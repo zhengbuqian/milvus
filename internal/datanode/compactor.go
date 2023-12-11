@@ -188,6 +188,7 @@ func (t *compactionTask) uploadRemainLog(
 	// remain insert data
 	if len(fID2Content) != 0 {
 		iData = &InsertData{Data: make(map[storage.FieldID]storage.FieldData)}
+		// TODO this gives empty sparse field data
 		for fID, content := range fID2Content {
 			tp, ok := fID2Type[fID]
 			if !ok {
@@ -811,6 +812,16 @@ func interface2FieldData(schemaDataType schemapb.DataType, content []interface{}
 		}
 
 		data.Dim = len(data.Data) * 8 / int(numRows)
+		rst = data
+
+	case schemapb.DataType_SparseFloatVector:
+		data := storage.MakeSparseFloatVectorFieldData()
+		for _, c := range content {
+			// c is of type *storage.SparseFloatVectorRowData
+			if err := data.AppendRow(c); err != nil {
+				return nil, err
+			}
+		}
 		rst = data
 
 	default:

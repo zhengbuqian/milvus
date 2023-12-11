@@ -34,8 +34,9 @@ FloatSegmentIndexSearch(const segcore::SegmentGrowingImpl& segment,
     auto vecfield_id = info.field_id_;
     auto& field = schema[vecfield_id];
 
-    AssertInfo(field.get_data_type() == DataType::VECTOR_FLOAT,
-               "[FloatSearch]Field data type isn't VECTOR_FLOAT");
+    AssertInfo(field.get_data_type() == DataType::VECTOR_FLOAT ||
+                field.get_data_type() == DataType::VECTOR_SPARSE_FLOAT,
+               "[FloatSearch]Field data type isn't VECTOR_FLOAT or VECTOR_SPARSE_FLOAT");
     dataset::SearchDataset search_dataset{info.metric_type_,
                                           num_queries,
                                           info.topk_,

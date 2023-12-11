@@ -262,7 +262,7 @@ func (ob *TargetObserver) isNextTargetExpired(collectionID int64) bool {
 func (ob *TargetObserver) updateNextTarget(collectionID int64) error {
 	log := log.With(zap.Int64("collectionID", collectionID))
 
-	log.Info("observer trigger update next target")
+	log.Debug("observer trigger update next target")
 	err := ob.targetMgr.UpdateCollectionNextTarget(collectionID)
 	if err != nil {
 		log.Warn("failed to update next target for collection",
@@ -433,7 +433,7 @@ func (ob *TargetObserver) checkNeedUpdateTargetVersion(ctx context.Context, lead
 }
 
 func (ob *TargetObserver) updateCurrentTarget(collectionID int64) {
-	log.Info("observer trigger update current target", zap.Int64("collectionID", collectionID))
+	log.Debug("observer trigger update current target", zap.Int64("collectionID", collectionID))
 	if ob.targetMgr.UpdateCollectionCurrentTarget(collectionID) {
 		ob.mut.Lock()
 		defer ob.mut.Unlock()

@@ -94,7 +94,8 @@ IndexFactory::CreateVectorIndex(
         }
     } else {  // create mem index
         switch (data_type) {
-            case DataType::VECTOR_FLOAT: {
+            case DataType::VECTOR_FLOAT:
+            case DataType::VECTOR_SPARSE_FLOAT: {
                 return std::make_unique<VectorMemIndex<float>>(
                     index_type, metric_type, version, file_manager_context);
             }

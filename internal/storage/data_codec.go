@@ -195,7 +195,7 @@ func (insertCodec *InsertCodec) SerializePkStatsByData(data *InsertData) (*Blob,
 	return nil, fmt.Errorf("there is no pk field")
 }
 
-// Serialize transfer insert data to blob. It will sort insert data by timestamp.
+// Serialize transforms insert data to blob. It will sort insert data by timestamp.
 // From schema, it gets all fields.
 // For each field, it will create a binlog writer, and write an event to the binlog.
 // It returns binlog buffer in the end.
@@ -244,8 +244,8 @@ func (insertCodec *InsertCodec) Serialize(partitionID UniqueID, segmentID Unique
 				eventWriter, err = writer.NextInsertEventWriter(singleData.(*FloatVectorFieldData).Dim)
 			case schemapb.DataType_BinaryVector:
 				eventWriter, err = writer.NextInsertEventWriter(singleData.(*BinaryVectorFieldData).Dim)
-			case schemapb.DataType_Float16Vector:
-				eventWriter, err = writer.NextInsertEventWriter(singleData.(*Float16VectorFieldData).Dim)
+			case schemapb.DataType_Float16Vector, schemapb.DataType_SparseFloatVector:
+				eventWriter, err = writer.NextInsertEventWriter()
 			default:
 				return nil, fmt.Errorf("undefined data type %d", field.DataType)
 			}
@@ -369,8 +369,16 @@ func (insertCodec *InsertCodec) Serialize(partitionID UniqueID, segmentID Unique
 				return nil, err
 			}
 			writer.AddExtra(originalSizeKey, fmt.Sprintf("%v", singleData.(*Float16VectorFieldData).GetMemorySize()))
+		case schemapb.DataType_SparseFloatVector:
+			err = eventWriter.AddSparseFloatVectorToPayload(singleData.(*SparseFloatVectorFieldData))
+			if err != nil {
+				eventWriter.Close()
+				writer.Close()
+				return nil, err
+			}
+			writer.AddExtra(originalSizeKey, fmt.Sprintf("%v", singleData.(*SparseFloatVectorFieldData).GetMemorySize()))
 		default:
-			return nil, fmt.Errorf("undefined data type %d", field.DataType)
+			return nil, fmt.Errorf("undefined data type 7%d", field.DataType)
 		}
 		if err != nil {
 			return nil, err
@@ -727,10 +735,26 @@ func (insertCodec *InsertCodec) DeserializeInto(fieldBinlogs []*Blob, rowNum int
 				floatVectorFieldData.Dim = dim
 				insertData.Data[fieldID] = floatVectorFieldData
 
+			case schemapb.DataType_SparseFloatVector:
+				sparseData, _, err := eventReader.GetSparseFloatVectorFromPayload()
+				if err != nil {
+					eventReader.Close()
+					binlogReader.Close()
+					return InvalidUniqueID, InvalidUniqueID, InvalidUniqueID, err
+				}
+				if insertData.Data[fieldID] == nil {
+					insertData.Data[fieldID] = MakeSparseFloatVectorFieldData()
+				}
+				vec := insertData.Data[fieldID].(*SparseFloatVectorFieldData)
+				vec.AppendAllRows(sparseData)
+
+				totalLength += sparseData.RowNum()
+				insertData.Data[fieldID] = vec
+
 			default:
 				eventReader.Close()
 				binlogReader.Close()
-				return InvalidUniqueID, InvalidUniqueID, InvalidUniqueID, fmt.Errorf("undefined data type %d", dataType)
+				return InvalidUniqueID, InvalidUniqueID, InvalidUniqueID, fmt.Errorf("undefined data type 8%d", dataType)
 			}
 			eventReader.Close()
 		}

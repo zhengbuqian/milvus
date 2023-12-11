@@ -398,6 +398,8 @@ func RowBasedInsertMsgToInsertData(msg *msgstream.InsertMsg, collSchema *schemap
 				Data: vecs,
 				Dim:  dim,
 			}
+		case schemapb.DataType_SparseFloatVector:
+			return nil, fmt.Errorf("Sparse Float Vector is not supported in row based data")
 
 		case schemapb.DataType_Bool:
 			idata.Data[field.FieldID] = &BoolFieldData{
@@ -514,6 +516,9 @@ func ColumnBasedInsertMsgToInsertData(msg *msgstream.InsertMsg, collSchema *sche
 			}
 			fieldData.Data = append(fieldData.Data, srcData...)
 
+			idata.Data[field.FieldID] = fieldData
+		case schemapb.DataType_SparseFloatVector:
+			fieldData := MakeSparseFloatVectorFieldDataFromProto(srcFields[field.FieldID].GetVectors().GetSparseFloatVector())
 			idata.Data[field.FieldID] = fieldData
 
 		case schemapb.DataType_Bool:
@@ -793,6 +798,14 @@ func mergeFloat16VectorField(data *InsertData, fid FieldID, field *Float16Vector
 	fieldData.Data = append(fieldData.Data, field.Data...)
 }
 
+func mergeSparseFloatVectorField(data *InsertData, fid FieldID, field *SparseFloatVectorFieldData) {
+	if _, ok := data.Data[fid]; !ok {
+		data.Data[fid] = MakeSparseFloatVectorFieldData()
+	}
+	fieldData := data.Data[fid].(*SparseFloatVectorFieldData)
+	fieldData.AppendAllRows(field)
+}
+
 // MergeFieldData merge field into data.
 func MergeFieldData(data *InsertData, fid FieldID, field FieldData) {
 	if field == nil {
@@ -825,6 +838,8 @@ func MergeFieldData(data *InsertData, fid FieldID, field FieldData) {
 		mergeFloatVectorField(data, fid, field)
 	case *Float16VectorFieldData:
 		mergeFloat16VectorField(data, fid, field)
+	case *SparseFloatVectorFieldData:
+		mergeSparseFloatVectorField(data, fid, field)
 	}
 }
 
@@ -1147,6 +1162,18 @@ func TransferInsertDataToInsertRecord(insertData *InsertData) (*segcorepb.Insert
 							BinaryVector: rawData.Data,
 						},
 						Dim: int64(rawData.Dim),
+					},
+				},
+			}
+		case *SparseFloatVectorFieldData:
+			fieldData = &schemapb.FieldData{
+				Type:    schemapb.DataType_SparseFloatVector,
+				FieldId: fieldID,
+				Field: &schemapb.FieldData_Vectors{
+					Vectors: &schemapb.VectorField{
+						Data: &schemapb.VectorField_SparseFloatVector{
+							SparseFloatVector: rawData.ToProto(),
+						},
 					},
 				},
 			}

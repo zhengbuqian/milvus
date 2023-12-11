@@ -51,6 +51,10 @@ datatype_sizeof(DataType data_type, int dim = 1) {
         case DataType::VECTOR_FLOAT16: {
             return sizeof(float16) * dim;
         }
+        // Not supporting VECTOR_SPARSE_FLOAT here intentionally. We can't
+        // easily estimately the size of a sparse float vector. Caller of this
+        // method must handle this case themselves and must not pass
+        // VECTOR_SPARSE_FLOAT data_type.
         default: {
             throw SegcoreError(DataTypeInvalid,
                                fmt::format("invalid type is {}", data_type));
@@ -94,6 +98,9 @@ datatype_name(DataType data_type) {
         case DataType::VECTOR_FLOAT16: {
             return "vector_float16";
         }
+        case DataType::VECTOR_SPARSE_FLOAT: {
+            return "vector_sparse_float";
+        }
         default: {
             PanicInfo(DataTypeInvalid,
                       fmt::format("Unsupported DataType({})", data_type));
@@ -105,7 +112,8 @@ inline bool
 datatype_is_vector(DataType datatype) {
     return datatype == DataType::VECTOR_BINARY ||
            datatype == DataType::VECTOR_FLOAT ||
-           datatype == DataType::VECTOR_FLOAT16;
+           datatype == DataType::VECTOR_FLOAT16 ||
+           datatype == DataType::VECTOR_SPARSE_FLOAT;
 }
 
 inline bool
@@ -147,6 +155,7 @@ datatype_is_variable(DataType datatype) {
         case DataType::STRING:
         case DataType::ARRAY:
         case DataType::JSON:
+        case DataType::VECTOR_SPARSE_FLOAT:
             return true;
         default:
             return false;
@@ -278,12 +287,15 @@ class FieldMeta {
     get_sizeof() const {
         static const size_t ARRAY_SIZE = 128;
         static const size_t JSON_SIZE = 512;
-        if (is_vector()) {
+        static const size_t SPARSE_FLOAT_VECTOR_SIZE = 160;
+        if (datatype_is_variable(type_)) {
+            return type_ == DataType::ARRAY  ? ARRAY_SIZE
+                   : type_ == DataType::JSON ? JSON_SIZE
+                                             : SPARSE_FLOAT_VECTOR_SIZE;
+        } else if (is_vector()) {
             return datatype_sizeof(type_, get_dim());
         } else if (is_string()) {
             return string_info_->max_length;
-        } else if (datatype_is_variable(type_)) {
-            return type_ == DataType::ARRAY ? ARRAY_SIZE : JSON_SIZE;
         } else {
             return datatype_sizeof(type_);
         }

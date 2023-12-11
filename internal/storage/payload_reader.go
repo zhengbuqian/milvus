@@ -11,6 +11,7 @@ import (
 	"github.com/golang/protobuf/proto"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus/pkg/util/typeutil"
 )
 
 // PayloadReader reads data from payload
@@ -68,6 +69,8 @@ func (r *PayloadReader) GetDataFromPayload() (interface{}, int, error) {
 		return r.GetFloatVectorFromPayload()
 	case schemapb.DataType_Float16Vector:
 		return r.GetFloat16VectorFromPayload()
+	case schemapb.DataType_SparseFloatVector:
+		return r.GetSparseFloatVectorFromPayload()
 	case schemapb.DataType_String, schemapb.DataType_VarChar:
 		val, err := r.GetStringFromPayload()
 		return val, 0, err
@@ -277,6 +280,7 @@ func (r *PayloadReader) GetJSONFromPayload() ([][]byte, error) {
 func readByteAndConvert[T any](r *PayloadReader, convert func(parquet.ByteArray) T) ([]T, error) {
 	values := make([]parquet.ByteArray, r.numRows)
 	valuesRead, err := ReadDataFromAllRowGroups[parquet.ByteArray, *file.ByteArrayColumnChunkReader](r.reader, values, 0, r.numRows)
+
 	if err != nil {
 		return nil, err
 	}
@@ -374,6 +378,27 @@ func (r *PayloadReader) GetFloatVectorFromPayload() ([]float32, int, error) {
 		copy(arrow.Float32Traits.CastToBytes(ret[i*dim:(i+1)*dim]), values[i])
 	}
 	return ret, dim, nil
+}
+
+func (r *PayloadReader) GetSparseFloatVectorFromPayload() (*SparseFloatVectorFieldData, int, error) {
+	if r.colType != schemapb.DataType_SparseFloatVector {
+		return nil, -1, fmt.Errorf("failed to get sparse float vector from datatype %v", r.colType.String())
+	}
+	values := make([]parquet.ByteArray, 1)
+	valuesRead, err := ReadDataFromAllRowGroups[parquet.ByteArray, *file.ByteArrayColumnChunkReader](r.reader, values, 0, 1)
+	if err != nil {
+		return nil, -1, err
+	}
+	if valuesRead != 1 {
+		return nil, -1, fmt.Errorf("expect %d rows, but got valuesRead = %d", r.numRows, valuesRead)
+	}
+
+	proto, err := typeutil.CSRBytesToSparseFloatArray(values[0])
+	if err != nil {
+		return nil, -1, err
+	}
+	fieldData := MakeSparseFloatVectorFieldDataFromProto(proto)
+	return fieldData, int(fieldData.Dim), nil
 }
 
 func (r *PayloadReader) GetPayloadLengthFromReader() (int, error) {

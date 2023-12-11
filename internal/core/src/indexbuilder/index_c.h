@@ -20,6 +20,7 @@ extern "C" {
 #include "common/binary_set_c.h"
 #include "indexbuilder/type_c.h"
 
+// used only in test
 CStatus
 CreateIndexV0(enum CDataType dtype,
               const char* serialized_type_params,
@@ -37,6 +38,9 @@ BuildFloatVecIndex(CIndex index, int64_t float_value_num, const float* vectors);
 
 CStatus
 BuildBinaryVecIndex(CIndex index, int64_t data_size, const uint8_t* vectors);
+
+CStatus
+BuildSparseFloatVecIndex(CIndex index, int64_t data_size, const uint8_t* vectors);
 
 // field_data:
 //  1, serialized proto::schema::BoolArray, if type is bool;

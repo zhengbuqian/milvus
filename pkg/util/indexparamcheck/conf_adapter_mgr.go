@@ -54,6 +54,7 @@ func (mgr *indexCheckerMgrImpl) registerIndexChecker() {
 	mgr.checkers[IndexFaissBinIvfFlat] = newBinIVFFlatChecker()
 	mgr.checkers[IndexHNSW] = newHnswChecker()
 	mgr.checkers[IndexDISKANN] = newDiskannChecker()
+	mgr.checkers[IndexSparseInverted] = newSparseInvertedIndexChecker()
 }
 
 func newIndexCheckerMgr() *indexCheckerMgrImpl {

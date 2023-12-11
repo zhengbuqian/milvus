@@ -167,7 +167,7 @@ rootCoord:
   dmlChannelNum: 16 # The number of dml channels created at system startup
   maxDatabaseNum: 64 # Maximum number of database
   maxPartitionNum: 4096 # Maximum number of partitions in a collection
-  minSegmentSizeToEnableIndex: 1024 # It's a threshold. When the segment size is less than this value, the segment will not be indexed
+  minSegmentSizeToEnableIndex: 1 # It's a threshold. When the segment size is less than this value, the segment will not be indexed
   importTaskExpiration: 900 # (in seconds) Duration after which an import task will expire (be killed). Default 900 seconds (15 minutes).
   importTaskRetention: 86400 # (in seconds) Milvus will keep the record of import tasks for at least `importTaskRetention` seconds. Default 86400, seconds (24 hours).
   enableActiveStandby: false
@@ -252,6 +252,7 @@ queryCoord:
 
 # Related configuration of queryNode, used to run hybrid search between vector and scalar data.
 queryNode:
+  mmapDirPath: ""
   dataSync:
     flowGraph:
       maxQueueLength: 16 # Maximum length of task queue in flowgraph
@@ -324,7 +325,7 @@ indexCoord:
     withCred: false
     nodeID: 0
   segment:
-    minSegmentNumRowsToEnableIndex: 1024 # It's a threshold. When the segment num rows is less than this value, the segment will not be indexed
+    minSegmentNumRowsToEnableIndex: 1 # It's a threshold. When the segment num rows is less than this value, the segment will not be indexed
 
 indexNode:
   scheduler:
@@ -360,7 +361,7 @@ dataCoord:
     # If a segment didn't accept dml records in maxIdleTime and the size of segment is greater than
     # minSizeFromIdleToSealed, Milvus will automatically seal it.
     # The max idle time of segment in seconds, 10*60.
-    maxIdleTime: 600
+    maxIdleTime: 60
     minSizeFromIdleToSealed: 16 # The min size in MB of segment which can be idle from sealed.
     # The max number of binlog file for one segment, the segment will be sealed if
     # the number of binlog file reaches to max value.

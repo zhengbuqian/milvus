@@ -32,52 +32,6 @@
 namespace milvus {
 
 inline size_t
-GetDataSize(const std::vector<storage::FieldDataPtr>& datas) {
-    size_t total_size{0};
-    for (auto data : datas) {
-        total_size += data->Size();
-    }
-
-    return total_size;
-}
-
-inline void*
-FillField(DataType data_type, const storage::FieldDataPtr data, void* dst) {
-    char* dest = reinterpret_cast<char*>(dst);
-    if (datatype_is_variable(data_type)) {
-        switch (data_type) {
-            case DataType::STRING:
-            case DataType::VARCHAR: {
-                for (ssize_t i = 0; i < data->get_num_rows(); ++i) {
-                    auto str =
-                        static_cast<const std::string*>(data->RawValue(i));
-                    memcpy(dest, str->data(), str->size());
-                    dest += str->size();
-                }
-                break;
-            }
-            case DataType::JSON: {
-                for (ssize_t i = 0; i < data->get_num_rows(); ++i) {
-                    auto padded_string =
-                        static_cast<const Json*>(data->RawValue(i))->data();
-                    memcpy(dest, padded_string.data(), padded_string.size());
-                    dest += padded_string.size();
-                }
-                break;
-            }
-            default:
-                PanicInfo(DataTypeInvalid,
-                          fmt::format("not supported data type {}", data_type));
-        }
-    } else {
-        memcpy(dst, data->Data(), data->Size());
-        dest += data->Size();
-    }
-
-    return dest;
-}
-
-inline size_t
 WriteFieldData(File& file,
                DataType data_type,
                const storage::FieldDataPtr& data,
@@ -124,9 +78,24 @@ WriteFieldData(File& file,
                 }
                 break;
             }
+            case DataType::VECTOR_SPARSE_FLOAT: {
+                std::unique_ptr<const void, void(*)(const void*)> buffer(
+                    data->Data(),
+                    [](const void* p) { delete[] static_cast<const char*>(p); }
+                );
+                auto size = data->Size();
+                ssize_t written = file.Write(buffer.get(), size);
+                // TODO: in case of write failure, should we handle it
+                // gracefully instead of silently ignoring it?
+                if (written < size) {
+                    break;
+                }
+                total_written += written;
+                break;
+            }
             default:
                 PanicInfo(DataTypeInvalid,
-                          fmt::format("not supported data type {}",
+                          fmt::format("not supported data type 13 {}",
                                       datatype_name(data_type)));
         }
     } else {

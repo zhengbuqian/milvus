@@ -19,6 +19,7 @@ import (
 	"io"
 	"strconv"
 
+	"github.com/cockroachdb/errors"
 	"github.com/golang/protobuf/proto"
 	"go.uber.org/zap"
 
@@ -94,6 +95,7 @@ func getPKsFromRowBasedInsertMsg(msg *msgstream.InsertMsg, schema *schemapb.Coll
 				}
 			}
 		}
+		// TODO(SPARSE) this won't work in presence of variable length fields
 	}
 
 	log.Info(strconv.FormatInt(int64(offset), 10))
@@ -164,6 +166,10 @@ func fillFloatVecFieldData(ctx context.Context, vcm storage.ChunkManager, dataPa
 	resultLen := dim
 	copy(x.FloatVector.Data[i*int(resultLen):(i+1)*int(resultLen)], floatResult)
 	return nil
+}
+
+func fillSparseFloatVecFieldData(ctx context.Context, vcm storage.ChunkManager, dataPath string, fieldData *schemapb.FieldData, i int, offset int64, endian binary.ByteOrder) error {
+	return errors.New("fillSparseFloatVecFieldData not implemented")
 }
 
 func fillBoolFieldData(ctx context.Context, vcm storage.ChunkManager, dataPath string, fieldData *schemapb.FieldData, i int, offset int64, endian binary.ByteOrder) error {
@@ -274,6 +280,8 @@ func fillFieldData(ctx context.Context, vcm storage.ChunkManager, dataPath strin
 		return fillBinVecFieldData(ctx, vcm, dataPath, fieldData, i, offset, endian)
 	case schemapb.DataType_FloatVector:
 		return fillFloatVecFieldData(ctx, vcm, dataPath, fieldData, i, offset, endian)
+	case schemapb.DataType_SparseFloatVector:
+		return fillSparseFloatVecFieldData(ctx, vcm, dataPath, fieldData, i, offset, endian)
 	case schemapb.DataType_Bool:
 		return fillBoolFieldData(ctx, vcm, dataPath, fieldData, i, offset, endian)
 	case schemapb.DataType_String, schemapb.DataType_VarChar:

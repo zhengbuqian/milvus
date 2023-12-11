@@ -186,6 +186,27 @@ func genEmptyFloat16VectorFieldData(field *schemapb.FieldSchema) (*schemapb.Fiel
 	}, nil
 }
 
+func genEmptySparseFloatVectorFieldData(field *schemapb.FieldSchema) (*schemapb.FieldData, error) {
+	return &schemapb.FieldData{
+		Type:      field.GetDataType(),
+		FieldName: field.GetName(),
+		Field: &schemapb.FieldData_Vectors{
+			Vectors: &schemapb.VectorField{
+				Dim: 0,
+				Data: &schemapb.VectorField_SparseFloatVector{
+					SparseFloatVector: &schemapb.SparseFloatArray{
+						Dim:      0,
+						Nnz:      0,
+						Contents: make([]*schemapb.SparseFloatRow, 0),
+					},
+				},
+			},
+		},
+		FieldId:   field.GetFieldID(),
+		IsDynamic: field.GetIsDynamic(),
+	}, nil
+}
+
 func GenEmptyFieldData(field *schemapb.FieldSchema) (*schemapb.FieldData, error) {
 	dataType := field.GetDataType()
 	switch dataType {
@@ -211,7 +232,9 @@ func GenEmptyFieldData(field *schemapb.FieldSchema) (*schemapb.FieldData, error)
 		return genEmptyFloatVectorFieldData(field)
 	case schemapb.DataType_Float16Vector:
 		return genEmptyFloat16VectorFieldData(field)
+	case schemapb.DataType_SparseFloatVector:
+		return genEmptySparseFloatVectorFieldData(field)
 	default:
-		return nil, fmt.Errorf("unsupported data type: %s", dataType.String())
+		return nil, fmt.Errorf("unsupported data type 3: %s", dataType.String())
 	}
 }

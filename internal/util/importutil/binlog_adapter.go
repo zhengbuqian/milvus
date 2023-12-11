@@ -766,6 +766,7 @@ func (p *BinlogAdapter) readInsertlog(fieldID storage.FieldID, logPath string,
 		if err != nil {
 			return err
 		}
+	// TODO(SPARSE)
 	default:
 		return fmt.Errorf("unsupported data type %d", binlogFile.DataType())
 	}

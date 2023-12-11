@@ -27,4 +27,6 @@ const (
 	IndexFaissBinIvfFlat IndexType = "BIN_IVF_FLAT"
 	IndexHNSW            IndexType = "HNSW"
 	IndexDISKANN         IndexType = "DISKANN"
+	IndexSparseInverted  IndexType = "SPARSE_INVERTED_INDEX"
+	IndexSparseWand      IndexType = "SPARSE_WAND"
 )

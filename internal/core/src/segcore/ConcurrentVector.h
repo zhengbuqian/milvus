@@ -24,14 +24,26 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <typeinfo>
+#include <sstream>
+#include <iostream>
 
+#include "common/csr_utils.h"
 #include "common/FieldMeta.h"
 #include "common/Json.h"
 #include "common/Span.h"
 #include "common/Types.h"
 #include "common/Utils.h"
 #include "common/EasyAssert.h"
+#include "log/Log.h"
 #include "storage/FieldData.h"
+
+
+// TODO: for sparse:
+// sealed:     store a single csr for all rows
+// growing:    store a single csr for each chunk.
+
+// Current impl:
 
 namespace milvus::segcore {
 
@@ -93,8 +105,10 @@ class VectorBase {
     }
     virtual ~VectorBase() = default;
 
-    virtual void
-    grow_to_at_least(int64_t element_count) = 0;
+    // TODO(ZBQ) for PR comment: removing grow_to_at_least from VectorBase, it is never used.
+    // this method is used only in the ConcurrentVectorImpl subclass, thus
+    // making it private of that class, and removing from this internface.
+    // Related unit tests can also be removed.
 
     virtual void
     set_data_raw(ssize_t element_offset,
@@ -105,12 +119,13 @@ class VectorBase {
     set_data_raw(ssize_t element_offset,
                  const std::vector<storage::FieldDataPtr>& data) = 0;
 
-    void
+    virtual void
     set_data_raw(ssize_t element_offset,
                  ssize_t element_count,
                  const DataArray* data,
                  const FieldMeta& field_meta);
 
+    // used only for sealed segment
     virtual void
     fill_chunk_data(const std::vector<storage::FieldDataPtr>& data) = 0;
 
@@ -133,6 +148,119 @@ class VectorBase {
 
  protected:
     const int64_t size_per_chunk_;
+};
+
+// TODO(SPARSE) assume value type is always float for now
+//
+// TODO(SPARSE) the current implementation of SerialSparseVectorImpl relies
+// on the current growing segment impl and doesn't implement all overridden
+// methods, we may need to add impl for them in the future.
+//
+// TODO(SPARSE) all growing indexes now support serial inserts only. Supporting
+// concurrent sparse vector inserts could make things complicated and slow, thus
+// for now this class is made non-concurrent to match the usage. In order to
+// support possible future concurrent inserts, we need to add a new PreInsert to
+// SegmentGrowing to reserve space based on not only number of rows, but also
+// number of non zero values so we can correctly reserve space in indices and
+// data.
+//
+// TODO(SPARSE) a better way to support concurrent is to not use CSR format for
+// storing the vectors: create a struct to represent a single row, and store a
+// vector of such structs.
+//
+// We use linscan/wand to search for a sparse float vector field of a
+// growing segment, which natively supports dynamically adding new
+// vectors, thus we do not split the vectors into chunks.
+class SerialSparseVectorImpl : public VectorBase {
+ public:
+    SerialSparseVectorImpl(SerialSparseVectorImpl&&) = delete;
+    SerialSparseVectorImpl(const SerialSparseVectorImpl&) =
+        delete;
+
+    SerialSparseVectorImpl&
+    operator=(SerialSparseVectorImpl&&) = delete;
+    SerialSparseVectorImpl&
+    operator=(const SerialSparseVectorImpl&) = delete;
+
+    explicit SerialSparseVectorImpl(int64_t size_per_chunk)
+        : VectorBase(size_per_chunk) {
+        AssertInfo(size_per_chunk == std::numeric_limits<int64_t>::max(),
+                   "sparse vector only supports max size per chunk");
+    }
+
+    void
+    set_data_raw(ssize_t element_offset,
+                 const void* source,
+                 ssize_t element_count) override {
+        AssertInfo(false,
+            "set_data_raw with raw pointer not supported on sparse float "
+            "vector field");
+    }
+
+    // element_offset: starting offset to insert the new vectors.
+    void
+    set_data_raw(ssize_t element_offset,
+                 const std::vector<storage::FieldDataPtr>& data) override {
+        std::ostringstream message;
+        message << "SerialSparseVectorImpl must be used sequentially. "
+                << "element_offset: " << element_offset << ", rows_: " << csr_.rows();
+        AssertInfo(element_offset == csr_.rows(), message.str());
+        for (auto& field_data : data) {
+            auto ptr = std::static_pointer_cast<storage::FieldDataSparseVectorImpl>(field_data);
+            csr_.append(ptr->get_csr());
+        }
+    }
+
+    // the new vectors are stored in DataArray, of which is a CSR matrix.
+    void
+    set_data_raw(ssize_t element_offset,
+                 ssize_t element_count,
+                 const DataArray* data,
+                 const FieldMeta& field_meta) override {
+        std::ostringstream message;
+        message << "SerialSparseVectorImpl must be used sequentially. "
+                << "element_offset: " << element_offset << ", rows_: " << csr_.rows();
+        AssertInfo(element_offset == csr_.rows(), message.str());
+        AssertInfo(field_meta.is_vector() && field_meta.get_data_type() ==
+                                                 DataType::VECTOR_SPARSE_FLOAT,
+                   "SerialSparseVectorImpl only supports sparse float "
+                   "vector field");
+        csr_.append(data->vectors().sparse_float_vector());
+    }
+
+    // used by only row_ids_ and timestamps_ column in sealed segment, thus
+    // not implementing for now.
+    void
+    fill_chunk_data(const std::vector<storage::FieldDataPtr>& data) override {
+        AssertInfo(false, "fill_chunk_data not supported on sparse float vector field");
+    }
+
+    SpanBase
+    get_span_base(int64_t chunk_id) const override {
+        // this is used only by scalar field
+        AssertInfo(false, "get_span_base not supported on sparse float vector field");
+        throw std::runtime_error("get_span_base not supported on sparse float vector field");
+    }
+
+    // caller is responsible for freeing the memory
+    const void*
+    get_chunk_data(ssize_t chunk_index) const override {
+        AssertInfo(chunk_index == 0, "SerialSparseVectorImpl has exact 1 chunk.");
+        return csr_.to_bytes();
+    }
+
+    ssize_t
+    num_chunk() const override {
+        return 1;
+    }
+
+    bool
+    empty() override {
+        return csr_.empty();
+    }
+
+ private:
+    sparse::SparseMatrix csr_;
 };
 
 template <typename Type, bool is_scalar = false>
@@ -159,21 +287,7 @@ class ConcurrentVectorImpl : public VectorBase {
 
  public:
     explicit ConcurrentVectorImpl(ssize_t dim, int64_t size_per_chunk)
-        : VectorBase(size_per_chunk), Dim(is_scalar ? 1 : dim) {
-        // Assert(is_scalar ? dim == 1 : dim != 1);
-    }
-
-    void
-    grow_to_at_least(int64_t element_count) override {
-        auto chunk_count = upper_div(element_count, size_per_chunk_);
-        chunks_.emplace_to_at_least(chunk_count, Dim * size_per_chunk_);
-    }
-
-    void
-    grow_on_demand(int64_t element_count) {
-        auto chunk_count = upper_div(element_count, size_per_chunk_);
-        chunks_.emplace_to_at_least(chunk_count, Dim * element_count);
-    }
+        : VectorBase(size_per_chunk), Dim(is_scalar ? 1 : dim) {}
 
     Span<TraitType>
     get_span(int64_t chunk_id) const {
@@ -196,10 +310,11 @@ class ConcurrentVectorImpl : public VectorBase {
         return get_span(chunk_id);
     }
 
+    // used only for sealed segment
     void
     fill_chunk_data(const std::vector<storage::FieldDataPtr>& datas)
-        override {  // used only for sealed segment
-        AssertInfo(chunks_.size() == 0, "no empty concurrent vector");
+        override {
+        AssertInfo(chunks_.size() == 0, "non empty concurrent vector");
 
         int64_t element_count = 0;
         for (auto& field_data : datas) {
@@ -232,45 +347,11 @@ class ConcurrentVectorImpl : public VectorBase {
         if (element_count == 0) {
             return;
         }
-        this->grow_to_at_least(element_offset + element_count);
+        chunks_.emplace_to_at_least(
+            upper_div(element_offset + element_count, size_per_chunk_),
+            Dim * size_per_chunk_);
         set_data(
             element_offset, static_cast<const Type*>(source), element_count);
-    }
-
-    void
-    set_data(ssize_t element_offset,
-             const Type* source,
-             ssize_t element_count) {
-        auto chunk_id = element_offset / size_per_chunk_;
-        auto chunk_offset = element_offset % size_per_chunk_;
-        ssize_t source_offset = 0;
-        // first partition:
-        if (chunk_offset + element_count <= size_per_chunk_) {
-            // only first
-            fill_chunk(
-                chunk_id, chunk_offset, element_count, source, source_offset);
-            return;
-        }
-
-        auto first_size = size_per_chunk_ - chunk_offset;
-        fill_chunk(chunk_id, chunk_offset, first_size, source, source_offset);
-
-        source_offset += size_per_chunk_ - chunk_offset;
-        element_count -= first_size;
-        ++chunk_id;
-
-        // the middle
-        while (element_count >= size_per_chunk_) {
-            fill_chunk(chunk_id, 0, size_per_chunk_, source, source_offset);
-            source_offset += size_per_chunk_;
-            element_count -= size_per_chunk_;
-            ++chunk_id;
-        }
-
-        // the final
-        if (element_count > 0) {
-            fill_chunk(chunk_id, 0, element_count, source, source_offset);
-        }
     }
 
     const Chunk&
@@ -327,6 +408,42 @@ class ConcurrentVectorImpl : public VectorBase {
     }
 
  private:
+    void
+    set_data(ssize_t element_offset,
+             const Type* source,
+             ssize_t element_count) {
+        auto chunk_id = element_offset / size_per_chunk_;
+        auto chunk_offset = element_offset % size_per_chunk_;
+        ssize_t source_offset = 0;
+        // first partition:
+        if (chunk_offset + element_count <= size_per_chunk_) {
+            // only first
+            fill_chunk(
+                chunk_id, chunk_offset, element_count, source, source_offset);
+            return;
+        }
+
+        auto first_size = size_per_chunk_ - chunk_offset;
+        fill_chunk(chunk_id, chunk_offset, first_size, source, source_offset);
+
+        source_offset += size_per_chunk_ - chunk_offset;
+        element_count -= first_size;
+        ++chunk_id;
+
+        // the middle
+        while (element_count >= size_per_chunk_) {
+            fill_chunk(chunk_id, 0, size_per_chunk_, source, source_offset);
+            source_offset += size_per_chunk_;
+            element_count -= size_per_chunk_;
+            ++chunk_id;
+        }
+
+        // the final
+        if (element_count > 0) {
+            fill_chunk(chunk_id, 0, element_count, source, source_offset);
+        }
+    }
+
     void
     fill_chunk(ssize_t chunk_id,
                ssize_t chunk_offset,

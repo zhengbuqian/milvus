@@ -66,6 +66,7 @@ AddFloatVectorToPayload(CPayloadWriter payloadWriter,
                         float* values,
                         int dimension,
                         int length);
+// TODO(SPARSE) these methods do not seem to be used.
 
 CStatus
 FinishPayloadWriter(CPayloadWriter payloadWriter);

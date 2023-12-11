@@ -132,9 +132,10 @@ class Schema {
         return fields_.at(field_id);
     }
 
+    // returned size of json, array and sparse float vector is estimated.
     auto
-    get_total_sizeof() const {
-        return total_sizeof_;
+    get_estimated_total_sizeof() const {
+        return estimated_total_sizeof_;
     }
 
     FieldId
@@ -183,7 +184,7 @@ class Schema {
         field_ids_.emplace_back(field_id);
 
         auto field_sizeof = field_meta.get_sizeof();
-        total_sizeof_ += field_sizeof;
+        estimated_total_sizeof_ += field_sizeof;
     }
 
  private:
@@ -197,7 +198,7 @@ class Schema {
     std::unordered_map<FieldName, FieldId> name_ids_;  // field_name -> field_id
     std::unordered_map<FieldId, FieldName> id_names_;  // field_id -> field_name
 
-    int64_t total_sizeof_ = 0;
+    int64_t estimated_total_sizeof_ = 0;
     std::optional<FieldId> primary_field_id_opt_;
 };
 

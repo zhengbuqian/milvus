@@ -81,15 +81,15 @@ SegmentGrowingImpl::Insert(int64_t reserved_offset,
                            int64_t num_rows,
                            const int64_t* row_ids,
                            const Timestamp* timestamps_raw,
-                           const InsertData* insert_data) {
-    AssertInfo(insert_data->num_rows() == num_rows,
+                           const InsertRecordProto* insert_record_proto) {
+    AssertInfo(insert_record_proto->num_rows() == num_rows,
                "Entities_raw count not equal to insert size");
-    //    AssertInfo(insert_data->fields_data_size() == schema_->size(),
+    //    AssertInfo(insert_record_proto->fields_data_size() == schema_->size(),
     //               "num fields of insert data not equal to num of schema fields");
     // step 1: check insert data if valid
     std::unordered_map<FieldId, int64_t> field_id_to_offset;
     int64_t field_offset = 0;
-    for (const auto& field : insert_data->fields_data()) {
+    for (const auto& field : insert_record_proto->fields_data()) {
         auto field_id = FieldId(field.field_id());
         AssertInfo(!field_id_to_offset.count(field_id), "duplicate field data");
         field_id_to_offset.emplace(field_id, field_offset++);
@@ -113,7 +113,7 @@ SegmentGrowingImpl::Insert(int64_t reserved_offset,
             insert_record_.get_field_data_base(field_id)->set_data_raw(
                 reserved_offset,
                 num_rows,
-                &insert_data->fields_data(data_offset),
+                &insert_record_proto->fields_data(data_offset),
                 field_meta);
         }
         //insert vector data into index
@@ -122,14 +122,14 @@ SegmentGrowingImpl::Insert(int64_t reserved_offset,
                 reserved_offset,
                 num_rows,
                 field_id,
-                &insert_data->fields_data(data_offset),
+                &insert_record_proto->fields_data(data_offset),
                 insert_record_);
         }
 
         // update average row data size
         if (datatype_is_variable(field_meta.get_data_type())) {
             auto field_data_size = GetRawDataSizeOfDataArray(
-                &insert_data->fields_data(data_offset), field_meta, num_rows);
+                &insert_record_proto->fields_data(data_offset), field_meta, num_rows);
             SegmentInternalInterface::set_field_avg_size(
                 field_id, num_rows, field_data_size);
         }
@@ -142,7 +142,7 @@ SegmentGrowingImpl::Insert(int64_t reserved_offset,
     AssertInfo(field_id.get() != INVALID_FIELD_ID, "Primary key is -1");
     std::vector<PkType> pks(num_rows);
     ParsePksFromFieldData(
-        pks, insert_data->fields_data(field_id_to_offset[field_id]));
+        pks, insert_record_proto->fields_data(field_id_to_offset[field_id]));
     for (int i = 0; i < num_rows; ++i) {
         insert_record_.insert_pk(pks[i], reserved_offset + i);
     }
@@ -280,7 +280,7 @@ SegmentGrowingImpl::GetMemoryUsageInBytes() const {
     int64_t total_bytes = 0;
     auto chunk_rows = segcore_config_.get_chunk_rows();
     int64_t ins_n = upper_align(insert_record_.reserved, chunk_rows);
-    total_bytes += ins_n * (schema_->get_total_sizeof() + 16 + 1);
+    total_bytes += ins_n * (schema_->get_estimated_total_sizeof() + 16 + 1);
     int64_t del_n = upper_align(deleted_record_.size(), chunk_rows);
     total_bytes += del_n * (16 * 2);
     return total_bytes;

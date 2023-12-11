@@ -248,7 +248,7 @@ VectorMemIndex<T>::Build(const Config& config) {
     auto insert_files =
         GetValueFromConfig<std::vector<std::string>>(config, "insert_files");
     AssertInfo(insert_files.has_value(),
-               "insert file paths is empty when build disk ann index");
+               "insert file paths is empty when building index");
     auto field_datas =
         file_manager_->CacheRawDataToMemory(insert_files.value());
 
@@ -258,6 +258,8 @@ VectorMemIndex<T>::Build(const Config& config) {
     for (auto data : field_datas) {
         total_size += data->Size();
         total_num_rows += data->get_num_rows();
+        // TODO(SPARSE) allows different dims for sparse vecs
+        // why is this not triggered?
         AssertInfo(dim == 0 || dim == data->get_dim(),
                    "inconsistent dim value between field datas!");
         dim = data->get_dim();

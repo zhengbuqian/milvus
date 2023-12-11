@@ -50,6 +50,7 @@ AppendIndexInfo(CLoadIndexInfo c_load_index_info,
                 int64_t build_id,
                 int64_t version);
 
+// TODO(ZBQ): unused
 CStatus
 AppendIndex(CLoadIndexInfo c_load_index_info, CBinarySet c_binary_set);
 

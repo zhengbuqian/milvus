@@ -33,6 +33,7 @@
 #include "common/FieldMeta.h"
 #include "common/Types.h"
 #include "log/Log.h"
+#include "mmap/Utils.h"
 #include "pb/schema.pb.h"
 #include "query/ScalarIndex.h"
 #include "query/SearchBruteForce.h"
@@ -203,12 +204,13 @@ SegmentSealedImpl::LoadFieldData(const LoadFieldDataInfo& load_info) {
         field_data_info.channel->set_capacity(parallel_degree * 2);
         auto& pool =
             ThreadPools::GetThreadPool(milvus::ThreadPoolPriority::MIDDLE);
-        auto load_future = pool.Submit(
+        pool.Submit(
             LoadFieldDatasFromRemote, insert_files, field_data_info.channel);
         LOG_SEGCORE_INFO_ << "finish submitting LoadFieldDatasFromRemote task "
                              "to thread pool, "
                           << "segmentID:" << this->id_
-                          << ", fieldID:" << info.field_id;
+                          << ", fieldID:" << info.field_id
+                          << ", mmap enabled? " << info.enable_mmap;
         if (!info.enable_mmap ||
             SystemProperty::Instance().IsSystem(field_id)) {
             LoadFieldData(field_id, field_data_info);
@@ -338,9 +340,18 @@ SegmentSealedImpl::LoadFieldData(FieldId field_id, FieldDataInfo& data) {
                     column = std::move(var_column);
                     break;
                 }
+                case milvus::DataType::VECTOR_SPARSE_FLOAT: {
+                    auto col = std::make_shared<SparseFloatColumn>(field_meta);
+                    storage::FieldDataPtr field_data;
+                    while (data.channel->pop(field_data)) {
+                        col->AppendBatch(field_data);
+                    }
+                    column = std::move(col);
+                    break;
+                }
                 default: {
                     PanicInfo(DataTypeInvalid,
-                              fmt::format("unsupported data type", data_type));
+                              fmt::format("unsupported data type 9", data_type));
                 }
             }
 
@@ -472,9 +483,10 @@ SegmentSealedImpl::MapFieldData(const FieldId field_id, FieldDataInfo& data) {
                 column = std::move(arr_column);
                 break;
             }
+            // TODO(SPARSE) support mmap
             default: {
                 PanicInfo(DataTypeInvalid,
-                          fmt::format("unsupported data type {}", data_type));
+                          fmt::format("unsupported data type 8 {}", data_type));
             }
         }
     } else {
@@ -585,7 +597,7 @@ SegmentSealedImpl::GetMemoryUsageInBytes() const {
     // TODO: add estimate for index
     std::shared_lock lck(mutex_);
     auto row_count = num_rows_.value_or(0);
-    return schema_->get_total_sizeof() * row_count;
+    return schema_->get_estimated_total_sizeof() * row_count;
 }
 
 int64_t
@@ -1150,7 +1162,8 @@ SegmentSealedImpl::bulk_subscript(FieldId field_id,
                                             ->mutable_data());
             break;
         }
-
+        // TODO(SPARSE): 可以忽略本文件中的 field_meta.get_sizeof() 调用。sparse 的
+        // bulk_subscript_impl 需要单独设计
         case DataType::VECTOR_FLOAT: {
             bulk_subscript_impl(field_meta.get_sizeof(),
                                 column->Data(),
@@ -1183,7 +1196,7 @@ SegmentSealedImpl::bulk_subscript(FieldId field_id,
 
         default: {
             PanicInfo(DataTypeInvalid,
-                      fmt::format("unsupported data type {}",
+                      fmt::format("unsupported data type bulk subscript {}",
                                   field_meta.get_data_type()));
         }
     }
@@ -1389,6 +1402,7 @@ SegmentSealedImpl::generate_binlog_index(const FieldId field_id) {
             auto vec_data = fields_.at(field_id);
             auto dataset =
                 knowhere::GenDataSet(row_count, dim, (void*)vec_data->Data());
+            // TODO(SPARSE): for sparse vector, dataset should own data.
             dataset->SetIsOwner(false);
             // generate index params
             auto field_binlog_config = std::unique_ptr<VecIndexConfig>(

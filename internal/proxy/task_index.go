@@ -165,9 +165,7 @@ func (cit *createIndexTask) parseIndexParams() error {
 				fmt.Sprintf("create index on %s field", cit.fieldSchema.DataType.String()),
 				"create index on json field is not supported")
 		}
-	}
-
-	if isVecIndex {
+	} else {
 		specifyIndexType, exist := indexParamsMap[common.IndexTypeKey]
 		if Params.AutoIndexConfig.Enable.GetAsBool() { // `enable` only for cloud instance.
 			log.Info("create index trigger AutoIndex",
@@ -304,6 +302,7 @@ func fillDimension(field *schemapb.FieldSchema, indexParams map[string]string) e
 		schemapb.DataType_FloatVector,
 		schemapb.DataType_BinaryVector,
 		schemapb.DataType_Float16Vector,
+		schemapb.DataType_SparseFloatVector,
 	}
 	if !funcutil.SliceContain(vecDataTypes, field.GetDataType()) {
 		return nil
@@ -333,6 +332,7 @@ func checkTrain(field *schemapb.FieldSchema, indexParams map[string]string) erro
 		schemapb.DataType_FloatVector,
 		schemapb.DataType_BinaryVector,
 		schemapb.DataType_Float16Vector,
+		schemapb.DataType_SparseFloatVector,
 	}
 	if !funcutil.SliceContain(vecDataTypes, field.GetDataType()) {
 		return indexparamcheck.CheckIndexValid(field.GetDataType(), indexType, indexParams)

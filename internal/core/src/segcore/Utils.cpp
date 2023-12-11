@@ -21,7 +21,6 @@
 #include "common/Common.h"
 #include "storage/ThreadPool.h"
 #include "storage/Util.h"
-#include "mmap/Utils.h"
 
 namespace milvus::segcore {
 
@@ -200,6 +199,13 @@ GetRawDataSizeOfDataArray(const DataArray* data,
                                         field_meta.get_element_type()));
                 }
 
+                break;
+            }
+            case DataType::VECTOR_SPARSE_FLOAT: {
+                // TODO(SPARSE): 目前暂时直接使用 proto 的 ByteSizeLong，不那么精细
+                // 的管理长度。这个的唯一使用的地方是 growing segment 估算新插入数据的
+                // 长度均值
+                result += data->vectors().sparse_float_vector().ByteSizeLong();
                 break;
             }
             default: {

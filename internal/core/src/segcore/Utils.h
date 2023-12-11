@@ -45,6 +45,8 @@ ParsePksFromIDs(std::vector<PkType>& pks,
 int64_t
 GetSizeOfIdArray(const IdArray& data);
 
+// 唯一的使用是在segcore/SegmentGrowingImpl.cpp中插入变长数据时，估算新插入的数据的长度均值，
+// 并更新当前growing_segment的长度均值
 int64_t
 GetRawDataSizeOfDataArray(const DataArray* data,
                           const FieldMeta& field_meta,

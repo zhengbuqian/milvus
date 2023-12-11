@@ -11,6 +11,8 @@
 
 #include <string>
 #include <thread>
+#include <iostream>
+
 #include "common/EasyAssert.h"
 #include "fmt/format.h"
 #include "index/ScalarIndexSort.h"
@@ -29,8 +31,8 @@ VectorFieldIndexing::VectorFieldIndexing(const FieldMeta& field_meta,
                                          int64_t segment_max_row_count,
                                          const SegcoreConfig& segcore_config)
     : FieldIndexing(field_meta, segcore_config),
-      build(false),
-      sync_with_index(false),
+      built_(false),
+      sync_with_index_(false),
       config_(std::make_unique<VecIndexConfig>(segment_max_row_count,
                                                field_index_meta,
                                                segcore_config,
@@ -45,6 +47,7 @@ void
 VectorFieldIndexing::BuildIndexRange(int64_t ack_beg,
                                      int64_t ack_end,
                                      const VectorBase* vec_base) {
+    // No BuildIndexRange support for sparse vector.
     AssertInfo(field_meta_.get_data_type() == DataType::VECTOR_FLOAT,
                "Data type of vector field is not VECTOR_FLOAT");
     auto dim = field_meta_.get_dim();
@@ -73,6 +76,8 @@ VectorFieldIndexing::GetDataFromIndex(const int64_t* seg_offsets,
                                       int64_t count,
                                       int64_t element_size,
                                       void* output) {
+    // TODO: what if index hasn't been built?
+    // TODO(SPARSE): sparse vector
     auto ids_ds = std::make_shared<knowhere::DataSet>();
     ids_ds->SetRows(count);
     ids_ds->SetDim(1);
@@ -89,9 +94,56 @@ VectorFieldIndexing::AppendSegmentIndex(int64_t reserved_offset,
                                         int64_t size,
                                         const VectorBase* vec_base,
                                         const void* data_source) {
-    AssertInfo(field_meta_.get_data_type() == DataType::VECTOR_FLOAT,
-               "Data type of vector field is not VECTOR_FLOAT");
+    if (field_meta_.get_data_type() == DataType::VECTOR_FLOAT) {
+        AppendSegmentIndexDense(reserved_offset, size, vec_base, data_source);
+    } else if (field_meta_.get_data_type() == DataType::VECTOR_SPARSE_FLOAT) {
+        AppendSegmentIndexSparse(reserved_offset, size, vec_base, data_source);
+    } else {
+        PanicInfo(DataTypeInvalid,
+                  fmt::format("unsupported vector type in index: {}",
+                              field_meta_.get_data_type()));
+    }
+}
+void
+VectorFieldIndexing::AppendSegmentIndexSparse(int64_t reserved_offset,
+                                        int64_t size,
+                                        const VectorBase* vec_base,
+                                        const void* data_source) {
+    auto conf = get_build_params();
+    auto source = dynamic_cast<const SerialSparseVectorImpl*>(vec_base);
+    AssertInfo(source, "vec_base can't cast to SerialSparseVectorImpl type");
 
+    if (!built_) {
+        AssertInfo(!sync_with_index_, "index marked synced before built");
+        auto csr = source->get_chunk_data(0);
+        auto rows = *(static_cast<const int32_t*>(csr));
+        auto dim = *(static_cast<const int32_t*>(csr) + 1);
+        auto dataset = knowhere::GenDataSet(rows, dim, csr);
+        dataset->SetIsOwner(true);
+        try {
+            index_->BuildWithDataset(dataset, conf);
+        } catch (SegcoreError& error) {
+            LOG_SEGCORE_ERROR_ << " growing index build error : "
+                               << error.what();
+            return;
+        }
+        index_cur_.fetch_add(rows);
+        built_ = true;
+        sync_with_index_ = true;
+        return;
+    }
+
+    auto dim = *(static_cast<const int32_t*>(data_source) + 1);
+    auto dataset = knowhere::GenDataSet(size, dim, data_source);
+    dataset->SetIsOwner(true);
+    index_->AddWithDataset(dataset, conf);
+    index_cur_.fetch_add(size);
+}
+void
+VectorFieldIndexing::AppendSegmentIndexDense(int64_t reserved_offset,
+                                        int64_t size,
+                                        const VectorBase* vec_base,
+                                        const void* data_source) {
     auto dim = field_meta_.get_dim();
     auto conf = get_build_params();
     auto source = dynamic_cast<const ConcurrentVector<FloatVector>*>(vec_base);
@@ -99,7 +151,7 @@ VectorFieldIndexing::AppendSegmentIndex(int64_t reserved_offset,
     auto per_chunk = source->get_size_per_chunk();
     //append vector [vector_id_beg, vector_id_end] into index
     //build index [vector_id_beg, build_threshold) when index not exist
-    if (!build) {
+    if (!built_) {
         idx_t vector_id_beg = index_cur_.load();
         idx_t vector_id_end = get_build_threshold() - 1;
         auto chunk_id_beg = vector_id_beg / per_chunk;
@@ -142,7 +194,7 @@ VectorFieldIndexing::AppendSegmentIndex(int64_t reserved_offset,
             return;
         }
         index_cur_.fetch_add(vec_num);
-        build = true;
+        built_ = true;
     }
     //append rest data when index has built
     idx_t vector_id_beg = index_cur_.load();
@@ -152,11 +204,11 @@ VectorFieldIndexing::AppendSegmentIndex(int64_t reserved_offset,
     int64_t vec_num = vector_id_end - vector_id_beg + 1;
 
     if (vec_num <= 0) {
-        sync_with_index.store(true);
+        sync_with_index_.store(true);
         return;
     }
 
-    if (sync_with_index.load()) {
+    if (sync_with_index_.load()) {
         auto dataset = knowhere::GenDataSet(vec_num, dim, data_source);
         index_->AddWithDataset(dataset, conf);
         index_cur_.fetch_add(vec_num);
@@ -177,7 +229,7 @@ VectorFieldIndexing::AppendSegmentIndex(int64_t reserved_offset,
             index_->AddWithDataset(dataset, conf);
             index_cur_.fetch_add(chunk_sz);
         }
-        sync_with_index.store(true);
+        sync_with_index_.store(true);
     }
 }
 
@@ -195,13 +247,9 @@ VectorFieldIndexing::get_search_params(const SearchInfo& searchInfo) const {
     return conf;
 }
 
-idx_t
-VectorFieldIndexing::get_index_cursor() {
-    return index_cur_.load();
-}
 bool
 VectorFieldIndexing::sync_data_with_index() const {
-    return sync_with_index.load();
+    return sync_with_index_.load();
 }
 
 bool
@@ -241,19 +289,17 @@ CreateIndex(const FieldMeta& field_meta,
             int64_t segment_max_row_count,
             const SegcoreConfig& segcore_config) {
     if (field_meta.is_vector()) {
-        if (field_meta.get_data_type() == DataType::VECTOR_FLOAT) {
-            return std::make_unique<VectorFieldIndexing>(field_meta,
-                                                         field_index_meta,
-                                                         segment_max_row_count,
-                                                         segcore_config);
-        } else if (field_meta.get_data_type() == DataType::VECTOR_FLOAT16) {
+        if (field_meta.get_data_type() == DataType::VECTOR_FLOAT ||
+        field_meta.get_data_type() == DataType::VECTOR_FLOAT16 ||
+        field_meta.get_data_type() == DataType::VECTOR_SPARSE_FLOAT
+        ) {
             return std::make_unique<VectorFieldIndexing>(field_meta,
                                                          field_index_meta,
                                                          segment_max_row_count,
                                                          segcore_config);
         } else {
             PanicInfo(DataTypeInvalid,
-                      fmt::format("unsupported vector type in index: {}",
+                      fmt::format("unsupported vector type 2 in index: {}",
                                   field_meta.get_data_type()));
         }
     }

@@ -68,7 +68,7 @@ func swapFieldData(field *schemapb.FieldData, i int, j int) {
 			data := sd.ArrayData.Data
 			data[i], data[j] = data[j], data[i]
 		default:
-			errMsg := "undefined data type " + field.Type.String()
+			errMsg := "undefined data type 4" + field.Type.String()
 			panic(errMsg)
 		}
 	case *schemapb.FieldData_Vectors:
@@ -91,7 +91,7 @@ func swapFieldData(field *schemapb.FieldData, i int, j int) {
 			}
 		}
 	default:
-		errMsg := "undefined data type " + field.Type.String()
+		errMsg := "undefined data type 5" + field.Type.String()
 		panic(errMsg)
 	}
 }

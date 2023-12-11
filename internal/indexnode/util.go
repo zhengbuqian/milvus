@@ -34,5 +34,6 @@ func estimateFieldDataSize(dim int64, numRows int64, dataType schemapb.DataType)
 	if dataType == schemapb.DataType_Float16Vector {
 		return uint64(dim) * uint64(numRows) * 2, nil
 	}
+	// TODO(SPARSE) estimate sparse vector size
 	return 0, nil
 }

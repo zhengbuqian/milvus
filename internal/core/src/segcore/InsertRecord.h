@@ -26,6 +26,7 @@
 #include "common/Types.h"
 #include "fmt/format.h"
 #include "mmap/Column.h"
+#include "log/Log.h"
 #include "segcore/AckResponder.h"
 #include "segcore/ConcurrentVector.h"
 #include "segcore/Record.h"
@@ -315,9 +316,15 @@ struct InsertRecord {
                     this->append_field_data<Float16Vector>(
                         field_id, field_meta.get_dim(), size_per_chunk);
                     continue;
+                } else if (field_meta.get_data_type() ==
+                           DataType::VECTOR_SPARSE_FLOAT) {
+                    fields_data_.emplace(
+                        field_id,
+                        std::make_unique<SerialSparseVectorImpl>(std::numeric_limits<int64_t>::max()));
+                    continue;
                 } else {
                     PanicInfo(DataTypeInvalid,
-                              fmt::format("unsupported vector type",
+                              fmt::format("unsupported vector type 1",
                                           field_meta.get_data_type()));
                 }
             }
@@ -493,8 +500,7 @@ struct InsertRecord {
         AssertInfo(fields_data_.find(field_id) != fields_data_.end(),
                    "Cannot find field_data with field_id: " +
                        std::to_string(field_id.get()));
-        auto ptr = fields_data_.at(field_id).get();
-        return ptr;
+        return fields_data_.at(field_id).get();
     }
 
     // get field data in given type, const version
@@ -552,7 +558,6 @@ struct InsertRecord {
     }
 
  private:
-    //    std::vector<std::unique_ptr<VectorBase>> fields_data_;
     std::unordered_map<FieldId, std::unique_ptr<VectorBase>> fields_data_{};
     mutable std::shared_mutex shared_mutex_{};
 };

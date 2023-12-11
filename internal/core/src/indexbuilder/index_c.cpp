@@ -203,6 +203,14 @@ BuildBinaryVecIndex(CIndex index, int64_t data_size, const uint8_t* vectors) {
     return status;
 }
 
+CStatus
+BuildSparseFloatVecIndex(CIndex index, int64_t data_size, const uint8_t* vectors) {
+    auto status = CStatus();
+    status.error_code = UnexpectedError;
+    status.error_msg = strdup("not implemented yet");
+    return status;
+}
+
 // field_data:
 //  1, serialized proto::schema::BoolArray, if type is bool;
 //  2, serialized proto::schema::StringArray, if type is string;

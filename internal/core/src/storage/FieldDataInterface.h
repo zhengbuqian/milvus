@@ -24,14 +24,17 @@
 #include <string>
 #include <mutex>
 #include <shared_mutex>
+#include <iostream>
 
 #include "arrow/api.h"
 #include "arrow/array/array_binary.h"
+#include "common/csr_utils.h"
 #include "common/FieldMeta.h"
 #include "common/Utils.h"
 #include "common/VectorTrait.h"
 #include "common/EasyAssert.h"
 #include "common/Array.h"
+#include "log/Log.h"
 
 namespace milvus::storage {
 
@@ -204,13 +207,115 @@ class FieldDataImpl : public FieldDataBase {
 
  protected:
     Chunk field_data_;
+    // number of elements field_data_ can hold
     int64_t num_rows_;
     mutable std::shared_mutex num_rows_mutex_;
+    // number of actual elements in field_data_
     size_t length_{};
     mutable std::shared_mutex tell_mutex_;
 
  private:
     const ssize_t dim_;
+};
+
+// TODO: why do we need thread safty on this class?
+class FieldDataSparseVectorImpl : public FieldDataBase {
+ public:
+    explicit FieldDataSparseVectorImpl(DataType data_type,
+                                    int64_t total_num_rows = 0)
+        : FieldDataBase(data_type) {
+        AssertInfo(data_type == DataType::VECTOR_SPARSE_FLOAT,
+                   "invalid data type for sparse vector");
+    }
+
+    int64_t
+    Size() const override {
+        return csr_.size();
+    }
+
+    int64_t
+    Size(ssize_t offset) const override {
+        return csr_.size(offset);
+    }
+
+    void
+    FillFieldData(const void* source, ssize_t element_count) override {
+        AssertInfo(element_count == 1, "rows should stored in source");
+        std::lock_guard lock(mutex_);
+        csr_.append(source);
+    }
+
+    void
+    FillFieldData(const std::shared_ptr<arrow::Array> array) override {
+        std::lock_guard lock(mutex_);
+        AssertInfo(array->type()->id() == arrow::Type::type::BINARY,
+                       "inconsistent data type, sparse vector data is stored "
+                       "as binary");
+
+        auto binary_array = std::static_pointer_cast<arrow::BinaryArray>(array);
+        AssertInfo(binary_array->length() == 1,
+                   "sparse vectors should be encoded into a single CSR binary");
+        int32_t length;
+        const uint8_t* data = binary_array->GetValue(0, &length);
+        AssertInfo(sparse::validate_csr(data, length), "corrupted CSR data");
+        csr_.append(data);
+    }
+
+    // TODO(SPARSE) I assume Data() must be called only after all mutating
+    // methods are guaranteed to not be called anymore, or else the data will be
+    // corrupted.
+    // caller is responsible for freeing the memory
+    const void*
+    Data() const override {
+        return csr_.to_bytes();
+    }
+
+    const void*
+    RawValue(ssize_t offset) const override {
+        AssertInfo(false, "RawValues should not be called on FieldDataSparseVectorImpl");
+        return nullptr;
+    }
+
+    size_t
+    Length() const override {
+        AssertInfo(false, "Length should not be called on FieldDataSparseVectorImpl");
+        return 0;
+    }
+
+    bool
+    IsFull() const override {
+        return true;
+    }
+
+    void
+    Reserve(size_t cap) override {
+        // does nothing
+    }
+
+    int64_t
+    get_num_rows() const override {
+        std::lock_guard lock(mutex_);
+        return csr_.rows();
+    }
+
+    int64_t
+    get_dim() const override {
+        std::lock_guard lock(mutex_);
+        return csr_.dim();
+    }
+
+    const sparse::SparseMatrix&
+    get_csr() const {
+        std::lock_guard lock(mutex_);
+        return csr_;
+    }
+
+ private:
+    // TODO(SPARSE) currently all operations are performed under lock as we
+    // don't know the exact data size of each row before it was inserted.
+    // So for FieldDataSparseVectorImpl, we don't have a pre-allocated buffer.
+    mutable std::shared_mutex mutex_;
+    sparse::SparseMatrix csr_;
 };
 
 class FieldDataStringImpl : public FieldDataImpl<std::string, true> {

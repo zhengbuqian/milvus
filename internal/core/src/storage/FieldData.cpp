@@ -21,6 +21,7 @@
 #include "simdjson/padded_string.h"
 #include "common/Array.h"
 #include "FieldDataInterface.h"
+#include "log/Log.h"
 
 namespace milvus::storage {
 

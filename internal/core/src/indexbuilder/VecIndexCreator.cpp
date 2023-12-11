@@ -16,6 +16,7 @@
 #include "index/Utils.h"
 #include "index/IndexFactory.h"
 #include "pb/index_cgo_msg.pb.h"
+#include "log/Log.h"
 
 namespace milvus::indexbuilder {
 

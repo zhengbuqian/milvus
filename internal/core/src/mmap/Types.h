@@ -55,31 +55,6 @@ struct FieldDataInfo {
           channel(std::move(channel)) {
     }
 
-    FieldDataInfo(int64_t field_id,
-                  size_t row_count,
-                  const std::vector<storage::FieldDataPtr>& batch)
-        : field_id(field_id), row_count(row_count) {
-        channel = std::make_shared<storage::FieldDataChannel>();
-        for (auto& data : batch) {
-            channel->push(data);
-        }
-        channel->close();
-    }
-
-    FieldDataInfo(int64_t field_id,
-                  size_t row_count,
-                  std::string mmap_dir_path,
-                  const std::vector<storage::FieldDataPtr>& batch)
-        : field_id(field_id),
-          row_count(row_count),
-          mmap_dir_path(std::move(mmap_dir_path)) {
-        channel = std::make_shared<storage::FieldDataChannel>();
-        for (auto& data : batch) {
-            channel->push(data);
-        }
-        channel->close();
-    }
-
     int64_t field_id;
     size_t row_count;
     std::string mmap_dir_path;

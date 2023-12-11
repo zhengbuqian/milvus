@@ -14,6 +14,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <iostream>
+
 #include "Plan.h"
 #include "PlanProto.h"
 #include "generated/ShowPlanNodeVisitor.h"
@@ -45,19 +47,27 @@ ParsePlaceholderGroup(const Plan* plan,
         Assert(plan->tag2field_.count(element.tag_));
         auto field_id = plan->tag2field_.at(element.tag_);
         auto& field_meta = plan->schema_[field_id];
-        element.num_of_queries_ = info.values_size();
-        AssertInfo(element.num_of_queries_, "must have queries");
-        Assert(element.num_of_queries_ > 0);
-        element.line_sizeof_ = info.values().Get(0).size();
-        AssertInfo(field_meta.get_sizeof() == element.line_sizeof_,
-                   "vector dimension mismatch");
-        auto& target = element.blob_;
-        target.reserve(element.line_sizeof_ * element.num_of_queries_);
-        for (auto& line : info.values()) {
-            Assert(element.line_sizeof_ == line.size());
-            target.insert(target.end(), line.begin(), line.end());
+        if (info.type() == set::PlaceholderType::SparseFloatVector) {
+            auto line = info.values().Get(0);
+            // content in placeholder is of CSR format, the first 4 bytes is the number of queries
+            element.num_of_queries_ = *(static_cast<const int32_t*>(static_cast<const void*>(line.data())));
+            AssertInfo(element.num_of_queries_ > 0, "must have queries");
+            element.blob_.reserve(line.size());
+            element.blob_.insert(element.blob_.end(), line.begin(), line.end());
+        } else {
+            element.num_of_queries_ = info.values_size();
+            AssertInfo(element.num_of_queries_ > 0, "must have queries");
+            auto line_size = info.values().Get(0).size();
+            AssertInfo(field_meta.get_sizeof() == line_size, "vector dimension mismatch");
+            auto& target = element.blob_;
+            target.reserve(line_size * element.num_of_queries_);
+            for (auto& line : info.values()) {
+                Assert(line_size == line.size());
+                target.insert(target.end(), line.begin(), line.end());
+            }
         }
         result->emplace_back(std::move(element));
+
     }
     return result;
 }

@@ -81,6 +81,10 @@ func (v *validateUtil) Validate(data []*schemapb.FieldData, schema *schemapb.Col
 			if err := v.checkBinaryVectorFieldData(field, fieldSchema); err != nil {
 				return err
 			}
+		case schemapb.DataType_SparseFloatVector:
+			if err := v.checkSparseFloatFieldData(field, fieldSchema); err != nil {
+				return err
+			}
 		case schemapb.DataType_VarChar:
 			if err := v.checkVarCharFieldData(field, fieldSchema); err != nil {
 				return err
@@ -182,6 +186,12 @@ func (v *validateUtil) checkAligned(data []*schemapb.FieldData, schema *typeutil
 				return errNumRowsMismatch(field.GetFieldName(), n, numRows)
 			}
 
+		case schemapb.DataType_SparseFloatVector:
+			n := uint64(len(field.GetVectors().GetSparseFloatVector().Contents))
+			if n != numRows {
+				return errNumRowsMismatch(field.GetFieldName(), n, numRows)
+			}
+
 		default:
 			// error won't happen here.
 			n, err := funcutil.GetNumRowOfFieldData(field)
@@ -259,7 +269,7 @@ func (v *validateUtil) fillWithDefaultValue(data []*schemapb.FieldData, schema *
 				return merr.WrapErrParameterInvalid("not set default value", "", "json type not support default value")
 
 			default:
-				panic("undefined data type " + field.Type.String())
+				panic("undefined data type 2" + field.Type.String())
 			}
 
 		case *schemapb.FieldData_Vectors:
@@ -267,7 +277,7 @@ func (v *validateUtil) fillWithDefaultValue(data []*schemapb.FieldData, schema *
 			return merr.WrapErrParameterInvalid("not set default value", "", "vector type not support default value")
 
 		default:
-			panic("undefined data type " + field.Type.String())
+			panic("undefined data type 3" + field.Type.String())
 		}
 	}
 
@@ -294,6 +304,11 @@ func (v *validateUtil) checkFloat16VectorFieldData(field *schemapb.FieldData, fi
 }
 
 func (v *validateUtil) checkBinaryVectorFieldData(field *schemapb.FieldData, fieldSchema *schemapb.FieldSchema) error {
+	// TODO
+	return nil
+}
+
+func (v *validateUtil) checkSparseFloatFieldData(field *schemapb.FieldData, fieldSchema *schemapb.FieldSchema) error {
 	// TODO
 	return nil
 }

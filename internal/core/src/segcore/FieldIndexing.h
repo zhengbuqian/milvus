@@ -26,6 +26,7 @@
 #include "IndexConfigGenerator.h"
 #include "segcore/SegcoreConfig.h"
 #include "index/VectorIndex.h"
+#include "log/Log.h"
 
 namespace milvus::segcore {
 
@@ -76,9 +77,6 @@ class FieldIndexing {
         return field_meta_;
     }
 
-    virtual idx_t
-    get_index_cursor() = 0;
-
     int64_t
     get_size_per_chunk() const {
         return segcore_config_.get_chunk_rows();
@@ -122,10 +120,6 @@ class ScalarFieldIndexing : public FieldIndexing {
                      void* output) override {
         PanicInfo(Unsupported,
                   "scalar index don't support get data from index");
-    }
-    idx_t
-    get_index_cursor() override {
-        return 0;
     }
 
     int64_t
@@ -202,9 +196,6 @@ class VectorFieldIndexing : public FieldIndexing {
     bool
     has_raw_data() const override;
 
-    idx_t
-    get_index_cursor() override;
-
     knowhere::Json
     get_build_params() const;
 
@@ -212,9 +203,23 @@ class VectorFieldIndexing : public FieldIndexing {
     get_search_params(const SearchInfo& searchInfo) const;
 
  private:
+    void
+    AppendSegmentIndexDense(int64_t reserved_offset,
+                       int64_t size,
+                       const VectorBase* vec_base,
+                       const void* data_source);
+    void
+    AppendSegmentIndexSparse(int64_t reserved_offset,
+                       int64_t size,
+                       const VectorBase* vec_base,
+                       const void* data_source);
+    // current number of rows in index.
     std::atomic<idx_t> index_cur_ = 0;
-    std::atomic<bool> build;
-    std::atomic<bool> sync_with_index;
+    // whether the growing index has been built.
+    std::atomic<bool> built_;
+    // whether all insertd data has been added to growing index and can be
+    // searched.
+    std::atomic<bool> sync_with_index_;
     std::unique_ptr<VecIndexConfig> config_;
     std::unique_ptr<index::VectorIndex> index_;
     tbb::concurrent_vector<std::unique_ptr<index::VectorIndex>> data_;
@@ -278,16 +283,30 @@ class IndexingRecord {
                    const InsertRecord<is_sealed>& record) {
         if (is_in(fieldId)) {
             auto& indexing = field_indexings_.at(fieldId);
-            if (indexing->get_field_meta().is_vector() &&
-                indexing->get_field_meta().get_data_type() ==
-                    DataType::VECTOR_FLOAT &&
+
+            bool is_sparse = indexing->get_field_meta().get_data_type() ==
+                               DataType::VECTOR_SPARSE_FLOAT;
+            bool is_vec = indexing->get_field_meta().is_vector() &&
+                          (indexing->get_field_meta().get_data_type() ==
+                               DataType::VECTOR_FLOAT || is_sparse);
+
+            const void* data = stream_data->vectors().float_vector().data().data();
+
+            if (is_sparse) {
+                auto& proto = stream_data->vectors().sparse_float_vector();
+                sparse::SparseMatrix csr;
+                csr.append(proto);
+                data = csr.to_bytes();
+            }
+
+            if (is_vec &&
                 reserved_offset + size >= indexing->get_build_threshold()) {
                 auto vec_base = record.get_field_data_base(fieldId);
                 indexing->AppendSegmentIndex(
                     reserved_offset,
                     size,
                     vec_base,
-                    stream_data->vectors().float_vector().data().data());
+                    data);
             }
         }
     }
@@ -302,9 +321,12 @@ class IndexingRecord {
                    const InsertRecord<is_sealed>& record) {
         if (is_in(fieldId)) {
             auto& indexing = field_indexings_.at(fieldId);
-            if (indexing->get_field_meta().is_vector() &&
-                indexing->get_field_meta().get_data_type() ==
-                    DataType::VECTOR_FLOAT &&
+            bool is_vec = indexing->get_field_meta().is_vector() &&
+                          (indexing->get_field_meta().get_data_type() ==
+                               DataType::VECTOR_FLOAT ||
+                           indexing->get_field_meta().get_data_type() ==
+                               DataType::VECTOR_SPARSE_FLOAT);
+            if (is_vec &&
                 reserved_offset + size >= indexing->get_build_threshold()) {
                 auto vec_base = record.get_field_data_base(fieldId);
                 indexing->AppendSegmentIndex(
@@ -389,14 +411,12 @@ class IndexingRecord {
     IndexMetaPtr index_meta_;
     const SegcoreConfig& segcore_config_;
 
- private:
     // control info
     std::atomic<int64_t> resource_ack_ = 0;
     //    std::atomic<int64_t> finished_ack_ = 0;
     AckResponder finished_ack_;
     std::mutex mutex_;
 
- private:
     // field_offset => indexing
     std::map<FieldId, std::unique_ptr<FieldIndexing>> field_indexings_;
 };

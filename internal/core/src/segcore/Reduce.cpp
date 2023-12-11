@@ -124,7 +124,7 @@ ReduceHelper::FillPrimaryKey() {
     uint32_t valid_index = 0;
     for (auto& search_result : search_results_) {
         FilterInvalidSearchResult(search_result);
-        LOG_SEGCORE_DEBUG_ << "the size of search result"
+        LOG_SEGCORE_DEBUG_ << "the size of search result "
                            << search_result->seg_offsets_.size();
         if (search_result->get_total_result_count() > 0) {
             auto segment =

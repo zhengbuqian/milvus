@@ -37,6 +37,7 @@ type PayloadWriterInterface interface {
 	AddBinaryVectorToPayload(binVec []byte, dim int) error
 	AddFloatVectorToPayload(binVec []float32, dim int) error
 	AddFloat16VectorToPayload(binVec []byte, dim int) error
+	AddSparseFloatVectorToPayload(data *SparseFloatVectorFieldData) error
 	FinishPayloadWriter() error
 	GetPayloadBufferFromWriter() ([]byte, error)
 	GetPayloadLengthFromWriter() (int, error)
@@ -61,6 +62,7 @@ type PayloadReaderInterface interface {
 	GetBinaryVectorFromPayload() ([]byte, int, error)
 	GetFloat16VectorFromPayload() ([]byte, int, error)
 	GetFloatVectorFromPayload() ([]float32, int, error)
+	GetSparseFloatVectorFromPayload() (*SparseFloatVectorFieldData, int, error)
 	GetPayloadLengthFromReader() (int, error)
 	ReleasePayloadReader() error
 	Close() error

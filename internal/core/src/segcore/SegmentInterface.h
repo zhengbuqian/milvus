@@ -61,7 +61,8 @@ class SegmentInterface {
              Timestamp timestamp,
              int64_t limit_size) const = 0;
 
-    // TODO: memory use is not correct when load string or load string index
+    // TODO: memory use is not correct when json, array, sparse float vector
+    // column or index is loaded.
     virtual int64_t
     GetMemoryUsageInBytes() const = 0;
 

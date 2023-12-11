@@ -31,6 +31,11 @@ Float16VectorANNS::accept(PlanNodeVisitor& visitor) {
 }
 
 void
+SparseFloatVectorANNS::accept(PlanNodeVisitor& visitor) {
+    visitor.visit(*this);
+}
+
+void
 RetrievePlanNode::accept(PlanNodeVisitor& visitor) {
     visitor.visit(*this);
 }

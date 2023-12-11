@@ -48,6 +48,7 @@ type CgoIndex struct {
 	close    bool
 }
 
+// used only in test
 // TODO: use proto.Marshal instead of proto.MarshalTextString for better compatibility.
 func NewCgoIndex(dtype schemapb.DataType, typeParams, indexParams map[string]string) (CodecIndex, error) {
 	protoTypeParams := &indexcgopb.TypeParams{
@@ -107,6 +108,8 @@ func CreateIndex(ctx context.Context, buildIndexInfo *BuildIndexInfo) (CodecInde
 	return index, nil
 }
 
+// TODO(ZBQ): this seems to be used only for test. We should mark the method
+// name with ForTest, or maybe even move to test file.
 func (index *CgoIndex) Build(dataset *Dataset) error {
 	switch dataset.DType {
 	case schemapb.DataType_None:
@@ -136,7 +139,7 @@ func (index *CgoIndex) Build(dataset *Dataset) error {
 	case schemapb.DataType_VarChar:
 		return index.buildStringIndex(dataset)
 	default:
-		return fmt.Errorf("build index on unsupported data type: %s", dataset.DType.String())
+		return fmt.Errorf("build index on unsupported data type 4: %s", dataset.DType.String())
 	}
 }
 
@@ -144,6 +147,13 @@ func (index *CgoIndex) buildFloatVecIndex(dataset *Dataset) error {
 	vectors := dataset.Data[keyRawArr].([]float32)
 	status := C.BuildFloatVecIndex(index.indexPtr, (C.int64_t)(len(vectors)), (*C.float)(&vectors[0]))
 	return HandleCStatus(&status, "failed to build float vector index")
+}
+
+// TODO(SPARSE) this is used only for test, not yet implemented
+func (index *CgoIndex) buildSparseFloatVecIndex(dataset *Dataset) error {
+	vectors := dataset.Data[keyRawArr].([]byte)
+	status := C.BuildSparseFloatVecIndex(index.indexPtr, (C.int64_t)(len(vectors)), (*C.uint8_t)(&vectors[0]))
+	return HandleCStatus(&status, "failed to build binary vector index")
 }
 
 func (index *CgoIndex) buildBinaryVecIndex(dataset *Dataset) error {

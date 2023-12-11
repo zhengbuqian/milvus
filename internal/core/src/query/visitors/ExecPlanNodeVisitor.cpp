@@ -217,4 +217,8 @@ ExecPlanNodeVisitor::visit(Float16VectorANNS& node) {
     VectorVisitorImpl<Float16Vector>(node);
 }
 
+void ExecPlanNodeVisitor::visit(SparseFloatVectorANNS& node) {
+    VectorVisitorImpl<SparseFloatVector>(node);
+}
+
 }  // namespace milvus::query

@@ -157,7 +157,7 @@ func (writer *InsertBinlogWriter) NextInsertEventWriter(dim ...int) (*insertEven
 
 	var event *insertEventWriter
 	var err error
-	if typeutil.IsVectorType(writer.PayloadDataType) {
+	if typeutil.IsVectorType(writer.PayloadDataType) && writer.PayloadDataType != schemapb.DataType_SparseFloatVector {
 		if len(dim) != 1 {
 			return nil, fmt.Errorf("incorrect input numbers")
 		}

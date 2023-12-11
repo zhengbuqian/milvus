@@ -248,6 +248,7 @@ func (v *CSVRowConsumer) initValidators(collectionSchema *schemapb.CollectionSch
 
 				return nil
 			}
+		// TODO(SPARSE)
 		case schemapb.DataType_String, schemapb.DataType_VarChar:
 			validators[schema.GetFieldID()].isString = true
 

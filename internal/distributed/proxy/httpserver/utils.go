@@ -204,6 +204,7 @@ func checkAndSetData(body string, collDescResp *milvuspb.DescribeCollectionRespo
 				}
 
 				switch fieldType {
+				// TODO(SPARSE) add sparse field support in this file
 				case schemapb.DataType_FloatVector:
 					for _, vector := range gjson.Get(data.Raw, fieldName).Array() {
 						vectorArray = append(vectorArray, cast.ToFloat32(vector.Num))

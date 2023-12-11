@@ -132,7 +132,7 @@ class ColumnBase {
         column.size_ = 0;
     }
 
-    const char*
+    virtual const char*
     Data() const {
         return data_;
     }
@@ -142,14 +142,14 @@ class ColumnBase {
         return num_rows_;
     };
 
-    const size_t
+    virtual size_t
     ByteSize() const {
         return cap_size_ + padding_;
     }
 
     // The capacity of the column,
-    // DO NOT call this for variable length column.
-    size_t
+    // DO NOT call this for variable length column(including SparseFloatColumn).
+    virtual size_t
     Capacity() const {
         return cap_size_ / type_size_;
     }
@@ -157,7 +157,8 @@ class ColumnBase {
     virtual SpanBase
     Span() const = 0;
 
-    void
+    // make virtual, SparseFloatColumn needs to override
+    virtual void
     AppendBatch(const storage::FieldDataPtr& data) {
         size_t required_size = size_ + data->Size();
         if (required_size > cap_size_) {
@@ -172,7 +173,7 @@ class ColumnBase {
     }
 
     // Append one row
-    void
+    virtual void
     Append(const char* data, size_t size) {
         size_t required_size = size_ + size;
         if (required_size > cap_size_) {
@@ -251,6 +252,68 @@ class Column : public ColumnBase {
     }
 };
 
+// Memory layout of Sparse float column is a lot different from other columns,
+// thus SparseFloatColumn inherits from ColumnBase while being vastly different.
+// SparseFloatColumn uses only member num_rows_ from ColumnBase.
+class SparseFloatColumn : public ColumnBase {
+ public:
+    // memory mode ctor
+    SparseFloatColumn(const FieldMeta& field_meta) : ColumnBase(0, field_meta) {
+    }
+    // mmap mode ctor
+    SparseFloatColumn(const File& file, size_t size, const FieldMeta& field_meta)
+        : ColumnBase(file, size, field_meta) {
+        AssertInfo(false, "SparseFloatColumn mmap mode not supported");
+    }
+
+    SparseFloatColumn(SparseFloatColumn&& column) noexcept
+        : ColumnBase(std::move(column)), csr_(std::move(column.csr_)) {
+    }
+
+    ~SparseFloatColumn() override = default;
+
+    // caller is responsible for freeing the memory
+    const char*
+    Data() const override {
+        return static_cast<const char*>(csr_.to_bytes());
+    }
+
+    size_t
+    ByteSize() const override {
+        return csr_.size();
+    }
+
+    size_t
+    Capacity() const override {
+        AssertInfo(false, "Capacity not supported for sparse float column");
+        throw std::runtime_error("Capacity not supported for sparse float column");
+    }
+
+    SpanBase
+    Span() const override {
+        AssertInfo(false, "Span not supported for sparse float column");
+        throw std::runtime_error("Span not supported for sparse float column");
+    }
+
+    void
+    AppendBatch(const storage::FieldDataPtr& data) override {
+        auto ptr = std::static_pointer_cast<storage::FieldDataSparseVectorImpl>(data);
+        csr_.append(ptr->get_csr());
+        num_rows_ = csr_.rows();
+    }
+
+    void
+    Append(const char* data, size_t size) override {
+        csr_.append(data);
+        num_rows_ = csr_.rows();
+    }
+ private:
+    // TODO(SPARSE) can we convert this to a representation so that we can
+    // append new vectors by directly appending the memory?
+    // Maybe represent each vec (nnz, <maybe dim>, indices, value)
+    sparse::SparseMatrix csr_;
+};
+
 template <typename T>
 class VariableColumn : public ColumnBase {
  public:
@@ -298,7 +361,7 @@ class VariableColumn : public ColumnBase {
     }
 
     void
-    Append(const char* data, size_t size) {
+    Append(const char* data, size_t size) override {
         indices_.emplace_back(size_);
         ColumnBase::Append(data, size);
     }

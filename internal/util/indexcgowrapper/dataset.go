@@ -3,6 +3,7 @@ package indexcgowrapper
 import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
 	"github.com/milvus-io/milvus/internal/storage"
+	"github.com/milvus-io/milvus/pkg/util/typeutil"
 )
 
 const (
@@ -19,6 +20,20 @@ func GenFloatVecDataset(vectors []float32) *Dataset {
 		DType: schemapb.DataType_FloatVector,
 		Data: map[string]interface{}{
 			keyRawArr: vectors,
+		},
+	}
+}
+
+func GenSparseFloatVecDataset(data *storage.SparseFloatVectorFieldData) *Dataset {
+	res, err := typeutil.SparseFloatArrayToBytes(data.ToProto())
+	if err != nil {
+		// TODO(SPARSE) gracefully handle error
+		panic(err)
+	}
+	return &Dataset{
+		DType: schemapb.DataType_SparseFloatVector,
+		Data: map[string]interface{}{
+			keyRawArr: res,
 		},
 	}
 }
@@ -94,6 +109,8 @@ func GenDataset(data storage.FieldData) *Dataset {
 		return GenBinaryVecDataset(f.Data)
 	case *storage.FloatVectorFieldData:
 		return GenFloatVecDataset(f.Data)
+	case *storage.SparseFloatVectorFieldData:
+		return GenSparseFloatVecDataset(f)
 	default:
 		return &Dataset{
 			DType: schemapb.DataType_None,

@@ -100,6 +100,7 @@ func (i *InsertData) GetMemorySize() int {
 	return size
 }
 
+// This is used only in test.
 func (i *InsertData) Append(row map[FieldID]interface{}) error {
 	for fID, v := range row {
 		field, ok := i.Data[fID]
@@ -153,7 +154,8 @@ func NewFieldData(dataType schemapb.DataType, fieldSchema *schemapb.FieldSchema)
 			Data: make([]byte, 0),
 			Dim:  dim,
 		}, nil
-
+	case schemapb.DataType_SparseFloatVector:
+		return MakeSparseFloatVectorFieldData(), nil
 	case schemapb.DataType_Bool:
 		return &BoolFieldData{
 			Data: make([]bool, 0),
@@ -249,20 +251,97 @@ type Float16VectorFieldData struct {
 	Dim  int
 }
 
+type SparseFloatVectorRowData struct {
+	Indices []int32
+	Data    []float32
+	Dim     int32
+}
+
+// Always use MakeSparseFloatVectorFieldData to create new empty instance.
+type SparseFloatVectorFieldData struct {
+	Contents []*SparseFloatVectorRowData
+	Dim      int32
+	Nnz      int32
+}
+
+func MakeSparseFloatVectorFieldData() *SparseFloatVectorFieldData {
+	return &SparseFloatVectorFieldData{
+		Contents: make([]*SparseFloatVectorRowData, 0),
+	}
+}
+
+func MakeSparseFloatVectorFieldDataFromProto(proto *schemapb.SparseFloatArray) *SparseFloatVectorFieldData {
+	res := &SparseFloatVectorFieldData{
+		Dim:      proto.Dim,
+		Nnz:      proto.Nnz,
+		Contents: make([]*SparseFloatVectorRowData, len(proto.Contents)),
+	}
+	for i := 0; i < len(proto.Contents); i++ {
+		res.Contents[i] = &SparseFloatVectorRowData{}
+		res.Contents[i].Dim = proto.Contents[i].Dim
+		res.Contents[i].Indices = proto.Contents[i].Indices.Data
+		res.Contents[i].Data = proto.Contents[i].Values.Data
+	}
+	return res
+}
+
+func (dst *SparseFloatVectorFieldData) AppendAllRows(src *SparseFloatVectorFieldData) {
+	if len(src.Contents) == 0 {
+		return
+	}
+	dst.Nnz += src.Nnz
+	if dst.Dim < src.Dim {
+		dst.Dim = src.Dim
+	}
+	dst.Contents = append(dst.Contents, src.Contents...)
+}
+
+func (d *SparseFloatVectorFieldData) ToProto() *schemapb.SparseFloatArray {
+	res := &schemapb.SparseFloatArray{
+		Dim:      d.Dim,
+		Nnz:      d.Nnz,
+		Contents: make([]*schemapb.SparseFloatRow, len(d.Contents)),
+	}
+	for i := 0; i < len(d.Contents); i++ {
+		res.Contents[i] = &schemapb.SparseFloatRow{
+			Dim: d.Contents[i].Dim,
+			Indices: &schemapb.IntArray{
+				Data: d.Contents[i].Indices,
+			},
+			Values: &schemapb.FloatArray{
+				Data: d.Contents[i].Data,
+			},
+		}
+	}
+	return res
+}
+
+func (d *SparseFloatVectorFieldData) Print() {
+	fmt.Printf("\t\tRows: %d, Dim: %d, Nnz: %d\n", d.RowNum(), d.Dim, d.Nnz)
+	for i, row := range d.Contents {
+		fmt.Printf("\t\tRow %d: [", i)
+		for j := 0; j < len(row.Indices); j++ {
+			fmt.Printf("%d: %f", row.Indices[j], row.Data[j])
+		}
+		fmt.Printf("]\n")
+	}
+}
+
 // RowNum implements FieldData.RowNum
-func (data *BoolFieldData) RowNum() int          { return len(data.Data) }
-func (data *Int8FieldData) RowNum() int          { return len(data.Data) }
-func (data *Int16FieldData) RowNum() int         { return len(data.Data) }
-func (data *Int32FieldData) RowNum() int         { return len(data.Data) }
-func (data *Int64FieldData) RowNum() int         { return len(data.Data) }
-func (data *FloatFieldData) RowNum() int         { return len(data.Data) }
-func (data *DoubleFieldData) RowNum() int        { return len(data.Data) }
-func (data *StringFieldData) RowNum() int        { return len(data.Data) }
-func (data *ArrayFieldData) RowNum() int         { return len(data.Data) }
-func (data *JSONFieldData) RowNum() int          { return len(data.Data) }
-func (data *BinaryVectorFieldData) RowNum() int  { return len(data.Data) * 8 / data.Dim }
-func (data *FloatVectorFieldData) RowNum() int   { return len(data.Data) / data.Dim }
-func (data *Float16VectorFieldData) RowNum() int { return len(data.Data) / 2 / data.Dim }
+func (data *BoolFieldData) RowNum() int              { return len(data.Data) }
+func (data *Int8FieldData) RowNum() int              { return len(data.Data) }
+func (data *Int16FieldData) RowNum() int             { return len(data.Data) }
+func (data *Int32FieldData) RowNum() int             { return len(data.Data) }
+func (data *Int64FieldData) RowNum() int             { return len(data.Data) }
+func (data *FloatFieldData) RowNum() int             { return len(data.Data) }
+func (data *DoubleFieldData) RowNum() int            { return len(data.Data) }
+func (data *StringFieldData) RowNum() int            { return len(data.Data) }
+func (data *ArrayFieldData) RowNum() int             { return len(data.Data) }
+func (data *JSONFieldData) RowNum() int              { return len(data.Data) }
+func (data *BinaryVectorFieldData) RowNum() int      { return len(data.Data) * 8 / data.Dim }
+func (data *FloatVectorFieldData) RowNum() int       { return len(data.Data) / data.Dim }
+func (data *Float16VectorFieldData) RowNum() int     { return len(data.Data) / 2 / data.Dim }
+func (data *SparseFloatVectorFieldData) RowNum() int { return len(data.Contents) }
 
 // GetRow implements FieldData.GetRow
 func (data *BoolFieldData) GetRow(i int) any   { return data.Data[i] }
@@ -285,6 +364,10 @@ func (data *FloatVectorFieldData) GetRow(i int) interface{} {
 
 func (data *Float16VectorFieldData) GetRow(i int) interface{} {
 	return data.Data[i*data.Dim*2 : (i+1)*data.Dim*2]
+}
+
+func (data *SparseFloatVectorFieldData) GetRow(i int) interface{} {
+	return data.Contents[i]
 }
 
 // AppendRow implements FieldData.AppendRow
@@ -405,6 +488,19 @@ func (data *Float16VectorFieldData) AppendRow(row interface{}) error {
 	return nil
 }
 
+func (data *SparseFloatVectorFieldData) AppendRow(row interface{}) error {
+	v, ok := row.(*SparseFloatVectorRowData)
+	if !ok {
+		return merr.WrapErrParameterInvalid("SparseFloatVectorRowData", row, "Wrong row type")
+	}
+	data.Nnz += int32(len(v.Data))
+	if data.Dim < v.Dim {
+		data.Dim = v.Dim
+	}
+	data.Contents = append(data.Contents, v)
+	return nil
+}
+
 // GetMemorySize implements FieldData.GetMemorySize
 func (data *BoolFieldData) GetMemorySize() int          { return binary.Size(data.Data) }
 func (data *Int8FieldData) GetMemorySize() int          { return binary.Size(data.Data) }
@@ -416,6 +512,14 @@ func (data *DoubleFieldData) GetMemorySize() int        { return binary.Size(dat
 func (data *BinaryVectorFieldData) GetMemorySize() int  { return binary.Size(data.Data) + 4 }
 func (data *FloatVectorFieldData) GetMemorySize() int   { return binary.Size(data.Data) + 4 }
 func (data *Float16VectorFieldData) GetMemorySize() int { return binary.Size(data.Data) + 4 }
+
+// return value is the bytes of data serialized into CSR bytes.
+func (data *SparseFloatVectorFieldData) GetMemorySize() int {
+	// 4 bytes for rows, 4 bytes for dim, 4 bytes for nnz
+	// indptr has rows+1 elements, each element takes 4 bytes
+	// each non zero value takes 8 bytes: indices + value
+	return 8*int(data.Nnz) + 12 + 4*(len(data.Contents)+1)
+}
 
 // why not binary.Size(data) directly? binary.Size(data) return -1
 // binary.Size returns how many bytes Write would generate to encode the value v, which

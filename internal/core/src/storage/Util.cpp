@@ -35,6 +35,7 @@
 #include "storage/OpenDALChunkManager.h"
 #include "storage/MemFileManagerImpl.h"
 #include "storage/DiskFileManagerImpl.h"
+#include "log/Log.h"
 
 namespace milvus::storage {
 
@@ -161,7 +162,7 @@ AddPayloadToArrowBuilder(std::shared_ptr<arrow::ArrayBuilder> builder,
         }
         default: {
             PanicInfo(DataTypeInvalid,
-                      fmt::format("unsupported data type {}", data_type));
+                      fmt::format("unsupported data type 7 {}", data_type));
         }
     }
 }
@@ -322,6 +323,11 @@ CreateArrowSchema(DataType data_type, int dim) {
             return arrow::schema({arrow::field(
                 "val", arrow::fixed_size_binary(dim * sizeof(float16)))});
         }
+        // case DataType::VECTOR_SPARSE_FLOAT: {
+        //     AssertInfo(dim > 0, "invalid dim value");
+        //     return arrow::schema({arrow::field(
+        //         "val", arrow::fixed_size_binary(dim * sizeof(float)))});
+        // }
         default: {
             PanicInfo(
                 DataTypeInvalid,
@@ -343,9 +349,13 @@ GetDimensionFromFileMetaData(const parquet::ColumnDescriptor* schema,
         case DataType::VECTOR_FLOAT16: {
             return schema->type_length() / sizeof(float16);
         }
+        case DataType::VECTOR_SPARSE_FLOAT: {
+            // TODO(SPARSE): do not allow this method call on sparse
+            return 1;
+        }
         default:
             PanicInfo(DataTypeInvalid,
-                      fmt::format("unsupported data type {}", data_type));
+                      fmt::format("unsupported data type 6 {}", data_type));
     }
 }
 
@@ -371,7 +381,7 @@ GetDimensionFromArrowArray(std::shared_ptr<arrow::Array> data,
         }
         default:
             PanicInfo(DataTypeInvalid,
-                      fmt::format("unsupported data type {}", data_type));
+                      fmt::format("unsupported data type 5 {}", data_type));
     }
 }
 
@@ -444,11 +454,11 @@ EncodeAndUploadFieldSlice(ChunkManager* chunk_manager,
     field_data->FillFieldData(buf, element_count);
     auto insertData = std::make_shared<InsertData>(field_data);
     insertData->SetFieldDataMeta(field_data_meta);
-    auto serialized_index_data = insertData->serialize_to_remote_file();
-    auto serialized_index_size = serialized_index_data.size();
+    auto serialized_inserted_data = insertData->serialize_to_remote_file();
+    auto serialized_inserted_data_size = serialized_inserted_data.size();
     chunk_manager->Write(
-        object_key, serialized_index_data.data(), serialized_index_size);
-    return std::make_pair(std::move(object_key), serialized_index_size);
+        object_key, serialized_inserted_data.data(), serialized_inserted_data_size);
+    return std::make_pair(std::move(object_key), serialized_inserted_data_size);
 }
 
 std::vector<FieldDataPtr>
@@ -618,6 +628,9 @@ CreateFieldData(const DataType& type, int64_t dim, int64_t total_num_rows) {
         case DataType::VECTOR_FLOAT16:
             return std::make_shared<FieldData<Float16Vector>>(
                 dim, type, total_num_rows);
+        case DataType::VECTOR_SPARSE_FLOAT:
+            return std::make_shared<FieldData<SparseFloatVector>>(
+                type, total_num_rows);
         default:
             throw SegcoreError(
                 DataTypeInvalid,

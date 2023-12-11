@@ -18,7 +18,7 @@ OBJPREFIX := "github.com/milvus-io/milvus/cmd/milvus"
 INSTALL_PATH := $(PWD)/bin
 LIBRARY_PATH := $(PWD)/lib
 OS := $(shell uname -s)
-mode = Release
+mode = Debug
 
 use_disk_index = OFF
 ifdef disk_index
@@ -64,7 +64,7 @@ milvus: build-cpp print-build-info
 	@source $(PWD)/scripts/setenv.sh && \
 		mkdir -p $(INSTALL_PATH) && go env -w CGO_ENABLED="1" && \
 		GO111MODULE=on $(GO) build -ldflags="-r $${RPATH} -X '$(OBJPREFIX).BuildTags=$(BUILD_TAGS)' -X '$(OBJPREFIX).BuildTime=$(BUILD_TIME)' -X '$(OBJPREFIX).GitCommit=$(GIT_COMMIT)' -X '$(OBJPREFIX).GoVersion=$(GO_VERSION)'" \
-		-tags dynamic -o $(INSTALL_PATH)/milvus $(PWD)/cmd/main.go 1>/dev/null
+		-gcflags="-N -l" -tags dynamic -o $(INSTALL_PATH)/milvus $(PWD)/cmd/main.go 1>/dev/null
 
 milvus-gpu: build-cpp-gpu print-gpu-build-info
 	@echo "Building Milvus-gpu ..."

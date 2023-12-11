@@ -64,7 +64,6 @@ struct Plan {
 struct Placeholder {
     std::string tag_;
     int64_t num_of_queries_;
-    int64_t line_sizeof_;
     aligned_vector<char> blob_;
 
     template <typename T>

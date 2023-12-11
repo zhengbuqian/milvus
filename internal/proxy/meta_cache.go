@@ -884,7 +884,7 @@ func (m *MetaCache) expireShardLeaderCache(ctx context.Context) {
 			case <-ticker.C:
 				m.mu.RLock()
 				for database, db := range m.collInfo {
-					log.Info("expire all shard leader cache",
+					log.Debug("expire all shard leader cache",
 						zap.String("database", database),
 						zap.Strings("collections", lo.Keys(db)))
 					for _, info := range db {

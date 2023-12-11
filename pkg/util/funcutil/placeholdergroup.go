@@ -2,6 +2,7 @@ package funcutil
 
 import (
 	"encoding/binary"
+	"fmt"
 	"math"
 
 	"github.com/cockroachdb/errors"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus/pkg/util/typeutil"
 )
 
 func FieldDataToPlaceholderGroupBytes(fieldData *schemapb.FieldData) ([]byte, error) {
@@ -62,6 +64,22 @@ func fieldDataToPlaceholderValue(fieldData *schemapb.FieldData) (*commonpb.Place
 			Tag:    "$0",
 			Type:   commonpb.PlaceholderType_Float16Vector,
 			Values: flattenedFloat16VectorsToByteVectors(x.Float16Vector, int(vectors.Dim)),
+		}
+		return placeholderValue, nil
+	case schemapb.DataType_SparseFloatVector:
+		vectors, ok := fieldData.GetVectors().GetData().(*schemapb.VectorField_SparseFloatVector)
+		if !ok {
+			return nil, errors.New("vector data is not schemapb.VectorField_SparseFloatVector")
+		}
+		vec := vectors.SparseFloatVector
+		bytes, err := typeutil.SparseFloatArrayToBytes(vec)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encode sparse float vector to bytes: %w", err)
+		}
+		placeholderValue := &commonpb.PlaceholderValue{
+			Tag:    "$0",
+			Type:   commonpb.PlaceholderType_SparseFloatVector,
+			Values: [][]byte{bytes},
 		}
 		return placeholderValue, nil
 	default:
