@@ -235,6 +235,6 @@ func GenEmptyFieldData(field *schemapb.FieldSchema) (*schemapb.FieldData, error)
 	case schemapb.DataType_SparseFloatVector:
 		return genEmptySparseFloatVectorFieldData(field)
 	default:
-		return nil, fmt.Errorf("unsupported data type 3: %s", dataType.String())
+		return nil, fmt.Errorf("unsupported data type: %s", dataType.String())
 	}
 }

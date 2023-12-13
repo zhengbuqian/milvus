@@ -287,7 +287,7 @@ class FieldMeta {
     get_sizeof() const {
         static const size_t ARRAY_SIZE = 128;
         static const size_t JSON_SIZE = 512;
-        static const size_t SPARSE_FLOAT_VECTOR_SIZE = 160;
+        static const size_t SPARSE_FLOAT_VECTOR_SIZE = 1200;
         if (datatype_is_variable(type_)) {
             return type_ == DataType::ARRAY  ? ARRAY_SIZE
                    : type_ == DataType::JSON ? JSON_SIZE

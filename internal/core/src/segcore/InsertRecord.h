@@ -26,7 +26,6 @@
 #include "common/Types.h"
 #include "fmt/format.h"
 #include "mmap/Column.h"
-#include "log/Log.h"
 #include "segcore/AckResponder.h"
 #include "segcore/ConcurrentVector.h"
 #include "segcore/Record.h"
@@ -324,7 +323,7 @@ struct InsertRecord {
                     continue;
                 } else {
                     PanicInfo(DataTypeInvalid,
-                              fmt::format("unsupported vector type 1",
+                              fmt::format("unsupported vector type",
                                           field_meta.get_data_type()));
                 }
             }

@@ -68,7 +68,7 @@ class IndexFactory {
             default:
                 throw SegcoreError(
                     DataTypeInvalid,
-                    fmt::format("invalid type is 1 {}", invalid_dtype_msg));
+                    fmt::format("invalid type is {}", invalid_dtype_msg));
         }
     }
 };

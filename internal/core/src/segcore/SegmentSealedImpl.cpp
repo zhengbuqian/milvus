@@ -351,7 +351,7 @@ SegmentSealedImpl::LoadFieldData(FieldId field_id, FieldDataInfo& data) {
                 }
                 default: {
                     PanicInfo(DataTypeInvalid,
-                              fmt::format("unsupported data type 9", data_type));
+                              fmt::format("unsupported data type", data_type));
                 }
             }
 
@@ -486,7 +486,7 @@ SegmentSealedImpl::MapFieldData(const FieldId field_id, FieldDataInfo& data) {
             // TODO(SPARSE) support mmap
             default: {
                 PanicInfo(DataTypeInvalid,
-                          fmt::format("unsupported data type 8 {}", data_type));
+                          fmt::format("unsupported data type {}", data_type));
             }
         }
     } else {

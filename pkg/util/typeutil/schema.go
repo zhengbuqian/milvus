@@ -752,7 +752,7 @@ func MergeFieldData(dst []*schemapb.FieldData, src []*schemapb.FieldData) error 
 				}
 			default:
 				log.Error("Not supported data type", zap.String("data type", srcFieldData.Type.String()))
-				return errors.New("unsupported data type 2: " + srcFieldData.Type.String())
+				return errors.New("unsupported data type: " + srcFieldData.Type.String())
 			}
 		case *schemapb.FieldData_Vectors:
 			dim := fieldType.Vectors.Dim

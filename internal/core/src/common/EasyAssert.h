@@ -116,6 +116,8 @@ FailureCStatus(std::exception* ex) {
 
 }  // namespace milvus
 
+// TODO: does segcore have debug/release mode? so that we can disable assert in
+// release mode.
 #define AssertInfo(expr, info)                                 \
     do {                                                       \
         auto _expr_res = bool(expr);                           \

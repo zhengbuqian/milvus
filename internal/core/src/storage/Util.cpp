@@ -160,6 +160,7 @@ AddPayloadToArrowBuilder(std::shared_ptr<arrow::ArrayBuilder> builder,
             add_vector_payload(builder, const_cast<uint8_t*>(raw_data), length);
             break;
         }
+        // TODO(SPARSE)
         default: {
             PanicInfo(DataTypeInvalid,
                       fmt::format("unsupported data type 7 {}", data_type));
@@ -355,7 +356,7 @@ GetDimensionFromFileMetaData(const parquet::ColumnDescriptor* schema,
         }
         default:
             PanicInfo(DataTypeInvalid,
-                      fmt::format("unsupported data type 6 {}", data_type));
+                      fmt::format("unsupported data type {}", data_type));
     }
 }
 

@@ -164,10 +164,6 @@ class VectorBase {
 // number of non zero values so we can correctly reserve space in indices and
 // data.
 //
-// TODO(SPARSE) a better way to support concurrent is to not use CSR format for
-// storing the vectors: create a struct to represent a single row, and store a
-// vector of such structs.
-//
 // We use linscan/wand to search for a sparse float vector field of a
 // growing segment, which natively supports dynamically adding new
 // vectors, thus we do not split the vectors into chunks.

@@ -33,62 +33,51 @@ static inline int64_t csr_byte_size(int32_t rows, int64_t nnz) {
 }
 
 static inline void print_csr(const void* csr) {
-    // 假设数据是以小端格式存储
     const int32_t* int_data = static_cast<const int32_t*>(csr);
     int32_t rows = int_data[0];
     int32_t dim = int_data[1];
     int32_t nnz = int_data[2];
+    // for debugging purpose, do not print large CSR
+    if (rows > 30 || dim > 30) {
+        return;
+    }
 
-    // 获取 indptr, indices, values 的指针
     const int32_t* indptr = &int_data[3];
     const int32_t* indices = &int_data[3 + rows + 1];
     const float* values = reinterpret_cast<const float*>(&int_data[3 + rows + 1 + nnz]);
 
-    // 打印基本信息
     std::cout << "Rows: " << rows << ", Dim: " << dim << ", NNZ: " << nnz << std::endl;
 
-    // 打印 indptr
     std::cout << "Indptr: ";
     for (int32_t i = 0; i <= rows; ++i) {
         std::cout << indptr[i] << " ";
     }
     std::cout << std::endl;
 
-    // 打印 indices
     std::cout << "Indices: ";
     for (int32_t i = 0; i < nnz; ++i) {
         std::cout << indices[i] << " ";
     }
     std::cout << std::endl;
 
-    // 打印 values
     std::cout << "Values: ";
     for (int32_t i = 0; i < nnz; ++i) {
         std::cout << values[i] << " ";
     }
     std::cout << std::endl;
 
-    if (rows > 10 || dim > 10) {
-        return;
-    }
-
-    // 打印矩阵形式的 CSR 数据
-    std::cout << "CSR Matrix:" << std::endl;
     for (int32_t row = 0; row < rows; ++row) {
         int32_t start = indptr[row];
         int32_t end = indptr[row + 1];
         int32_t current_index = 0;
 
         for (int32_t j = start; j < end; ++j) {
-            // 打印前面的零
             for (; current_index < indices[j]; ++current_index) {
                 std::cout << "0 ";
             }
-            // 打印值
             std::cout << values[j] << " ";
             ++current_index;
         }
-        // 行尾剩余的零
         for (; current_index < dim; ++current_index) {
             std::cout << "0 ";
         }
@@ -97,13 +86,11 @@ static inline void print_csr(const void* csr) {
 }
 
 static inline bool validate_csr(const void* csr_bytes, int64_t length) {
-    // 读取基本信息
     const int32_t* int_data = static_cast<const int32_t*>(csr_bytes);
     int32_t rows = int_data[0];
     int32_t dim = int_data[1];
     int32_t nnz = int_data[2];
 
-    // 校验长度
     int64_t expected_length = (3 + (rows + 1) + nnz) * sizeof(int32_t) + nnz * sizeof(float);
     if (length != expected_length) {
         std::cerr << "Invalid length: expected " << expected_length << ", got " << length << std::endl;
@@ -111,14 +98,18 @@ static inline bool validate_csr(const void* csr_bytes, int64_t length) {
         return false;
     }
 
-    // 获取 indptr, indices, values 的指针
     const int32_t* indptr = &int_data[3];
     const int32_t* indices = &int_data[3 + rows + 1];
     const float* values = reinterpret_cast<const float*>(&int_data[3 + rows + 1 + nnz]);
 
-    // 校验 indptr[0] 是 0 且 indptr 是非递减的
+    // Verify indptr[0] == 0 and indptr[i] <= indptr[i + 1]
     if (indptr[0] != 0) {
         std::cerr << "Invalid indptr: first element is not zero" << std::endl;
+        print_csr(csr_bytes);
+        return false;
+    }
+    if (indptr[row] != nnz) {
+        std::cerr << "Invalid indptr: last element is not nnz" << std::endl;
         print_csr(csr_bytes);
         return false;
     }
@@ -130,7 +121,7 @@ static inline bool validate_csr(const void* csr_bytes, int64_t length) {
         }
     }
 
-    // 校验 indices 的值严格小于 dim
+    // Verify no indices is greater than or equal to dim
     for (int32_t i = 0; i < nnz; ++i) {
         if (indices[i] >= dim || indices[i] < 0) {
             std::cerr << "Invalid index at position " << i << ": out of bounds" << std::endl;
@@ -139,7 +130,7 @@ static inline bool validate_csr(const void* csr_bytes, int64_t length) {
         }
     }
 
-    // 校验每一行没有重复的 indices
+    // Verify no duplicate indices in any row
     for (int32_t i = 0; i < rows; ++i) {
         for (int32_t j = indptr[i]; j < indptr[i + 1] - 1; ++j) {
             if (indices[j] >= indices[j + 1]) {
@@ -150,7 +141,6 @@ static inline bool validate_csr(const void* csr_bytes, int64_t length) {
         }
     }
 
-    // 如果所有校验都通过了，则返回 true
     return true;
 }
 
@@ -168,7 +158,7 @@ class SparseMatrix {
           contents_(std::move(other.contents_)) {
     }
 
-    // append CSR bytes to the matrix
+    // convert and append CSR bytes to the matrix
     void append(const void* input) {
         int32_t rows, dim, nnz;
         const int32_t* indptr;
@@ -177,7 +167,7 @@ class SparseMatrix {
         rows = *ptr++;
         dim = *ptr++;
         nnz = *ptr++;
-        AssertInfo(validate_csr(input, csr_byte_size(rows, nnz)), "SparseMatrix append raw pointer");
+        AssertInfo(validate_csr(input, csr_byte_size(rows, nnz)), "SparseMatrix append from raw pointer: invalid input CSR");
         indptr = ptr;
         ptr += rows + 1;
         indices = ptr;
@@ -242,7 +232,6 @@ class SparseMatrix {
                 *data++ = p.first;
             }
         }
-        AssertInfo(validate_csr(res, size), "SparseMatrix to_bytes");
         return res;
     }
 

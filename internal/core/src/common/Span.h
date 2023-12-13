@@ -58,7 +58,7 @@ class SpanBase {
 template <typename T, typename Enable = void>
 class Span;
 
-// TODO: refine Span to support T=FloatVector
+// TODO: refine Span to support T=FloatVector and maybe SparseFloatVector
 template <typename T>
 class Span<
     T,

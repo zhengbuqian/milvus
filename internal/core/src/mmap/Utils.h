@@ -95,7 +95,7 @@ WriteFieldData(File& file,
             }
             default:
                 PanicInfo(DataTypeInvalid,
-                          fmt::format("not supported data type 13 {}",
+                          fmt::format("not supported data type {}",
                                       datatype_name(data_type)));
         }
     } else {
