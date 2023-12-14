@@ -25,7 +25,7 @@
 #include "common/EasyAssert.h"
 
 
-// TODO(SPARSE): current impl is not efficient.
+// TODO(SPARSE): current impl is for correctness and not efficient.
 namespace milvus::sparse {
 
 static inline int64_t csr_byte_size(int32_t rows, int64_t nnz) {
@@ -245,8 +245,8 @@ class SparseMatrix {
 
     // returns the CSR byte size of a single row
     int64_t size(ssize_t offset) const {
-        // count shape and first of indptr towards the first row
         auto s = sizeof(int32_t) + (sizeof(int32_t) + sizeof(float)) * (contents_[offset].data_.size());
+        // count shape and first of indptr towards the first row
         if (offset == 0) {
             s += 4 * sizeof(int32_t);
         }

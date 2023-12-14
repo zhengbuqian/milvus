@@ -230,18 +230,20 @@ class FieldDataSparseVectorImpl : public FieldDataBase {
 
     int64_t
     Size() const override {
+        std::lock_guard lock(mutex_);
         return csr_.size();
     }
 
     int64_t
     Size(ssize_t offset) const override {
+        std::lock_guard lock(mutex_);
         return csr_.size(offset);
     }
 
     void
     FillFieldData(const void* source, ssize_t element_count) override {
-        AssertInfo(element_count == 1, "rows should stored in source");
         std::lock_guard lock(mutex_);
+        AssertInfo(element_count == 1, "sparse rows should be stored in the same bytes array");
         csr_.append(source);
     }
 
@@ -264,9 +266,17 @@ class FieldDataSparseVectorImpl : public FieldDataBase {
     // TODO(SPARSE) I assume Data() must be called only after all mutating
     // methods are guaranteed to not be called anymore, or else the data will be
     // corrupted.
-    // caller is responsible for freeing the memory
+    // caller is responsible for freeing the memory.
+    // TODO(SPARSE): this is very dangrous, how to ensure the memory is freed?
+    // We can't simply change the return type of Data() to unique_ptr, because
+    // for other FieldDataImpl, the memory is managed by the class itself.
+    // 是不是可以不要求调用者释放内存，而在本类的析构函数中释放内存？如果其他的
+    // FieldDataImpl 会持有返回的内存，说明 FieldDataImpl 的生命周期超出调用者使用返回值
+    // 的生命，反正 FieldDataSparseVectorImpl 是临时对象，把所有 Data() 产生的内存在析构
+    // 的时候一次性全部释放掉。
     const void*
     Data() const override {
+        std::lock_guard lock(mutex_);
         return csr_.to_bytes();
     }
 
@@ -314,7 +324,7 @@ class FieldDataSparseVectorImpl : public FieldDataBase {
     // TODO(SPARSE) currently all operations are performed under lock as we
     // don't know the exact data size of each row before it was inserted.
     // So for FieldDataSparseVectorImpl, we don't have a pre-allocated buffer.
-    mutable std::shared_mutex mutex_;
+    mutable std::mutex mutex_;
     sparse::SparseMatrix csr_;
 };
 
