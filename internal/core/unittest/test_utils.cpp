@@ -9,6 +9,10 @@
 // is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
+#include <vector>
+#include <memory>
+#include <cstring>
+
 #include <gtest/gtest.h>
 #include <string.h>
 #include <boost/uuid/uuid.hpp>
@@ -19,6 +23,8 @@
 #include "common/Types.h"
 #include "common/Utils.h"
 #include "common/Exception.h"
+#include "knowhere/sparse_utils.h"
+#include "pb/schema.pb.h"
 #include "query/Utils.h"
 #include "test_utils/DataGen.h"
 
@@ -131,8 +137,7 @@ TEST(Util, upper_bound) {
 
     std::vector<Timestamp> data{0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
     ConcurrentVector<Timestamp> timestamps(1);
-    timestamps.grow_to_at_least(data.size());
-    timestamps.set_data(0, data.data(), data.size());
+    timestamps.set_data_raw(0, data.data(), data.size());
 
     ASSERT_EQ(1, upper_bound(timestamps, 0, data.size(), 0));
     ASSERT_EQ(5, upper_bound(timestamps, 0, data.size(), 4));
@@ -207,3 +212,136 @@ TEST(Util, get_common_prefix) {
     common_prefix = milvus::GetCommonPrefix(str1, str2);
     EXPECT_STREQ(common_prefix.c_str(), "");
 }
+
+namespace milvus::sparse_utils_test {
+
+milvus::proto::schema::SparseFloatRow
+CreateTestProtoRow(const std::vector<int>& indices,
+                   const std::vector<float>& values) {
+    milvus::proto::schema::SparseFloatRow row;
+    for (int idx : indices) {
+        row.mutable_indices()->add_data(idx);
+    }
+    for (float val : values) {
+        row.mutable_values()->add_data(val);
+    }
+    return row;
+}
+
+void
+VerifySparseRowEquality(
+    const knowhere::sparse::SparseRow<float>& sparse_row,
+    const milvus::proto::schema::SparseFloatRow& proto_row) {
+    ASSERT_EQ(sparse_row.size(), proto_row.indices().data_size());
+    ASSERT_EQ(sparse_row.size(), proto_row.values().data_size());
+
+    for (size_t i = 0; i < sparse_row.size(); ++i) {
+        auto [index, value] = sparse_row[i];
+        ASSERT_EQ(index, proto_row.indices().data(i));
+        ASSERT_FLOAT_EQ(value, proto_row.values().data(i));
+    }
+}
+
+TEST(SparseRowTest, SparseProtoToRows_SingleRow) {
+    std::vector<milvus::proto::schema::SparseFloatRow> proto_rows = {
+        CreateTestProtoRow({0, 100, 2000}, {1.0f, 2.0f, 3.0f})};
+    auto sparse_rows = SparseProtoToRows(proto_rows);
+    ASSERT_NE(sparse_rows.get(), nullptr);
+    VerifySparseRowEquality(sparse_rows[0], proto_rows[0]);
+}
+
+TEST(SparseRowTest, SparseProtoToRows_MultipleRows) {
+    std::vector<milvus::proto::schema::SparseFloatRow> proto_rows = {
+        CreateTestProtoRow({0, 100, 2000}, {1.0f, 2.0f, 3.0f}),
+        CreateTestProtoRow({10, 110, 2100}, {4.0f, 5.0f, 6.0f})};
+    auto sparse_rows = SparseProtoToRows(proto_rows);
+    ASSERT_NE(sparse_rows.get(), nullptr);
+    for (size_t i = 0; i < proto_rows.size(); ++i) {
+        VerifySparseRowEquality(sparse_rows[i], proto_rows[i]);
+    }
+}
+
+TEST(SparseRowTest, SparseProtoToRows_ZeroElementRow) {
+    std::vector<milvus::proto::schema::SparseFloatRow> proto_rows = {
+        CreateTestProtoRow({}, {})};
+    auto sparse_rows = SparseProtoToRows(proto_rows);
+    ASSERT_NE(sparse_rows.get(), nullptr);
+    ASSERT_EQ(sparse_rows[0].size(), 0);
+}
+
+TEST(SparseRowTest, SparseRowsToProto_SingleRow) {
+    auto sparse_row = knowhere::sparse::SparseRow<float>(3);
+    sparse_row.set_at(0, 0, 1.0f);
+    sparse_row.set_at(1, 100, 2.0f);
+    sparse_row.set_at(2, 2000, 3.0f);
+
+    milvus::proto::schema::SparseFloatArray proto;
+    SparseRowsToProto(&sparse_row, 1, &proto);
+    ASSERT_EQ(proto.contents_size(), 1);
+    VerifySparseRowEquality(sparse_row, proto.contents(0));
+}
+
+TEST(SparseRowTest, SparseRowsToProto_MultipleRows) {
+    // Create two SparseRows
+    auto sparse_row1 = knowhere::sparse::SparseRow<float>(3);
+    sparse_row1.set_at(0, 0, 1.0f);
+    sparse_row1.set_at(1, 100, 2.0f);
+    sparse_row1.set_at(2, 2000, 3.0f);
+
+    auto sparse_row2 = knowhere::sparse::SparseRow<float>(3);
+    sparse_row2.set_at(0, 10, 4.0f);
+    sparse_row2.set_at(1, 110, 5.0f);
+    sparse_row2.set_at(2, 2100, 6.0f);
+
+    knowhere::sparse::SparseRow<float> rows[] = {sparse_row1, sparse_row2};
+
+    milvus::proto::schema::SparseFloatArray proto;
+    SparseRowsToProto(rows, 2, &proto);
+    ASSERT_EQ(proto.contents_size(), 2);
+    for (int i = 0; i < proto.contents_size(); ++i) {
+        VerifySparseRowEquality(rows[i], proto.contents(i));
+    }
+}
+
+TEST(SparseRowTest, SparseRowsToProto_ZeroElementRow) {
+    knowhere::sparse::SparseRow<float> sparse_row(0);
+
+    milvus::proto::schema::SparseFloatArray proto;
+    SparseRowsToProto(&sparse_row, 1, &proto);
+    ASSERT_EQ(proto.contents_size(), 1);
+    ASSERT_EQ(proto.contents(0).indices().data_size(), 0);
+    ASSERT_EQ(proto.contents(0).values().data_size(), 0);
+}
+
+TEST(SparseRowTest, SerializeDeserialize_NonEmpty) {
+    auto sparse_row = knowhere::sparse::SparseRow<float>(3);
+    sparse_row.set_at(0, 0, 1.0f);
+    sparse_row.set_at(1, 100, 2.0f);
+    sparse_row.set_at(2, 2000, 3.0f);
+
+    auto buffer = SerializeSparseRow(sparse_row);
+    ASSERT_EQ(
+        buffer.size(),
+        sparse_row.size() * knowhere::sparse::SparseRow<float>::element_size());
+
+    auto deserialized_row = DeserializeSparseRow(buffer.data(), buffer.size());
+    ASSERT_EQ(deserialized_row.size(), sparse_row.size());
+    for (size_t i = 0; i < sparse_row.size(); ++i) {
+        auto [index, value] = sparse_row[i];
+        auto [deserialized_index, deserialized_value] = deserialized_row[i];
+        ASSERT_EQ(index, deserialized_index);
+        ASSERT_FLOAT_EQ(value, deserialized_value);
+    }
+}
+
+TEST(SparseRowTest, SerializeDeserialize_ZeroElementRow) {
+    knowhere::sparse::SparseRow<float> sparse_row(0);
+
+    auto buffer = SerializeSparseRow(sparse_row);
+    ASSERT_TRUE(buffer.empty());
+
+    auto deserialized_row = DeserializeSparseRow(buffer.data(), buffer.size());
+    ASSERT_EQ(deserialized_row.size(), 0);
+}
+
+}  // namespace sparse_test

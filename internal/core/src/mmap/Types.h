@@ -55,6 +55,7 @@ struct FieldDataInfo {
           channel(std::move(channel)) {
     }
 
+
     FieldDataInfo(int64_t field_id,
                   size_t row_count,
                   const std::vector<FieldDataPtr>& batch)

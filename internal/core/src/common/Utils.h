@@ -31,6 +31,7 @@
 #include "common/EasyAssert.h"
 #include "knowhere/dataset.h"
 #include "knowhere/expected.h"
+#include "knowhere/sparse_utils.h"
 #include "simdjson.h"
 
 namespace milvus {
@@ -211,6 +212,69 @@ GetCommonPrefix(const std::string& str1, const std::string& str2) {
     size_t i = 0;
     while (i < len && str1[i] == str2[i]) ++i;
     return str1.substr(0, i);
+}
+
+// Iterable is a list of milvus::proto::schema::SparseFloatRow. This helper
+// function converts sparse matrix in proto to a vector of
+// knowhere::sparse::SparseRow<float>.
+template <typename Iterable>
+std::unique_ptr<knowhere::sparse::SparseRow<float>[]>
+SparseProtoToRows(const Iterable& rows) {
+    AssertInfo(rows.size() > 0, "at least 1 sparse row should be provided");
+    auto res =
+        std::make_unique<knowhere::sparse::SparseRow<float>[]>(rows.size());
+    for (size_t i = 0; i < rows.size(); ++i) {
+        knowhere::sparse::SparseRow<float> row(rows[i].indices().data_size());
+        for (int j = 0; j < rows[i].indices().data_size(); ++j) {
+            row.set_at(j, rows[i].indices().data(j), rows[i].values().data(j));
+        }
+        res[i] = std::move(row);
+    }
+    return res;
+}
+
+inline void
+SparseRowsToProto(const knowhere::sparse::SparseRow<float>* source,
+                  int64_t rows,
+                  milvus::proto::schema::SparseFloatArray* proto) {
+    int64_t max_dim = 0;
+    for (size_t i = 0; i < rows; ++i) {
+        auto new_row = proto->add_contents();
+        if (source + i == nullptr) {
+            // empty row
+            continue;
+        }
+        auto& row = source[i];
+        max_dim = std::max(max_dim, row.dim());
+        for (size_t j = 0; j < row.size(); ++j) {
+            auto [index, value] = row[j];
+            new_row->mutable_indices()->add_data(index);
+            new_row->mutable_values()->add_data(value);
+        }
+    }
+    proto->set_dim(max_dim);
+}
+
+inline int64_t
+SparseRowSerializedSize(const knowhere::sparse::SparseRow<float>& row) {
+    return row.size() * knowhere::sparse::SparseRow<float>::element_size();
+}
+
+// serialize a sparse row to bytes that will be written into binlog file.
+inline std::vector<uint8_t>
+SerializeSparseRow(const knowhere::sparse::SparseRow<float>& row) {
+    std::vector<uint8_t> buffer(SparseRowSerializedSize(row));
+    std::memcpy(buffer.data(), row.data(), buffer.size());
+    return buffer;
+}
+
+inline knowhere::sparse::SparseRow<float>
+DeserializeSparseRow(const void* data, size_t size) {
+    size_t num_elements =
+        size / knowhere::sparse::SparseRow<float>::element_size();
+    knowhere::sparse::SparseRow<float> row(num_elements);
+    std::memcpy(row.data(), data, size);
+    return row;
 }
 
 }  // namespace milvus

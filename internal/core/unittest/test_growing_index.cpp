@@ -155,7 +155,7 @@ class GrowingIndexGetVectorTest : public ::testing::TestWithParam<Param> {
     const char* metricType;
 };
 
-INSTANTIATE_TEST_CASE_P(IndexTypeParameters,
+INSTANTIATE_TEST_SUITE_P(IndexTypeParameters,
                         GrowingIndexGetVectorTest,
                         ::testing::Values(knowhere::metric::L2,
                                           knowhere::metric::COSINE,

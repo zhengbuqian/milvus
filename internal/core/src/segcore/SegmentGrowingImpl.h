@@ -32,6 +32,7 @@
 #include "common/EasyAssert.h"
 #include "query/PlanNode.h"
 #include "common/IndexMeta.h"
+#include "pb/schema.pb.h"
 
 namespace milvus::segcore {
 
@@ -45,7 +46,7 @@ class SegmentGrowingImpl : public SegmentGrowing {
            int64_t size,
            const int64_t* row_ids,
            const Timestamp* timestamps,
-           const InsertData* insert_data) override;
+           const InsertRecordProto* insert_record_proto) override;
 
     bool
     Contain(const PkType& pk) const override {

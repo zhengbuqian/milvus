@@ -157,7 +157,7 @@ class RangeSearchSortTest
     float dist_min = 0.0, dist_max = 100.0;
 };
 
-INSTANTIATE_TEST_CASE_P(RangeSearchSortParameters,
+INSTANTIATE_TEST_SUITE_P(RangeSearchSortParameters,
                         RangeSearchSortTest,
                         ::testing::Values(knowhere::metric::L2,
                                           knowhere::metric::IP,

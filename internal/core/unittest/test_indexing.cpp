@@ -378,7 +378,7 @@ class IndexTest : public ::testing::TestWithParam<Param> {
     StorageConfig storage_config_;
 };
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     IndexTypeParameters,
     IndexTest,
     ::testing::Values(
@@ -914,7 +914,7 @@ TEST(Indexing, SearchDiskAnnWithInvalidParam) {
 //    boost::filesystem::path mmap_file_path;
 //};
 //
-//INSTANTIATE_TEST_CASE_P(
+//INSTANTIATE_TEST_SUITE_P(
 //    IndexTypeParameters,
 //    IndexTestV2,
 //    testing::Combine(

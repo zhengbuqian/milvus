@@ -141,7 +141,7 @@ class BinlogIndexTest : public ::testing::TestWithParam<Param> {
     std::shared_ptr<float[]> vec_data;
 };
 
-INSTANTIATE_TEST_CASE_P(MetricTypeParameters,
+INSTANTIATE_TEST_SUITE_P(MetricTypeParameters,
                         BinlogIndexTest,
                         ::testing::Values(knowhere::metric::L2));
 
