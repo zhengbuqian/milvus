@@ -382,7 +382,7 @@ func (h *HandlersV1) getCollectionDetails(c *gin.Context) {
 	}
 	vectorField := ""
 	for _, field := range coll.Schema.Fields {
-		if field.DataType == schemapb.DataType_BinaryVector || field.DataType == schemapb.DataType_FloatVector {
+		if field.DataType == schemapb.DataType_BinaryVector || field.DataType == schemapb.DataType_FloatVector || field.DataType == schemapb.DataType_SparseFloatVector {
 			vectorField = field.Name
 			break
 		}
