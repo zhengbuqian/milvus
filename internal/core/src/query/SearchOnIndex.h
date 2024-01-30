@@ -23,6 +23,7 @@ SubSearchResult
 SearchOnIndex(const dataset::SearchDataset& search_dataset,
               const index::VectorIndex& indexing,
               const SearchInfo& search_conf,
-              const BitsetView& bitset);
+              const BitsetView& bitset,
+              bool is_sparse = false);
 
 }  // namespace milvus::query

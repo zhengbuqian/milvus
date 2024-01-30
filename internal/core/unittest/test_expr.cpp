@@ -35,40 +35,43 @@
 #include "exec/expression/Expr.h"
 #include "exec/Task.h"
 
-TEST(Expr, Range) {
+class ExprTest : public ::testing::TestWithParam<
+                     std::pair<milvus::DataType, knowhere::MetricType>> {
+ public:
+    void
+    SetUp() override {
+        auto param = GetParam();
+        data_type = param.first;
+        metric_type = param.second;
+    }
+
+    // replace the metric type in the plan string with the proper type
+    std::vector<char>
+    translate_text_plan_with_metric_type(std::string plan) {
+        return milvus::segcore::
+            replace_metric_and_translate_text_plan_to_binary_plan(
+                std::move(plan), metric_type);
+    }
+
+    milvus::DataType data_type;
+    knowhere::MetricType metric_type;
+};
+
+INSTANTIATE_TEST_SUITE_P(
+    ExprTestSuite,
+    ExprTest,
+    ::testing::Values(
+        std::pair(milvus::DataType::VECTOR_FLOAT, knowhere::metric::L2),
+        std::pair(milvus::DataType::VECTOR_SPARSE_FLOAT, knowhere::metric::IP),
+        std::pair(milvus::DataType::VECTOR_BINARY, knowhere::metric::JACCARD)));
+
+TEST_P(ExprTest, Range) {
     SUCCEED();
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
-    // std::string dsl_string = R"({
-    //     "bool": {
-    //         "must": [
-    //             {
-    //                 "range": {
-    //                     "age": {
-    //                         "GT": 1,
-    //                         "LT": 100
-    //                     }
-    //                 }
-    //             },
-    //             {
-    //                 "vector": {
-    //                     "fakevec": {
-    //                         "metric_type": "L2",
-    //                         "params": {
-    //                             "nprobe": 10
-    //                         },
-    //                         "query": "$0",
-    //                         "topk": 10,
-    //                         "round_decimal": 3
-    //                     }
-    //                 }
-    //             }
-    //         ]
-    //     }
-    // })";
 
-    const char* raw_plan = R"(vector_anns: <
+    std::string raw_plan = R"(vector_anns: <
                                 field_id: 100
                                 predicates: <
                                   binary_expr: <
@@ -107,10 +110,9 @@ TEST(Expr, Range) {
                                 >
                                 placeholder_tag: "$0"
      >)";
-    auto plan_str = translate_text_plan_to_binary_plan(raw_plan);
+    auto plan_str = translate_text_plan_with_metric_type(raw_plan);
     auto schema = std::make_shared<Schema>();
-    schema->AddDebugField(
-        "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+    schema->AddDebugField("fakevec", data_type, 16, metric_type);
     schema->AddDebugField("age", DataType::INT32);
     auto plan =
         CreateSearchPlanByExpr(*schema, plan_str.data(), plan_str.size());
@@ -119,122 +121,12 @@ TEST(Expr, Range) {
            schema->get_field_id(FieldName("fakevec")));
 }
 
-TEST(Expr, RangeBinary) {
+TEST_P(ExprTest, InvalidRange) {
     SUCCEED();
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
-    // std::string dsl_string = R"({
-    //     "bool": {
-    //         "must": [
-    //             {
-    //                 "range": {
-    //                     "age": {
-    //                         "GT": 1,
-    //                         "LT": 100
-    //                     }
-    //                 }
-    //             },
-    //             {
-    //                 "vector": {
-    //                     "fakevec": {
-    //                         "metric_type": "Jaccard",
-    //                         "params": {
-    //                             "nprobe": 10
-    //                         },
-    //                         "query": "$0",
-    //                         "topk": 10,
-    //                         "round_decimal": 3
-    //                     }
-    //                 }
-    //             }
-    //         ]
-    //     }
-    // })";
-    const char* raw_plan = R"(vector_anns: <
-                                field_id: 100
-                                predicates: <
-                                  binary_expr: <
-                                    op: LogicalAnd
-                                    left: <
-                                      unary_range_expr: <
-                                        column_info: <
-                                          field_id: 101
-                                          data_type: Int32
-                                        >
-                                        op: GreaterThan
-                                        value: <
-                                          int64_val: 1
-                                        >
-                                      >
-                                    >
-                                    right: <
-                                      unary_range_expr: <
-                                        column_info: <
-                                          field_id: 101
-                                          data_type: Int32
-                                        >
-                                        op: LessThan
-                                        value: <
-                                          int64_val: 100
-                                        >
-                                      >
-                                    >
-                                  >
-                                >
-                                query_info: <
-                                  topk: 10
-                                  round_decimal: 3
-                                  metric_type: "JACCARD"
-                                  search_params: "{\"nprobe\": 10}"
-                                >
-                                placeholder_tag: "$0"
-     >)";
-    auto plan_str = translate_text_plan_to_binary_plan(raw_plan);
-    auto schema = std::make_shared<Schema>();
-    schema->AddDebugField(
-        "fakevec", DataType::VECTOR_BINARY, 512, knowhere::metric::JACCARD);
-    schema->AddDebugField("age", DataType::INT32);
-    auto plan =
-        CreateSearchPlanByExpr(*schema, plan_str.data(), plan_str.size());
-    ShowPlanNodeVisitor shower;
-    Assert(plan->tag2field_.at("$0") ==
-           schema->get_field_id(FieldName("fakevec")));
-}
-
-TEST(Expr, InvalidRange) {
-    SUCCEED();
-    using namespace milvus;
-    using namespace milvus::query;
-    using namespace milvus::segcore;
-    //     std::string dsl_string = R"(
-    // {
-    //     "bool": {
-    //         "must": [
-    //             {
-    //                 "range": {
-    //                     "age": {
-    //                         "GT": 1,
-    //                         "LT": "100"
-    //                     }
-    //                 }
-    //             },
-    //             {
-    //                 "vector": {
-    //                     "fakevec": {
-    //                         "metric_type": "L2",
-    //                         "params": {
-    //                             "nprobe": 10
-    //                         },
-    //                         "query": "$0",
-    //                         "topk": 10
-    //                     }
-    //                 }
-    //             }
-    //         ]
-    //     }
-    // })";
-    const char* raw_plan = R"(vector_anns: <
+    std::string raw_plan = R"(vector_anns: <
                                 field_id: 100
                                 predicates: <
                                   binary_expr: <
@@ -273,24 +165,22 @@ TEST(Expr, InvalidRange) {
                                 >
                                 placeholder_tag: "$0"
      >)";
-    auto plan_str = translate_text_plan_to_binary_plan(raw_plan);
+    auto plan_str = translate_text_plan_with_metric_type(raw_plan);
     auto schema = std::make_shared<Schema>();
-    schema->AddDebugField(
-        "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+    schema->AddDebugField("fakevec", data_type, 16, metric_type);
     schema->AddDebugField("age", DataType::INT32);
     ASSERT_ANY_THROW(
         CreateSearchPlanByExpr(*schema, plan_str.data(), plan_str.size()));
 }
 
-TEST(Expr, ShowExecutor) {
+TEST_P(ExprTest, ShowExecutor) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
     auto node = std::make_unique<FloatVectorANNS>();
     auto schema = std::make_shared<Schema>();
-    auto metric_type = knowhere::metric::L2;
-    auto field_id = schema->AddDebugField(
-        "fakevec", DataType::VECTOR_FLOAT, 16, metric_type);
+    auto field_id =
+        schema->AddDebugField("fakevec", data_type, 16, metric_type);
     int64_t num_queries = 100L;
     auto raw_data = DataGen(schema, num_queries);
     auto& info = node->search_info_;
@@ -307,7 +197,7 @@ TEST(Expr, ShowExecutor) {
     std::cout << dup.dump(4);
 }
 
-TEST(Expr, TestRange) {
+TEST_P(ExprTest, TestRange) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
@@ -440,32 +330,6 @@ TEST(Expr, TestRange) {
          [](int v) { return v != 2000; }},
     };
 
-    // std::string dsl_string_tmp = R"({
-    //     "bool": {
-    //         "must": [
-    //             {
-    //                 "range": {
-    //                     "age": {
-    //                         @@@@
-    //                     }
-    //                 }
-    //             },
-    //             {
-    //                 "vector": {
-    //                     "fakevec": {
-    //                         "metric_type": "L2",
-    //                         "params": {
-    //                             "nprobe": 10
-    //                         },
-    //                         "query": "$0",
-    //                         "topk": 10,
-    //                         "round_decimal": 3
-    //                     }
-    //                 }
-    //             }
-    //         ]
-    //     }
-    // })";
     std::string raw_plan_tmp = R"(vector_anns: <
                                     field_id: 100
                                     predicates: <
@@ -480,8 +344,7 @@ TEST(Expr, TestRange) {
                                     placeholder_tag: "$0"
      >)";
     auto schema = std::make_shared<Schema>();
-    auto vec_fid = schema->AddDebugField(
-        "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+    auto vec_fid = schema->AddDebugField("fakevec", data_type, 16, metric_type);
     auto i64_fid = schema->AddDebugField("age", DataType::INT64);
     schema->set_primary_field_id(i64_fid);
 
@@ -507,7 +370,7 @@ TEST(Expr, TestRange) {
         auto loc = raw_plan_tmp.find("@@@@");
         auto raw_plan = raw_plan_tmp;
         raw_plan.replace(loc, 4, clause);
-        auto plan_str = translate_text_plan_to_binary_plan(raw_plan.c_str());
+        auto plan_str = translate_text_plan_with_metric_type(raw_plan);
         auto plan =
             CreateSearchPlanByExpr(*schema, plan_str.data(), plan_str.size());
         query::ExecPlanNodeVisitor visitor(*seg_promote, MAX_TIMESTAMP);
@@ -528,7 +391,7 @@ TEST(Expr, TestRange) {
     }
 }
 
-TEST(Expr, TestBinaryRangeJSON) {
+TEST_P(ExprTest, TestBinaryRangeJSON) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
@@ -631,7 +494,7 @@ TEST(Expr, TestBinaryRangeJSON) {
     }
 }
 
-TEST(Expr, TestExistsJson) {
+TEST_P(ExprTest, TestExistsJson) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
@@ -726,7 +589,7 @@ GetValueFromProto(const milvus::proto::plan::GenericValue& value_proto) {
     }
 };
 
-TEST(Expr, TestUnaryRangeJson) {
+TEST_P(ExprTest, TestUnaryRangeJson) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
@@ -899,7 +762,7 @@ TEST(Expr, TestUnaryRangeJson) {
     }
 }
 
-TEST(Expr, TestTermJson) {
+TEST_P(ExprTest, TestTermJson) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
@@ -974,7 +837,7 @@ TEST(Expr, TestTermJson) {
     }
 }
 
-TEST(Expr, TestTerm) {
+TEST_P(ExprTest, TestTerm) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
@@ -1007,33 +870,6 @@ TEST(Expr, TestTerm) {
         {vec_2k_3k, [](int v) { return 2000 <= v && v < 3000; }},
     };
 
-    // std::string dsl_string_tmp = R"({
-    //     "bool": {
-    //         "must": [
-    //             {
-    //                 "term": {
-    //                     "age": {
-    //                         "values": @@@@,
-    //                         "is_in_field" : false
-    //                     }
-    //                 }
-    //             },
-    //             {
-    //                 "vector": {
-    //                     "fakevec": {
-    //                         "metric_type": "L2",
-    //                         "params": {
-    //                             "nprobe": 10
-    //                         },
-    //                         "query": "$0",
-    //                         "topk": 10,
-    //                         "round_decimal": 3
-    //                     }
-    //                 }
-    //             }
-    //         ]
-    //     }
-    // })";
     std::string raw_plan_tmp = R"(vector_anns: <
                                     field_id: 100
                                     predicates: <
@@ -1054,8 +890,7 @@ TEST(Expr, TestTerm) {
                                     placeholder_tag: "$0"
      >)";
     auto schema = std::make_shared<Schema>();
-    auto vec_fid = schema->AddDebugField(
-        "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+    auto vec_fid = schema->AddDebugField("fakevec", data_type, 16, metric_type);
     auto i64_fid = schema->AddDebugField("age", DataType::INT64);
     schema->set_primary_field_id(i64_fid);
 
@@ -1081,7 +916,7 @@ TEST(Expr, TestTerm) {
         auto loc = raw_plan_tmp.find("@@@@");
         auto raw_plan = raw_plan_tmp;
         raw_plan.replace(loc, 4, clause);
-        auto plan_str = translate_text_plan_to_binary_plan(raw_plan.c_str());
+        auto plan_str = translate_text_plan_with_metric_type(raw_plan);
         auto plan =
             CreateSearchPlanByExpr(*schema, plan_str.data(), plan_str.size());
         BitsetType final;
@@ -1101,7 +936,7 @@ TEST(Expr, TestTerm) {
     }
 }
 
-TEST(Expr, TestCompare) {
+TEST_P(ExprTest, TestCompare) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
@@ -1115,33 +950,6 @@ TEST(Expr, TestCompare) {
             {R"(NotEqual)", [](int a, int64_t b) { return a != b; }},
         };
 
-    // std::string dsl_string_tpl = R"({
-    //     "bool": {
-    //         "must": [
-    //             {
-    //                 "compare": {
-    //                     %1%: [
-    //                         "age1",
-    //                         "age2"
-    //                     ]
-    //                 }
-    //             },
-    //             {
-    //                 "vector": {
-    //                     "fakevec": {
-    //                         "metric_type": "L2",
-    //                         "params": {
-    //                             "nprobe": 10
-    //                         },
-    //                         "query": "$0",
-    //                         "topk": 10,
-    //                         "round_decimal": 3
-    //                     }
-    //                 }
-    //             }
-    //         ]
-    //     }
-    // })";
     std::string raw_plan_tmp = R"(vector_anns: <
                                     field_id: 100
                                     predicates: <
@@ -1166,8 +974,7 @@ TEST(Expr, TestCompare) {
                                     placeholder_tag: "$0"
      >)";
     auto schema = std::make_shared<Schema>();
-    auto vec_fid = schema->AddDebugField(
-        "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+    auto vec_fid = schema->AddDebugField("fakevec", data_type, 16, metric_type);
     auto i32_fid = schema->AddDebugField("age1", DataType::INT32);
     auto i64_fid = schema->AddDebugField("age2", DataType::INT64);
     schema->set_primary_field_id(i64_fid);
@@ -1199,7 +1006,7 @@ TEST(Expr, TestCompare) {
         auto loc = raw_plan_tmp.find("@@@@");
         auto raw_plan = raw_plan_tmp;
         raw_plan.replace(loc, 4, clause);
-        auto plan_str = translate_text_plan_to_binary_plan(raw_plan.c_str());
+        auto plan_str = translate_text_plan_with_metric_type(raw_plan);
         auto plan =
             CreateSearchPlanByExpr(*schema, plan_str.data(), plan_str.size());
         BitsetType final;
@@ -1221,7 +1028,7 @@ TEST(Expr, TestCompare) {
     }
 }
 
-TEST(Expr, TestCompareWithScalarIndex) {
+TEST_P(ExprTest, TestCompareWithScalarIndex) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
@@ -1260,8 +1067,7 @@ TEST(Expr, TestCompareWithScalarIndex) {
      >)";
 
     auto schema = std::make_shared<Schema>();
-    auto vec_fid = schema->AddDebugField(
-        "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+    auto vec_fid = schema->AddDebugField("fakevec", data_type, 16, metric_type);
     auto i32_fid = schema->AddDebugField("age32", DataType::INT32);
     auto i64_fid = schema->AddDebugField("age64", DataType::INT64);
     schema->set_primary_field_id(i64_fid);
@@ -1300,7 +1106,7 @@ TEST(Expr, TestCompareWithScalarIndex) {
             i32_fid.get() % proto::schema::DataType_Name(int(DataType::INT32)) %
             i64_fid.get() % proto::schema::DataType_Name(int(DataType::INT64));
         auto binary_plan =
-            translate_text_plan_to_binary_plan(dsl_string.str().data());
+            translate_text_plan_with_metric_type(dsl_string.str());
         auto plan = CreateSearchPlanByExpr(
             *schema, binary_plan.data(), binary_plan.size());
         // std::cout << ShowPlanNodeVisitor().call_child(*plan->plan_node_) << std::endl;
@@ -1320,13 +1126,12 @@ TEST(Expr, TestCompareWithScalarIndex) {
     }
 }
 
-TEST(Expr, TestCompareExpr) {
+TEST_P(ExprTest, TestCompareExpr) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
     auto schema = std::make_shared<Schema>();
-    auto vec_fid = schema->AddDebugField(
-        "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+    auto vec_fid = schema->AddDebugField("fakevec", data_type, 16, metric_type);
     auto bool_fid = schema->AddDebugField("bool", DataType::BOOL);
     auto bool_1_fid = schema->AddDebugField("bool1", DataType::BOOL);
     auto int8_fid = schema->AddDebugField("int8", DataType::INT8);
@@ -1472,13 +1277,12 @@ TEST(Expr, TestCompareExpr) {
     std::cout << "end compare test" << std::endl;
 }
 
-TEST(Expr, TestMultiLogicalExprsOptimization) {
+TEST_P(ExprTest, TestMultiLogicalExprsOptimization) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
     auto schema = std::make_shared<Schema>();
-    auto vec_fid = schema->AddDebugField(
-        "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+    auto vec_fid = schema->AddDebugField("fakevec", data_type, 16, metric_type);
     auto int64_fid = schema->AddDebugField("int64", DataType::INT64);
     auto str1_fid = schema->AddDebugField("string1", DataType::VARCHAR);
     schema->set_primary_field_id(str1_fid);
@@ -1561,13 +1365,12 @@ TEST(Expr, TestMultiLogicalExprsOptimization) {
     ASSERT_LT(cost_op, cost_no_op);
 }
 
-TEST(Expr, TestExprs) {
+TEST_P(ExprTest, TestExprs) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
     auto schema = std::make_shared<Schema>();
-    auto vec_fid = schema->AddDebugField(
-        "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+    auto vec_fid = schema->AddDebugField("fakevec", data_type, 16, metric_type);
     auto int8_fid = schema->AddDebugField("int8", DataType::INT8);
     auto int8_1_fid = schema->AddDebugField("int81", DataType::INT8);
     auto int16_fid = schema->AddDebugField("int16", DataType::INT16);
@@ -1736,14 +1539,13 @@ TEST(Expr, TestExprs) {
     // test_case(500);
 }
 
-TEST(Expr, test_term_pk) {
+TEST_P(ExprTest, test_term_pk) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
     auto schema = std::make_shared<Schema>();
     schema->AddField(FieldName("Timestamp"), FieldId(1), DataType::INT64);
-    auto vec_fid = schema->AddDebugField(
-        "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+    auto vec_fid = schema->AddDebugField("fakevec", data_type, 16, metric_type);
     auto str1_fid = schema->AddDebugField("string1", DataType::VARCHAR);
     auto int64_fid = schema->AddDebugField("int64", DataType::INT64);
     schema->set_primary_field_id(int64_fid);
@@ -1803,13 +1605,12 @@ TEST(Expr, test_term_pk) {
     }
 }
 
-TEST(Expr, TestSealedSegmentGetBatchSize) {
+TEST_P(ExprTest, TestSealedSegmentGetBatchSize) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
     auto schema = std::make_shared<Schema>();
-    auto vec_fid = schema->AddDebugField(
-        "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+    auto vec_fid = schema->AddDebugField("fakevec", data_type, 16, metric_type);
     auto int8_fid = schema->AddDebugField("int8", DataType::INT8);
     auto str1_fid = schema->AddDebugField("string1", DataType::VARCHAR);
     schema->set_primary_field_id(str1_fid);
@@ -1868,13 +1669,12 @@ TEST(Expr, TestSealedSegmentGetBatchSize) {
     }
 }
 
-TEST(Expr, TestGrowingSegmentGetBatchSize) {
+TEST_P(ExprTest, TestGrowingSegmentGetBatchSize) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
     auto schema = std::make_shared<Schema>();
-    auto vec_fid = schema->AddDebugField(
-        "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+    auto vec_fid = schema->AddDebugField("fakevec", data_type, 16, metric_type);
     auto int8_fid = schema->AddDebugField("int8", DataType::INT8);
     auto str1_fid = schema->AddDebugField("string1", DataType::VARCHAR);
     schema->set_primary_field_id(str1_fid);
@@ -1927,13 +1727,12 @@ TEST(Expr, TestGrowingSegmentGetBatchSize) {
     }
 }
 
-TEST(Expr, TestConjuctExpr) {
+TEST_P(ExprTest, TestConjuctExpr) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
     auto schema = std::make_shared<Schema>();
-    auto vec_fid = schema->AddDebugField(
-        "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+    auto vec_fid = schema->AddDebugField("fakevec", data_type, 16, metric_type);
     auto int8_fid = schema->AddDebugField("int8", DataType::INT8);
     auto int8_1_fid = schema->AddDebugField("int81", DataType::INT8);
     auto int16_fid = schema->AddDebugField("int16", DataType::INT16);
@@ -1998,13 +1797,12 @@ TEST(Expr, TestConjuctExpr) {
     }
 }
 
-TEST(Expr, TestUnaryBenchTest) {
+TEST_P(ExprTest, TestUnaryBenchTest) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
     auto schema = std::make_shared<Schema>();
-    auto vec_fid = schema->AddDebugField(
-        "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+    auto vec_fid = schema->AddDebugField("fakevec", data_type, 16, metric_type);
     auto int8_fid = schema->AddDebugField("int8", DataType::INT8);
     auto int8_1_fid = schema->AddDebugField("int81", DataType::INT8);
     auto int16_fid = schema->AddDebugField("int16", DataType::INT16);
@@ -2073,13 +1871,12 @@ TEST(Expr, TestUnaryBenchTest) {
     }
 }
 
-TEST(Expr, TestBinaryRangeBenchTest) {
+TEST_P(ExprTest, TestBinaryRangeBenchTest) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
     auto schema = std::make_shared<Schema>();
-    auto vec_fid = schema->AddDebugField(
-        "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+    auto vec_fid = schema->AddDebugField("fakevec", data_type, 16, metric_type);
     auto int8_fid = schema->AddDebugField("int8", DataType::INT8);
     auto int8_1_fid = schema->AddDebugField("int81", DataType::INT8);
     auto int16_fid = schema->AddDebugField("int16", DataType::INT16);
@@ -2157,13 +1954,12 @@ TEST(Expr, TestBinaryRangeBenchTest) {
     }
 }
 
-TEST(Expr, TestLogicalUnaryBenchTest) {
+TEST_P(ExprTest, TestLogicalUnaryBenchTest) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
     auto schema = std::make_shared<Schema>();
-    auto vec_fid = schema->AddDebugField(
-        "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+    auto vec_fid = schema->AddDebugField("fakevec", data_type, 16, metric_type);
     auto int8_fid = schema->AddDebugField("int8", DataType::INT8);
     auto int8_1_fid = schema->AddDebugField("int81", DataType::INT8);
     auto int16_fid = schema->AddDebugField("int16", DataType::INT16);
@@ -2235,13 +2031,12 @@ TEST(Expr, TestLogicalUnaryBenchTest) {
     }
 }
 
-TEST(Expr, TestBinaryLogicalBenchTest) {
+TEST_P(ExprTest, TestBinaryLogicalBenchTest) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
     auto schema = std::make_shared<Schema>();
-    auto vec_fid = schema->AddDebugField(
-        "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+    auto vec_fid = schema->AddDebugField("fakevec", data_type, 16, metric_type);
     auto int8_fid = schema->AddDebugField("int8", DataType::INT8);
     auto int8_1_fid = schema->AddDebugField("int81", DataType::INT8);
     auto int16_fid = schema->AddDebugField("int16", DataType::INT16);
@@ -2323,13 +2118,12 @@ TEST(Expr, TestBinaryLogicalBenchTest) {
     }
 }
 
-TEST(Expr, TestBinaryArithOpEvalRangeBenchExpr) {
+TEST_P(ExprTest, TestBinaryArithOpEvalRangeBenchExpr) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
     auto schema = std::make_shared<Schema>();
-    auto vec_fid = schema->AddDebugField(
-        "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+    auto vec_fid = schema->AddDebugField("fakevec", data_type, 16, metric_type);
     auto int8_fid = schema->AddDebugField("int8", DataType::INT8);
     auto int8_1_fid = schema->AddDebugField("int81", DataType::INT8);
     auto int16_fid = schema->AddDebugField("int16", DataType::INT16);
@@ -2407,13 +2201,12 @@ TEST(Expr, TestBinaryArithOpEvalRangeBenchExpr) {
     }
 }
 
-TEST(Expr, TestCompareExprBenchTest) {
+TEST_P(ExprTest, TestCompareExprBenchTest) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
     auto schema = std::make_shared<Schema>();
-    auto vec_fid = schema->AddDebugField(
-        "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+    auto vec_fid = schema->AddDebugField("fakevec", data_type, 16, metric_type);
     auto int8_fid = schema->AddDebugField("int8", DataType::INT8);
     auto int8_1_fid = schema->AddDebugField("int81", DataType::INT8);
     auto int16_fid = schema->AddDebugField("int16", DataType::INT16);
@@ -2484,13 +2277,12 @@ TEST(Expr, TestCompareExprBenchTest) {
     }
 }
 
-TEST(Expr, TestRefactorExprs) {
+TEST_P(ExprTest, TestRefactorExprs) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
     auto schema = std::make_shared<Schema>();
-    auto vec_fid = schema->AddDebugField(
-        "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+    auto vec_fid = schema->AddDebugField("fakevec", data_type, 16, metric_type);
     auto int8_fid = schema->AddDebugField("int8", DataType::INT8);
     auto int8_1_fid = schema->AddDebugField("int81", DataType::INT8);
     auto int16_fid = schema->AddDebugField("int16", DataType::INT16);
@@ -2657,7 +2449,7 @@ TEST(Expr, TestRefactorExprs) {
     // test_case(500);
 }
 
-TEST(Expr, TestCompareWithScalarIndexMaris) {
+TEST_P(ExprTest, TestCompareWithScalarIndexMaris) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
@@ -2678,7 +2470,7 @@ TEST(Expr, TestCompareWithScalarIndexMaris) {
              [](std::string a, std::string b) { return a.compare(b) != 0; }},
         };
 
-    const char* serialized_expr_plan = R"(vector_anns: <
+    std::string serialized_expr_plan = R"(vector_anns: <
                                             field_id: %1%
                                             predicates: <
                                                 compare_expr: <
@@ -2703,8 +2495,7 @@ TEST(Expr, TestCompareWithScalarIndexMaris) {
      >)";
 
     auto schema = std::make_shared<Schema>();
-    auto vec_fid = schema->AddDebugField(
-        "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+    auto vec_fid = schema->AddDebugField("fakevec", data_type, 16, metric_type);
     auto str1_fid = schema->AddDebugField("string1", DataType::VARCHAR);
     auto str2_fid = schema->AddDebugField("string2", DataType::VARCHAR);
     schema->set_primary_field_id(str1_fid);
@@ -2739,7 +2530,7 @@ TEST(Expr, TestCompareWithScalarIndexMaris) {
         auto dsl_string = boost::format(serialized_expr_plan) % vec_fid.get() %
                           clause % str1_fid.get() % str2_fid.get();
         auto binary_plan =
-            translate_text_plan_to_binary_plan(dsl_string.str().data());
+            translate_text_plan_with_metric_type(dsl_string.str());
         auto plan = CreateSearchPlanByExpr(
             *schema, binary_plan.data(), binary_plan.size());
         //         std::cout << ShowPlanNodeVisitor().call_child(*plan->plan_node_) << std::endl;
@@ -2759,7 +2550,7 @@ TEST(Expr, TestCompareWithScalarIndexMaris) {
     }
 }
 
-TEST(Expr, TestBinaryArithOpEvalRange) {
+TEST_P(ExprTest, TestBinaryArithOpEvalRange) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
@@ -2977,31 +2768,6 @@ TEST(Expr, TestBinaryArithOpEvalRange) {
              DataType::INT64},
         };
 
-    // std::string dsl_string_tmp = R"({
-    //     "bool": {
-    //         "must": [
-    //             {
-    //                 "range": {
-    //                     @@@@@
-    //                 }
-    //             },
-    //             {
-    //                 "vector": {
-    //                     "fakevec": {
-    //                         "metric_type": "L2",
-    //                         "params": {
-    //                             "nprobe": 10
-    //                         },
-    //                         "query": "$0",
-    //                         "topk": 10,
-    //                         "round_decimal": 3
-    //                     }
-    //                 }
-    //             }
-    //         ]
-    //     }
-    // })";
-
     std::string raw_plan_tmp = R"(vector_anns: <
                                     field_id: 100
                                     predicates: <
@@ -3016,8 +2782,7 @@ TEST(Expr, TestBinaryArithOpEvalRange) {
                                     placeholder_tag: "$0"
      >)";
     auto schema = std::make_shared<Schema>();
-    auto vec_fid = schema->AddDebugField(
-        "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+    auto vec_fid = schema->AddDebugField("fakevec", data_type, 16, metric_type);
     auto i8_fid = schema->AddDebugField("age8", DataType::INT8);
     auto i16_fid = schema->AddDebugField("age16", DataType::INT16);
     auto i32_fid = schema->AddDebugField("age32", DataType::INT32);
@@ -3091,7 +2856,7 @@ TEST(Expr, TestBinaryArithOpEvalRange) {
         // }
         // loc = dsl_string.find("@@@@");
         // dsl_string.replace(loc, 4, clause);
-        auto plan_str = translate_text_plan_to_binary_plan(raw_plan.c_str());
+        auto plan_str = translate_text_plan_with_metric_type(raw_plan);
         auto plan =
             CreateSearchPlanByExpr(*schema, plan_str.data(), plan_str.size());
         BitsetType final;
@@ -3135,7 +2900,7 @@ TEST(Expr, TestBinaryArithOpEvalRange) {
     }
 }
 
-TEST(Expr, TestBinaryArithOpEvalRangeJSON) {
+TEST_P(ExprTest, TestBinaryArithOpEvalRangeJSON) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
@@ -3228,7 +2993,7 @@ TEST(Expr, TestBinaryArithOpEvalRangeJSON) {
     }
 }
 
-TEST(Expr, TestBinaryArithOpEvalRangeJSONFloat) {
+TEST_P(ExprTest, TestBinaryArithOpEvalRangeJSONFloat) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
@@ -3358,7 +3123,7 @@ TEST(Expr, TestBinaryArithOpEvalRangeJSONFloat) {
     }
 }
 
-TEST(Expr, TestBinaryArithOpEvalRangeWithScalarSortIndex) {
+TEST_P(ExprTest, TestBinaryArithOpEvalRangeWithScalarSortIndex) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
@@ -3521,8 +3286,7 @@ TEST(Expr, TestBinaryArithOpEvalRangeWithScalarSortIndex) {
     @@@@)";
 
     auto schema = std::make_shared<Schema>();
-    auto vec_fid = schema->AddDebugField(
-        "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+    auto vec_fid = schema->AddDebugField("fakevec", data_type, 16, metric_type);
     auto i8_fid = schema->AddDebugField("age8", DataType::INT8);
     auto i16_fid = schema->AddDebugField("age16", DataType::INT16);
     auto i32_fid = schema->AddDebugField("age32", DataType::INT32);
@@ -3634,8 +3398,7 @@ TEST(Expr, TestBinaryArithOpEvalRangeWithScalarSortIndex) {
             ASSERT_TRUE(false) << "No test case defined for this data type";
         }
 
-        auto binary_plan =
-            translate_text_plan_to_binary_plan(expr.str().data());
+        auto binary_plan = translate_text_plan_with_metric_type(expr.str());
         auto plan = CreateSearchPlanByExpr(
             *schema, binary_plan.data(), binary_plan.size());
 
@@ -3677,7 +3440,7 @@ TEST(Expr, TestBinaryArithOpEvalRangeWithScalarSortIndex) {
     }
 }
 
-TEST(Expr, TestUnaryRangeWithJSON) {
+TEST_P(ExprTest, TestUnaryRangeWithJSON) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
@@ -3770,8 +3533,7 @@ TEST(Expr, TestUnaryRangeWithJSON) {
     @@@@)";
 
     auto schema = std::make_shared<Schema>();
-    auto vec_fid = schema->AddDebugField(
-        "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+    auto vec_fid = schema->AddDebugField("fakevec", data_type, 16, metric_type);
     auto i64_fid = schema->AddDebugField("age64", DataType::INT64);
     auto json_fid = schema->AddDebugField("json", DataType::JSON);
     schema->set_primary_field_id(i64_fid);
@@ -3836,7 +3598,7 @@ TEST(Expr, TestUnaryRangeWithJSON) {
             }
         }
 
-        auto unary_plan = translate_text_plan_to_binary_plan(expr.str().data());
+        auto unary_plan = translate_text_plan_with_metric_type(expr.str());
         auto plan = CreateSearchPlanByExpr(
             *schema, unary_plan.data(), unary_plan.size());
 
@@ -3880,7 +3642,7 @@ TEST(Expr, TestUnaryRangeWithJSON) {
     }
 }
 
-TEST(Expr, TestTermWithJSON) {
+TEST_P(ExprTest, TestTermWithJSON) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
@@ -3951,8 +3713,7 @@ TEST(Expr, TestTermWithJSON) {
     @@@@)";
 
     auto schema = std::make_shared<Schema>();
-    auto vec_fid = schema->AddDebugField(
-        "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+    auto vec_fid = schema->AddDebugField("fakevec", data_type, 16, metric_type);
     auto i64_fid = schema->AddDebugField("age64", DataType::INT64);
     auto json_fid = schema->AddDebugField("json", DataType::JSON);
     schema->set_primary_field_id(i64_fid);
@@ -4017,7 +3778,7 @@ TEST(Expr, TestTermWithJSON) {
             }
         }
 
-        auto unary_plan = translate_text_plan_to_binary_plan(expr.str().data());
+        auto unary_plan = translate_text_plan_with_metric_type(expr.str());
         auto plan = CreateSearchPlanByExpr(
             *schema, unary_plan.data(), unary_plan.size());
 
@@ -4061,7 +3822,7 @@ TEST(Expr, TestTermWithJSON) {
     }
 }
 
-TEST(Expr, TestExistsWithJSON) {
+TEST_P(ExprTest, TestExistsWithJSON) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
@@ -4099,8 +3860,7 @@ TEST(Expr, TestExistsWithJSON) {
     @@@@)";
 
     auto schema = std::make_shared<Schema>();
-    auto vec_fid = schema->AddDebugField(
-        "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+    auto vec_fid = schema->AddDebugField("fakevec", data_type, 16, metric_type);
     auto i64_fid = schema->AddDebugField("age64", DataType::INT64);
     auto json_fid = schema->AddDebugField("json", DataType::JSON);
     schema->set_primary_field_id(i64_fid);
@@ -4172,7 +3932,7 @@ TEST(Expr, TestExistsWithJSON) {
             }
         }
 
-        auto unary_plan = translate_text_plan_to_binary_plan(expr.str().data());
+        auto unary_plan = translate_text_plan_with_metric_type(expr.str());
         auto plan = CreateSearchPlanByExpr(
             *schema, unary_plan.data(), unary_plan.size());
 
@@ -4224,7 +3984,7 @@ struct Testcase {
     bool res;
 };
 
-TEST(Expr, TestTermInFieldJson) {
+TEST_P(ExprTest, TestTermInFieldJson) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
@@ -4444,12 +4204,12 @@ TEST(Expr, TestTermInFieldJson) {
     }
 }
 
-TEST(Expr, PraseJsonContainsExpr) {
+TEST_P(ExprTest, PraseJsonContainsExpr) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
 
-    std::vector<const char*> raw_plans{
+    std::vector<std::string> raw_plans{
         R"(vector_anns:<
             field_id:100
             predicates:<
@@ -4581,17 +4341,16 @@ TEST(Expr, PraseJsonContainsExpr) {
     };
 
     for (auto& raw_plan : raw_plans) {
-        auto plan_str = translate_text_plan_to_binary_plan(raw_plan);
+        auto plan_str = translate_text_plan_with_metric_type(raw_plan);
         auto schema = std::make_shared<Schema>();
-        schema->AddDebugField(
-            "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+        schema->AddDebugField("fakevec", data_type, 16, metric_type);
         schema->AddDebugField("json", DataType::JSON);
         auto plan =
             CreateSearchPlanByExpr(*schema, plan_str.data(), plan_str.size());
     }
 }
 
-TEST(Expr, TestJsonContainsAny) {
+TEST_P(ExprTest, TestJsonContainsAny) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
@@ -4815,7 +4574,7 @@ TEST(Expr, TestJsonContainsAny) {
     }
 }
 
-TEST(Expr, TestJsonContainsAll) {
+TEST_P(ExprTest, TestJsonContainsAll) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
@@ -5063,7 +4822,7 @@ TEST(Expr, TestJsonContainsAll) {
     }
 }
 
-TEST(Expr, TestJsonContainsArray) {
+TEST_P(ExprTest, TestJsonContainsArray) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
@@ -5396,7 +5155,7 @@ generatedArrayWithFourDiffType(int64_t int_val,
     return value;
 }
 
-TEST(Expr, TestJsonContainsDiffTypeArray) {
+TEST_P(ExprTest, TestJsonContainsDiffTypeArray) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;
@@ -5502,7 +5261,7 @@ TEST(Expr, TestJsonContainsDiffTypeArray) {
     }
 }
 
-TEST(Expr, TestJsonContainsDiffType) {
+TEST_P(ExprTest, TestJsonContainsDiffType) {
     using namespace milvus;
     using namespace milvus::query;
     using namespace milvus::segcore;

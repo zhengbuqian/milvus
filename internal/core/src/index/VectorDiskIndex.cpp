@@ -413,6 +413,8 @@ VectorDiskAnnIndex<T>::HasRawData() const {
 template <typename T>
 std::vector<uint8_t>
 VectorDiskAnnIndex<T>::GetVector(const DatasetPtr dataset) const {
+    // TODO(SPARSE): error is sparse. caller should use GetSparseVector for
+    // sparse.
     auto res = index_.GetVectorByIds(*dataset);
     if (!res.has_value()) {
         PanicInfo(ErrorCode::UnexpectedError,

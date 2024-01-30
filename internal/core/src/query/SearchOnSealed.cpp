@@ -33,8 +33,9 @@ SearchOnSealedIndex(const Schema& schema,
 
     auto field_id = search_info.field_id_;
     auto& field = schema[field_id];
-    // Assert(field.get_data_type() == DataType::VECTOR_FLOAT);
-    auto dim = field.get_dim();
+    auto is_sparse = field.get_data_type() == DataType::VECTOR_SPARSE_FLOAT;
+    // TODO(SPARSE): see todo in PlanImpl.h::PlaceHolder.
+    auto dim = is_sparse ? 0 : field.get_dim();
 
     AssertInfo(record.is_ready(field_id), "[SearchOnSealed]Record isn't ready");
     // Keep the field_indexing smart pointer, until all reference by raw dropped.
@@ -44,6 +45,7 @@ SearchOnSealedIndex(const Schema& schema,
 
     auto final = [&] {
         auto ds = knowhere::GenDataSet(num_queries, dim, query_data);
+        ds->SetIsSparse(is_sparse);
 
         auto vec_index =
             dynamic_cast<index::VectorIndex*>(field_indexing->indexing_.get());
@@ -82,11 +84,16 @@ SearchOnSealed(const Schema& schema,
     auto field_id = search_info.field_id_;
     auto& field = schema[field_id];
 
+    // TODO(SPARSE): see todo in PlanImpl.h::PlaceHolder.
+    auto dim = field.get_data_type() == DataType::VECTOR_SPARSE_FLOAT
+                   ? 0
+                   : field.get_dim();
+
     query::dataset::SearchDataset dataset{search_info.metric_type_,
                                           num_queries,
                                           search_info.topk_,
                                           search_info.round_decimal_,
-                                          field.get_dim(),
+                                          dim,
                                           query_data};
 
     auto data_type = field.get_data_type();

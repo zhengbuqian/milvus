@@ -16,7 +16,8 @@ SubSearchResult
 SearchOnIndex(const dataset::SearchDataset& search_dataset,
               const index::VectorIndex& indexing,
               const SearchInfo& search_conf,
-              const BitsetView& bitset) {
+              const BitsetView& bitset,
+              bool is_sparse) {
     auto num_queries = search_dataset.num_queries;
     auto topK = search_dataset.topk;
     auto dim = search_dataset.dim;
@@ -24,6 +25,7 @@ SearchOnIndex(const dataset::SearchDataset& search_dataset,
     auto round_decimal = search_dataset.round_decimal;
     auto dataset =
         knowhere::GenDataSet(num_queries, dim, search_dataset.query_data);
+    dataset->SetIsSparse(is_sparse);
 
     // NOTE: VecIndex Query API forget to add const qualifier
     // NOTE: use const_cast as a workaround

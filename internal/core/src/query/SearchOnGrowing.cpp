@@ -33,14 +33,18 @@ FloatSegmentIndexSearch(const segcore::SegmentGrowingImpl& segment,
 
     auto vecfield_id = info.field_id_;
     auto& field = schema[vecfield_id];
+    auto is_sparse = field.get_data_type() == DataType::VECTOR_SPARSE_FLOAT;
+    // TODO(SPARSE): see todo in PlanImpl.h::PlaceHolder.
+    auto dim = is_sparse ? 0 : field.get_dim();
 
-    AssertInfo(field.get_data_type() == DataType::VECTOR_FLOAT,
-               "[FloatSearch]Field data type isn't VECTOR_FLOAT");
+    AssertInfo(field.get_data_type() == DataType::VECTOR_FLOAT ||
+                field.get_data_type() == DataType::VECTOR_SPARSE_FLOAT,
+               "[FloatSearch]Field data type isn't VECTOR_FLOAT or VECTOR_SPARSE_FLOAT");
     dataset::SearchDataset search_dataset{info.metric_type_,
                                           num_queries,
                                           info.topk_,
                                           info.round_decimal_,
-                                          field.get_dim(),
+                                          dim,
                                           query_data};
     if (indexing_record.is_in(vecfield_id)) {
         const auto& field_indexing =
@@ -49,8 +53,8 @@ FloatSegmentIndexSearch(const segcore::SegmentGrowingImpl& segment,
         auto indexing = field_indexing.get_segment_indexing();
         SearchInfo search_conf = field_indexing.get_search_params(info);
         auto vec_index = dynamic_cast<index::VectorIndex*>(indexing);
-        auto result =
-            SearchOnIndex(search_dataset, *vec_index, search_conf, bitset);
+        auto result = SearchOnIndex(
+            search_dataset, *vec_index, search_conf, bitset, is_sparse);
         results.merge(result);
     }
 }
@@ -78,15 +82,12 @@ SearchOnGrowing(const segcore::SegmentGrowingImpl& segment,
     AssertInfo(datatype_is_vector(data_type),
                "[SearchOnGrowing]Data type isn't vector type");
 
-    auto dim = field.get_dim();
     auto topk = info.topk_;
     auto metric_type = info.metric_type_;
     auto round_decimal = info.round_decimal_;
 
     // step 2: small indexing search
     SubSearchResult final_qr(num_queries, topk, metric_type, round_decimal);
-    dataset::SearchDataset search_dataset{
-        metric_type, num_queries, topk, round_decimal, dim, query_data};
 
     if (segment.get_indexing_record().SyncDataWithIndex(field.get_id())) {
         FloatSegmentIndexSearch(segment,
@@ -101,6 +102,12 @@ SearchOnGrowing(const segcore::SegmentGrowingImpl& segment,
         results.unity_topK_ = topk;
         results.total_nq_ = num_queries;
     } else {
+        // TODO(SPARSE): see todo in PlanImpl.h::PlaceHolder.
+        auto dim = field.get_data_type() == DataType::VECTOR_SPARSE_FLOAT
+                       ? 0
+                       : field.get_dim();
+        dataset::SearchDataset search_dataset{
+            metric_type, num_queries, topk, round_decimal, dim, query_data};
         std::shared_lock<std::shared_mutex> read_chunk_mutex(
             segment.get_chunk_mutex());
         int32_t current_chunk_id = 0;
@@ -116,12 +123,12 @@ SearchOnGrowing(const segcore::SegmentGrowingImpl& segment,
             auto element_begin = chunk_id * vec_size_per_chunk;
             auto element_end =
                 std::min(active_count, (chunk_id + 1) * vec_size_per_chunk);
-            auto size_per_chunk = element_end - element_begin;
+            auto size_of_chunk = element_end - element_begin;
 
-            auto sub_view = bitset.subview(element_begin, size_per_chunk);
+            auto sub_view = bitset.subview(element_begin, size_of_chunk);
             auto sub_qr = BruteForceSearch(search_dataset,
                                            chunk_data,
-                                           size_per_chunk,
+                                           size_of_chunk,
                                            info.search_params_,
                                            sub_view,
                                            data_type);

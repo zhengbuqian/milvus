@@ -41,7 +41,7 @@ class TypedScalarIndexTest : public ::testing::Test {
     // }
 };
 
-TYPED_TEST_CASE_P(TypedScalarIndexTest);
+TYPED_TEST_SUITE_P(TypedScalarIndexTest);
 
 TYPED_TEST_P(TypedScalarIndexTest, Dummy) {
     using T = TypeParam;
@@ -213,7 +213,7 @@ TYPED_TEST_P(TypedScalarIndexTest, Codec) {
 using ScalarT =
     ::testing::Types<int8_t, int16_t, int32_t, int64_t, float, double>;
 
-REGISTER_TYPED_TEST_CASE_P(TypedScalarIndexTest,
+REGISTER_TYPED_TEST_SUITE_P(TypedScalarIndexTest,
                            Dummy,
                            Constructor,
                            Count,
@@ -224,7 +224,7 @@ REGISTER_TYPED_TEST_CASE_P(TypedScalarIndexTest,
                            Reverse,
                            HasRawData);
 
-INSTANTIATE_TYPED_TEST_CASE_P(ArithmeticCheck, TypedScalarIndexTest, ScalarT);
+INSTANTIATE_TYPED_TEST_SUITE_P(ArithmeticCheck, TypedScalarIndexTest, ScalarT);
 
 template <typename T>
 class TypedScalarIndexTestV2 : public ::testing::Test {
@@ -346,7 +346,7 @@ struct TypedScalarIndexTestV2<double>::Helper {
     using C = arrow::DoubleType;
 };
 
-TYPED_TEST_CASE_P(TypedScalarIndexTestV2);
+TYPED_TEST_SUITE_P(TypedScalarIndexTestV2);
 
 TYPED_TEST_P(TypedScalarIndexTestV2, Base) {
     using T = TypeParam;
@@ -388,6 +388,6 @@ TYPED_TEST_P(TypedScalarIndexTestV2, Base) {
     }
 }
 
-REGISTER_TYPED_TEST_CASE_P(TypedScalarIndexTestV2, Base);
+REGISTER_TYPED_TEST_SUITE_P(TypedScalarIndexTestV2, Base);
 
-INSTANTIATE_TYPED_TEST_CASE_P(ArithmeticCheck, TypedScalarIndexTestV2, ScalarT);
+INSTANTIATE_TYPED_TEST_SUITE_P(ArithmeticCheck, TypedScalarIndexTestV2, ScalarT);

@@ -672,6 +672,8 @@ VectorMemIndex<T>::HasRawData() const {
 template <typename T>
 std::vector<uint8_t>
 VectorMemIndex<T>::GetVector(const DatasetPtr dataset) const {
+    // TODO(SPARSE): error is sparse. caller should use GetSparseVector for
+    // sparse.
     auto res = index_.GetVectorByIds(*dataset);
     if (!res.has_value()) {
         PanicInfo(ErrorCode::UnexpectedError,
@@ -691,6 +693,20 @@ VectorMemIndex<T>::GetVector(const DatasetPtr dataset) const {
     raw_data.resize(data_size);
     memcpy(raw_data.data(), tensor, data_size);
     return raw_data;
+}
+
+template <typename T>
+std::unique_ptr<const knowhere::sparse::SparseRow<float>[]>
+VectorMemIndex<T>::GetSparseVector(const DatasetPtr dataset) const {
+    auto res = index_.GetVectorByIds(*dataset);
+    if (!res.has_value()) {
+        PanicInfo(ErrorCode::UnexpectedError,
+                  "failed to get vector, " + KnowhereStatusString(res.error()));
+    }
+    res.value()->SetIsOwner(false);
+    return std::unique_ptr<const knowhere::sparse::SparseRow<float>[]>(
+        static_cast<const knowhere::sparse::SparseRow<float>*>(
+            res.value()->GetTensor()));
 }
 
 template <typename T>

@@ -32,6 +32,13 @@ using milvus::segcore::LoadIndexInfo;
 const int64_t ROW_COUNT = 10 * 1000;
 const int64_t BIAS = 4200;
 
+using Param = std::string;
+class SealedTest : public ::testing::TestWithParam<Param> {
+ public:
+    void SetUp() override {
+    }
+};
+
 TEST(Sealed, without_predicate) {
     using namespace milvus::query;
     using namespace milvus::segcore;

@@ -33,7 +33,8 @@ CheckBruteForceSearchParam(const FieldMeta& field,
                "[BruteForceSearch] Data type isn't vector type");
     bool is_float_data_type = (data_type == DataType::VECTOR_FLOAT ||
                                data_type == DataType::VECTOR_FLOAT16 ||
-                               data_type == DataType::VECTOR_BFLOAT16);
+                               data_type == DataType::VECTOR_BFLOAT16 ||
+                               data_type == DataType::VECTOR_SPARSE_FLOAT);
     bool is_float_metric_type = IsFloatMetricType(metric_type);
     AssertInfo(is_float_data_type == is_float_metric_type,
                "[BruteForceSearch] Data type and metric type miss-match");
@@ -65,7 +66,24 @@ BruteForceSearch(const dataset::SearchDataset& dataset,
     sub_result.mutable_seg_offsets().resize(nq * topk);
     sub_result.mutable_distances().resize(nq * topk);
 
-    if (conf.contains(RADIUS)) {
+    if (data_type == DataType::VECTOR_SPARSE_FLOAT) {
+        // TODO(SPARSE): support sparse brute force range search
+        AssertInfo(!conf.contains(RADIUS) && !conf.contains(RANGE_FILTER),
+                   "sparse vector not support range search");
+        base_dataset->SetIsSparse(true);
+        query_dataset->SetIsSparse(true);
+        auto stat = knowhere::BruteForce::SearchSparseWithBuf(
+            base_dataset,
+            query_dataset,
+            sub_result.mutable_seg_offsets().data(),
+            sub_result.mutable_distances().data(),
+            config,
+            bitset);
+        milvus::tracer::AddEvent("knowhere_finish_BruteForce_SearchWithBuf");
+        if (stat != knowhere::Status::success) {
+            throw SegcoreError(KnowhereError, KnowhereStatusString(stat));
+        }
+    } else if (conf.contains(RADIUS)) {
         config[RADIUS] = conf[RADIUS].get<float>();
         if (conf.contains(RANGE_FILTER)) {
             config[RANGE_FILTER] = conf[RANGE_FILTER].get<float>();

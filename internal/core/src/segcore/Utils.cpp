@@ -315,8 +315,11 @@ CreateVectorDataArray(int64_t count, const FieldMeta& field_meta) {
         field_meta.get_data_type()));
 
     auto vector_array = data_array->mutable_vectors();
-    auto dim = field_meta.get_dim();
-    vector_array->set_dim(dim);
+    auto dim = 0;
+    if (data_type != DataType::VECTOR_SPARSE_FLOAT) {
+        dim = field_meta.get_dim();
+        vector_array->set_dim(dim);
+    }
     switch (data_type) {
         case DataType::VECTOR_FLOAT: {
             auto length = count * dim;
@@ -541,8 +544,11 @@ MergeDataArray(
                    "merge field data type not consistent");
         if (field_meta.is_vector()) {
             auto vector_array = data_array->mutable_vectors();
-            auto dim = field_meta.get_dim();
-            vector_array->set_dim(dim);
+            auto dim = 0;
+            if (!datatype_is_sparse_vector(data_type)) {
+                dim = field_meta.get_dim();
+                vector_array->set_dim(dim);
+            }
             if (field_meta.get_data_type() == DataType::VECTOR_FLOAT) {
                 auto data = VEC_FIELD_DATA(src_field_data, float).data();
                 auto obj = vector_array->mutable_float_vector();
@@ -563,6 +569,7 @@ MergeDataArray(
                 if (src.dim() > dst->dim()) {
                     dst->set_dim(src.dim());
                 }
+                vector_array->set_dim(dst->dim());
                 for (const auto& src_row : src.contents()) {
                     auto dst_row = dst->add_contents();
                     for (size_t i = 0; i < src_row.indices().data_size(); ++i) {
