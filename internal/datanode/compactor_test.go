@@ -104,6 +104,28 @@ func TestCompactionTaskInnerMethods(t *testing.T) {
 			{false, schemapb.DataType_BinaryVector, []interface{}{nil, nil}, "invalid binaryvector"},
 			{false, schemapb.DataType_Float16Vector, []interface{}{nil, nil}, "invalid float16vector"},
 			{false, schemapb.DataType_BFloat16Vector, []interface{}{nil, nil}, "invalid bfloat16vector"},
+
+			// sparse float vector: each element is schemapb.SparseFloatRow
+			{false, schemapb.DataType_SparseFloatVector, []interface{}{nil, nil}, "invalid sparsefloatvector"},
+			{false, schemapb.DataType_SparseFloatVector, []interface{}{[]byte{255}, []byte{15}}, "invalid sparsefloatvector"},
+			{true, schemapb.DataType_SparseFloatVector, []interface{}{
+				&schemapb.SparseFloatRow{
+					Indices: &schemapb.IntArray{
+						Data: []int32{1, 2},
+					},
+					Values: &schemapb.FloatArray{
+						Data: []float32{1.0, 2.0},
+					},
+				},
+				&schemapb.SparseFloatRow{
+					Indices: &schemapb.IntArray{
+						Data: []int32{3, 4},
+					},
+					Values: &schemapb.FloatArray{
+						Data: []float32{1.0, 2.0},
+					},
+				},
+			}, "valid sparsefloatvector"},
 		}
 
 		// make sure all new data types missed to handle would throw unexpected error

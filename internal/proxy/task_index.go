@@ -173,9 +173,7 @@ func (cit *createIndexTask) parseIndexParams() error {
 				fmt.Sprintf("create index on %s field", cit.fieldSchema.DataType.String()),
 				fmt.Sprintf("create index on %s field is not supported", cit.fieldSchema.DataType.String()))
 		}
-	}
-
-	if isVecIndex {
+	} else {
 		specifyIndexType, exist := indexParamsMap[common.IndexTypeKey]
 		if Params.AutoIndexConfig.Enable.GetAsBool() { // `enable` only for cloud instance.
 			log.Info("create index trigger AutoIndex",
@@ -308,13 +306,7 @@ func (cit *createIndexTask) getIndexedField(ctx context.Context) (*schemapb.Fiel
 }
 
 func fillDimension(field *schemapb.FieldSchema, indexParams map[string]string) error {
-	vecDataTypes := []schemapb.DataType{
-		schemapb.DataType_FloatVector,
-		schemapb.DataType_BinaryVector,
-		schemapb.DataType_Float16Vector,
-		schemapb.DataType_BFloat16Vector,
-	}
-	if !funcutil.SliceContain(vecDataTypes, field.GetDataType()) {
+	if !isVectorType(field.GetDataType()) {
 		return nil
 	}
 	params := make([]*commonpb.KeyValuePair, 0, len(field.GetTypeParams())+len(field.GetIndexParams()))
@@ -337,14 +329,7 @@ func fillDimension(field *schemapb.FieldSchema, indexParams map[string]string) e
 
 func checkTrain(field *schemapb.FieldSchema, indexParams map[string]string) error {
 	indexType := indexParams[common.IndexTypeKey]
-	// skip params check of non-vector field.
-	vecDataTypes := []schemapb.DataType{
-		schemapb.DataType_FloatVector,
-		schemapb.DataType_BinaryVector,
-		schemapb.DataType_Float16Vector,
-		schemapb.DataType_BFloat16Vector,
-	}
-	if !funcutil.SliceContain(vecDataTypes, field.GetDataType()) {
+	if !isVectorType(field.GetDataType()) {
 		return indexparamcheck.CheckIndexValid(field.GetDataType(), indexType, indexParams)
 	}
 
@@ -354,8 +339,10 @@ func checkTrain(field *schemapb.FieldSchema, indexParams map[string]string) erro
 		return fmt.Errorf("invalid index type: %s", indexType)
 	}
 
-	if err := fillDimension(field, indexParams); err != nil {
-		return err
+	if !isSparseVectorType(field.DataType) {
+		if err := fillDimension(field, indexParams); err != nil {
+			return err
+		}
 	}
 
 	if err := checker.CheckValidDataType(field.GetDataType()); err != nil {

@@ -33,25 +33,26 @@ import (
 )
 
 const (
-	CollectionID        = 1
-	PartitionID         = 1
-	SegmentID           = 1
-	RowIDField          = 0
-	TimestampField      = 1
-	BoolField           = 100
-	Int8Field           = 101
-	Int16Field          = 102
-	Int32Field          = 103
-	Int64Field          = 104
-	FloatField          = 105
-	DoubleField         = 106
-	StringField         = 107
-	BinaryVectorField   = 108
-	FloatVectorField    = 109
-	ArrayField          = 110
-	JSONField           = 111
-	Float16VectorField  = 112
-	BFloat16VectorField = 113
+	CollectionID           = 1
+	PartitionID            = 1
+	SegmentID              = 1
+	RowIDField             = 0
+	TimestampField         = 1
+	BoolField              = 100
+	Int8Field              = 101
+	Int16Field             = 102
+	Int32Field             = 103
+	Int64Field             = 104
+	FloatField             = 105
+	DoubleField            = 106
+	StringField            = 107
+	BinaryVectorField      = 108
+	FloatVectorField       = 109
+	ArrayField             = 110
+	JSONField              = 111
+	Float16VectorField     = 112
+	BFloat16VectorField    = 113
+	SparseFloatVectorField = 114
 )
 
 func genTestCollectionMeta() *etcdpb.CollectionMeta {
@@ -187,6 +188,13 @@ func genTestCollectionMeta() *etcdpb.CollectionMeta {
 						},
 					},
 				},
+				{
+					FieldID:     SparseFloatVectorField,
+					Name:        "field_sparse_float_vector",
+					Description: "sparse_float_vector",
+					DataType:    schemapb.DataType_SparseFloatVector,
+					TypeParams:  []*commonpb.KeyValuePair{},
+				},
 			},
 		},
 	}
@@ -266,6 +274,25 @@ func TestInsertCodec(t *testing.T) {
 				Data: []byte{0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255},
 				Dim:  4,
 			},
+			SparseFloatVectorField: &SparseFloatVectorFieldData{
+				SparseFloatArray: schemapb.SparseFloatArray{
+					Dim: 600,
+					Contents: []*schemapb.SparseFloatRow{
+						{
+							Indices: &schemapb.IntArray{Data: []int32{0, 1, 2}},
+							Values:  &schemapb.FloatArray{Data: []float32{1.1, 1.2, 1.3}},
+						},
+						{
+							Indices: &schemapb.IntArray{Data: []int32{10, 20, 30}},
+							Values:  &schemapb.FloatArray{Data: []float32{2.1, 2.2, 2.3}},
+						},
+						{
+							Indices: &schemapb.IntArray{Data: []int32{100, 200, 599}},
+							Values:  &schemapb.FloatArray{Data: []float32{3.1, 3.2, 3.3}},
+						},
+					},
+				},
+			},
 		},
 	}
 
@@ -319,6 +346,25 @@ func TestInsertCodec(t *testing.T) {
 				Data: []byte{0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255},
 				Dim:  4,
 			},
+			SparseFloatVectorField: &SparseFloatVectorFieldData{
+				SparseFloatArray: schemapb.SparseFloatArray{
+					Dim: 300,
+					Contents: []*schemapb.SparseFloatRow{
+						{
+							Indices: &schemapb.IntArray{Data: []int32{5, 6, 7}},
+							Values:  &schemapb.FloatArray{Data: []float32{1.1, 1.2, 1.3}},
+						},
+						{
+							Indices: &schemapb.IntArray{Data: []int32{15, 26, 37}},
+							Values:  &schemapb.FloatArray{Data: []float32{2.1, 2.2, 2.3}},
+						},
+						{
+							Indices: &schemapb.IntArray{Data: []int32{105, 207, 299}},
+							Values:  &schemapb.FloatArray{Data: []float32{3.1, 3.2, 3.3}},
+						},
+					},
+				},
+			},
 			ArrayField: &ArrayFieldData{
 				ElementType: schemapb.DataType_Int32,
 				Data: []*schemapb.ScalarField{
@@ -359,8 +405,14 @@ func TestInsertCodec(t *testing.T) {
 			FloatVectorField:    &FloatVectorFieldData{[]float32{}, 4},
 			Float16VectorField:  &Float16VectorFieldData{[]byte{}, 4},
 			BFloat16VectorField: &BFloat16VectorFieldData{[]byte{}, 4},
-			ArrayField:          &ArrayFieldData{schemapb.DataType_Int32, []*schemapb.ScalarField{}},
-			JSONField:           &JSONFieldData{[][]byte{}},
+			SparseFloatVectorField: &SparseFloatVectorFieldData{
+				SparseFloatArray: schemapb.SparseFloatArray{
+					Dim:      0,
+					Contents: []*schemapb.SparseFloatRow{},
+				},
+			},
+			ArrayField: &ArrayFieldData{schemapb.DataType_Int32, []*schemapb.ScalarField{}},
+			JSONField:  &JSONFieldData{[][]byte{}},
 		},
 	}
 	b, err := insertCodec.Serialize(PartitionID, SegmentID, insertDataEmpty)
@@ -413,6 +465,37 @@ func TestInsertCodec(t *testing.T) {
 		0, 255, 0, 255, 0, 255, 0, 255,
 		0, 255, 0, 255, 0, 255, 0, 255,
 	}, resultData.Data[BFloat16VectorField].(*BFloat16VectorFieldData).Data)
+
+	assert.Equal(t, schemapb.SparseFloatArray{
+		// merged dim should be max of all dims
+		Dim: 600,
+		Contents: []*schemapb.SparseFloatRow{
+			{
+				Indices: &schemapb.IntArray{Data: []int32{5, 6, 7}},
+				Values:  &schemapb.FloatArray{Data: []float32{1.1, 1.2, 1.3}},
+			},
+			{
+				Indices: &schemapb.IntArray{Data: []int32{15, 26, 37}},
+				Values:  &schemapb.FloatArray{Data: []float32{2.1, 2.2, 2.3}},
+			},
+			{
+				Indices: &schemapb.IntArray{Data: []int32{105, 207, 299}},
+				Values:  &schemapb.FloatArray{Data: []float32{3.1, 3.2, 3.3}},
+			},
+			{
+				Indices: &schemapb.IntArray{Data: []int32{0, 1, 2}},
+				Values:  &schemapb.FloatArray{Data: []float32{1.1, 1.2, 1.3}},
+			},
+			{
+				Indices: &schemapb.IntArray{Data: []int32{10, 20, 30}},
+				Values:  &schemapb.FloatArray{Data: []float32{2.1, 2.2, 2.3}},
+			},
+			{
+				Indices: &schemapb.IntArray{Data: []int32{100, 200, 599}},
+				Values:  &schemapb.FloatArray{Data: []float32{3.1, 3.2, 3.3}},
+			},
+		},
+	}, resultData.Data[SparseFloatVectorField].(*SparseFloatVectorFieldData).SparseFloatArray)
 
 	int32ArrayList := [][]int32{{1, 2, 3}, {4, 5, 6}, {3, 2, 1}, {6, 5, 4}}
 	resultArrayList := [][]int32{}

@@ -40,6 +40,9 @@ const (
 	// Cagra Train Param
 	CagraInterDegree = "intermediate_graph_degree"
 	CagraGraphDegree = "graph_degree"
+
+	// Sparse Index Param
+	SparseDropRatioBuild = "drop_ratio_build"
 )
 
 // METRICS is a set of all metrics types supported for float vector.
@@ -50,13 +53,15 @@ var (
 	BinIDMapMetrics           = []string{metric.HAMMING, metric.JACCARD, metric.SUBSTRUCTURE, metric.SUPERSTRUCTURE} // const
 	BinIvfMetrics             = []string{metric.HAMMING, metric.JACCARD}                                             // const
 	HnswMetrics               = []string{metric.L2, metric.IP, metric.COSINE, metric.HAMMING, metric.JACCARD}        // const
-	RaftMetrics               = []string{metric.L2, metric.IP}
-	CagraMetrics              = []string{metric.L2}                                              // const
-	supportDimPerSubQuantizer = []int{32, 28, 24, 20, 16, 12, 10, 8, 6, 4, 3, 2, 1}              // const
-	supportSubQuantizer       = []int{96, 64, 56, 48, 40, 32, 28, 24, 20, 16, 12, 8, 4, 3, 2, 1} // const
+	RaftMetrics               = []string{metric.L2, metric.IP}                                                       // const
+	SparseMetrics             = []string{metric.IP}                                                                  // const
+	CagraMetrics              = []string{metric.L2}                                                                  // const
+	supportDimPerSubQuantizer = []int{32, 28, 24, 20, 16, 12, 10, 8, 6, 4, 3, 2, 1}                                  // const
+	supportSubQuantizer       = []int{96, 64, 56, 48, 40, 32, 28, 24, 20, 16, 12, 8, 4, 3, 2, 1}                     // const
 )
 
 const (
-	FloatVectorDefaultMetricType  = metric.IP
-	BinaryVectorDefaultMetricType = metric.JACCARD
+	FloatVectorDefaultMetricType       = metric.IP
+	SparseFloatVectorDefaultMetricType = metric.IP
+	BinaryVectorDefaultMetricType      = metric.JACCARD
 )

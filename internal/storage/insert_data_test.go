@@ -84,11 +84,11 @@ func (s *InsertDataSuite) TestInsertData() {
 
 		s.False(s.iDataOneRow.IsEmpty())
 		s.Equal(1, s.iDataOneRow.GetRowNum())
-		s.Equal(151, s.iDataOneRow.GetMemorySize())
+		s.Equal(178, s.iDataOneRow.GetMemorySize())
 
 		s.False(s.iDataTwoRows.IsEmpty())
 		s.Equal(2, s.iDataTwoRows.GetRowNum())
-		s.Equal(286, s.iDataTwoRows.GetMemorySize())
+		s.Equal(338, s.iDataTwoRows.GetMemorySize())
 
 		for _, field := range s.iDataTwoRows.Data {
 			s.Equal(2, field.RowNum())
@@ -182,6 +182,10 @@ func (s *InsertDataSuite) SetupTest() {
 		FloatVectorField:    []float32{4, 5, 6, 7},
 		Float16VectorField:  []byte{0, 0, 0, 0, 255, 255, 255, 255},
 		BFloat16VectorField: []byte{0, 0, 0, 0, 255, 255, 255, 255},
+		SparseFloatVectorField: &schemapb.SparseFloatRow{
+			Indices: &schemapb.IntArray{Data: []int32{0, 1, 2}},
+			Values:  &schemapb.FloatArray{Data: []float32{4, 5, 6}},
+		},
 		ArrayField: &schemapb.ScalarField{
 			Data: &schemapb.ScalarField_IntData{
 				IntData: &schemapb.IntArray{Data: []int32{1, 2, 3}},
@@ -214,6 +218,10 @@ func (s *InsertDataSuite) SetupTest() {
 		FloatVectorField:    []float32{4, 5, 6, 7},
 		Float16VectorField:  []byte{1, 2, 3, 4, 5, 6, 7, 8},
 		BFloat16VectorField: []byte{1, 2, 3, 4, 5, 6, 7, 8},
+		SparseFloatVectorField: &schemapb.SparseFloatRow{
+			Indices: &schemapb.IntArray{Data: []int32{2, 3, 4}},
+			Values:  &schemapb.FloatArray{Data: []float32{4, 5, 6}},
+		},
 		ArrayField: &schemapb.ScalarField{
 			Data: &schemapb.ScalarField_IntData{
 				IntData: &schemapb.IntArray{Data: []int32{1, 2, 3}},
