@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math/rand"
 	"os"
 	"sort"
 	"strconv"
@@ -1246,4 +1247,52 @@ func Min(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+func TEST_generateSparseFloatVectors(numRows int) *schemapb.SparseFloatArray {
+	dim := 700
+	avgNnz := 20
+	var contents []*schemapb.SparseFloatRow
+	maxDim := 0
+
+	uniqueAndSort := func(indices []int32) []int32 {
+		seen := make(map[int32]bool)
+		var result []int32
+		for _, value := range indices {
+			if _, ok := seen[value]; !ok {
+				seen[value] = true
+				result = append(result, value)
+			}
+		}
+		sort.Slice(result, func(i, j int) bool {
+			return result[i] < result[j]
+		})
+		return result
+	}
+
+	for i := 0; i < numRows; i++ {
+		nnz := rand.Intn(avgNnz*2) + 1
+		indices := make([]int32, 0, nnz)
+		for j := 0; j < nnz; j++ {
+			indices = append(indices, int32(rand.Intn(dim)))
+		}
+		indices = uniqueAndSort(indices)
+		values := make([]float32, 0, len(indices))
+		for j := 0; j < len(indices); j++ {
+			values = append(values, rand.Float32())
+		}
+		if len(indices) > 0 && int(indices[len(indices)-1])+1 > maxDim {
+			maxDim = int(indices[len(indices)-1]) + 1
+		}
+
+		contents = append(contents, &schemapb.SparseFloatRow{
+			Indices: &schemapb.IntArray{Data: []int32{100, 200, 599}},
+			Values:  &schemapb.FloatArray{Data: []float32{3.1, -3.2, 3.3}},
+		})
+
+	}
+	return &schemapb.SparseFloatArray{
+		Dim:      int64(maxDim),
+		Contents: contents,
+	}
 }
