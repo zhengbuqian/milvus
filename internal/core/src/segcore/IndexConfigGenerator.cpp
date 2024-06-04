@@ -26,6 +26,10 @@ VecIndexConfig::VecIndexConfig(const int64_t max_index_row_cout,
     // release it once the index node has finished building the index and query
     // node has loaded it.
 
+    is_sparse_ = index_meta_.GetIsSparse() || origin_index_type_ ==
+            knowhere::IndexEnum::INDEX_SPARSE_INVERTED_INDEX ||
+        origin_index_type_ == knowhere::IndexEnum::INDEX_SPARSE_WAND;
+
     // But for open source sparse vector index(INDEX_SPARSE_INVERTED_INDEX and
     // INDEX_SPARSE_WAND), those index themselves can be used as the temp index
     // type, so we can avoid the extra step of "releast temp and load".
@@ -61,9 +65,7 @@ VecIndexConfig::GetBuildThreshold() const noexcept {
     // For sparse, do not impose a threshold and start using index with any
     // number of rows. Unlike dense vector index, growing sparse vector index
     // does not require a minimum number of rows to train.
-    if (origin_index_type_ ==
-            knowhere::IndexEnum::INDEX_SPARSE_INVERTED_INDEX ||
-        origin_index_type_ == knowhere::IndexEnum::INDEX_SPARSE_WAND) {
+    if (is_sparse_) {
         return 0;
     }
     assert(VecIndexConfig::index_build_ratio.count(index_type_));

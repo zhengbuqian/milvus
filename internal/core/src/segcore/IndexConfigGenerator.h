@@ -72,6 +72,8 @@ class VecIndexConfig {
 
     knowhere::MetricType metric_type_;
 
+    bool is_sparse_;
+
     knowhere::Json build_params_;
 
     knowhere::Json search_params_;
