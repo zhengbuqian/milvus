@@ -16,7 +16,10 @@
 
 #pragma once
 
+#include <algorithm>
+#include <cctype>
 #include <memory>
+#include <string>
 #include <unordered_map>
 
 #include "pb/common.pb.h"
@@ -43,6 +46,15 @@ class FieldIndexMeta {
     knowhere::IndexType
     GetIndexType() const {
         return index_params_.at(knowhere::meta::INDEX_TYPE);
+    }
+
+    bool
+    GetIsSparse() const {
+        // TODO: add in knowhere::meta.
+        std::string is_sparse = index_params_.at("is_sparse");
+        std::transform(
+            is_sparse.begin(), is_sparse.end(), is_sparse.begin(), ::tolower);
+        return is_sparse.compare("true") == 0;
     }
 
     bool

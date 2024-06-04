@@ -19,6 +19,7 @@ package indexparamcheck
 import (
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/cockroachdb/errors"
 	"go.uber.org/zap"
@@ -33,6 +34,7 @@ func (c baseChecker) CheckTrain(params map[string]string) error {
 	// vector dimension should be checked on collection creation. this is just some basic check
 	log.Info("baseChecker CheckTrain", zap.Any("params", params))
 	if val, ok := params[IsSparse]; ok {
+		val = strings.ToLower(val)
 		if val != "true" && val != "false" {
 			return fmt.Errorf("invalid is_sparse value: %s, must be true or false", val)
 		}

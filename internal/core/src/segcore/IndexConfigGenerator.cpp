@@ -26,14 +26,17 @@ VecIndexConfig::VecIndexConfig(const int64_t max_index_row_cout,
     // release it once the index node has finished building the index and query
     // node has loaded it.
 
-    // But for sparse vector index(INDEX_SPARSE_INVERTED_INDEX and
+    // But for open source sparse vector index(INDEX_SPARSE_INVERTED_INDEX and
     // INDEX_SPARSE_WAND), those index themselves can be used as the temp index
     // type, so we can avoid the extra step of "releast temp and load".
-
+    // When using HNSW(cardinal) for sparse, we use INDEX_SPARSE_INVERTED_INDEX
+    // as the growing index.
     if (origin_index_type_ ==
             knowhere::IndexEnum::INDEX_SPARSE_INVERTED_INDEX ||
         origin_index_type_ == knowhere::IndexEnum::INDEX_SPARSE_WAND) {
         index_type_ = origin_index_type_;
+    } else if (index_meta_.GetIsSparse()) {
+        index_type_ = knowhere::IndexEnum::INDEX_SPARSE_INVERTED_INDEX;
     } else {
         index_type_ = support_index_types.at(segment_type);
     }
