@@ -21,14 +21,28 @@ import (
 	"math"
 
 	"github.com/cockroachdb/errors"
+	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus/pkg/log"
 )
 
 type baseChecker struct{}
 
 func (c baseChecker) CheckTrain(params map[string]string) error {
 	// vector dimension should be checked on collection creation. this is just some basic check
+	log.Info("baseChecker CheckTrain", zap.Any("params", params))
+	if val, ok := params[IsSparse]; ok {
+		if val != "true" && val != "false" {
+			return fmt.Errorf("invalid is_sparse value: %s, must be true or false", val)
+		}
+		if val == "true" {
+			if !CheckStrByValues(params, Metric, SparseMetrics) {
+				return fmt.Errorf("metric type not found or not supported for sparse float vectors, supported: %v", SparseMetrics)
+			}
+			return nil
+		}
+	}
 	if !CheckIntByRange(params, DIM, 1, math.MaxInt) {
 		return fmt.Errorf("failed to check vector dimension, should be larger than 0 and smaller than math.MaxInt")
 	}

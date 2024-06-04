@@ -25,6 +25,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <iostream>
 
 #include "common/Common.h"
 #include "common/Consts.h"
@@ -473,17 +474,45 @@ DiskFileManagerImpl::CacheRawDataToDisk(std::vector<std::string> remote_files) {
         for (int i = 0; i < batch_size; ++i) {
             auto field_data = field_datas[i].get()->GetFieldData();
             num_rows += uint32_t(field_data->get_num_rows());
-            AssertInfo(dim == 0 || dim == field_data->get_dim(),
-                       "inconsistent dim value in multi binlogs!");
-            dim = field_data->get_dim();
+            auto data_type = field_data->get_data_type();
+            if (data_type == milvus::DataType::VECTOR_SPARSE_FLOAT) {
+                dim = std::max(
+                    dim,
+                    (uint32_t)(std::dynamic_pointer_cast<FieldData<SparseFloatVector>>(
+                        field_data)
+                        ->Dim()));
+                auto sparse_rows =
+                    static_cast<const knowhere::sparse::SparseRow<float>*>(
+                        field_data->Data());
+                for (size_t i = 0; i < field_data->Length(); ++i) {
+                    auto row = sparse_rows[i];
+                    auto row_byte_size = row.data_byte_size();
+                    uint32_t nnz = row.size();
+                    local_chunk_manager->Write(local_data_path,
+                                               write_offset,
+                                               const_cast<uint32_t*>(&nnz),
+                                               sizeof(nnz));
+                    write_offset += sizeof(nnz);
+                    local_chunk_manager->Write(local_data_path,
+                                               write_offset,
+                                               row.data(),
+                                               row_byte_size);
+                    write_offset += row_byte_size;
+                }
+            } else {
+                AssertInfo(dim == 0 || dim == field_data->get_dim(),
+                           "inconsistent dim value in multi binlogs!");
+                dim = field_data->get_dim();
 
-            auto data_size =
-                field_data->get_num_rows() * dim * sizeof(DataType);
-            local_chunk_manager->Write(local_data_path,
-                                       write_offset,
-                                       const_cast<void*>(field_data->Data()),
-                                       data_size);
-            write_offset += data_size;
+                auto data_size =
+                    field_data->get_num_rows() * dim * sizeof(DataType);
+                local_chunk_manager->Write(
+                    local_data_path,
+                    write_offset,
+                    const_cast<void*>(field_data->Data()),
+                    data_size);
+                write_offset += data_size;
+            }
         }
     };
 

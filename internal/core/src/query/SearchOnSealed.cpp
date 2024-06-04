@@ -11,6 +11,7 @@
 
 #include <cmath>
 #include <string>
+#include <iostream>
 
 #include "common/QueryInfo.h"
 #include "common/Types.h"
@@ -45,6 +46,7 @@ SearchOnSealedIndex(const Schema& schema,
                "Metric type of field index isn't the same with search info");
 
     auto dataset = knowhere::GenDataSet(num_queries, dim, query_data);
+    std::cout << "ZBQ SearchOnSealedIndex: query dataset addr " << dataset.get() << " tensor " << dataset->GetTensor() << std::endl;
     dataset->SetIsSparse(is_sparse);
     auto vec_index =
         dynamic_cast<index::VectorIndex*>(field_indexing->indexing_.get());

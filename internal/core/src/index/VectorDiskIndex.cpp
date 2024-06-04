@@ -14,6 +14,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <iostream>
+
 #include "index/VectorDiskIndex.h"
 
 #include "common/Tracer.h"
@@ -59,8 +61,13 @@ VectorDiskAnnIndex<T>::VectorDiskAnnIndex(
     local_chunk_manager->CreateDir(local_index_path_prefix);
     auto diskann_index_pack =
         knowhere::Pack(std::shared_ptr<knowhere::FileManager>(file_manager_));
+    std::cout
+        << "VectorDiskAnnIndex<T>::VectorDiskAnnIndex diskann_index_pack: "
+        << file_manager_.get() << std::endl;
     auto get_index_obj = knowhere::IndexFactory::Instance().Create<T>(
         GetIndexType(), version, diskann_index_pack);
+    std::cout << "VectorDiskAnnIndex<T>::VectorDiskAnnIndex get_index_obj: "
+              << get_index_obj.has_value() << std::endl;
     if (get_index_obj.has_value()) {
         index_ = get_index_obj.value();
     } else {
@@ -219,6 +226,7 @@ VectorDiskAnnIndex<T>::BuildV2(const Config& config) {
 
     build_config.erase("insert_files");
     build_config.erase(VEC_OPT_FIELDS);
+    std::cout << "ZBQ VectorDiskAnnIndex<T>::BuildV2 build_config: " << build_config.dump() << std::endl;
     index_.Build({}, build_config);
 
     auto local_chunk_manager =
@@ -235,6 +243,7 @@ VectorDiskAnnIndex<T>::Build(const Config& config) {
         storage::LocalChunkManagerSingleton::GetInstance().GetChunkManager();
     knowhere::Json build_config;
     build_config.update(config);
+    std::cout << "ZBQ VectorDiskAnnIndex<T>::Build build_config: " << build_config.dump() << std::endl;
 
     auto segment_id = file_manager_->GetFieldDataMeta().segment_id;
     auto insert_files =
@@ -266,6 +275,7 @@ VectorDiskAnnIndex<T>::Build(const Config& config) {
 
     build_config.erase("insert_files");
     build_config.erase(VEC_OPT_FIELDS);
+    std::cout << "ZBQ VectorDiskAnnIndex<T>::Build build_config: " << build_config.dump() << std::endl;
     auto stat = index_.Build({}, build_config);
     if (stat != knowhere::Status::success)
         PanicInfo(ErrorCode::IndexBuildError,
@@ -283,6 +293,7 @@ VectorDiskAnnIndex<T>::BuildWithDataset(const DatasetPtr& dataset,
         storage::LocalChunkManagerSingleton::GetInstance().GetChunkManager();
     knowhere::Json build_config;
     build_config.update(config);
+    std::cout << "ZBQ VectorDiskAnnIndex<T>::BuildWithDataset build_config: " << build_config.dump() << std::endl;
     // set data path
     auto segment_id = file_manager_->GetFieldDataMeta().segment_id;
     auto field_id = file_manager_->GetFieldDataMeta().field_id;
@@ -319,7 +330,7 @@ VectorDiskAnnIndex<T>::BuildWithDataset(const DatasetPtr& dataset,
     auto data_size = num * dim * sizeof(T);
     auto raw_data = const_cast<void*>(milvus::GetDatasetTensor(dataset));
     local_chunk_manager->Write(local_data_path, offset, raw_data, data_size);
-
+    std::cout << "ZBQ VectorDiskAnnIndex<T>::BuildWithDataset local_data_path: " << local_data_path << std::endl;
     auto stat = index_.Build({}, build_config);
     if (stat != knowhere::Status::success)
         PanicInfo(ErrorCode::IndexBuildError,

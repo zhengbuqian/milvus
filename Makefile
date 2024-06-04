@@ -20,7 +20,7 @@ LIBRARY_PATH := $(PWD)/lib
 OS := $(shell uname -s)
 mode = Release
 
-use_disk_index = OFF
+use_disk_index = ON
 ifdef disk_index
 	use_disk_index = ${disk_index}
 endif
@@ -60,7 +60,7 @@ GOTESTSUM_VERSION := 1.11.0
 GOTESTSUM_OUTPUT := $(shell $(INSTALL_PATH)/gotestsum --version 2>/dev/null)
 INSTALL_GOTESTSUM := $(findstring $(GOTESTSUM_VERSION),$(GOTESTSUM_OUTPUT))
 
-index_engine = knowhere
+index_engine = cardinal
 
 export GIT_BRANCH=master
 

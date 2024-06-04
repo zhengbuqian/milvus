@@ -44,6 +44,9 @@ const (
 
 	// Sparse Index Param
 	SparseDropRatioBuild = "drop_ratio_build"
+
+	// for graph based sparse index
+	IsSparse = "is_sparse"
 )
 
 // METRICS is a set of all metrics types supported for float vector.

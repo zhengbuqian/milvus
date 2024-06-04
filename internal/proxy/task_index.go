@@ -250,6 +250,7 @@ func (cit *createIndexTask) parseIndexParams() error {
 				return err
 			}
 		}
+		// TODO(Buqian): sparse hnsw should have similar check.
 		if indexType == indexparamcheck.IndexSparseInverted || indexType == indexparamcheck.IndexSparseWand {
 			metricType, metricTypeExist := indexParamsMap[common.MetricTypeKey]
 			if !metricTypeExist || metricType != metric.IP {
