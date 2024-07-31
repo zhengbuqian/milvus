@@ -4,7 +4,7 @@ use crate::{
     array::RustArray,
     index_reader::IndexReaderWrapper,
     util::{create_binding, free_binding},
-    util_c::tantivy_index_exist,
+    util_c::tantivy_index_exist, callback_collector::{CallbackOnOffsetFn, BitsetType},
 };
 
 #[no_mangle]
@@ -143,6 +143,15 @@ pub extern "C" fn tantivy_term_query_keyword(ptr: *mut c_void, term: *const c_ch
         let c_str = CStr::from_ptr(term);
         let hits = (*real).term_query_keyword(c_str.to_str().unwrap());
         RustArray::from_vec(hits)
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn tantivy_term_query_keyword_with_callback(ptr: *mut c_void, term: *const c_char, callback: CallbackOnOffsetFn, bitset: *mut c_void) {
+    let real = ptr as *mut IndexReaderWrapper;
+    unsafe {
+        let c_str = CStr::from_ptr(term);
+        (*real).term_query_with_callback(c_str.to_str().unwrap(), callback, bitset);
     }
 }
 

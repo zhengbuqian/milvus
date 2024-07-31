@@ -120,12 +120,24 @@ StartSpan(const std::string& name, TraceContext* parentCtx) {
     return GetTracer()->StartSpan(name, opts);
 }
 
+std::shared_ptr<trace::Span>
+StartSpan(const std::string& name, const std::shared_ptr<trace::Span>& span) {
+    trace::StartSpanOptions opts;
+    opts.parent = span->GetContext();
+    return GetTracer()->StartSpan(name, opts);
+}
+
 thread_local std::shared_ptr<trace::Span> local_span;
 void
 SetRootSpan(std::shared_ptr<trace::Span> span) {
     if (enable_trace) {
         local_span = std::move(span);
     }
+}
+
+std::shared_ptr<trace::Span>
+GetRootSpan() {
+    return local_span;
 }
 
 void

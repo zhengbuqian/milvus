@@ -19,6 +19,8 @@ struct RustArray {
   size_t cap;
 };
 
+using CallbackOnOffsetFn = void(*)(void*, uint32_t);
+
 extern "C" {
 
 void free_rust_array(RustArray array);
@@ -56,6 +58,11 @@ RustArray tantivy_range_query_f64(void *ptr,
 RustArray tantivy_term_query_bool(void *ptr, bool term);
 
 RustArray tantivy_term_query_keyword(void *ptr, const char *term);
+
+void tantivy_term_query_keyword_with_callback(void *ptr,
+                                              const char *term,
+                                              CallbackOnOffsetFn callback,
+                                              void *bitset);
 
 RustArray tantivy_lower_bound_range_query_keyword(void *ptr,
                                                   const char *lower_bound,

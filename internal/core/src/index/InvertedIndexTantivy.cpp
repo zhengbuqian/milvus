@@ -9,6 +9,7 @@
 // is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
+#include "common/Tracer.h"
 #include "tantivy-binding.h"
 #include "common/Slice.h"
 #include "storage/LocalChunkManagerSingleton.h"
@@ -228,8 +229,21 @@ const TargetBitmap
 InvertedIndexTantivy<T>::In(size_t n, const T* values) {
     TargetBitmap bitset(Count());
     for (size_t i = 0; i < n; ++i) {
-        auto array = wrapper_->term_query(values[i]);
-        apply_hits(bitset, array, true);
+        if constexpr (true && std::is_same_v<T, std::string>) {
+            tracer::AutoSpan span("term_query_callback", tracer::GetRootSpan());
+            wrapper_->term_query_callback(
+                values[i],
+                [](void* bitset, uint32_t offset) {
+                    (static_cast<TargetBitmap*>(bitset))->operator[](offset) =
+                        true;
+                },
+                static_cast<void*>(&bitset));
+        } else {
+            tracer::AutoSpan span("term_query", tracer::GetRootSpan());
+            auto array = wrapper_->term_query(values[i]);
+            tracer::AutoSpan("apply_hits", span.GetSpan());
+            apply_hits(bitset, array, true);
+        }
     }
     return bitset;
 }

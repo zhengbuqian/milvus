@@ -47,8 +47,14 @@ GetTracer();
 std::shared_ptr<trace::Span>
 StartSpan(const std::string& name, TraceContext* ctx = nullptr);
 
+std::shared_ptr<trace::Span>
+StartSpan(const std::string& name, const std::shared_ptr<trace::Span>& span);
+
 void
 SetRootSpan(std::shared_ptr<trace::Span> span);
+
+std::shared_ptr<trace::Span>
+GetRootSpan();
 
 void
 CloseRootSpan();
@@ -71,21 +77,37 @@ GetSpanIDAsVector(const TraceContext* ctx);
 struct AutoSpan {
     explicit AutoSpan(const std::string& name,
                       TraceContext* ctx = nullptr,
-                      bool is_root_span = false) {
+                      bool is_root_span = false)
+        : is_root_span_(is_root_span) {
         span_ = StartSpan(name, ctx);
         if (is_root_span) {
             SetRootSpan(span_);
         }
     }
 
+    explicit AutoSpan(const std::string& name,
+                      const std::shared_ptr<trace::Span>& span)
+        : is_root_span_(false) {
+        span_ = StartSpan(name, span);
+    }
+
+    std::shared_ptr<trace::Span>
+    GetSpan() {
+        return span_;
+    }
+
     ~AutoSpan() {
         if (span_ != nullptr) {
             span_->End();
+        }
+        if (is_root_span_) {
+            CloseRootSpan();
         }
     }
 
  private:
     std::shared_ptr<trace::Span> span_;
+    bool is_root_span_;
 };
 
 }  // namespace milvus::tracer

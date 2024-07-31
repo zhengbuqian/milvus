@@ -1,14 +1,17 @@
 use std::ops::Bound;
 use std::str::FromStr;
 
+use libc::c_void;
 use tantivy::directory::MmapDirectory;
 use tantivy::query::{Query, RangeQuery, RegexQuery, TermQuery};
 use tantivy::schema::{Field, IndexRecordOption};
 use tantivy::{Index, IndexReader, ReloadPolicy, Term};
 
+use crate::callback_collector::{CallbackOnOffsetFn, CallbackCollector, BitsetType};
 use crate::log::init_log;
 use crate::util::make_bounds;
 use crate::vec_collector::VecCollector;
+
 
 pub struct IndexReaderWrapper {
     pub field_name: String,
@@ -151,6 +154,16 @@ impl IndexReaderWrapper {
             IndexRecordOption::Basic,
         );
         self.search(&q)
+    }
+
+    pub fn term_query_with_callback(&self, term: &str, callback: CallbackOnOffsetFn, bitset: *mut c_void) {
+        let q = TermQuery::new(
+            Term::from_field_text(self.field, term),
+            IndexRecordOption::Basic,
+        );
+        let searcher = self.reader.searcher();
+        let c = CallbackCollector::new(callback, bitset);
+        searcher.search(&q, &c).unwrap();
     }
 
     pub fn lower_bound_range_query_keyword(&self, lower_bound: &str, inclusive: bool) -> Vec<u32> {

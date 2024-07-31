@@ -153,6 +153,15 @@ run<std::string>() {
         auto hits = w.regex_query("a(.|\n)*");
         hits.debug();
     }
+
+    {
+        w.term_query_callback(
+            "a",
+            [](void*, uint32_t offset) {
+                std::cout << "offset: " << offset << std::endl;
+            },
+            nullptr);
+    }
 }
 
 void

@@ -288,6 +288,14 @@ struct TantivyIndexWrapper {
         return RustArrayWrapper(array);
     }
 
+    void
+    term_query_callback(const std::string& term,
+                        CallbackOnOffsetFn callback,
+                        void* bitset) {
+        tantivy_term_query_keyword_with_callback(
+            reader_, term.c_str(), callback, bitset);
+    }
+
     template <typename T>
     RustArrayWrapper
     lower_bound_range_query(T lower_bound, bool inclusive) {

@@ -103,13 +103,17 @@ func (t *QueryTask) Execute() error {
 	}
 	tr := timerecord.NewTimeRecorderWithTrace(t.ctx, "QueryTask")
 
-	retrievePlan, err := segments.NewRetrievePlan(
-		t.ctx,
-		t.collection,
-		t.req.Req.GetSerializedExprPlan(),
-		t.req.Req.GetMvccTimestamp(),
-		t.req.Req.Base.GetMsgID(),
-	)
+	retrievePlan, err := func() (*segments.RetrievePlan, error) {
+		_, span := otel.Tracer(typeutil.QueryNodeRole).Start(t.ctx, "NewRetrievePlan")
+		defer span.End()
+		return segments.NewRetrievePlan(
+			t.ctx,
+			t.collection,
+			t.req.Req.GetSerializedExprPlan(),
+			t.req.Req.GetMvccTimestamp(),
+			t.req.Req.Base.GetMsgID(),
+		)
+	}()
 	if err != nil {
 		return err
 	}
