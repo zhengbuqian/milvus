@@ -123,7 +123,9 @@ StartSpan(const std::string& name, TraceContext* parentCtx) {
 std::shared_ptr<trace::Span>
 StartSpan(const std::string& name, const std::shared_ptr<trace::Span>& span) {
     trace::StartSpanOptions opts;
-    opts.parent = span->GetContext();
+    if (span != nullptr) {
+        opts.parent = span->GetContext();
+    }
     return GetTracer()->StartSpan(name, opts);
 }
 
@@ -137,7 +139,10 @@ SetRootSpan(std::shared_ptr<trace::Span> span) {
 
 std::shared_ptr<trace::Span>
 GetRootSpan() {
-    return local_span;
+    if (enable_trace) {
+        return local_span;
+    }
+    return nullptr;
 }
 
 void
