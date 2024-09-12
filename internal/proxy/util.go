@@ -622,6 +622,10 @@ func validateFunction(coll *schemapb.CollectionSchema) error {
 	usedFunctionName := typeutil.NewSet[string]()
 	// validate function
 	for _, function := range coll.GetFunctions() {
+		if err := checkFunctionBasicParams(function); err != nil {
+			return err
+		}
+
 		if usedFunctionName.Contain(function.GetName()) {
 			return fmt.Errorf("duplicate function name %s", function.GetName())
 		}
@@ -632,6 +636,9 @@ func validateFunction(coll *schemapb.CollectionSchema) error {
 			inputField, ok := nameMap[name]
 			if !ok {
 				return fmt.Errorf("function input field not found %s", function.InputFieldNames)
+			}
+			if inputField.GetNullable() {
+				return fmt.Errorf("function input field %s cannot be nullable", inputField.GetName())
 			}
 			inputFields = append(inputFields, inputField)
 		}
@@ -656,10 +663,6 @@ func validateFunction(coll *schemapb.CollectionSchema) error {
 		}
 
 		if err := checkFunctionOutputField(function, outputFields); err != nil {
-			return err
-		}
-
-		if err := checkFunctionParams(function); err != nil {
 			return err
 		}
 	}
@@ -708,46 +711,30 @@ func checkFunctionInputField(function *schemapb.FunctionSchema, fields []*schema
 	return nil
 }
 
-func checkFunctionParams(function *schemapb.FunctionSchema) error {
+func checkFunctionBasicParams(function *schemapb.FunctionSchema) error {
+	if function.GetName() == "" {
+		return fmt.Errorf("function name cannot be empty")
+	}
+	if len(function.GetInputFieldNames()) == 0 {
+		return fmt.Errorf("function input field names cannot be empty")
+	}
+	if len(function.GetOutputFieldNames()) == 0 {
+		return fmt.Errorf("function output field names cannot be empty")
+	}
+	for _, input := range function.GetInputFieldNames() {
+		if input == "" {
+			return fmt.Errorf("function input field name cannot be empty")
+		}
+	}
+	for _, output := range function.GetOutputFieldNames() {
+		if output == "" {
+			return fmt.Errorf("function output field name cannot be empty")
+		}
+	}
 	switch function.GetType() {
 	case schemapb.FunctionType_BM25:
-		for _, kv := range function.GetParams() {
-			switch kv.GetKey() {
-			case "bm25_k1":
-				k1, err := strconv.ParseFloat(kv.GetValue(), 64)
-				if err != nil {
-					return fmt.Errorf("failed to parse bm25_k1 value, %w", err)
-				}
-
-				if k1 < 0 || k1 > 3 {
-					return fmt.Errorf("bm25_k1 must in [0,3] but now %f", k1)
-				}
-
-			case "bm25_b":
-				b, err := strconv.ParseFloat(kv.GetValue(), 64)
-				if err != nil {
-					return fmt.Errorf("failed to parse bm25_b value, %w", err)
-				}
-
-				if b < 0 || b > 1 {
-					return fmt.Errorf("bm25_b must in [0,1] but now %f", b)
-				}
-
-			case "bm25_avgdl":
-				avgdl, err := strconv.ParseFloat(kv.GetValue(), 64)
-				if err != nil {
-					return fmt.Errorf("failed to parse bm25_avgdl value, %w", err)
-				}
-
-				if avgdl <= 0 {
-					return fmt.Errorf("bm25_avgdl must large than zero but now %f", avgdl)
-				}
-
-			case "tokenizer_params":
-				// TODO ADD tokenizer check
-			default:
-				return fmt.Errorf("invalid function params, key: %s, value:%s", kv.GetKey(), kv.GetValue())
-			}
+		if len(function.GetParams()) != 0 {
+			return fmt.Errorf("BM25 function accepts no params")
 		}
 	default:
 		return fmt.Errorf("check function params with unknown function type")
