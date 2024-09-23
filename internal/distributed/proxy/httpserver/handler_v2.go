@@ -436,6 +436,7 @@ func (h *HandlersV2) getCollectionDetails(ctx context.Context, c *gin.Context, a
 		HTTPReturnDescription: coll.Schema.Description,
 		HTTPReturnFieldAutoID: autoID,
 		"fields":              printFieldsV2(coll.Schema.Fields),
+		"functions":           printFunctionDetails(coll.Schema.Functions),
 		"aliases":             aliases,
 		"indexes":             indexDesc,
 		"load":                collLoadState,
@@ -894,7 +895,22 @@ func generatePlaceholderGroup(ctx context.Context, body string, collSchema *sche
 	if !typeutil.IsSparseFloatVectorType(vectorField.DataType) {
 		dim, _ = getDim(vectorField)
 	}
-	phv, err := convertVectors2Placeholder(body, vectorField.DataType, dim)
+
+	dataType := vectorField.DataType
+
+	if vectorField.GetIsFunctionOutput() {
+		for _, function := range collSchema.Functions {
+			if function.Type == schemapb.FunctionType_BM25 {
+				// TODO: currently only BM25 function is supported, thus guarantees one input field to one output field
+				if function.OutputFieldNames[0] == vectorField.Name {
+					dataType = schemapb.DataType_VarChar
+				}
+			}
+		}
+	}
+
+	phv, err := convertQueries2Placeholder(body, dataType, dim)
+
 	if err != nil {
 		return nil, err
 	}
@@ -945,6 +961,10 @@ func (h *HandlersV2) search(ctx context.Context, c *gin.Context, anyReq any, dbN
 	searchParams = append(searchParams, &commonpb.KeyValuePair{Key: ParamOffset, Value: strconv.FormatInt(int64(httpReq.Offset), 10)})
 	searchParams = append(searchParams, &commonpb.KeyValuePair{Key: ParamGroupByField, Value: httpReq.GroupByField})
 	searchParams = append(searchParams, &commonpb.KeyValuePair{Key: proxy.AnnsFieldKey, Value: httpReq.AnnsField})
+	// // if httpReq.Params contains metric_type, then use the value in httpReq.Params
+	// if metricType, ok := httpReq.Params["metric_type"]; ok {
+	// 	searchParams = append(searchParams, &commonpb.KeyValuePair{Key: "metric_type", Value: metricType})
+	// }
 	body, _ := c.Get(gin.BodyBytesKey)
 	placeholderGroup, err := generatePlaceholderGroup(ctx, string(body.([]byte)), collSchema, httpReq.AnnsField)
 	if err != nil {
@@ -1079,6 +1099,17 @@ func (h *HandlersV2) createCollection(ctx context.Context, c *gin.Context, anyRe
 	fieldNames := map[string]bool{}
 	partitionsNum := int64(-1)
 	if httpReq.Schema.Fields == nil || len(httpReq.Schema.Fields) == 0 {
+		if len(httpReq.Schema.Functions) > 0 {
+			err := merr.WrapErrParameterInvalid("schema", "functions",
+				"functions are not supported for quickly create collection")
+			log.Ctx(ctx).Warn("high level restful api, quickly create collection fail", zap.Error(err), zap.Any("request", anyReq))
+			HTTPAbortReturn(c, http.StatusOK, gin.H{
+				HTTPReturnCode:    merr.Code(err),
+				HTTPReturnMessage: err.Error(),
+			})
+			return nil, err
+		}
+
 		if httpReq.Dimension == 0 {
 			err := merr.WrapErrParameterInvalid("collectionName & dimension", "collectionName",
 				"dimension is required for quickly create collection(default metric type: "+DefaultMetricType+")")
@@ -1155,8 +1186,39 @@ func (h *HandlersV2) createCollection(ctx context.Context, c *gin.Context, anyRe
 			Name:               httpReq.CollectionName,
 			AutoID:             httpReq.Schema.AutoId,
 			Fields:             []*schemapb.FieldSchema{},
+			Functions:          []*schemapb.FunctionSchema{},
 			EnableDynamicField: httpReq.Schema.EnableDynamicField,
 		}
+
+		all_output_fields := []string{}
+
+		for _, function := range httpReq.Schema.Functions {
+			functionTypeValue, ok := schemapb.FunctionType_value[function.FunctionType]
+			if !ok {
+				log.Ctx(ctx).Warn("function's data type is invalid(case sensitive).", zap.Any("function.DataType", function.FunctionType), zap.Any("function", function))
+				HTTPAbortReturn(c, http.StatusOK, gin.H{
+					HTTPReturnCode:    merr.Code(merr.ErrParameterInvalid),
+					HTTPReturnMessage: merr.ErrParameterInvalid.Error() + ", function data type " + function.FunctionType + " is invalid(case sensitive).",
+				})
+				return nil, merr.ErrParameterInvalid
+			}
+			functionType := schemapb.FunctionType(functionTypeValue)
+			description := function.Description
+			params := []*commonpb.KeyValuePair{}
+			for key, value := range function.Params {
+				params = append(params, &commonpb.KeyValuePair{Key: key, Value: fmt.Sprintf("%v", value)})
+			}
+			collSchema.Functions = append(collSchema.Functions, &schemapb.FunctionSchema{
+				Name:             function.FunctionName,
+				Description:      description,
+				Type:             functionType,
+				InputFieldNames:  function.InputFieldNames,
+				OutputFieldNames: function.OutputFieldNames,
+				Params:           params,
+			})
+			all_output_fields = append(all_output_fields, function.OutputFieldNames...)
+		}
+
 		for _, field := range httpReq.Schema.Fields {
 			fieldDataType, ok := schemapb.DataType_value[field.DataType]
 			if !ok {
@@ -1199,6 +1261,9 @@ func (h *HandlersV2) createCollection(ctx context.Context, c *gin.Context, anyRe
 			}
 			for key, fieldParam := range field.ElementTypeParams {
 				fieldSchema.TypeParams = append(fieldSchema.TypeParams, &commonpb.KeyValuePair{Key: key, Value: fmt.Sprintf("%v", fieldParam)})
+			}
+			if lo.Contains(all_output_fields, field.FieldName) {
+				fieldSchema.IsFunctionOutput = true
 			}
 			collSchema.Fields = append(collSchema.Fields, &fieldSchema)
 			fieldNames[field.FieldName] = true

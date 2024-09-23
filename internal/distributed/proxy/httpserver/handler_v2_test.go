@@ -468,6 +468,144 @@ func TestDatabaseWrapper(t *testing.T) {
 	}
 }
 
+func TestCreateDocInDocOutCollection(t *testing.T) {
+	paramtable.Init()
+	// disable rate limit
+	paramtable.Get().Save(paramtable.Get().QuotaConfig.QuotaAndLimitsEnabled.Key, "false")
+	defer paramtable.Get().Reset(paramtable.Get().QuotaConfig.QuotaAndLimitsEnabled.Key)
+
+	postTestCases := []requestBodyTestCase{}
+	mp := mocks.NewMockProxy(t)
+	mp.EXPECT().CreateCollection(mock.Anything, mock.Anything).Return(commonSuccessStatus, nil).Times(2)
+	testEngine := initHTTPServerV2(mp, false)
+	path := versionalV2(CollectionCategory, CreateAction)
+
+	const baseRequestBody = `{
+		"collectionName": "doc_in_doc_out_demo",
+		"schema": {
+			"autoId": false,
+			"enableDynamicField": false,
+			"fields": [
+				{
+					"fieldName": "my_id",
+					"dataType": "Int64",
+					"isPrimary": true
+				},
+				{
+					"fieldName": "document_content",
+					"dataType": "VarChar",
+					"elementTypeParams": {
+						"max_length": "9000"
+					}
+				}
+			],
+			"functions": %s
+		}
+	}`
+
+	postTestCases = append(postTestCases, requestBodyTestCase{
+		path: path,
+		requestBody: []byte(fmt.Sprintf(baseRequestBody, `[
+			{
+				"functionName": "bm25_fn_1",
+				"functionType": "BM25",
+				"inputFieldNames": ["document_content"],
+				"outputFieldNames": ["sparse_vector_1"]
+			}
+		]`)),
+	})
+
+	postTestCases = append(postTestCases, requestBodyTestCase{
+		path: path,
+		requestBody: []byte(fmt.Sprintf(baseRequestBody, `[
+			{
+				"functionName": "bm25_fn_1",
+				"functionType": "BM25",
+				"inputFieldNames": ["document_content"],
+				"outputFieldNames": [{
+					"fieldName": "sparse_vector_2",
+					"dataType": "SparseFloatVector"
+				}]
+			}
+		]`)),
+	})
+
+	runCase := func(t *testing.T, testcase requestBodyTestCase) {
+		t.Run("post"+testcase.path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, testcase.path, bytes.NewReader(testcase.requestBody))
+			w := httptest.NewRecorder()
+			testEngine.ServeHTTP(w, req)
+			assert.Equal(t, http.StatusOK, w.Code)
+			fmt.Println(w.Body.String())
+			returnBody := &ReturnErrMsg{}
+			err := json.Unmarshal(w.Body.Bytes(), returnBody)
+			assert.Nil(t, err)
+			assert.Equal(t, testcase.errCode, returnBody.Code)
+			if testcase.errCode != 0 {
+				assert.Contains(t, returnBody.Message, testcase.errMsg)
+			}
+		})
+	}
+
+	for _, testcase := range postTestCases {
+		runCase(t, testcase)
+	}
+
+	postTestCases = []requestBodyTestCase{}
+	postTestCases = append(postTestCases, requestBodyTestCase{
+		path: path,
+		requestBody: []byte(fmt.Sprintf(baseRequestBody, `[
+			{
+				"functionName": "bm25_fn_1",
+				"functionType": "BM25_",
+				"inputs": ["document_content"],
+				"outputs": [{
+					"fieldName": "sparse_vector_2",
+					"dataType": "SparseFloatVector"
+				}]
+			}
+		]`)),
+		errMsg:  "BM25_ is invalid",
+		errCode: 1100,
+	})
+
+	postTestCases = append(postTestCases, requestBodyTestCase{
+		path: path,
+		requestBody: []byte(fmt.Sprintf(baseRequestBody, `[
+			{
+				"functionName": "bm25_fn_1",
+				"inputs": ["document_content"],
+				"outputs": [{
+					"fieldName": "sparse_vector_2",
+					"dataType": "SparseFloatVector"
+				}]
+			}
+		]`)),
+		errMsg:  "function data type  is invalid", // unprovided function type is empty string
+		errCode: 1100,
+	})
+
+	postTestCases = append(postTestCases, requestBodyTestCase{
+		path: path,
+		requestBody: []byte(fmt.Sprintf(baseRequestBody, `[
+			{
+				"functionName": "bm25_fn_1",
+				"functionType": "BM25",
+				"inputs": ["document_content"],
+				"outputs": [{
+					"fieldName": "sparse_vector_2"
+				}]
+			}
+		]`)),
+		errMsg:  "data type  is invalid", // unprovided output data type is empty string
+		errCode: 1100,
+	})
+
+	for _, testcase := range postTestCases {
+		runCase(t, testcase)
+	}
+}
+
 func TestCreateCollection(t *testing.T) {
 	paramtable.Init()
 	// disable rate limit
