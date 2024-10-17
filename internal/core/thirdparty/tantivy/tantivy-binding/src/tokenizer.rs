@@ -1,11 +1,20 @@
 use lazy_static::lazy_static;
 use log::{info, warn};
 use std::collections::HashMap;
-use tantivy::tokenizer::{TextAnalyzer, TokenizerManager};
+use tantivy::tokenizer::{TextAnalyzer, TokenizerManager, LowerCaser, StopWordFilter, SimpleTokenizer, Stemmer, Language};
 use crate::log::init_log;
 
 lazy_static! {
-    static ref DEFAULT_TOKENIZER_MANAGER: TokenizerManager = TokenizerManager::default();
+    static ref DEFAULT_TOKENIZER_MANAGER: TokenizerManager = {
+        let mut manager = TokenizerManager::default();
+        let en_stem = TextAnalyzer::builder(SimpleTokenizer::default())
+            .filter(LowerCaser)
+            .filter(StopWordFilter::new(Language::English).unwrap())
+            .filter(Stemmer::new(Language::English))
+            .build();
+        manager.register("default", en_stem);
+        manager
+    };
 }
 
 pub(crate) fn default_tokenizer() -> TextAnalyzer {
