@@ -19,14 +19,17 @@
 package function
 
 import (
+	"encoding/json"
 	"fmt"
 	"sync"
 
 	"github.com/samber/lo"
+	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
 	"github.com/milvus-io/milvus/internal/util/ctokenizer"
 	"github.com/milvus-io/milvus/internal/util/tokenizerapi"
+	"github.com/milvus-io/milvus/pkg/log"
 	"github.com/milvus-io/milvus/pkg/util/typeutil"
 )
 
@@ -34,10 +37,42 @@ import (
 // Input: string
 // Output: map[uint32]float32
 type BM25FunctionRunner struct {
-	tokenizer   tokenizerapi.Tokenizer
-	schema      *schemapb.FunctionSchema
-	outputField *schemapb.FieldSchema
-	concurrency int
+	tokenizer       tokenizerapi.Tokenizer
+	schema          *schemapb.FunctionSchema
+	outputField     *schemapb.FieldSchema
+	concurrency     int
+	tokenizerParams map[string]string
+}
+
+func GetTokenizerParams(coll *schemapb.CollectionSchema, schema *schemapb.FunctionSchema) map[string]string {
+	tokenizerParams := map[string]string{}
+	for _, field := range coll.GetFields() {
+		if field.GetFieldID() == schema.GetInputFieldIds()[0] {
+			type_params := field.GetTypeParams()
+			log.Info("BM25FunctionRunner type params", zap.Any("type_params", type_params))
+
+			for _, param := range type_params {
+				if param.GetKey() == "tokenizer_params" {
+					log.Info("BM25FunctionRunner tokenizer param", zap.Any("param key", param.GetKey()), zap.Any("param value", param.GetValue()))
+					if jsonValue := param.GetValue(); jsonValue != "" {
+						var parsedValue map[string]string
+						if err := json.Unmarshal([]byte(jsonValue), &parsedValue); err != nil {
+							log.Warn("BM25FunctionRunner Failed to parse tokenizer params", zap.Error(err))
+						} else {
+							for k, v := range parsedValue {
+								tokenizerParams[k] = v
+								log.Info("BM25FunctionRunner tokenizer param", zap.Any("param key", k), zap.Any("param value", v))
+							}
+						}
+					} else {
+						log.Warn("BM25FunctionRunner tokenizer param value is empty", zap.Any("param key", param.GetKey()))
+					}
+				}
+			}
+		}
+	}
+	log.Info("BM25FunctionRunner tokenizer params", zap.Any("tokenizerParams", tokenizerParams))
+	return tokenizerParams
 }
 
 func NewBM25FunctionRunner(coll *schemapb.CollectionSchema, schema *schemapb.FunctionSchema) (*BM25FunctionRunner, error) {
@@ -59,7 +94,11 @@ func NewBM25FunctionRunner(coll *schemapb.CollectionSchema, schema *schemapb.Fun
 	if runner.outputField == nil {
 		return nil, fmt.Errorf("no output field")
 	}
-	tokenizer, err := ctokenizer.NewTokenizer(map[string]string{})
+
+	tokenizerParams := GetTokenizerParams(coll, schema)
+	runner.tokenizerParams = tokenizerParams
+
+	tokenizer, err := ctokenizer.NewTokenizer(tokenizerParams)
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +109,7 @@ func NewBM25FunctionRunner(coll *schemapb.CollectionSchema, schema *schemapb.Fun
 
 func (v *BM25FunctionRunner) run(data []string, dst []map[uint32]float32) error {
 	// TODO AOIASD Support single Tokenizer concurrency
-	tokenizer, err := ctokenizer.NewTokenizer(map[string]string{})
+	tokenizer, err := ctokenizer.NewTokenizer(v.tokenizerParams)
 	if err != nil {
 		return err
 	}
