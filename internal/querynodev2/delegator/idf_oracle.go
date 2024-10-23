@@ -255,7 +255,10 @@ func (o *idfOracle) BuildIDF(fieldID int64, tfs *schemapb.SparseFloatArray) ([][
 		idf := stats.BuildIDF(tf)
 		idfBytes[i] = idf
 	}
-	_ = o.writeIdfToFile(fmt.Sprintf("/tmp/idf.bin", fieldID), idfBytes)
+	err = o.writeIdfToFile("/tmp/idf.bin", idfBytes)
+	if err != nil {
+		return nil, 0, err
+	}
 	return idfBytes, stats.GetAvgdl(), nil
 }
 
@@ -273,14 +276,24 @@ func (o *idfOracle) writeIdfToFile(fname string, idfs [][]byte) error {
 	if err != nil {
 		return err
 	}
+	// Log current file size before writing
+	fileInfo, err := f.Stat()
+	if err != nil {
+		log.Warn("Failed to get file info", zap.String("filename", fname), zap.Error(err))
+	} else {
+		log.Info("Current file size before writing",
+			zap.String("filename", fname),
+			zap.Int64("size", fileInfo.Size()))
+	}
 	defer f.Close()
 	for i := 0; i < rows; i++ {
 		idf := idfs[i]
-		count := typeutil.SparseFloatRowElementCount(idf)
+		count := uint32(typeutil.SparseFloatRowElementCount(idf))
 		binary.Write(f, common.Endian, count)
 		if _, err := f.Write(idf); err != nil {
 			return err
 		}
+		log.Info("write idf to file", zap.Int("row", i+1), zap.Int64("size", fileInfo.Size()), zap.Uint32("count", count))
 	}
 	return nil
 }
