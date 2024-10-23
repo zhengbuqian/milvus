@@ -17,7 +17,9 @@
 package delegator
 
 import (
+	"encoding/binary"
 	"fmt"
+	"os"
 	"sync"
 
 	"go.uber.org/zap"
@@ -26,7 +28,9 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
 	"github.com/milvus-io/milvus/internal/querynodev2/segments"
 	"github.com/milvus-io/milvus/internal/storage"
+	"github.com/milvus-io/milvus/pkg/common"
 	"github.com/milvus-io/milvus/pkg/log"
+	"github.com/milvus-io/milvus/pkg/util/typeutil"
 )
 
 type IDFOracle interface {
@@ -251,6 +255,7 @@ func (o *idfOracle) BuildIDF(fieldID int64, tfs *schemapb.SparseFloatArray) ([][
 		idf := stats.BuildIDF(tf)
 		idfBytes[i] = idf
 	}
+	_ = o.writeIdfToFile(fmt.Sprintf("/tmp/idf.bin", fieldID), idfBytes)
 	return idfBytes, stats.GetAvgdl(), nil
 }
 
@@ -260,4 +265,22 @@ func NewIDFOracle(functions []*schemapb.FunctionSchema) IDFOracle {
 		growing: make(map[int64]*bm25Stats),
 		sealed:  make(map[int64]*bm25Stats),
 	}
+}
+
+func (o *idfOracle) writeIdfToFile(fname string, idfs [][]byte) error {
+	rows := len(idfs)
+	f, err := os.OpenFile(fname, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	for i := 0; i < rows; i++ {
+		idf := idfs[i]
+		count := typeutil.SparseFloatRowElementCount(idf)
+		binary.Write(f, common.Endian, count)
+		if _, err := f.Write(idf); err != nil {
+			return err
+		}
+	}
+	return nil
 }
