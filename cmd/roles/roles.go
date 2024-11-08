@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -33,6 +34,7 @@ import (
 	"github.com/samber/lo"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"golang.org/x/exp/rand"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus/cmd/components"
@@ -301,9 +303,173 @@ func setupPrometheusHTTPServer(r *internalmetrics.MilvusRegistry) {
 	})
 }
 
+func monitorFileAndTriggerGC(filePath string) {
+	var once sync.Once
+	once.Do(func() {
+		log.Info("monitorFileAndTriggerGC", zap.String("filePath", filePath))
+		for {
+			// Check the file existence every minute
+			if _, err := os.Stat(filePath); err == nil {
+				// File exists, trigger GC
+				fmt.Println("File exists, triggering GC...")
+				runtime.GC()
+			} else if os.IsNotExist(err) {
+				// File does not exist, do nothing
+				fmt.Println("File does not exist, skipping GC")
+			} else {
+				// Other error, do nothing
+				fmt.Println("Error checking file:", err)
+			}
+
+			// Wait for 1 minute before the next check
+			time.Sleep(1 * time.Minute)
+		}
+	})
+}
+
+const (
+	MemorySize         = 1 * 1024 * 1024 * 1024 // 1GB memory allocation size
+	WriteChunkSize     = 100 * 1024 * 1024      // 100MB chunk size for writing
+	WriteInterval      = 6 * time.Second        // Interval between writes
+	AllocationInterval = 1 * time.Minute        // Interval between allocations
+	TmpDir             = "./tmp"                // Temporary directory for memory mapped files
+	NumFiles           = 10                     // Number of memory mapped files to create
+)
+
+// writeRandomData fills a byte slice with random data
+func writeRandomData(addr []byte, size int) {
+	for i := 0; i < size; i++ {
+		addr[i] = byte(rand.Intn(256))
+	}
+}
+
+// createFilesIfNotExist creates memory mapped files if they don't exist
+func createFilesIfNotExist(dirPath string, numFiles int, fileSize int64) {
+	if err := os.MkdirAll(dirPath, 0755); err != nil {
+		log.Error("[GO MEMORY TEST] Failed to create directory", zap.String("dir", dirPath), zap.Error(err))
+		os.Exit(1)
+	}
+	for i := 0; i < numFiles; i++ {
+		filePath := fmt.Sprintf("%s/file_%d", dirPath, i)
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			file, err := os.OpenFile(filePath, os.O_CREATE|os.O_RDWR, 0644)
+			if err != nil {
+				log.Error("[GO MEMORY TEST] Failed to open file", zap.String("file", filePath), zap.Error(err))
+				os.Exit(1)
+			}
+			defer file.Close()
+			if err := file.Truncate(fileSize); err != nil {
+				log.Error("[GO MEMORY TEST] Failed to truncate file", zap.String("file", filePath), zap.Error(err))
+				os.Exit(1)
+			}
+			log.Info("[GO MEMORY TEST] Created memory mapped file", zap.String("file", filePath))
+		}
+	}
+}
+
+// memoryTest runs memory allocation tests using different allocation modes
+func memoryTest(allocationMode string) {
+	var allocate func(int, int) ([]byte, error)
+	var deallocate func([]byte) error
+
+	switch allocationMode {
+	case "mmap":
+		allocate = func(size int, id int) ([]byte, error) {
+			return syscall.Mmap(-1, 0, size, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_PRIVATE|syscall.MAP_ANONYMOUS)
+		}
+		deallocate = func(addr []byte) error {
+			return syscall.Munmap(addr)
+		}
+	case "malloc":
+		allocate = func(size int, id int) ([]byte, error) {
+			return make([]byte, size), nil
+		}
+		deallocate = func(addr []byte) error {
+			return nil
+		}
+	case "file_mmap":
+		createFilesIfNotExist(TmpDir, NumFiles, MemorySize)
+		allocate = func(index int, id int) ([]byte, error) {
+			filePath := fmt.Sprintf("%s/file_%d", TmpDir, id)
+			file, err := os.OpenFile(filePath, os.O_RDWR, 0644)
+			if err != nil {
+				return nil, err
+			}
+			defer file.Close()
+			return syscall.Mmap(int(file.Fd()), 0, MemorySize, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+		}
+		deallocate = func(addr []byte) error {
+			return syscall.Munmap(addr)
+		}
+	default:
+		log.Error("[GO MEMORY TEST] Invalid allocation mode", zap.String("mode", allocationMode))
+		os.Exit(1)
+	}
+
+	allocations := make([][]byte, 0, 5)
+	// Allocate memory every minute for 5 minutes
+	for i := 0; i < 5; i++ {
+		method := allocationMode
+		log.Info("[GO MEMORY TEST] Allocating memory",
+			zap.String("mode", method),
+			zap.String("size", "1GB"),
+			zap.Int("minute", i*2))
+		addr, err := allocate(MemorySize, i)
+		if err != nil {
+			log.Error("[GO MEMORY TEST] Memory allocation failed", zap.Error(err))
+			os.Exit(1)
+		}
+		allocations = append(allocations, addr)
+
+		// Write random data in chunks
+		for j := 0; j < 10; j++ {
+			log.Debug("[GO MEMORY TEST] Writing chunk of random data",
+				zap.String("size", "100MB"),
+				zap.Float64("second", float64(j)*WriteInterval.Seconds()))
+			writeRandomData(addr[j*WriteChunkSize:], WriteChunkSize)
+			time.Sleep(WriteInterval)
+		}
+
+		time.Sleep(AllocationInterval - 10*WriteInterval)
+	}
+
+	// Deallocate memory every minute for 5 minutes
+	for i := 0; i < 5; i++ {
+		method := allocationMode
+		log.Info("[GO MEMORY TEST] Deallocating memory",
+			zap.String("mode", method),
+			zap.String("size", "1GB"),
+			zap.Int("minute", 10+i*2))
+		if err := deallocate(allocations[i]); err != nil {
+			log.Error("[GO MEMORY TEST] Memory deallocation failed", zap.Error(err))
+			os.Exit(1)
+		}
+		time.Sleep(AllocationInterval)
+	}
+}
+
+// memoryTestMain runs memory tests for different allocation modes
+func memoryTestMain() {
+	// log.Info("Starting memory tests", zap.Duration("initial_wait", time.Minute))
+	// time.Sleep(1 * time.Minute)
+
+	modes := []string{"file_mmap"}
+	for _, mode := range modes {
+		log.Info("[GO MEMORY TEST] Starting memory test", zap.String("mode", mode))
+		memoryTest(mode)
+		log.Info("[GO MEMORY TEST] Memory test complete, triggering GC", zap.String("mode", mode))
+		runtime.GC()
+		log.Info("[GO MEMORY TEST] GC complete", zap.String("mode", mode))
+		time.Sleep(1 * time.Minute)
+	}
+}
+
 func (mr *MilvusRoles) handleSignals() func() {
 	sign := make(chan struct{})
 	done := make(chan struct{})
+
+	go monitorFileAndTriggerGC("/tmp/milvusgcflag")
+	// go memoryTestMain()
 
 	sc := make(chan os.Signal, 1)
 	signal.Notify(sc,

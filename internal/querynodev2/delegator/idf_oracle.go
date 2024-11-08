@@ -255,10 +255,10 @@ func (o *idfOracle) BuildIDF(fieldID int64, tfs *schemapb.SparseFloatArray) ([][
 		idf := stats.BuildIDF(tf)
 		idfBytes[i] = idf
 	}
-	err = o.writeIdfToFile("/tmp/idf.bin", idfBytes)
-	if err != nil {
-		return nil, 0, err
-	}
+	// err = o.writeIdfToFile("/tmp/idf.bin", idfBytes)
+	// if err != nil {
+	// 	return nil, 0, err
+	// }
 	return idfBytes, stats.GetAvgdl(), nil
 }
 

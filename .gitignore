@@ -105,3 +105,6 @@ internal/core/src/pb/*.pb.h
 internal/core/src/pb/*.pb.cc
 *.pb.go
 **/legacypb/*.pb.go
+
+massif.out.*
+heaptrack.*

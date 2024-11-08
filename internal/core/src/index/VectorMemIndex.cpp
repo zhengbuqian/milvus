@@ -24,6 +24,17 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <iostream>
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <cstdlib>
+#include <ctime>
+#include <thread>
+#include <chrono>
+#include <vector>
+
 
 #include "common/Tracer.h"
 #include "common/Types.h"
@@ -51,6 +62,155 @@
 #include "storage/ThreadPools.h"
 #include "storage/Util.h"
 #include "monitor/prometheus_client.h"
+
+
+#define MEMORY_SIZE (2L * 1024 * 1024 * 1024)  // 2GB
+#define WRITE_CHUNK_SIZE (200L * 1024 * 1024)  // 0.2GB
+#define WRITE_INTERVAL 12  // 12 seconds
+#define ALLOCATION_INTERVAL 120  // 2 minutes
+#define TOTAL_ALLOCATION_TIME 600  // 10 minutes
+#define TOTAL_DEALLOCATION_TIME 600  // 10 minutes
+
+namespace fs = std::filesystem;
+
+void write_random_data(void* addr, size_t size) {
+    srand(time(0));  // Seed the random number generator
+    char* data = static_cast<char*>(addr);
+    for (size_t i = 0; i < size; ++i) {
+        data[i] = rand() % 256;  // Write a random byte
+    }
+}
+
+void create_files_if_not_exist(const std::string& dir_path, int num_files, size_t file_size) {
+    fs::create_directory(dir_path);
+    for (int i = 0; i < num_files; ++i) {
+        std::string file_path = dir_path + "/file_" + std::to_string(i);
+        if (!fs::exists(file_path)) {
+            int fd = open(file_path.c_str(), O_CREAT | O_RDWR, S_IRUSR | S_IWUSR);
+            if (fd == -1) {
+                perror("open failed");
+                exit(1);
+            }
+            if (ftruncate(fd, file_size) == -1) {
+                perror("ftruncate failed");
+                close(fd);
+                exit(1);
+            }
+            close(fd);
+            std::cout << "Created file: " << file_path << std::endl;
+        }
+    }
+}
+
+void memory_test(const std::string& allocation_mode) {
+    bool use_mmap = (allocation_mode == "mmap");
+    bool use_file_mmap = (allocation_mode == "file_mmap");
+
+    // Array to store the allocation addresses
+    std::vector<void*> allocations;
+
+    // Function pointers for allocation and deallocation
+    void* (*allocate)(size_t, const std::string&) = nullptr;
+    int (*deallocate)(void*, size_t, const std::string&) = nullptr;
+
+    if (use_mmap) {
+        allocate = [](size_t size, const std::string&) {
+            return mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        };
+        deallocate = [](void* addr, size_t size, const std::string&) {
+            return munmap(addr, size);
+        };
+    } else if (use_file_mmap) {
+        std::string tmp_dir = "./tmp";
+        create_files_if_not_exist(tmp_dir, 10, MEMORY_SIZE);
+
+        allocate = [](size_t size, const std::string& file_path) {
+            int fd = open(file_path.c_str(), O_RDWR);
+            if (fd == -1) {
+                perror("open failed");
+                exit(1);
+            }
+            void* addr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+            close(fd);
+            return addr;
+        };
+        deallocate = [](void* addr, size_t size, const std::string& file_path) {
+            return munmap(addr, size);
+        };
+    } else {
+        allocate = [](size_t size, const std::string&) {
+            return malloc(size);
+        };
+        deallocate = [](void* addr, size_t, const std::string&) {
+            free(addr);
+            return 0;  // Return 0 to match the signature of munmap
+        };
+    }
+
+    // Allocate memory every 2 minutes for the first 10 minutes
+    for (int i = 0; i < 5; ++i) {
+        std::string method = use_mmap ? "mmap" : (use_file_mmap ? "file_mmap" : "malloc");
+        std::string file_path = use_file_mmap ? "./tmp/file_" + std::to_string(i) : "";
+        std::cout << "Allocating 2GB of memory using " << method << " at minute " << i * 2 << std::endl;
+        void* addr = allocate(MEMORY_SIZE, file_path);
+        if (!addr || addr == MAP_FAILED) {
+            std::cerr << "Allocation failed\n";
+            exit(1);
+        }
+        allocations.push_back(addr);
+
+        // Write random data to 0.2GB of memory every 12 seconds
+        for (int j = 0; j < 10; ++j) {
+            std::cout << "Writing to 0.2GB of memory at second " << j * WRITE_INTERVAL << std::endl;
+            write_random_data(static_cast<char*>(addr) + j * WRITE_CHUNK_SIZE, WRITE_CHUNK_SIZE);
+            std::this_thread::sleep_for(std::chrono::seconds(WRITE_INTERVAL));
+        }
+
+        std::this_thread::sleep_for(std::chrono::seconds(ALLOCATION_INTERVAL - 120));
+    }
+
+    // Deallocate memory every 2 minutes for the next 10 minutes
+    for (int i = 0; i < 5; ++i) {
+        std::string method = use_mmap ? "munmap" : (use_file_mmap ? "munmap" : "free");
+        std::string file_path = use_file_mmap ? "./tmp/file_" + std::to_string(i) : "";
+        std::cout << "Deallocating 2GB of memory using " << method << " at minute " << 10 + i * 2 << std::endl;
+        if (deallocate(allocations[i], MEMORY_SIZE, file_path) == -1) {
+            std::cerr << "Deallocation failed\n";
+            exit(1);
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(ALLOCATION_INTERVAL));
+    }
+}
+
+void thread_function() {
+    std::cout << "ZBQ waiting 2 minutes...\n";
+    std::this_thread::sleep_for(std::chrono::minutes(2));
+    std::vector<std::string> allocation_modes = {"mmap", "malloc", "file_mmap"};
+    for (const auto& mode : allocation_modes) {
+        std::cout << "ZBQ Starting thread for " << mode << " mode...\n";
+        memory_test(mode);
+        std::this_thread::sleep_for(std::chrono::minutes(2));
+    }
+}
+
+// class AutoThreadStarter {
+// public:
+//     AutoThreadStarter() {
+//         thread = std::thread(thread_function);
+//     }
+
+//     ~AutoThreadStarter() {
+//         if (thread.joinable()) {
+//             thread.join();
+//         }
+//     }
+
+// private:
+//     std::thread thread;
+// };
+
+// 全局对象实例
+// AutoThreadStarter auto_thread_starter;
 
 namespace milvus::index {
 

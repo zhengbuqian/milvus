@@ -409,7 +409,7 @@ queryNode:
   enableDisk: false # enable querynode load disk index, and search on disk index
   maxDiskUsagePercentage: 95
   cache:
-    memoryLimit: 2147483648 # 2 GB, 2 * 1024 *1024 *1024
+    memoryLimit: 20971520 # 20MB
     readAheadPolicy: willneed # The read ahead policy of chunk cache, options: `normal, random, sequential, willneed, dontneed`
     # options: async, sync, disable. 
     # Specifies the necessity for warming up the chunk cache. 
@@ -423,7 +423,7 @@ queryNode:
     vectorIndex: false # Enable mmap for loading vector index
     scalarField: false # Enable mmap for loading scalar data
     scalarIndex: false # Enable mmap for loading scalar index
-    chunkCache: true # Enable mmap for chunk cache (raw vector retrieving).
+    chunkCache: false # Enable mmap for chunk cache (raw vector retrieving).
     # Enable memory mapping (mmap) to optimize the handling of growing raw data. 
     # By activating this feature, the memory overhead associated with newly added or modified data will be significantly minimized. 
     # However, this optimization may come at the cost of a slight decrease in query latency for the affected data segments.
