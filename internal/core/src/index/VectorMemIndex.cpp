@@ -30,6 +30,13 @@
 #include "common/type_c.h"
 #include "fmt/format.h"
 
+#include <folly/executors/CPUThreadPoolExecutor.h>
+
+#include "eyrie/config.hpp"
+#include "eyrie/eyrie.hpp"
+#include "eyrie/eyrie_slice.hpp"
+#include "eyrie/utils.hpp"
+
 #include "index/Index.h"
 #include "index/IndexInfo.h"
 #include "index/Meta.h"
@@ -53,6 +60,88 @@
 #include "monitor/prometheus_client.h"
 
 namespace milvus::index {
+
+namespace {
+static struct HelloEyrie {
+    inline std::string
+    GetEnv(const std::string& key) {
+        const char* value = std::getenv(key.c_str());
+        if (value == nullptr) {
+            std::cout << "[Eyrie] GetEnv: " << key << " is not set"
+                      << std::endl;
+            return "";
+        }
+        std::cout << "[Eyrie] GetEnv: " << key << " = " << value << std::endl;
+        return std::string(value);
+    }
+    HelloEyrie() {
+        std::shared_ptr<folly::CPUThreadPoolExecutor> exctr =
+            std::make_shared<folly::CPUThreadPoolExecutor>(3);
+
+        auto opendal_options =
+            eyrie::OpenDALOptions::Builder::New()
+                .endpoint(GetEnv("MINIO_ENDPOINT"))
+                .access_key_id(GetEnv("AWS_ACCESS_KEY_ID"))
+                .secret_access_key(GetEnv("AWS_SECRET_ACCESS_KEY"))
+                .build();
+        auto remote_location = eyrie::RemoteLocation::Builder::New()
+                                   .bucket(GetEnv("EYRIE_TEST_BUCKET"))
+                                   .prefix(GetEnv("EYRIE_TEST_PREFIX"))
+                                   .opendal_options(opendal_options)
+                                   .build();
+        auto local_location =
+            eyrie::LocalLocation::Builder::New()
+                .cache_file_path("output/eyrie_cache_root/test-bucket")
+                .build();
+        eyrie::EyrieConfig eyrie_config = {};
+        auto eyrie_result =
+            eyrie::Eyrie::Create(remote_location, local_location, eyrie_config);
+        if (!eyrie_result.hasValue()) {
+            std::cout << "[Eyrie] Failed to create eyrie, error: "
+                      << eyrie_result.error().message() << std::endl;
+            return;
+        }
+        auto eyrie = std::move(eyrie_result.value());
+        auto shutdown = [eyrie_ptr = eyrie.get(), exctr_ptr = exctr.get()]() {
+            eyrie_ptr->Shutdown().via(exctr_ptr).thenTry([&](auto&&) {
+                std::cout << "[Eyrie] Shutdown done" << std::endl;
+            });
+        };
+        auto policy = eyrie::ObjectPolicy::Builder::New()
+                          .cache_location(eyrie::CacheLocation::MEMORY)
+                          .build();
+        std::vector<eyrie::EyrieSlice> slices = {
+            eyrie::EyrieSlice("test-file-0", std::nullopt)};
+        auto obtain_object_future =
+            eyrie->ObtainObject(slices, policy, nullptr);
+
+        auto eyrie_object_result =
+            std::move(obtain_object_future).via(exctr.get()).get();
+        if (!eyrie_object_result.hasValue()) {
+            std::cout << "[Eyrie] Failed to obtain object, error: "
+                      << eyrie_object_result.error().message() << std::endl;
+            shutdown();
+            return;
+        }
+        auto eyrie_object = std::move(eyrie_object_result.value());
+
+        auto span_result = eyrie_object.PinSpan(0, 10).via(exctr.get()).get();
+        if (!span_result.hasValue()) {
+            std::cout << "[Eyrie] Failed to pin span, error: "
+                      << span_result.error().message() << std::endl;
+            shutdown();
+            return;
+        }
+        auto span = std::move(span_result.value());
+        std::cout << "[Eyrie] Span: " << (void*)span.data()
+                  << " size: " << span.size() << " offset: " << span.offset()
+                  << " complete_raw_size: " << span.complete_raw_size()
+                  << " complete_decoded_size: " << span.complete_decoded_size()
+                  << std::endl;
+        shutdown();
+    }
+} hello_eyrie;
+}  // namespace
 
 template <typename T>
 VectorMemIndex<T>::VectorMemIndex(
@@ -490,7 +579,8 @@ VectorMemIndex<T>::GetSparseVector(const DatasetPtr dataset) const {
 }
 
 template <typename T>
-void VectorMemIndex<T>::LoadFromFile(const Config& config) {
+void
+VectorMemIndex<T>::LoadFromFile(const Config& config) {
     auto filepath = GetValueFromConfig<std::string>(config, MMAP_FILE_PATH);
     AssertInfo(filepath.has_value(), "mmap filepath is empty when load index");
 

@@ -31,6 +31,7 @@ set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
 add_subdirectory(knowhere)
+add_subdirectory(eyrie)
 
 add_subdirectory(boost_ext)
 add_subdirectory(rocksdb)

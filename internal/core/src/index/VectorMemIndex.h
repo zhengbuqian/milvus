@@ -23,6 +23,7 @@
 #include <boost/dynamic_bitset.hpp>
 #include "common/Types.h"
 #include "knowhere/index/index_factory.h"
+#include "eyrie/eyrie.hpp"
 #include "index/VectorIndex.h"
 #include "storage/MemFileManagerImpl.h"
 #include "index/IndexInfo.h"
