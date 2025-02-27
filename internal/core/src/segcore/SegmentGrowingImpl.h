@@ -85,7 +85,7 @@ class SegmentGrowingImpl : public SegmentGrowing {
     CreateTextIndex(FieldId field_id) override;
 
  public:
-    const InsertRecord<>&
+    const InsertRecord<false>&
     get_insert_record() const {
         return insert_record_;
     }

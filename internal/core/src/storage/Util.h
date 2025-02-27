@@ -191,6 +191,7 @@ SortByPath(std::vector<std::string>& paths) {
               });
 }
 
+// fot test only
 inline std::shared_ptr<ArrowDataWrapper>
 ConvertFieldDataToArrowDataWrapper(const FieldDataPtr& field_data) {
     BaseEventData event_data;

@@ -9,23 +9,22 @@
 // is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
-#include <chrono>
-#include "Executor.h"
-#include "common/Common.h"
-#include "monitor/prometheus_client.h"
+#pragma once
 
-namespace milvus::futures {
+#include <cstdint>
 
-const int kNumPriority = 3;
+namespace milvus::cachinglayer {
 
-folly::CPUThreadPoolExecutor*
-getGlobalCPUExecutor() {
-    auto thread_num = std::thread::hardware_concurrency();
-    static folly::CPUThreadPoolExecutor executor(
-        thread_num,
-        folly::CPUThreadPoolExecutor::makeDefaultPriorityQueue(kNumPriority),
-        std::make_shared<folly::NamedThreadFactory>("MILVUS_CPU_"));
-    return &executor;
-}
+using uid_t = int64_t;
+using cid_t = int64_t;
 
-};  // namespace milvus::futures
+enum class StorageType {
+    MEMORY = 0,  // including Anonymous mmap
+    FILE_MMAP = 1,
+    FILE = 2,
+
+    // must be the last one, value will be the number of storage types
+    COUNT,
+};
+
+}  // namespace milvus::cachinglayer
