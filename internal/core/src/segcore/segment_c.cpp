@@ -348,8 +348,8 @@ LoadFieldRawData(CSegmentInterface c_segment,
     try {
         auto segment_interface =
             reinterpret_cast<milvus::segcore::SegmentInterface*>(c_segment);
-        auto segment =
-            dynamic_cast<milvus::segcore::SegmentSealed*>(segment_interface);
+        auto segment = dynamic_cast<milvus::segcore::SegmentSealedImpl*>(
+            segment_interface);
         AssertInfo(segment != nullptr, "segment conversion failed");
         milvus::DataType data_type;
         int64_t dim = 1;
@@ -375,7 +375,7 @@ LoadFieldRawData(CSegmentInterface c_segment,
             static_cast<size_t>(row_count),
             std::vector<std::shared_ptr<milvus::ArrowDataWrapper>>{
                 arrow_data_wrapper}};
-        segment->LoadFieldData(milvus::FieldId(field_id), field_data_info);
+        segment->LoadFieldDataInternal(milvus::FieldId(field_id), field_data_info);
         return milvus::SuccessCStatus();
     } catch (std::exception& e) {
         return milvus::FailureCStatus(&e);
