@@ -21,10 +21,11 @@
 
 namespace milvus::cachinglayer {
 
-// TODO: add config system, include config for the overall caching layer, and for individual cache slots.
+// TODO(tiered storage): add config system, include config for the overall caching layer, and for individual cache slots.
+// TODO(tiered storage): 加 monitoring
+// TODO(tiered storage): 综合管理资源用量，reserve需要reserve所有类型的资源
 class Manager {
  public:
-    // TODO: configs
     static Manager&
     GetInstance();
 
@@ -38,9 +39,9 @@ class Manager {
     ~Manager();
 
     template <typename CellT>
-    std::unique_ptr<CacheSlot<CellT>>
+    std::shared_ptr<CacheSlot<CellT>>
     CreateCacheSlot(std::unique_ptr<Translator<CellT>> translator) {
-        return std::make_unique<CacheSlot<CellT>>(
+        return std::make_shared<CacheSlot<CellT>>(
             std::move(translator),
             get_eviction_manager(translator->storage_type()));
     }

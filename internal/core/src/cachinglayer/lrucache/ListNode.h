@@ -19,6 +19,7 @@
 #include <folly/futures/SharedPromise.h>
 
 #include "cachinglayer/Utils.h"
+#include "common/EasyAssert.h"
 
 namespace milvus::cachinglayer::internal {
 
@@ -77,8 +78,55 @@ class ListNode {
     virtual const cid_t&
     cid() const = 0;
 
+    template <typename Fn>
     void
-    mark_loaded(std::function<void()>&& cb, bool requesting_thread);
+    mark_loaded(Fn&& cb, bool requesting_thread) {
+        std::unique_lock<std::shared_mutex> lock(mtx_);
+        if (requesting_thread) {
+            // requesting thread will promote NOT_LOADED to LOADING and only requesting
+            // thread will set state to ERROR, thus it is not possible for the requesting
+            // thread to see NOT_LOADED or ERROR.
+            AssertInfo(state_ != State::NOT_LOADED && state_ != State::ERROR,
+                       "Programming error: mark_loaded(requesting_thread=true) "
+                       "called on a {} cell",
+                       state_to_string(state_));
+            // no need to touch() here: node is pinned thus not eligible for eviction.
+            // we can delay touch() until unpin() is called.
+            pin_count_++;
+            if (state_ == State::LOADING) {
+                cb();
+                state_ = State::LOADED;
+                load_promise_->setValue(folly::Unit());
+                load_promise_ = nullptr;
+            } else {
+                // LOADED: cell has been loaded by another thread, do nothing.
+                return;
+            }
+        } else {
+            // Even though this thread did not request loading this cell, translator still
+            // decided to download it because the adjacent cells are requested.
+            // Don't increase pin_count_ as this thread is not attempting to pin it.
+            if (state_ == State::NOT_LOADED || state_ == State::ERROR) {
+                // no one has requested this cell. does not increase pin_count_ as no
+                // thread is attempting to pin it.
+                state_ = State::LOADED;
+                cb();
+                touch();
+            } else if (state_ == State::LOADING) {
+                // another thread has explicitly requested loading this cell, we did it first
+                // thus we set up the state first.
+                state_ = State::LOADED;
+                // serve all waiting threads, except for the requesting thread.
+                load_promise_->setValue(folly::Unit());
+                load_promise_ = nullptr;
+                cb();
+                touch();
+            } else {
+                // LOADED: cell has been loaded by another thread, do nothing.
+                return;
+            }
+        }
+    }
 
     State state_ = State::NOT_LOADED;
 

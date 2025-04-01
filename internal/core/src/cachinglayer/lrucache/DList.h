@@ -35,7 +35,7 @@ class DList {
  private:
     ListNode* head_ = nullptr;
     ListNode* tail_ = nullptr;
-    // TODO: benchmark folly::DistributedMutex for this usecase.
+    // TODO(tiered storage): benchmark folly::DistributedMutex for this usecase.
     mutable std::mutex list_mtx_;
     std::atomic<size_t> used_memory_{0};
     const size_t max_memory_;

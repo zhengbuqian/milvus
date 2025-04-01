@@ -33,11 +33,12 @@ template <typename CellT>
 class CellAccessor;
 
 // - The action of pinning cells is not started until the returned SemiFuture is scheduled on an executor.
-// - Once the future is scheduled, CacheSlot must live until both the future is ready and the returned CellAccessor is
-//   destroyed. In other words, ~CacheSlot() must not be called when there are pending futures or live CellAccessors.
+// - Once the future is scheduled, CacheSlot must live until both the future is ready.
+// - The returned CellAccessor stores a shared_ptr of CacheSlot, thus will keep CacheSlot alive.
 template <typename CellT>
-class CacheSlot final {
+class CacheSlot final : public std::enable_shared_from_this<CacheSlot<CellT>> {
  public:
+    // TODO(tiered storage): may want to request a different sizing method, and allow return a struct of usage of different resources.
     static_assert(
         std::is_same_v<size_t, decltype(std::declval<CellT>().DataByteSize())>,
         "CellT must have a DataByteSize() method that returns a size_t "
@@ -48,7 +49,7 @@ class CacheSlot final {
         : cells_(translator->num_cells()),
           translator_(std::move(translator)),
           em_(eviction_manager),
-          load_delay_ms_(10) {
+          load_delay_ms_(2) {
         // em_->register_slot(slot_id(), cells_.size());
         for (cid_t i = 0; i < translator_->num_cells(); ++i) {
             new (&cells_[i])
@@ -64,7 +65,7 @@ class CacheSlot final {
     operator=(CacheSlot&&) = delete;
 
     // `uids` must be valid until the returned future is ready. PinCells does not copy `uids`.
-    // TODO: may want to change to std::shared_ptr of uids?
+    // TODO(tiered storage): need to change to std::shared_ptr of uids. Need to change how caller passes uids.
     folly::SemiFuture<std::unique_ptr<CellAccessor<CellT>>>
     PinCells(const uid_t* uids, size_t count) {
         return folly::makeSemiFuture().deferValue([this, uids, count](auto&&) {
@@ -90,6 +91,8 @@ class CacheSlot final {
                     involved_cids.push_back(cid);
                 }
             }
+            // TODO(tiered storage): cell_[cid].pin() 需要返回一个 std::pair<bool/*need_loading*/, ListNode::Pin>
+            // 然后RunLoad() 需要根据 need_loading 来决定是否需要 load，而不是加延迟
             std::vector<folly::SemiFuture<internal::ListNode::Pin>> futures;
             futures.reserve(involved_cids.size());
             for (auto cid : involved_cids) {
@@ -99,13 +102,11 @@ class CacheSlot final {
                 [this](auto&& pins) mutable {
                     // or else unpinning is done in CellAccessor's destructor.
                     return std::make_unique<CellAccessor<CellT>>(
-                        this, std::move(pins));
+                        this->shared_from_this(), std::move(pins));
                 });
         });
     }
 
-    // CacheSlot is created/destroyed along with segment load/release.
-    // CacheSlot must out live all returned CellAccessors.
     ~CacheSlot() {
         // em_->unregister_slot(slot_id(), cells_.size());
     }
@@ -125,7 +126,7 @@ class CacheSlot final {
         return folly::makeSemiFuture().deferValue([this](auto&&)
                                                       -> folly::SemiFuture<
                                                           folly::Unit> {
-            // TODO: should use folly::SemiFuture::delayed(std::chrono::milliseconds(load_delay_ms_)),
+            // TODO(tiered storage): should use folly::SemiFuture::delayed(std::chrono::milliseconds(load_delay_ms_)),
             // but this requires folly::Init, thus using std::this_thread::sleep_for for now.
             std::this_thread::sleep_for(
                 std::chrono::milliseconds(load_delay_ms_));
@@ -194,9 +195,8 @@ class CacheSlot final {
         set_cell(std::unique_ptr<CellT> cell, bool requesting_thread) {
             // translator may return more than requested, thus we need insert those
             // extra cells into the dlist and mark them as LOADED.
-            auto shared_cell = std::make_shared<std::unique_ptr<CellT>>(std::move(cell));
-            mark_loaded([this, shared_cell]() {
-                cell_ = std::move(*shared_cell);
+            mark_loaded([this, cell = std::move(cell)]() mutable {
+                cell_ = std::move(cell);
             }, requesting_thread);
         }
 
@@ -264,9 +264,9 @@ class CacheSlot final {
 template <typename CellT>
 class CellAccessor {
  public:
-    CellAccessor(CacheSlot<CellT>* slot,
+    CellAccessor(std::shared_ptr<CacheSlot<CellT>> slot,
                  std::vector<internal::ListNode::Pin> pins)
-        : slot_(slot), pins_(std::move(pins)) {
+        : slot_(std::move(slot)), pins_(std::move(pins)) {
     }
 
     CellT*
@@ -277,6 +277,6 @@ class CellAccessor {
 
  private:
     std::vector<internal::ListNode::Pin> pins_;
-    CacheSlot<CellT>* slot_;
+    std::shared_ptr<CacheSlot<CellT>> slot_;
 };
 }  // namespace milvus::cachinglayer

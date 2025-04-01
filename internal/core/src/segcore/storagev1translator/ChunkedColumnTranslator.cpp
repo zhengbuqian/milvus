@@ -1,20 +1,15 @@
 #include "segcore/storagev1translator/ChunkedColumnTranslator.h"
 
-#include <algorithm>
 #include <filesystem>
 #include <string>
-#include <thread>
 #include <vector>
 
-#include "cachinglayer/Translator.h"
 #include "cachinglayer/Utils.h"
 #include "common/ChunkWriter.h"
 #include "common/Types.h"
 #include "common/SystemProperty.h"
-#include "fmt/format.h"
 #include "segcore/Utils.h"
 #include "storage/ThreadPools.h"
-#include "storage/MmapManager.h"
 
 namespace milvus::segcore::storagev1translator {
 

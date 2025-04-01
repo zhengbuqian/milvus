@@ -37,6 +37,10 @@
 
 namespace milvus::segcore {
 
+namespace storagev1translator {
+    class InsertRecordTranslator;
+}
+
 class ChunkedSegmentSealedImpl : public SegmentSealed {
  public:
     explicit ChunkedSegmentSealedImpl(SchemaPtr schema,
@@ -66,7 +70,7 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
 
     bool
     Contain(const PkType& pk) const override {
-        return insert_record_.contain(pk);
+        return pin_insert_record()->get_cell_of(0)->contain(pk);
     }
 
     void
@@ -97,12 +101,7 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
  public:
     size_t
     GetMemoryUsageInBytes() const override {
-        return stats_.mem_size.load() + deleted_record_.mem_size();
-    }
-
-    InsertRecord<true>&
-    get_insert_record() override {
-        return insert_record_;
+        return stats_.mem_size.load() + deleted_record_->mem_size();
     }
 
     int64_t
@@ -243,7 +242,7 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
 
     const ConcurrentVector<Timestamp>&
     get_timestamps() const override {
-        return insert_record_.timestamps_;
+        return pin_insert_record()->get_cell_of(0)->timestamps_;
     }
 
  private:
@@ -303,12 +302,8 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
 
     void
     update_row_count(int64_t row_count) {
-        // if (row_count_opt_.has_value()) {
-        //     AssertInfo(row_count_opt_.value() == row_count, "load data has different row count from other columns");
-        // } else {
         num_rows_ = row_count;
-        // }
-        deleted_record_.set_sealed_row_count(row_count);
+        deleted_record_->set_sealed_row_count(row_count);
     }
 
     void
@@ -352,31 +347,16 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
     generate_interim_index(const FieldId field_id);
 
  private:
-    // This class is needed to hold a copy of the std::shared_ptr<CacheSlot>.
-    // See comment in impl of ChunkedSegmentSealedImpl::get_raw_data.
-    struct SingleCellAccessor {
-        SingleCellAccessor(
-            std::unique_ptr<milvus::cachinglayer::CellAccessor<
-                ChunkedColumnBase>> cell_accessor,
-            std::shared_ptr<milvus::cachinglayer::CacheSlot<ChunkedColumnBase>>
-                cache_slot)
-            : cell_accessor_(std::move(cell_accessor)),
-              cache_slot_(cache_slot) {
-        }
+    // InsertRecord needs to pin pk column.
+    friend class storagev1translator::InsertRecordTranslator;
 
-        ChunkedColumnBase*
-        get_cell() {
-            return cell_accessor_->get_cell_of(0);
-        }
-
-     private:
-        std::unique_ptr<milvus::cachinglayer::CellAccessor<ChunkedColumnBase>>
-            cell_accessor_;
-        std::shared_ptr<milvus::cachinglayer::CacheSlot<ChunkedColumnBase>>
-            cache_slot_;
-    };
-
-    std::unique_ptr<SingleCellAccessor>
+    // TODO(tiered storage):
+    // 1. with partial load supported, this should be replaced by pinning with specified offsets.
+    //
+    // Be careful when you do `pin_column(field_id)->get_cell_of(0)`: the temp
+    // CellAccessor will be destroyed after the method returns so cell may
+    // become invalid immediately.
+    std::unique_ptr<milvus::cachinglayer::CellAccessor<ChunkedColumnBase>>
     pin_column(FieldId field_id) const {
         auto it = fields_.find(field_id);
         if (it == fields_.end()) {
@@ -384,17 +364,15 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
         }
         static milvus::cachinglayer::uid_t uid = 0;
         auto shared_slot = it->second;
-        // TODO: after the entire process is made async, we should avoid using
+        // TODO(tiered storage): after the entire process is made async, we should avoid using
         // inline executor and return a SemiFuture instead. Currently we can't use
         // milvus::futures::getGlobalCPUExecutor() because this method may be
         // called from thread in that executor, calling .get() here will block the
         // thread. If all threads in that executor are blocked, the program will
         // stuck.
-        auto cell_accessor = shared_slot->PinCells(&uid, 1)
-                                 .via(&folly::InlineExecutor::instance())
-                                 .get();
-        return std::make_unique<SingleCellAccessor>(std::move(cell_accessor),
-                                                    shared_slot);
+        return shared_slot->PinCells(&uid, 1)
+            .via(&folly::InlineExecutor::instance())
+            .get();
     }
 
     // mmap descriptor, used in chunk cache
@@ -414,11 +392,20 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
     // vector field index
     SealedIndexingRecord vector_indexings_;
 
+    std::unique_ptr<milvus::cachinglayer::CellAccessor<InsertRecord<true>>>
+    pin_insert_record() const {
+        static milvus::cachinglayer::uid_t uid = 0;
+        return insert_record_slot_->PinCells(&uid, 1)
+                                 .via(&folly::InlineExecutor::instance())
+                                 .get();
+    }
+
     // inserted fields data and row_ids, timestamps
-    InsertRecord<true> insert_record_;
+    mutable std::shared_ptr<milvus::cachinglayer::CacheSlot<InsertRecord<true>>>
+        insert_record_slot_;
 
     // deleted pks
-    mutable DeletedRecord<true> deleted_record_;
+    mutable std::unique_ptr<DeletedRecord<true>> deleted_record_;
 
     LoadFieldDataInfo field_data_info_;
 
