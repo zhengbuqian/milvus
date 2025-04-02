@@ -344,17 +344,16 @@ class ThreadSafeValidData {
 
 template <bool is_sealed>
 struct InsertRecord {
- private:
-    template <typename T>
-    using OffsetContainer = std::
-        conditional_t<is_sealed, OffsetOrderedArray<T>, OffsetOrderedMap<T>>;
-
  public:
     InsertRecord(
         const Schema& schema,
         const int64_t size_per_chunk,
-        const storage::MmapChunkDescriptorPtr mmap_descriptor = nullptr)
+        const storage::MmapChunkDescriptorPtr mmap_descriptor = nullptr,
+        bool called_from_subclass = false)
         : timestamps_(size_per_chunk), mmap_descriptor_(mmap_descriptor) {
+        if (called_from_subclass) {
+            return;
+        }
         std::optional<FieldId> pk_field_id = schema.get_primary_field_id();
         // for sealed segment, only pk field is added.
         for (auto& field : schema) {
@@ -366,12 +365,12 @@ struct InsertRecord {
                 switch (field_meta.get_data_type()) {
                     case DataType::INT64: {
                         pk2offset_ =
-                            std::make_unique<OffsetContainer<int64_t>>();
+                            std::make_unique<OffsetOrderedArray<int64_t>>();
                         break;
                     }
                     case DataType::VARCHAR: {
                         pk2offset_ =
-                            std::make_unique<OffsetContainer<std::string>>();
+                            std::make_unique<OffsetOrderedArray<std::string>>();
                         break;
                     }
                     default: {
@@ -506,10 +505,32 @@ struct InsertRecord<false> : public InsertRecord<true> {
         const Schema& schema,
         const int64_t size_per_chunk,
         const storage::MmapChunkDescriptorPtr mmap_descriptor = nullptr)
-        : InsertRecord<true>(schema, size_per_chunk, mmap_descriptor) {
+        : InsertRecord<true>(schema, size_per_chunk, mmap_descriptor, true) {
+        std::optional<FieldId> pk_field_id = schema.get_primary_field_id();
         for (auto& field : schema) {
             auto field_id = field.first;
             auto& field_meta = field.second;
+            if (pk_field_id.has_value() && pk_field_id.value() == field_id) {
+                AssertInfo(!field_meta.is_nullable(),
+                           "Primary key should not be nullable");
+                switch (field_meta.get_data_type()) {
+                    case DataType::INT64: {
+                        pk2offset_ =
+                            std::make_unique<OffsetOrderedMap<int64_t>>();
+                        break;
+                    }
+                    case DataType::VARCHAR: {
+                        pk2offset_ =
+                            std::make_unique<OffsetOrderedMap<std::string>>();
+                        break;
+                    }
+                    default: {
+                        PanicInfo(DataTypeInvalid,
+                                  fmt::format("unsupported pk type",
+                                              field_meta.get_data_type()));
+                    }
+                }
+            }
             if (field_meta.is_vector()) {
                 if (field_meta.get_data_type() == DataType::VECTOR_FLOAT) {
                     this->append_data<FloatVector>(

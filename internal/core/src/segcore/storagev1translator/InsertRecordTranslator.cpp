@@ -24,7 +24,7 @@ InsertRecordTranslator::InsertRecordTranslator(int64_t segment_id,
                                                ChunkedSegmentSealedImpl* chunked_segment)
     : segment_id_(segment_id),
       data_type_(data_type),
-      key_(fmt::format("seg_{}_f_{}", segment_id, field_data_info.field_id)),
+      key_(fmt::format("seg_{}_ir_f_{}", segment_id, field_data_info.field_id)),
       field_data_info_(field_data_info),
       schema_(schema),
       is_sorted_by_pk_(is_sorted_by_pk),
@@ -125,8 +125,11 @@ InsertRecordTranslator::get_cells(
         ir->insert_pks(data_type_, sca->get_cell_of(0));
         ir->seal_pks();
     }
-
-    return {};
+    std::vector<std::pair<milvus::cachinglayer::cid_t,
+                          std::unique_ptr<milvus::segcore::InsertRecord<true>>>>
+        cells;
+    cells.emplace_back(0, std::move(ir));
+    return cells;
 }
 
 

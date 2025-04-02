@@ -325,7 +325,7 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
 
     bool
     is_system_field_ready() const {
-        return system_ready_count_ == 2;
+        return system_ready_count_ == 1;
     }
 
     std::pair<std::unique_ptr<IdArray>, std::vector<SegOffset>>

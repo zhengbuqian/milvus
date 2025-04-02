@@ -116,7 +116,6 @@ ChunkedSegmentSealedImpl::LoadVecIndex(const LoadIndexInfo& info) {
         set_bit(binlog_index_bitset_, field_id, false);
         vector_indexings_.drop_field_indexing(field_id);
     }
-    update_row_count(row_count);
     vector_indexings_.append_field_indexing(
         field_id,
         metric_type,
@@ -200,7 +199,6 @@ ChunkedSegmentSealedImpl::LoadScalarIndex(const LoadIndexInfo& info) {
         std::move(const_cast<LoadIndexInfo&>(info).index);
 
     set_bit(index_ready_bitset_, field_id, true);
-    update_row_count(row_count);
     // release field column if the index contains raw data
     // only release non-primary field when in pk sorted mode
     if (scalar_indexings_[field_id]->HasRawData() &&
@@ -215,13 +213,9 @@ ChunkedSegmentSealedImpl::LoadScalarIndex(const LoadIndexInfo& info) {
 
 void
 ChunkedSegmentSealedImpl::LoadFieldData(const LoadFieldDataInfo& load_info) {
-    // NOTE: lock only when data is ready to avoid starvation
-    // only one field for now, parallel load field data in golang
     size_t num_rows = storage::GetNumRowsForLoadInfo(load_info);
-    {
-        std::unique_lock lck(mutex_);
-        update_row_count(num_rows);
-    }
+    AssertInfo(!num_rows_.has_value() || num_rows_ == num_rows,
+               "num_rows_ is set but not equal to num_rows of LoadFieldDataInfo");
 
     for (auto& [id, info] : load_info.field_infos) {
         AssertInfo(info.row_count > 0, "The row count of field data is 0");
@@ -268,6 +262,10 @@ ChunkedSegmentSealedImpl::LoadFieldData(const LoadFieldDataInfo& load_info) {
                     return this->search_pk(pk, timestamp);
                 },
                 this->get_segment_id());
+            {
+                std::unique_lock lck(mutex_);
+                update_row_count(num_rows);
+            }
             ++system_ready_count_;
         } else {
             std::unique_ptr<

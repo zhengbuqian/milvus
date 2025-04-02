@@ -93,7 +93,7 @@ ListNode::pin() {
         if (!dlist_->reserveMemory(size())) {
             lock.lock();
             state_ = State::ERROR;
-            // TODO(tiered storage): better error handling.
+            // TODO(tiered storage 2): better error handling.
             error_ = folly::make_exception_wrapper<std::runtime_error>(
                 fmt::format("Failed to load {}:{} due to insufficient resource",
                             key(),
