@@ -350,13 +350,13 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
     // InsertRecord needs to pin pk column.
     friend class storagev1translator::InsertRecordTranslator;
 
-    // TODO(tiered storage):
+    // TODO(tiered storage 1):
     // 1. with partial load supported, this should be replaced by pinning with specified offsets.
     //
     // Be careful when you do `pin_column(field_id)->get_cell_of(0)`: the temp
     // CellAccessor will be destroyed after the method returns so cell may
     // become invalid immediately.
-    std::unique_ptr<milvus::cachinglayer::CellAccessor<ChunkedColumnBase>>
+    std::shared_ptr<milvus::cachinglayer::CellAccessor<ChunkedColumnBase>>
     pin_column(FieldId field_id) const {
         auto it = fields_.find(field_id);
         if (it == fields_.end()) {
@@ -364,7 +364,7 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
         }
         static milvus::cachinglayer::uid_t uid = 0;
         auto shared_slot = it->second;
-        // TODO(tiered storage): after the entire process is made async, we should avoid using
+        // TODO(tiered storage 4): after the entire process is made async, we should avoid using
         // inline executor and return a SemiFuture instead. Currently we can't use
         // milvus::futures::getGlobalCPUExecutor() because this method may be
         // called from thread in that executor, calling .get() here will block the
@@ -392,7 +392,7 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
     // vector field index
     SealedIndexingRecord vector_indexings_;
 
-    std::unique_ptr<milvus::cachinglayer::CellAccessor<InsertRecord<true>>>
+    std::shared_ptr<milvus::cachinglayer::CellAccessor<InsertRecord<true>>>
     pin_insert_record() const {
         static milvus::cachinglayer::uid_t uid = 0;
         return insert_record_slot_->PinCells(&uid, 1)

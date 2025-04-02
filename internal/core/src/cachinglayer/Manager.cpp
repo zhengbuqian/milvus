@@ -31,7 +31,7 @@ Manager::bytes_used(StorageType storage_type) const {
 
 size_t
 Manager::memory_overhead() const {
-    // TODO(tiered storage): calculate memory overhead
+    // TODO(tiered storage 2): calculate memory overhead
     return 0;
 }
 

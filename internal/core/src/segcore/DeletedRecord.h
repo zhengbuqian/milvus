@@ -109,7 +109,7 @@ class DeletedRecord {
 
         SortedDeleteList::Accessor accessor(deleted_lists_);
         InsertRecord<is_sealed>* insert_record = nullptr;
-        std::unique_ptr<milvus::cachinglayer::CellAccessor<InsertRecord<is_sealed>>>
+        std::shared_ptr<milvus::cachinglayer::CellAccessor<InsertRecord<is_sealed>>>
             cell_accessor{nullptr};
         if constexpr (is_sealed) {
             static milvus::cachinglayer::uid_t uid = 0;

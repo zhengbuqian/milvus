@@ -449,7 +449,8 @@ ChunkedSegmentSealedImpl::is_mmap_field(FieldId field_id) const {
     return mmap_fields_.find(field_id) != mmap_fields_.end();
 }
 
-// TODO(tiered storage) for tiered storage support:
+// TODO(tiered storage 1) for tiered storage support:
+// Design a generic Pin interface.
 // Some methods returns a view, those view must carry a Pin so that the pinned cell
 // stays in memory during the view's lifetime.
 // 1. SpanBase
@@ -472,7 +473,7 @@ ChunkedSegmentSealedImpl::chunk_data_impl(FieldId field_id,
         auto field_data = cell_accessor->get_cell_of(0);
         return field_data->Span(chunk_id);
     }
-    // // TODO(tiered storage): 真的有可能调用到这儿么？应该不会，先注释，测试没有问题了再删掉
+    // // TODO(tiered storage 1): 真的有可能调用到这儿么？应该不会，先注释，测试没有问题了再删掉
     // auto ir_accessor = pin_insert_record();
     // auto field_data = ir_accessor->get_cell_of(0)->get_data_base(field_id);
     // // system field
@@ -874,7 +875,7 @@ ChunkedSegmentSealedImpl::search_pk(const PkType& pk,
 std::vector<SegOffset>
 ChunkedSegmentSealedImpl::search_pk(const PkType& pk,
                                     int64_t insert_barrier) const {
-    // TODO(tiered storage): ChunkedSegmentSealedImpl 应该不需要这个，先注释，测试没有问题了再删掉
+    // TODO(tiered storage 1): ChunkedSegmentSealedImpl 应该不需要这个，先注释，测试没有问题了再删掉
     // if (!is_sorted_by_pk_) {
     //     auto ir_accessor = pin_insert_record();
     //     return ir_accessor->get_cell_of(0)->search_pk(pk, insert_barrier);
@@ -1803,7 +1804,7 @@ ChunkedSegmentSealedImpl::generate_interim_index(const FieldId field_id) {
             return false;
         }
         ChunkedColumnBase* vec_data = nullptr;
-        std::unique_ptr<milvus::cachinglayer::CellAccessor<ChunkedColumnBase>> cell_accessor{nullptr};
+        std::shared_ptr<milvus::cachinglayer::CellAccessor<ChunkedColumnBase>> cell_accessor{nullptr};
         {
             std::shared_lock lck(mutex_);
             cell_accessor = pin_column(field_id);

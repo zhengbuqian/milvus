@@ -38,7 +38,7 @@ class CellAccessor;
 template <typename CellT>
 class CacheSlot final : public std::enable_shared_from_this<CacheSlot<CellT>> {
  public:
-    // TODO(tiered storage): may want to request a different sizing method, and allow return a struct of usage of different resources.
+    // TODO(tiered storage 2): may want to request a different sizing method, and allow return a struct of usage of different resources.
     static_assert(
         std::is_same_v<size_t, decltype(std::declval<CellT>().DataByteSize())>,
         "CellT must have a DataByteSize() method that returns a size_t "
@@ -65,8 +65,8 @@ class CacheSlot final : public std::enable_shared_from_this<CacheSlot<CellT>> {
     operator=(CacheSlot&&) = delete;
 
     // `uids` must be valid until the returned future is ready. PinCells does not copy `uids`.
-    // TODO(tiered storage): need to change to std::shared_ptr of uids. Need to change how caller passes uids.
-    folly::SemiFuture<std::unique_ptr<CellAccessor<CellT>>>
+    // TODO(tiered storage 3): need to change to std::shared_ptr of uids. Need to change how caller passes uids.
+    folly::SemiFuture<std::shared_ptr<CellAccessor<CellT>>>
     PinCells(const uid_t* uids, size_t count) {
         return folly::makeSemiFuture().deferValue([this, uids, count](auto&&) {
             BitsetType bitset(cells_.size());
@@ -77,7 +77,7 @@ class CacheSlot final : public std::enable_shared_from_this<CacheSlot<CellT>> {
                 auto cid = translator_->cell_id_of(uid);
                 if (cid >= cells_.size()) {
                     return folly::makeSemiFuture<
-                        std::unique_ptr<CellAccessor<CellT>>>(
+                        std::shared_ptr<CellAccessor<CellT>>>(
                         folly::make_exception_wrapper<std::invalid_argument>(
                             fmt::format(
                                 "CacheSlot {}: translator returned cell_id {} "
@@ -91,7 +91,7 @@ class CacheSlot final : public std::enable_shared_from_this<CacheSlot<CellT>> {
                     involved_cids.push_back(cid);
                 }
             }
-            // TODO(tiered storage): cell_[cid].pin() 需要返回一个 std::pair<bool/*need_loading*/, ListNode::Pin>
+            // TODO(tiered storage 1): cell_[cid].pin() 需要返回一个 std::pair<bool/*need_loading*/, ListNode::Pin>
             // 然后RunLoad() 需要根据 need_loading 来决定是否需要 load，而不是加延迟
             std::vector<folly::SemiFuture<internal::ListNode::Pin>> futures;
             futures.reserve(involved_cids.size());
@@ -101,7 +101,7 @@ class CacheSlot final : public std::enable_shared_from_this<CacheSlot<CellT>> {
             return folly::collect(futures).deferValue(
                 [this](auto&& pins) mutable {
                     // or else unpinning is done in CellAccessor's destructor.
-                    return std::make_unique<CellAccessor<CellT>>(
+                    return std::make_shared<CellAccessor<CellT>>(
                         this->shared_from_this(), std::move(pins));
                 });
         });
@@ -126,7 +126,7 @@ class CacheSlot final : public std::enable_shared_from_this<CacheSlot<CellT>> {
         return folly::makeSemiFuture().deferValue([this](auto&&)
                                                       -> folly::SemiFuture<
                                                           folly::Unit> {
-            // TODO(tiered storage): should use folly::SemiFuture::delayed(std::chrono::milliseconds(load_delay_ms_)),
+            // TODO(tiered storage 4): should use folly::SemiFuture::delayed(std::chrono::milliseconds(load_delay_ms_)),
             // but this requires folly::Init, thus using std::this_thread::sleep_for for now.
             std::this_thread::sleep_for(
                 std::chrono::milliseconds(load_delay_ms_));

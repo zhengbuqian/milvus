@@ -43,7 +43,7 @@ class Translator {
     key() const = 0;
 
     // Translator may choose to fetch more than requested cells.
-    // TODO(tiered storage): This has a problem: when loading, the resource manager will only reserve the size of the requested cells,
+    // TODO(tiered storage 2): This has a problem: when loading, the resource manager will only reserve the size of the requested cells,
     // How can translator be sure the extra cells can fit?
     virtual std::vector<std::pair<cid_t, std::unique_ptr<CellT>>>
     get_cells(const std::vector<cid_t>& cids) const = 0;

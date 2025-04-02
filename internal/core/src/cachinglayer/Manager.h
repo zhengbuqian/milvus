@@ -21,9 +21,9 @@
 
 namespace milvus::cachinglayer {
 
-// TODO(tiered storage): add config system, include config for the overall caching layer, and for individual cache slots.
-// TODO(tiered storage): 加 monitoring
-// TODO(tiered storage): 综合管理资源用量，reserve需要reserve所有类型的资源
+// TODO(tiered storage 2): add config system, include config for the overall caching layer, and for individual cache slots.
+// TODO(tiered storage 2): 加 monitoring
+// TODO(tiered storage 2): 综合管理资源用量，reserve需要reserve所有类型的资源
 class Manager {
  public:
     static Manager&

@@ -67,7 +67,7 @@ InsertRecordTranslator::get_cells(
     FieldId fid = FieldId(field_data_info_.field_id);
     auto parallel_degree =
         static_cast<uint64_t>(DEFAULT_FIELD_MAX_MEMORY_LIMIT / FILE_SLICE_SIZE);
-    // TODO: storagev2 should use executor to perform download.
+    // TODO(tiered storage 4): storagev2 should use executor to perform download.
     auto& pool = ThreadPools::GetThreadPool(milvus::ThreadPoolPriority::MIDDLE);
     pool.Submit(LoadArrowReaderFromRemote,
                 insert_files_,
