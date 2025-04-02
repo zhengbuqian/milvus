@@ -758,6 +758,7 @@ func (loader *segmentLoader) loadSealedSegment(ctx context.Context, loadInfo *qu
 		return nil
 	}
 	defer func() {
+		// TODO: do we need to call C.DeleteSegment(segment.ptr) here?
 		if err != nil {
 			// Release partial loaded segment data if load failed.
 			segment.ReleaseSegmentData()

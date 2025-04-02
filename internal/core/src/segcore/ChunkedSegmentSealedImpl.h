@@ -14,28 +14,32 @@
 #include <tbb/concurrent_priority_queue.h>
 #include <tbb/concurrent_vector.h>
 
-#include <deque>
-#include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include "folly/executors/InlineExecutor.h"
+
 #include "ConcurrentVector.h"
 #include "DeletedRecord.h"
 #include "SealedIndexingRecord.h"
 #include "SegmentSealed.h"
-#include "TimestampIndex.h"
 #include "common/EasyAssert.h"
 #include "google/protobuf/message_lite.h"
 #include "mmap/ChunkedColumn.h"
-#include "index/ScalarIndex.h"
-#include "sys/mman.h"
 #include "common/Types.h"
 #include "common/IndexMeta.h"
+#include "cachinglayer/CacheSlot.h"
+#include "cachinglayer/CacheSlot.h"
+#include "cachinglayer/Utils.h"
 
 namespace milvus::segcore {
+
+namespace storagev1translator {
+    class InsertRecordTranslator;
+}
 
 class ChunkedSegmentSealedImpl : public SegmentSealed {
  public:
@@ -66,13 +70,9 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
 
     bool
     Contain(const PkType& pk) const override {
-        return insert_record_.contain(pk);
+        return pin_insert_record()->get_cell_of(0)->contain(pk);
     }
 
-    void
-    LoadFieldData(FieldId field_id, FieldDataInfo& data) override;
-    void
-    MapFieldData(const FieldId field_id, FieldDataInfo& data) override;
     void
     AddFieldDataInfoForSealed(
         const LoadFieldDataInfo& field_data_info) override;
@@ -101,12 +101,7 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
  public:
     size_t
     GetMemoryUsageInBytes() const override {
-        return stats_.mem_size.load() + deleted_record_.mem_size();
-    }
-
-    InsertRecord<true>&
-    get_insert_record() override {
-        return insert_record_;
+        return stats_.mem_size.load() + deleted_record_->mem_size();
     }
 
     int64_t
@@ -135,11 +130,8 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
 
     bool
     is_nullable(FieldId field_id) const override {
-        auto it = fields_.find(field_id);
-        AssertInfo(it != fields_.end(),
-                   "Cannot find field with field_id: " +
-                       std::to_string(field_id.get()));
-        return it->second->IsNullable();
+        auto& field_meta = schema_->operator[](field_id);
+        return field_meta.is_nullable();
     };
 
     bool
@@ -250,10 +242,13 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
 
     const ConcurrentVector<Timestamp>&
     get_timestamps() const override {
-        return insert_record_.timestamps_;
+        return pin_insert_record()->get_cell_of(0)->timestamps_;
     }
 
  private:
+    void
+    LoadSystemFieldInternal(FieldId field_id, FieldDataInfo& data);
+
     template <typename S, typename T = S>
     static void
     bulk_subscript_impl(const void* src_raw,
@@ -307,12 +302,8 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
 
     void
     update_row_count(int64_t row_count) {
-        // if (row_count_opt_.has_value()) {
-        //     AssertInfo(row_count_opt_.value() == row_count, "load data has different row count from other columns");
-        // } else {
         num_rows_ = row_count;
-        // }
-        deleted_record_.set_sealed_row_count(row_count);
+        deleted_record_->set_sealed_row_count(row_count);
     }
 
     void
@@ -334,7 +325,7 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
 
     bool
     is_system_field_ready() const {
-        return system_ready_count_ == 2;
+        return system_ready_count_ == 1;
     }
 
     std::pair<std::unique_ptr<IdArray>, std::vector<SegOffset>>
@@ -356,6 +347,34 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
     generate_interim_index(const FieldId field_id);
 
  private:
+    // InsertRecord needs to pin pk column.
+    friend class storagev1translator::InsertRecordTranslator;
+
+    // TODO(tiered storage 1):
+    // 1. with partial load supported, this should be replaced by pinning with specified offsets.
+    //
+    // Be careful when you do `pin_column(field_id)->get_cell_of(0)`: the temp
+    // CellAccessor will be destroyed after the method returns so cell may
+    // become invalid immediately.
+    std::shared_ptr<milvus::cachinglayer::CellAccessor<ChunkedColumnBase>>
+    pin_column(FieldId field_id) const {
+        auto it = fields_.find(field_id);
+        if (it == fields_.end()) {
+            return nullptr;
+        }
+        static milvus::cachinglayer::uid_t uid = 0;
+        auto shared_slot = it->second;
+        // TODO(tiered storage 4): after the entire process is made async, we should avoid using
+        // inline executor and return a SemiFuture instead. Currently we can't use
+        // milvus::futures::getGlobalCPUExecutor() because this method may be
+        // called from thread in that executor, calling .get() here will block the
+        // thread. If all threads in that executor are blocked, the program will
+        // stuck.
+        return shared_slot->PinCells(&uid, 1)
+            .via(&folly::InlineExecutor::instance())
+            .get();
+    }
+
     // mmap descriptor, used in chunk cache
     storage::MmapChunkDescriptorPtr mmap_descriptor_ = nullptr;
     // segment loading state
@@ -373,17 +392,29 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
     // vector field index
     SealedIndexingRecord vector_indexings_;
 
+    std::shared_ptr<milvus::cachinglayer::CellAccessor<InsertRecord<true>>>
+    pin_insert_record() const {
+        static milvus::cachinglayer::uid_t uid = 0;
+        return insert_record_slot_->PinCells(&uid, 1)
+                                 .via(&folly::InlineExecutor::instance())
+                                 .get();
+    }
+
     // inserted fields data and row_ids, timestamps
-    InsertRecord<true> insert_record_;
+    mutable std::shared_ptr<milvus::cachinglayer::CacheSlot<InsertRecord<true>>>
+        insert_record_slot_;
 
     // deleted pks
-    mutable DeletedRecord<true> deleted_record_;
+    mutable std::unique_ptr<DeletedRecord<true>> deleted_record_;
 
     LoadFieldDataInfo field_data_info_;
 
     SchemaPtr schema_;
     int64_t id_;
-    std::unordered_map<FieldId, std::shared_ptr<ChunkedColumnBase>> fields_;
+    mutable std::unordered_map<
+        FieldId,
+        std::shared_ptr<milvus::cachinglayer::CacheSlot<ChunkedColumnBase>>>
+        fields_;
     std::unordered_set<FieldId> mmap_fields_;
 
     // only useful in binlog
@@ -402,4 +433,20 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
     bool is_sorted_by_pk_ = false;
 };
 
+inline SegmentSealedUPtr
+CreateSealedSegment(
+    SchemaPtr schema,
+    IndexMetaPtr index_meta = nullptr,
+    int64_t segment_id = 0,
+    const SegcoreConfig& segcore_config = SegcoreConfig::default_config(),
+    bool TEST_skip_index_for_retrieve = false,
+    bool is_sorted_by_pk = false) {
+    return std::make_unique<ChunkedSegmentSealedImpl>(
+        schema,
+        index_meta,
+        segcore_config,
+        segment_id,
+        TEST_skip_index_for_retrieve,
+        is_sorted_by_pk);
+}
 }  // namespace milvus::segcore
