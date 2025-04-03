@@ -30,10 +30,8 @@
 #include "cachinglayer/Manager.h"
 #include "common/Array.h"
 #include "common/Chunk.h"
-#include "common/ChunkWriter.h"
 #include "common/Consts.h"
 #include "common/EasyAssert.h"
-#include "common/FieldData.h"
 #include "common/FieldMeta.h"
 #include "common/Json.h"
 #include "common/LoadInfo.h"
@@ -43,6 +41,7 @@
 #include "index/VectorMemIndex.h"
 #include "mmap/ChunkedColumn.h"
 #include "mmap/Types.h"
+#include "monitor/prometheus_client.h"
 #include "log/Log.h"
 #include "pb/schema.pb.h"
 #include "query/SearchOnSealed.h"
@@ -164,8 +163,10 @@ ChunkedSegmentSealedImpl::LoadScalarIndex(const LoadIndexInfo& info) {
     auto field_id = FieldId(info.field_id);
     auto& field_meta = schema_->operator[](field_id);
 
+    auto is_pk_and_sorted = field_id == schema_->get_primary_field_id() && is_sorted_by_pk_;
+
     // if segment is pk sorted, user created indexes bring no performance gain but extra memory usage
-    if (is_sorted_by_pk_ && field_id == schema_->get_primary_field_id()) {
+    if (is_pk_and_sorted) {
         LOG_INFO(
             "segment pk sorted, skip user index loading for primary key field");
         return;
@@ -203,8 +204,7 @@ ChunkedSegmentSealedImpl::LoadScalarIndex(const LoadIndexInfo& info) {
     // release field column if the index contains raw data
     // only release non-primary field when in pk sorted mode
     if (scalar_indexings_[field_id]->HasRawData() &&
-        get_bit(field_data_ready_bitset_, field_id) &&
-        (schema_->get_primary_field_id() != field_id || !is_sorted_by_pk_)) {
+        get_bit(field_data_ready_bitset_, field_id) && !is_pk_and_sorted) {
         fields_.erase(field_id);
         set_bit(field_data_ready_bitset_, field_id, false);
     }
@@ -458,7 +458,7 @@ ChunkedSegmentSealedImpl::is_mmap_field(FieldId field_id) const {
 // 4. get_timestamps returns a const ConcurrentVector<Timestamp>&.
 // 5. if possible, pin only necessary cells, not all.
 // 6. InsertRecord 把 is_sealed 和 not 用模板分开，然后把 CacheSlot 塞进去？
-// 7. search_sorted_pk 让 CacheAccessor 的 scope 更大，避免重复pin
+// 7. search_sorted_pk 需要 capture Pin
 //
 // These TODOs must be implemented before we can enable eviction in caching layer.
 
@@ -863,31 +863,14 @@ ChunkedSegmentSealedImpl::check_search(const query::Plan* plan) const {
 std::vector<SegOffset>
 ChunkedSegmentSealedImpl::search_pk(const PkType& pk,
                                     Timestamp timestamp) const {
-    if (!is_sorted_by_pk_) {
-        auto ir_accessor = pin_insert_record();
-        return ir_accessor->get_cell_of(0)->search_pk(pk, timestamp);
-    }
     auto ir_accessor = pin_insert_record();
     auto ir = ir_accessor->get_cell_of(0);
+    if (!is_sorted_by_pk_) {
+        return ir->search_pk(pk, timestamp);
+    }
     return search_sorted_pk(pk, [this, timestamp, ir](int64_t offset) {
         return ir->timestamps()[offset] <= timestamp;
     });
-}
-
-std::vector<SegOffset>
-ChunkedSegmentSealedImpl::search_pk(const PkType& pk,
-                                    int64_t insert_barrier) const {
-    // TODO(tiered storage 1): ChunkedSegmentSealedImpl 应该不需要这个，先注释，测试没有问题了再删掉
-    // if (!is_sorted_by_pk_) {
-    //     auto ir_accessor = pin_insert_record();
-    //     return ir_accessor->get_cell_of(0)->search_pk(pk, insert_barrier);
-    // }
-    // return search_sorted_pk(pk, [insert_barrier](int64_t offset) {
-    //     return offset < insert_barrier;
-    // });
-    PanicInfo(ErrorCode::UnexpectedError,
-              "ChunkedSegmentSealedImpl::search_pk(const PkType& pk, int64_t "
-              "insert_barrier) const should not be called");
 }
 
 template <typename Condition>

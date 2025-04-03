@@ -347,11 +347,6 @@ class SegmentGrowingImpl : public SegmentGrowing {
         return insert_record_.search_pk(pk, timestamp);
     }
 
-    std::vector<SegOffset>
-    search_pk(const PkType& pk, int64_t insert_barrier) const override {
-        return insert_record_.search_pk(pk, insert_barrier);
-    }
-
     bool
     is_field_exist(FieldId field_id) const override {
         return schema_->get_fields().find(field_id) !=

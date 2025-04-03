@@ -10,13 +10,10 @@
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
 #pragma once
-#include <cstddef>
+
 #include <unordered_map>
 
 #include "common/Types.h"
-#include "log/Log.h"
-#include "mmap/Column.h"
-#include "mmap/ChunkedColumn.h"
 
 namespace milvus {
 

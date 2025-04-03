@@ -21,9 +21,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <filesystem>
 #include <memory>
-#include <queue>
 #include <string>
 #include <vector>
 #include <math.h>
@@ -32,24 +30,15 @@
 #include "common/Chunk.h"
 #include "common/Common.h"
 #include "common/EasyAssert.h"
-#include "common/File.h"
 #include "common/FieldMeta.h"
-#include "common/FieldData.h"
 #include "common/Span.h"
-#include "fmt/format.h"
-#include "log/Log.h"
-#include "mmap/Utils.h"
-#include "common/FieldData.h"
-#include "common/FieldDataInterface.h"
 #include "common/Array.h"
-#include "knowhere/dataset.h"
-#include "monitor/prometheus_client.h"
 #include "storage/MmapChunkManager.h"
 
-#include "mmap/Column.h"
 namespace milvus {
 
-class ChunkedColumnBase : public ColumnBase {
+// 只有sealed在用
+class ChunkedColumnBase {
  public:
     ChunkedColumnBase() = default;
     // memory mode ctor
@@ -59,13 +48,8 @@ class ChunkedColumnBase : public ColumnBase {
 
     virtual ~ChunkedColumnBase() = default;
 
-    void
-    AppendBatch(const FieldDataPtr data) override {
-        PanicInfo(ErrorCode::Unsupported, "AppendBatch not supported");
-    }
-
     const char*
-    Data(int chunk_id) const override {
+    Data(int chunk_id) const {
         return chunks_[chunk_id]->Data();
     }
 
@@ -77,7 +61,7 @@ class ChunkedColumnBase : public ColumnBase {
 
     // MmappedData() returns the mmaped address
     const char*
-    MmappedData() const override {
+    MmappedData() const {
         AssertInfo(chunks_.size() == 1,
                    "only support one chunk, but got {} chunk(s)",
                    chunks_.size());
@@ -124,7 +108,7 @@ class ChunkedColumnBase : public ColumnBase {
     }
 
     size_t
-    DataByteSize() const override {
+    DataByteSize() const {
         auto size = 0;
         for (auto& chunk : chunks_) {
             size += chunk->Size();
@@ -236,7 +220,7 @@ class ChunkedColumn : public ChunkedColumnBase {
     }
 };
 
-// when mmap is used, size_, data_ and num_rows_ of ColumnBase are used.
+// when mmap is used, size_, data_ and num_rows_ of ChunkedColumnBase are used.
 class ChunkedSparseFloatColumn : public ChunkedColumnBase {
  public:
     // memory mode ctor

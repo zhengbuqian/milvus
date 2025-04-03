@@ -14,8 +14,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #pragma once
+
 #include "common/Array.h"
 #include "storage/MmapManager.h"
+
 namespace milvus {
 /**
  * @brief FixedLengthChunk

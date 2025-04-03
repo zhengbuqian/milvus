@@ -17,7 +17,6 @@
 #include "common/BitsetView.h"
 #include "common/QueryInfo.h"
 #include "common/Types.h"
-#include "mmap/Column.h"
 #include "query/CachedSearchIterator.h"
 #include "query/SearchBruteForce.h"
 #include "query/SearchOnSealed.h"

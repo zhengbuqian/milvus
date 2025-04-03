@@ -29,6 +29,7 @@
 #include "common/EasyAssert.h"
 #include "google/protobuf/message_lite.h"
 #include "mmap/ChunkedColumn.h"
+#include "mmap/Types.h"
 #include "common/Types.h"
 #include "common/IndexMeta.h"
 #include "cachinglayer/CacheSlot.h"
@@ -115,9 +116,6 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
 
     std::vector<SegOffset>
     search_pk(const PkType& pk, Timestamp timestamp) const override;
-
-    std::vector<SegOffset>
-    search_pk(const PkType& pk, int64_t insert_barrier) const override;
 
     template <typename Condition>
     std::vector<SegOffset>
@@ -436,6 +434,7 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
     bool TEST_skip_index_for_retrieve_ = false;
 
     // whether the segment is sorted by the pk
+    // 1. will skip index loading for primary key field
     bool is_sorted_by_pk_ = false;
 };
 

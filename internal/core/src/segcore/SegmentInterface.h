@@ -36,7 +36,6 @@
 #include "pb/segcore.pb.h"
 #include "index/IndexInfo.h"
 #include "index/SkipIndex.h"
-#include "mmap/Column.h"
 #include "index/TextMatchIndex.h"
 
 namespace milvus::segcore {
@@ -500,9 +499,6 @@ class SegmentInternalInterface : public SegmentInterface {
 
     virtual std::vector<SegOffset>
     search_pk(const PkType& pk, Timestamp timestamp) const = 0;
-
-    virtual std::vector<SegOffset>
-    search_pk(const PkType& pk, int64_t insert_barrier) const = 0;
 
  protected:
     mutable std::shared_mutex mutex_;

@@ -6,6 +6,7 @@
 #include "cachinglayer/Translator.h"
 #include "cachinglayer/Utils.h"
 #include "mmap/ChunkedColumn.h"
+#include "mmap/Types.h"
 
 namespace milvus::segcore::storagev1translator {
 

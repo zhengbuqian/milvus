@@ -19,16 +19,16 @@
 #include <memory>
 
 #include "ChunkCache.h"
-#include "boost/filesystem/operations.hpp"
-#include "boost/filesystem/path.hpp"
 #include "common/Chunk.h"
 #include "common/ChunkWriter.h"
 #include "common/FieldMeta.h"
 #include "common/Types.h"
 #include "log/Log.h"
+#include "mmap/ChunkedColumn.h"
+#include "storage/Util.h"
 
 namespace milvus::storage {
-std::shared_ptr<ColumnBase>
+std::shared_ptr<ChunkedColumnBase>
 ChunkCache::Read(const std::string& filepath,
                  const FieldMeta& field_meta,
                  bool mmap_enabled,
@@ -56,8 +56,8 @@ ChunkCache::Read(const std::string& filepath,
         return result;
     }
 
-    std::promise<std::shared_ptr<ColumnBase>> p;
-    std::shared_future<std::shared_ptr<ColumnBase>> f = p.get_future();
+    std::promise<std::shared_ptr<ChunkedColumnBase>> p;
+    std::shared_future<std::shared_ptr<ChunkedColumnBase>> f = p.get_future();
     columns_.emplace(filepath, std::make_pair(std::move(p), f));
     lck.unlock();
 

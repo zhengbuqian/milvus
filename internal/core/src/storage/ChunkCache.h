@@ -46,7 +46,7 @@ class ChunkCache {
     ~ChunkCache() = default;
 
  public:
-    std::shared_ptr<ColumnBase>
+    std::shared_ptr<ChunkedColumnBase>
     Read(const std::string& filepath,
          const FieldMeta& field_meta,
          bool mmap_enabled,
@@ -65,8 +65,8 @@ class ChunkCache {
  private:
     using ColumnTable = std::unordered_map<
         std::string,
-        std::pair<std::promise<std::shared_ptr<ColumnBase>>,
-                  std::shared_future<std::shared_ptr<ColumnBase>>>>;
+        std::pair<std::promise<std::shared_ptr<ChunkedColumnBase>>,
+                  std::shared_future<std::shared_ptr<ChunkedColumnBase>>>>;
 
  private:
     mutable std::shared_mutex mutex_;
