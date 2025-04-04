@@ -154,7 +154,7 @@ CachedSearchIterator::CachedSearchIterator(
         bitset,
         data_type,
         [column](int64_t chunk_id) {
-            const char* chunk_data = column->Data(chunk_id);
+            const char* chunk_data = column->DataOfChunk(chunk_id);
             int64_t chunk_size = column->chunk_row_nums(chunk_id);
             return std::make_pair(static_cast<const void*>(chunk_data),
                                   chunk_size);

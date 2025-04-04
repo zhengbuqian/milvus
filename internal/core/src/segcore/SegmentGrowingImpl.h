@@ -377,16 +377,6 @@ class SegmentGrowingImpl : public SegmentGrowing {
                           int64_t chunk_id,
                           const FixedVector<int32_t>& offsets) const override;
 
-    std::pair<BufferView, FixedVector<bool>>
-    get_chunk_buffer(FieldId field_id,
-                     int64_t chunk_id,
-                     int64_t start_offset,
-                     int64_t length) const override {
-        PanicInfo(
-            ErrorCode::Unsupported,
-            "get_chunk_buffer interface not supported for growing segment");
-    }
-
     void
     check_search(const query::Plan* plan) const override {
         Assert(plan);

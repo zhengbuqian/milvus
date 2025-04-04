@@ -209,7 +209,7 @@ VariableLengthChunk<Array>::set(
     auto mcm = storage::MmapManager::GetInstance().GetMmapChunkManager();
     AssertInfo(
         begin + length <= size_,
-        "failed to set a chunk with length: {} from beign {}, map_size={}",
+        "failed to set a chunk with length: {} from begin {}, map_size={}",
         length,
         begin,
         size_);

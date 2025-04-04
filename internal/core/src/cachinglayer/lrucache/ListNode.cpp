@@ -25,21 +25,21 @@
 
 namespace milvus::cachinglayer::internal {
 
-ListNode::Pin::Pin(ListNode* node) : node_(node) {
+ListNode::NodePin::NodePin(ListNode* node) : node_(node) {
 }
 
-ListNode::Pin::~Pin() {
+ListNode::NodePin::~NodePin() {
     if (node_) {
         node_->unpin();
     }
 }
 
-ListNode::Pin::Pin(Pin&& other) : Pin(other.node_) {
+ListNode::NodePin::NodePin(NodePin&& other) : NodePin(other.node_) {
     other.node_ = nullptr;
 }
 
-ListNode::Pin&
-ListNode::Pin::operator=(Pin&& other) {
+ListNode::NodePin&
+ListNode::NodePin::operator=(NodePin&& other) {
     node_ = other.node_;
     other.node_ = nullptr;
     return *this;
@@ -56,24 +56,24 @@ ListNode::~ListNode() {
     dlist_->popItem(this);
 }
 
-folly::SemiFuture<ListNode::Pin>
+folly::SemiFuture<ListNode::NodePin>
 ListNode::pin() {
     return folly::makeSemiFuture().deferValue([this](auto&&) {
         // must be called with lock acquired, and state must not be NOT_LOADED.
-        auto read_op = [this]() -> folly::SemiFuture<Pin> {
+        auto read_op = [this]() -> folly::SemiFuture<NodePin> {
             AssertInfo(
                 state_ != State::NOT_LOADED,
                 "Programming error: read_op called on a {} cell",
                 state_to_string(state_));
             if (state_ == State::ERROR) {
-                return folly::makeSemiFuture<ListNode::Pin>(error_);
+                return folly::makeSemiFuture<ListNode::NodePin>(error_);
             }
             pin_count_++;
             if (state_ == State::LOADED) {
-                return Pin(this);
+                return NodePin(this);
             }
             return load_promise_->getSemiFuture().deferValue(
-                [this](auto&&) { return Pin(this); });
+                [this](auto&&) { return NodePin(this); });
         };
         {
             std::shared_lock<std::shared_mutex> lock(mtx_);
@@ -100,12 +100,12 @@ ListNode::pin() {
                             cid()));
             load_promise_->setException(error_);
             load_promise_ = nullptr;
-            return folly::makeSemiFuture<Pin>(error_);
+            return folly::makeSemiFuture<NodePin>(error_);
         }
 
         return load()
             .deferValue([this](auto&&) {
-                return folly::makeSemiFuture<Pin>(this);
+                return folly::makeSemiFuture<NodePin>(this);
             })
             .deferError([this](folly::exception_wrapper&& e) {
                 dlist_->releaseMemoryWhenLoadFailed(size());
@@ -118,7 +118,7 @@ ListNode::pin() {
                                 e.what()));
                 load_promise_->setException(error_);
                 load_promise_ = nullptr;
-                return folly::makeSemiFuture<Pin>(error_);
+                return folly::makeSemiFuture<NodePin>(error_);
             });
     });
 }

@@ -128,7 +128,7 @@ SearchOnSealedColumn(const Schema& schema,
 
     auto offset = 0;
     for (int i = 0; i < num_chunk; ++i) {
-        auto vec_data = column->Data(i);
+        auto vec_data = column->DataOfChunk(i);
         auto chunk_size = column->chunk_row_nums(i);
         auto raw_dataset =
             query::dataset::RawDataset{offset, dim, chunk_size, vec_data};

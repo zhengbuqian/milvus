@@ -91,9 +91,9 @@ class CacheSlot final : public std::enable_shared_from_this<CacheSlot<CellT>> {
                     involved_cids.push_back(cid);
                 }
             }
-            // TODO(tiered storage 1): cell_[cid].pin() 需要返回一个 std::pair<bool/*need_loading*/, ListNode::Pin>
+            // TODO(tiered storage 1): cell_[cid].pin() 需要返回一个 std::pair<bool/*need_loading*/, ListNode::NodePin>
             // 然后RunLoad() 需要根据 need_loading 来决定是否需要 load，而不是加延迟
-            std::vector<folly::SemiFuture<internal::ListNode::Pin>> futures;
+            std::vector<folly::SemiFuture<internal::ListNode::NodePin>> futures;
             futures.reserve(involved_cids.size());
             for (auto cid : involved_cids) {
                 futures.push_back(cells_[cid].pin());
@@ -265,7 +265,7 @@ template <typename CellT>
 class CellAccessor {
  public:
     CellAccessor(std::shared_ptr<CacheSlot<CellT>> slot,
-                 std::vector<internal::ListNode::Pin> pins)
+                 std::vector<internal::ListNode::NodePin> pins)
         : slot_(std::move(slot)), pins_(std::move(pins)) {
     }
 
@@ -276,7 +276,11 @@ class CellAccessor {
     }
 
  private:
-    std::vector<internal::ListNode::Pin> pins_;
+    std::vector<internal::ListNode::NodePin> pins_;
     std::shared_ptr<CacheSlot<CellT>> slot_;
 };
+
+template <typename T>
+using PinWrapper = std::function<T&()>;
+
 }  // namespace milvus::cachinglayer

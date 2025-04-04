@@ -29,19 +29,19 @@ class DList;
 class ListNode {
  public:
     // RAII class to unpin the node.
-    class Pin {
+    class NodePin {
      public:
-        // Pin is movable but not copyable.
-        Pin(Pin&&);
-        Pin&
-        operator=(Pin&&);
-        Pin(const Pin&) = delete;
-        Pin&
-        operator=(const Pin&) = delete;
-        ~Pin();
+        // NodePin is movable but not copyable.
+        NodePin(NodePin&&);
+        NodePin&
+        operator=(NodePin&&);
+        NodePin(const NodePin&) = delete;
+        NodePin&
+        operator=(const NodePin&) = delete;
+        ~NodePin();
 
      private:
-        Pin(ListNode* node);
+        NodePin(ListNode* node);
         friend class ListNode;
         ListNode* node_;
     };
@@ -53,7 +53,7 @@ class ListNode {
     // ListNode also should not be movable/copyable because that would make
     // all Pins::node_ dangling pointers.
 
-    folly::SemiFuture<Pin>
+    folly::SemiFuture<NodePin>
     pin();
 
  protected:
@@ -135,7 +135,7 @@ class ListNode {
 
  private:
     friend class DList;
-    friend class Pin;
+    friend class NodePin;
 
     // called by DList during eviction.
     // must be called under the lock of mtx_.

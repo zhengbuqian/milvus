@@ -446,13 +446,6 @@ class SegmentInternalInterface : public SegmentInterface {
                           std::optional<std::pair<int64_t, int64_t>>
                               offset_len = std::nullopt) const = 0;
 
-    // internal API: return buffer reference to field chunk data located from start_offset
-    virtual std::pair<BufferView, FixedVector<bool>>
-    get_chunk_buffer(FieldId field_id,
-                     int64_t chunk_id,
-                     int64_t start_offset,
-                     int64_t length) const = 0;
-
     virtual std::pair<std::vector<std::string_view>, FixedVector<bool>>
     chunk_view_by_offsets(FieldId field_id,
                           int64_t chunk_id,

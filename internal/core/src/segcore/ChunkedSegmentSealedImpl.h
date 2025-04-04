@@ -221,12 +221,6 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
                           int64_t chunk_id,
                           const FixedVector<int32_t>& offsets) const override;
 
-    std::pair<BufferView, FixedVector<bool>>
-    get_chunk_buffer(FieldId field_id,
-                     int64_t chunk_id,
-                     int64_t start_offset,
-                     int64_t length) const override;
-
     const index::IndexBase*
     chunk_index_impl(FieldId field_id, int64_t chunk_id) const override;
 
@@ -415,9 +409,9 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
 
     SchemaPtr schema_;
     int64_t id_;
-    mutable std::unordered_map<
-        FieldId,
-        std::shared_ptr<milvus::cachinglayer::CacheSlot<ChunkedColumnBase>>>
+    // TODO(tiered storage 1): 很多目前标记为 const 的方法，如果他们可能会触发缓存更新
+    // 就不应该标记为 const。
+    mutable std::unordered_map<FieldId, std::shared_ptr<ChunkedColumnBase>>
         fields_;
     std::unordered_set<FieldId> mmap_fields_;
 

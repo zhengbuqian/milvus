@@ -26,6 +26,9 @@
 #include <vector>
 #include <math.h>
 
+#include "cachinglayer/CacheSlot.h"
+#include "cachinglayer/Manager.h"
+#include "cachinglayer/Translator.h"
 #include "common/Array.h"
 #include "common/Chunk.h"
 #include "common/Common.h"
@@ -33,31 +36,34 @@
 #include "common/FieldMeta.h"
 #include "common/Span.h"
 #include "common/Array.h"
-#include "storage/MmapChunkManager.h"
 
 namespace milvus {
 
 // 只有sealed在用
 class ChunkedColumnBase {
  public:
-    ChunkedColumnBase() = default;
     // memory mode ctor
-    explicit ChunkedColumnBase(const FieldMeta& field_meta) {
+    explicit ChunkedColumnBase(
+        std::unique_ptr<milvus::cachinglayer::Translator<Chunk>> translator,
+        const FieldMeta& field_meta)
+        : slot_(milvus::cachinglayer::Manager::GetInstance().CreateCacheSlot(
+              std::move(translator))) {
         nullable_ = field_meta.is_nullable();
     }
 
     virtual ~ChunkedColumnBase() = default;
 
-    const char*
-    Data(int chunk_id) const {
+    milvus::cachinglayer::PinWrapper<const char*>
+    DataOfChunk(int chunk_id) const {
         return chunks_[chunk_id]->Data();
     }
 
-    virtual const char*
-    ValueAt(int64_t offset) const {
-        auto [chunk_id, offset_in_chunk] = GetChunkIDByOffset(offset);
-        return chunks_[chunk_id]->ValueAt(offset_in_chunk);
-    };
+    // // TODO(tiered storage 1): 这个需要每个都返回一个pin，可能overhead会太大，需要重构使用方式
+    // virtual const char*
+    // ValueAt(int64_t offset) const {
+    //     auto [chunk_id, offset_in_chunk] = GetChunkIDByOffset(offset);
+    //     return chunks_[chunk_id]->ValueAt(offset_in_chunk);
+    // };
 
     // MmappedData() returns the mmaped address
     const char*
@@ -70,11 +76,11 @@ class ChunkedColumnBase {
 
     bool
     IsValid(size_t offset) const {
-        if (nullable_) {
-            auto [chunk_id, offset_in_chunk] = GetChunkIDByOffset(offset);
-            return chunks_[chunk_id]->isValid(offset_in_chunk);
+        if (!nullable_) {
+            return true;
         }
-        return true;
+        auto [chunk_id, offset_in_chunk] = GetChunkIDByOffset(offset);
+        return chunks_[chunk_id]->isValid(offset_in_chunk);
     }
 
     bool
@@ -124,13 +130,6 @@ class ChunkedColumnBase {
     virtual SpanBase
     Span(int64_t chunk_id) const = 0;
 
-    // used for sequential access for search
-    virtual BufferView
-    GetBatchBuffer(int64_t chunk_id, int64_t start_offset, int64_t length) {
-        PanicInfo(ErrorCode::Unsupported,
-                  "GetBatchBuffer only supported for VariableColumn");
-    }
-
     virtual std::pair<std::vector<std::string_view>, FixedVector<bool>>
     StringViews(int64_t chunk_id,
                 std::optional<std::pair<int64_t, int64_t>> offset_len) const {
@@ -178,37 +177,27 @@ class ChunkedColumnBase {
         return num_rows_until_chunk_[chunk_id];
     }
 
+    // TODO(tiered storage 1): replace with a lambda
     const std::vector<int64_t>&
     GetNumRowsUntilChunk() const {
         return num_rows_until_chunk_;
     }
 
+ private:
  protected:
     bool nullable_{false};
     size_t num_rows_{0};
     std::vector<int64_t> num_rows_until_chunk_;
-
- private:
-    storage::MmapChunkManagerPtr mcm_ = nullptr;
-
- protected:
-    std::vector<std::shared_ptr<Chunk>> chunks_;
+    std::shared_ptr<milvus::cachinglayer::CacheSlot<Chunk>> slot_;
 };
 
 class ChunkedColumn : public ChunkedColumnBase {
  public:
-    ChunkedColumn() = default;
     // memory mode ctor
-    explicit ChunkedColumn(const FieldMeta& field_meta)
-        : ChunkedColumnBase(field_meta) {
-    }
-
-    explicit ChunkedColumn(const FieldMeta& field_meta,
-                           const std::vector<std::shared_ptr<Chunk>>& chunks)
-        : ChunkedColumnBase(field_meta) {
-        for (auto& chunk : chunks) {
-            AddChunk(chunk);
-        }
+    explicit ChunkedColumn(
+        std::unique_ptr<milvus::cachinglayer::Translator<Chunk>> translator,
+        const FieldMeta& field_meta)
+        : ChunkedColumnBase(std::move(translator), field_meta) {
     }
 
     ~ChunkedColumn() override = default;
@@ -224,17 +213,10 @@ class ChunkedColumn : public ChunkedColumnBase {
 class ChunkedSparseFloatColumn : public ChunkedColumnBase {
  public:
     // memory mode ctor
-    explicit ChunkedSparseFloatColumn(const FieldMeta& field_meta)
-        : ChunkedColumnBase(field_meta) {
-    }
-
     explicit ChunkedSparseFloatColumn(
-        const FieldMeta& field_meta,
-        const std::vector<std::shared_ptr<Chunk>>& chunks)
-        : ChunkedColumnBase(field_meta) {
-        for (auto& chunk : chunks) {
-            AddChunk(chunk);
-        }
+        std::unique_ptr<milvus::cachinglayer::Translator<Chunk>> translator,
+        const FieldMeta& field_meta)
+        : ChunkedColumnBase(std::move(translator), field_meta) {
     }
 
     ~ChunkedSparseFloatColumn() override = default;
@@ -271,17 +253,10 @@ class ChunkedVariableColumn : public ChunkedColumnBase {
         std::conditional_t<std::is_same_v<T, std::string>, std::string_view, T>;
 
     // memory mode ctor
-    explicit ChunkedVariableColumn(const FieldMeta& field_meta)
-        : ChunkedColumnBase(field_meta) {
-    }
-
     explicit ChunkedVariableColumn(
-        const FieldMeta& field_meta,
-        const std::vector<std::shared_ptr<Chunk>>& chunks)
-        : ChunkedColumnBase(field_meta) {
-        for (auto& chunk : chunks) {
-            AddChunk(chunk);
-        }
+        std::unique_ptr<milvus::cachinglayer::Translator<Chunk>> translator,
+        const FieldMeta& field_meta)
+        : ChunkedColumnBase(std::move(translator), field_meta) {
     }
 
     ~ChunkedVariableColumn() override = default;
@@ -307,23 +282,6 @@ class ChunkedVariableColumn : public ChunkedColumnBase {
             ->ViewsByOffsets(offsets);
     }
 
-    BufferView
-    GetBatchBuffer(int64_t chunk_id,
-                   int64_t start_offset,
-                   int64_t length) override {
-        BufferView buffer_view;
-        std::vector<BufferView::Element> elements;
-        elements.push_back(
-            {chunks_[chunk_id]->Data(),
-             std::static_pointer_cast<StringChunk>(chunks_[chunk_id])
-                 ->Offsets(),
-             static_cast<int>(start_offset),
-             static_cast<int>(start_offset + length)});
-
-        buffer_view.data_ = elements;
-        return buffer_view;
-    }
-
     ViewType
     operator[](const int i) const {
         if (i < 0 || i > num_rows_) {
@@ -333,8 +291,7 @@ class ChunkedVariableColumn : public ChunkedColumnBase {
         auto [chunk_id, offset_in_chunk] = GetChunkIDByOffset(i);
         std::string_view str_view =
             std::static_pointer_cast<StringChunk>(chunks_[chunk_id])
-                ->
-                operator[](offset_in_chunk);
+                ->operator[](offset_in_chunk);
         return ViewType(str_view.data(), str_view.size());
     }
 
@@ -346,17 +303,10 @@ class ChunkedVariableColumn : public ChunkedColumnBase {
 class ChunkedArrayColumn : public ChunkedColumnBase {
  public:
     // memory mode ctor
-    explicit ChunkedArrayColumn(const FieldMeta& field_meta)
-        : ChunkedColumnBase(field_meta) {
-    }
-
     explicit ChunkedArrayColumn(
-        const FieldMeta& field_meta,
-        const std::vector<std::shared_ptr<Chunk>>& chunks)
-        : ChunkedColumnBase(field_meta) {
-        for (auto& chunk : chunks) {
-            AddChunk(chunk);
-        }
+        std::unique_ptr<milvus::cachinglayer::Translator<Chunk>> translator,
+        const FieldMeta& field_meta)
+        : ChunkedColumnBase(std::move(translator), field_meta) {
     }
 
     ~ChunkedArrayColumn() override = default;

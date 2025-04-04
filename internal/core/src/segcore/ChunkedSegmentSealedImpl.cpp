@@ -45,7 +45,7 @@
 #include "log/Log.h"
 #include "pb/schema.pb.h"
 #include "query/SearchOnSealed.h"
-#include "segcore/storagev1translator/ChunkedColumnTranslator.h"
+#include "segcore/storagev1translator/ChunkTranslator.h"
 #include "segcore/storagev1translator/InsertRecordTranslator.h"
 #include "storage/Util.h"
 #include "storage/ThreadPools.h"
@@ -270,9 +270,9 @@ ChunkedSegmentSealedImpl::LoadFieldData(const LoadFieldDataInfo& load_info) {
             ++system_ready_count_;
         } else {
             std::unique_ptr<
-                milvus::cachinglayer::Translator<milvus::ChunkedColumnBase>>
+                milvus::cachinglayer::Translator<milvus::Chunk>>
                 translator = std::make_unique<
-                    storagev1translator::ChunkedColumnTranslator>(
+                    storagev1translator::ChunkTranslator>(
                     this->get_segment_id(),
                     field_meta,
                     field_data_info,
@@ -280,21 +280,46 @@ ChunkedSegmentSealedImpl::LoadFieldData(const LoadFieldDataInfo& load_info) {
                     info.enable_mmap
                         ? milvus::cachinglayer::StorageType::FILE_MMAP
                         : milvus::cachinglayer::StorageType::MEMORY);
-            std::shared_ptr<milvus::cachinglayer::CacheSlot<ChunkedColumnBase>>
-                slot = milvus::cachinglayer::Manager::GetInstance()
-                           .CreateCacheSlot(std::move(translator));
+
+            std::shared_ptr<milvus::ChunkedColumnBase> column{};
+
+            auto data_type = field_meta.get_data_type();
+            switch (data_type) {
+                case milvus::DataType::STRING:
+                case milvus::DataType::VARCHAR:
+                case milvus::DataType::TEXT: {
+                    column = std::make_shared<ChunkedVariableColumn<std::string>>(
+                        std::move(translator), field_meta);
+                    break;
+                }
+                case milvus::DataType::JSON: {
+                    column = std::make_shared<ChunkedVariableColumn<milvus::Json>>(
+                        std::move(translator), field_meta);
+                    break;
+                }
+                case milvus::DataType::ARRAY: {
+                    column = std::make_shared<ChunkedArrayColumn>(std::move(translator), field_meta);
+                    break;
+                }
+                case milvus::DataType::VECTOR_SPARSE_FLOAT: {
+                    column = std::make_shared<ChunkedSparseFloatColumn>(std::move(translator), field_meta);
+                    break;
+                }
+                default: {
+                    column = std::make_shared<ChunkedColumn>(std::move(translator), field_meta);
+                    break;
+                }
+            }
+                        
             {
                 std::unique_lock lck(mutex_);
-                fields_.emplace(field_id, slot);
+                fields_.emplace(field_id, column);
                 if (info.enable_mmap) {
                     mmap_fields_.insert(field_id);
                 }
             }
 
-            auto data_type = field_meta.get_data_type();
             if (!info.enable_mmap) {
-                auto sca = pin_column(field_id);
-                auto column = sca->get_cell_of(0);
                 stats_.mem_size += column->DataByteSize();
                 if (IsVariableDataType(data_type)) {
                     if (data_type == milvus::DataType::STRING ||
@@ -303,8 +328,7 @@ ChunkedSegmentSealedImpl::LoadFieldData(const LoadFieldDataInfo& load_info) {
                         LoadStringSkipIndex(
                             field_id,
                             0,
-                            *dynamic_cast<ChunkedVariableColumn<std::string>*>(
-                                column));
+                            *column);
                     }
                     // update average row data size
                     SegmentInternalInterface::set_field_avg_size(
@@ -414,32 +438,6 @@ int64_t
 ChunkedSegmentSealedImpl::num_rows_until_chunk(FieldId field_id,
                                                int64_t chunk_id) const {
     return pin_column(field_id)->get_cell_of(0)->GetNumRowsUntilChunk(chunk_id);
-}
-
-std::pair<BufferView, FixedVector<bool>>
-ChunkedSegmentSealedImpl::get_chunk_buffer(FieldId field_id,
-                                           int64_t chunk_id,
-                                           int64_t start_offset,
-                                           int64_t length) const {
-    std::shared_lock lck(mutex_);
-    AssertInfo(get_bit(field_data_ready_bitset_, field_id),
-               "Can't get bitset element at " + std::to_string(field_id.get()));
-    if (auto cell_accessor = pin_column(field_id); cell_accessor != nullptr) {
-        auto field_data = cell_accessor->get_cell_of(0);
-        FixedVector<bool> valid_data;
-        if (field_data->IsNullable()) {
-            valid_data.reserve(length);
-            for (int i = 0; i < length; i++) {
-                valid_data.push_back(
-                    field_data->IsValid(chunk_id, start_offset + i));
-            }
-        }
-        return std::make_pair(
-            field_data->GetBatchBuffer(chunk_id, start_offset, length),
-            valid_data);
-    }
-    PanicInfo(ErrorCode::UnexpectedError,
-              "get_chunk_buffer only used for  variable column field");
 }
 
 bool
@@ -890,7 +888,7 @@ ChunkedSegmentSealedImpl::search_sorted_pk(const PkType& pk,
 
             auto num_chunk = pk_column->num_chunks();
             for (int i = 0; i < num_chunk; ++i) {
-                auto src = reinterpret_cast<const int64_t*>(pk_column->Data(i));
+                auto src = reinterpret_cast<const int64_t*>(pk_column->DataOfChunk(i));
                 auto chunk_row_num = pk_column->chunk_row_nums(i);
                 auto it = std::lower_bound(
                     src,
@@ -1812,7 +1810,7 @@ ChunkedSegmentSealedImpl::generate_interim_index(const FieldId field_id) {
         auto num_chunk = vec_data->num_chunks();
         for (int i = 0; i < num_chunk; ++i) {
             auto dataset = knowhere::GenDataSet(
-                vec_data->chunk_row_nums(i), dim, vec_data->Data(i));
+                vec_data->chunk_row_nums(i), dim, vec_data->DataOfChunk(i));
             dataset->SetIsOwner(false);
             dataset->SetIsSparse(is_sparse);
 
