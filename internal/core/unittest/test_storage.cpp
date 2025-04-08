@@ -20,9 +20,6 @@
 #include "storage/RemoteChunkManagerSingleton.h"
 #include "storage/storage_c.h"
 
-#define private public
-#include "storage/ChunkCache.h"
-
 using namespace std;
 using namespace milvus;
 using namespace milvus::storage;
@@ -102,9 +99,6 @@ TEST_F(StorageTest, InitRemoteChunkManagerSingleton) {
     auto rcm =
         RemoteChunkManagerSingleton::GetInstance().GetRemoteChunkManager();
     EXPECT_EQ(rcm->GetRootPath(), "/tmp/milvus/remote_data");
-}
-
-TEST_F(StorageTest, InitChunkCacheSingleton) {
 }
 
 TEST_F(StorageTest, CleanRemoteChunkManagerSingleton) {

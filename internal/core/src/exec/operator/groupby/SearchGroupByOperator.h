@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include "cachinglayer/CacheSlot.h"
 #include "common/QueryInfo.h"
 #include "knowhere/index/index_node.h"
 #include "segcore/SegmentInterface.h"
@@ -67,8 +68,8 @@ class SealedDataGetter : public DataGetter<T> {
     const FieldId field_id_;
     bool from_data_;
 
-    mutable std::unordered_map<int64_t, std::vector<std::string_view>>
-        str_view_map_;
+    mutable std::unordered_map<int64_t, PinWrapper<std::pair<std::vector<std::string_view>, FixedVector<bool>>>>
+        pw_map_;
     // Getting str_view from segment is cpu-costly, this map is to cache this view for performance
  public:
     SealedDataGetter(const segcore::SegmentSealed& segment, FieldId& field_id)
@@ -91,20 +92,21 @@ class SealedDataGetter : public DataGetter<T> {
             auto chunk_id = id_offset_pair.first;
             auto inner_offset = id_offset_pair.second;
             if constexpr (std::is_same_v<T, std::string>) {
-                if (str_view_map_.find(chunk_id) == str_view_map_.end()) {
+                if (pw_map_.find(chunk_id) == pw_map_.end()) {
                     // for now, search_group_by does not handle null values
-                    auto [str_chunk_view, _] =
+                    auto pw =
                         segment_.chunk_view<std::string_view>(field_id_,
                                                               chunk_id);
-                    str_view_map_[chunk_id] = std::move(str_chunk_view);
+                    pw_map_[chunk_id] = std::move(pw);
                 }
-                auto& str_chunk_view = str_view_map_[chunk_id];
+                auto& pw = pw_map_[chunk_id];
+                auto [str_chunk_view, _] = pw.get();
                 std::string_view str_val_view =
                     str_chunk_view.operator[](inner_offset);
                 return std::string(str_val_view.data(), str_val_view.length());
             } else {
-                Span<T> span = segment_.chunk_data<T>(field_id_, chunk_id);
-                auto raw = span.operator[](inner_offset);
+                auto pw = segment_.chunk_data<T>(field_id_, chunk_id);
+                auto raw = pw.get().operator[](inner_offset);
                 return raw;
             }
         } else {

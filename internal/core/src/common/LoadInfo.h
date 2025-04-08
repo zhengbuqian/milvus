@@ -21,16 +21,20 @@
 #include <vector>
 
 #include "Types.h"
-#include "common/CDataType.h"
 
 // NOTE: field_id can be system field
 // NOTE: Refer to common/SystemProperty.cpp for details
 struct FieldBinlogInfo {
     int64_t field_id;
     int64_t row_count = -1;
+    // num of rows in each binlog file.
+    // TODO: why is this field used only in SegmentGrowingImpl? Are we missing the
+    // logic in sealed?
     std::vector<int64_t> entries_nums;
     bool enable_mmap{false};
     std::vector<std::string> insert_files;
+
+    // std::vector<std::shared_ptr<milvus::ArrowDataWrapper>> data_FOR_TEST{};
 };
 
 struct LoadFieldDataInfo {
@@ -38,8 +42,9 @@ struct LoadFieldDataInfo {
     // Set empty to disable mmap,
     // mmap file path will be {mmap_dir_path}/{segment_id}/{field_id}
     std::string mmap_dir_path = "";
-    std::string url;
     int64_t storage_version = 0;
+
+    // bool FOR_TEST{false};
 };
 
 struct LoadDeletedRecordInfo {

@@ -530,38 +530,33 @@ PhyUnaryRangeFilterExpr::ExecArrayEqualForIndex(EvalCtx& context,
             }
 
             // filtering by index, get candidates.
-            std::function<const milvus::ArrayView*(int64_t)> retrieve;
+            std::function<bool(milvus::proto::plan::Array&/*val*/, int64_t/*offset*/)> is_same;
 
-            // avoid use-after-free
-            milvus::ArrayView array_view_tmp;
             if (segment_->is_chunked()) {
-                retrieve = [this, &array_view_tmp](
-                               int64_t offset) -> const milvus::ArrayView* {
+                is_same = [this, reverse](
+                        milvus::proto::plan::Array& val,
+                        int64_t offset) -> bool {
                     auto [chunk_idx, chunk_offset] =
                         segment_->get_chunk_by_offset(field_id_, offset);
-                    const auto& chunk =
+                    auto pw =
                         segment_->template chunk_view<milvus::ArrayView>(
                             field_id_, chunk_idx);
-                    array_view_tmp = std::move(chunk.first[chunk_offset]);
-                    return &array_view_tmp;
+                    auto chunk = pw.get();
+                    return chunk.first[chunk_offset].is_same_array(val) ^ reverse;
                 };
             } else {
                 auto size_per_chunk = segment_->size_per_chunk();
-                retrieve = [ size_per_chunk, this ](int64_t offset) -> auto{
+                is_same = [this, size_per_chunk, reverse](milvus::proto::plan::Array& val, int64_t offset) -> bool {
                     auto chunk_idx = offset / size_per_chunk;
                     auto chunk_offset = offset % size_per_chunk;
-                    const auto& chunk =
+                    auto pw =
                         segment_->template chunk_data<milvus::ArrayView>(
                             field_id_, chunk_idx);
-                    return chunk.data() + chunk_offset;
+                    auto chunk = pw.get();
+                    auto array_view = chunk.data() + chunk_offset;
+                    return array_view->is_same_array(val) ^ reverse;
                 };
             }
-
-            // compare the array via the raw data.
-            auto filter = [&retrieve, &val, reverse](size_t offset) -> bool {
-                auto data_ptr = retrieve(offset);
-                return data_ptr->is_same_array(val) ^ reverse;
-            };
 
             // collect all candidates.
             std::unordered_set<size_t> candidates;
@@ -600,7 +595,7 @@ PhyUnaryRangeFilterExpr::ExecArrayEqualForIndex(EvalCtx& context,
             TargetBitmap res(active_count_);
             // run post-filter. The filter will only be executed once in the framework.
             for (const auto& candidate : candidates) {
-                res[candidate] = filter(candidate);
+                res[candidate] = is_same(val, candidate);
             }
             return res;
         });
@@ -1226,8 +1221,7 @@ PhyUnaryRangeFilterExpr::ExecRangeVisitorImplJsonForIndex() {
                 if (!json_pair.second) {
                     return false;
                 }
-                auto json = milvus::Json(json_pair.first.data(),
-                                         json_pair.first.size());
+                auto& json = json_pair.first;
                 switch (op_type) {
                     case proto::plan::GreaterThan:
                         if constexpr (std::is_same_v<GetType,
