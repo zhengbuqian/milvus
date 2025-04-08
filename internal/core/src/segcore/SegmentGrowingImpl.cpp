@@ -20,6 +20,7 @@
 #include <type_traits>
 #include <variant>
 
+#include "cachinglayer/CacheSlot.h"
 #include "common/Consts.h"
 #include "common/EasyAssert.h"
 #include "common/FieldData.h"
@@ -36,6 +37,8 @@
 #include "storage/ThreadPools.h"
 
 namespace milvus::segcore {
+
+using namespace milvus::cachinglayer;
 
 int64_t
 SegmentGrowingImpl::PreInsert(int64_t size) {
@@ -396,12 +399,12 @@ SegmentGrowingImpl::LoadDeletedRecord(const LoadDeletedRecordInfo& info) {
     deleted_record_.LoadPush(pks, timestamps);
 }
 
-SpanBase
+PinWrapper<SpanBase>
 SegmentGrowingImpl::chunk_data_impl(FieldId field_id, int64_t chunk_id) const {
-    return get_insert_record().get_span_base(field_id, chunk_id);
+    return PinWrapper<SpanBase>(get_insert_record().get_span_base(field_id, chunk_id));
 }
 
-std::pair<std::vector<std::string_view>, FixedVector<bool>>
+PinWrapper<std::pair<std::vector<std::string_view>, FixedVector<bool>>>
 SegmentGrowingImpl::chunk_string_view_impl(
     FieldId field_id,
     int64_t chunk_id,
@@ -411,7 +414,7 @@ SegmentGrowingImpl::chunk_string_view_impl(
               "chunk string view impl not implement for growing segment");
 }
 
-std::pair<std::vector<ArrayView>, FixedVector<bool>>
+PinWrapper<std::pair<std::vector<ArrayView>, FixedVector<bool>>>
 SegmentGrowingImpl::chunk_array_view_impl(
     FieldId field_id,
     int64_t chunk_id,
@@ -421,7 +424,7 @@ SegmentGrowingImpl::chunk_array_view_impl(
               "chunk array view impl not implement for growing segment");
 }
 
-std::pair<std::vector<std::string_view>, FixedVector<bool>>
+PinWrapper<std::pair<std::vector<std::string_view>, FixedVector<bool>>>
 SegmentGrowingImpl::chunk_view_by_offsets(
     FieldId field_id,
     int64_t chunk_id,

@@ -36,13 +36,7 @@ class SegmentSealed : public SegmentInternalInterface {
     DropFieldData(const FieldId field_id) = 0;
 
     virtual void
-    LoadFieldData(FieldId field_id, FieldDataInfo& data) = 0;
-    virtual void
-    MapFieldData(const FieldId field_id, FieldDataInfo& data) = 0;
-    virtual void
     AddFieldDataInfoForSealed(const LoadFieldDataInfo& field_data_info) = 0;
-    virtual void
-    WarmupChunkCache(const FieldId field_id, bool mmap_enabled) = 0;
     virtual void
     RemoveFieldFile(const FieldId field_id) = 0;
     virtual void
@@ -53,9 +47,6 @@ class SegmentSealed : public SegmentInternalInterface {
     virtual void
     LoadTextIndex(FieldId field_id,
                   std::unique_ptr<index::TextMatchIndex> index) = 0;
-
-    virtual InsertRecord<true>&
-    get_insert_record() = 0;
 
     virtual index::IndexBase*
     GetJsonIndex(FieldId field_id, std::string path) const override {

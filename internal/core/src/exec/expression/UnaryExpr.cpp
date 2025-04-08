@@ -533,9 +533,10 @@ PhyUnaryRangeFilterExpr::ExecArrayEqualForIndex(EvalCtx& context,
                 retrieve = [this](int64_t offset) -> const milvus::ArrayView* {
                     auto [chunk_idx, chunk_offset] =
                         segment_->get_chunk_by_offset(field_id_, offset);
-                    const auto& chunk =
+                    auto pw =
                         segment_->template chunk_data<milvus::ArrayView>(
                             field_id_, chunk_idx);
+                    auto chunk = pw.get();
                     return chunk.data() + chunk_offset;
                 };
             } else {
@@ -543,9 +544,10 @@ PhyUnaryRangeFilterExpr::ExecArrayEqualForIndex(EvalCtx& context,
                 retrieve = [ size_per_chunk, this ](int64_t offset) -> auto {
                     auto chunk_idx = offset / size_per_chunk;
                     auto chunk_offset = offset % size_per_chunk;
-                    const auto& chunk =
+                    auto pw =
                         segment_->template chunk_data<milvus::ArrayView>(
                             field_id_, chunk_idx);
+                    auto chunk = pw.get();
                     return chunk.data() + chunk_offset;
                 };
             }

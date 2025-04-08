@@ -10,13 +10,10 @@
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
 #pragma once
-#include <cstddef>
+
 #include <unordered_map>
 
 #include "common/Types.h"
-#include "log/Log.h"
-#include "mmap/Column.h"
-#include "mmap/ChunkedColumn.h"
 
 namespace milvus {
 
@@ -105,7 +102,7 @@ class SkipIndex {
     void
     LoadString(milvus::FieldId field_id,
                int64_t chunk_id,
-               const T& var_column) {
+               T& var_column) {
         int num_rows = var_column.NumRows();
         auto chunkMetrics = std::make_unique<FieldChunkMetrics>();
         if (num_rows > 0) {
@@ -294,7 +291,7 @@ class SkipIndex {
 
     template <typename T>
     metricInfo<std::string>
-    ProcessStringFieldMetrics(const T& var_column) {
+    ProcessStringFieldMetrics(T& var_column) {
         int num_rows = var_column.NumRows();
         // find first not null value
         int64_t start = 0;

@@ -21,6 +21,7 @@
 #include <vector>
 #include <utility>
 
+#include "cachinglayer/CacheSlot.h"
 #include "AckResponder.h"
 #include "ConcurrentVector.h"
 #include "DeletedRecord.h"
@@ -34,6 +35,8 @@
 #include "query/PlanNode.h"
 
 namespace milvus::segcore {
+
+using namespace milvus::cachinglayer;
 
 class SegmentGrowingImpl : public SegmentGrowing {
  public:
@@ -85,7 +88,7 @@ class SegmentGrowingImpl : public SegmentGrowing {
     CreateTextIndex(FieldId field_id) override;
 
  public:
-    const InsertRecord<>&
+    const InsertRecord<false>&
     get_insert_record() const {
         return insert_record_;
     }
@@ -348,11 +351,6 @@ class SegmentGrowingImpl : public SegmentGrowing {
         return insert_record_.search_pk(pk, timestamp);
     }
 
-    std::vector<SegOffset>
-    search_pk(const PkType& pk, int64_t insert_barrier) const override {
-        return insert_record_.search_pk(pk, insert_barrier);
-    }
-
     bool
     is_field_exist(FieldId field_id) const override {
         return schema_->get_fields().find(field_id) !=
@@ -363,35 +361,25 @@ class SegmentGrowingImpl : public SegmentGrowing {
     int64_t
     num_chunk(FieldId field_id) const override;
 
-    SpanBase
+    PinWrapper<SpanBase>
     chunk_data_impl(FieldId field_id, int64_t chunk_id) const override;
 
-    std::pair<std::vector<std::string_view>, FixedVector<bool>>
+    PinWrapper<std::pair<std::vector<std::string_view>, FixedVector<bool>>>
     chunk_string_view_impl(
         FieldId field_id,
         int64_t chunk_id,
         std::optional<std::pair<int64_t, int64_t>> offset_len) const override;
 
-    std::pair<std::vector<ArrayView>, FixedVector<bool>>
+    PinWrapper<std::pair<std::vector<ArrayView>, FixedVector<bool>>>
     chunk_array_view_impl(
         FieldId field_id,
         int64_t chunk_id,
         std::optional<std::pair<int64_t, int64_t>> offset_len) const override;
 
-    std::pair<std::vector<std::string_view>, FixedVector<bool>>
+    PinWrapper<std::pair<std::vector<std::string_view>, FixedVector<bool>>>
     chunk_view_by_offsets(FieldId field_id,
                           int64_t chunk_id,
                           const FixedVector<int32_t>& offsets) const override;
-
-    std::pair<BufferView, FixedVector<bool>>
-    get_chunk_buffer(FieldId field_id,
-                     int64_t chunk_id,
-                     int64_t start_offset,
-                     int64_t length) const override {
-        PanicInfo(
-            ErrorCode::Unsupported,
-            "get_chunk_buffer interface not supported for growing segment");
-    }
 
     void
     check_search(const query::Plan* plan) const override {
