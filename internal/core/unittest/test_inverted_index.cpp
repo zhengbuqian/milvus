@@ -27,7 +27,7 @@ using namespace milvus;
 
 namespace milvus::test {
 auto
-gen_field_meta(int64_t collection_id = 1,
+gen_field_data_meta(int64_t collection_id = 1,
                int64_t partition_id = 2,
                int64_t segment_id = 3,
                int64_t field_id = 101,
@@ -109,7 +109,7 @@ test_run() {
     int64_t index_version = 4000;
     int64_t lack_binlog_row = 100;
 
-    auto field_meta = test::gen_field_meta(collection_id,
+    auto field_meta = test::gen_field_data_meta(collection_id,
                                            partition_id,
                                            segment_id,
                                            field_id,
@@ -518,7 +518,7 @@ test_string() {
     int64_t index_version = 4001;
     int64_t lack_binlog_row = 100;
 
-    auto field_meta = test::gen_field_meta(collection_id,
+    auto field_meta = test::gen_field_data_meta(collection_id,
                                            partition_id,
                                            segment_id,
                                            field_id,

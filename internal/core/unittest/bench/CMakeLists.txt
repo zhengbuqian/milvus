@@ -9,32 +9,32 @@
 # is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 # or implied. See the License for the specific language governing permissions and limitations under the License
 
-include_directories(${CMAKE_HOME_DIRECTORY}/src)
-include_directories(${CMAKE_HOME_DIRECTORY}/unittest)
+# include_directories(${CMAKE_HOME_DIRECTORY}/src)
+# include_directories(${CMAKE_HOME_DIRECTORY}/unittest)
 
-set(bench_srcs
-    bench_naive.cpp
-    bench_search.cpp
-)
+# set(bench_srcs
+#     bench_naive.cpp
+#     bench_search.cpp
+# )
 
-set(indexbuilder_bench_srcs
-        bench_indexbuilder.cpp
-)
+# set(indexbuilder_bench_srcs
+#         bench_indexbuilder.cpp
+# )
 
-add_executable(all_bench ${bench_srcs})
-target_link_libraries(all_bench
-        milvus_core
-        knowhere
-        pthread
-        )
+# add_executable(all_bench ${bench_srcs})
+# target_link_libraries(all_bench
+#         milvus_core
+#         knowhere
+#         pthread
+#         )
 
-target_link_libraries(all_bench benchmark_main)
+# target_link_libraries(all_bench benchmark_main)
 
-add_executable(indexbuilder_bench ${indexbuilder_bench_srcs})
-target_link_libraries(indexbuilder_bench
-        milvus_core
-        knowhere
-        pthread
-        )
+# add_executable(indexbuilder_bench ${indexbuilder_bench_srcs})
+# target_link_libraries(indexbuilder_bench
+#         milvus_core
+#         knowhere
+#         pthread
+#         )
 
-target_link_libraries(indexbuilder_bench benchmark_main)
+# target_link_libraries(indexbuilder_bench benchmark_main)
