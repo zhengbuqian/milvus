@@ -342,9 +342,8 @@ struct InsertRecord {
                 auto column = dynamic_cast<ChunkedColumn*>(data);
                 auto num_chunk = column->num_chunks();
                 for (int i = 0; i < num_chunk; ++i) {
-                    auto pw = column->GetChunk(i);
-                    auto pks =
-                        reinterpret_cast<const int64_t*>(pw.get());
+                    auto pw = column->DataOfChunk(i);
+                    auto pks = reinterpret_cast<const int64_t*>(pw.get());
                     auto chunk_num_rows = column->chunk_row_nums(i);
                     for (int j = 0; j < chunk_num_rows; ++j) {
                         pk2offset_->insert(pks[j], offset++);
@@ -354,8 +353,7 @@ struct InsertRecord {
             }
             case DataType::VARCHAR: {
                 auto column =
-                    dynamic_cast<ChunkedVariableColumn<std::string>*>(
-                        data);
+                    dynamic_cast<ChunkedVariableColumn<std::string>*>(data);
 
                 auto num_chunk = column->num_chunks();
                 for (int i = 0; i < num_chunk; ++i) {

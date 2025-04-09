@@ -383,8 +383,7 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
 
     SchemaPtr schema_;
     int64_t id_;
-    // TODO(tiered storage 1): 很多目前标记为 const 的方法，如果他们可能会触发缓存更新
-    // 就不应该标记为 const。
+    // TODO(tiered storage 1): 检查所有删除了const标记的方法，也许应该把改动的缓存成员改成mutable。
     mutable std::unordered_map<FieldId, std::shared_ptr<ChunkedColumnBase>>
         fields_;
     std::unordered_set<FieldId> mmap_fields_;

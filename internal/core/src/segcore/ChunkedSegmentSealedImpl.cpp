@@ -475,8 +475,15 @@ ChunkedSegmentSealedImpl::chunk_string_view_impl(
     AssertInfo(get_bit(field_data_ready_bitset_, field_id),
                "Can't get bitset element at " + std::to_string(field_id.get()));
     if (auto it = fields_.find(field_id); it != fields_.end()) {
-        auto variable_column = std::dynamic_pointer_cast<ChunkedVariableColumn<std::string>>(it->second);
-        return variable_column->StringViews(chunk_id, offset_len);
+        auto column = it->second;
+        auto str_column = std::dynamic_pointer_cast<ChunkedVariableColumn<std::string>>(column);
+        if (str_column) {
+            return str_column->StringViews(chunk_id, offset_len);
+        }
+        auto json_column = std::dynamic_pointer_cast<ChunkedVariableColumn<milvus::Json>>(column);
+        if (json_column) {
+            return json_column->StringViews(chunk_id, offset_len);
+        }
     }
     PanicInfo(ErrorCode::UnexpectedError,
               "chunk_string_view_impl only used for variable column field ");
@@ -491,8 +498,15 @@ ChunkedSegmentSealedImpl::chunk_view_by_offsets(
     AssertInfo(get_bit(field_data_ready_bitset_, field_id),
                "Can't get bitset element at " + std::to_string(field_id.get()));
     if (auto it = fields_.find(field_id); it != fields_.end()) {
-        auto variable_column = std::dynamic_pointer_cast<ChunkedVariableColumn<std::string>>(it->second);
-        return variable_column->ViewsByOffsets(chunk_id, offsets);
+        auto column = it->second;
+        auto str_column = std::dynamic_pointer_cast<ChunkedVariableColumn<std::string>>(column);
+        if (str_column) {
+            return str_column->ViewsByOffsets(chunk_id, offsets);
+        }
+        auto json_column = std::dynamic_pointer_cast<ChunkedVariableColumn<milvus::Json>>(column);
+        if (json_column) {
+            return json_column->ViewsByOffsets(chunk_id, offsets);
+        }
     }
     PanicInfo(ErrorCode::UnexpectedError,
               "chunk_view_by_offsets only used for variable column field ");
@@ -765,7 +779,7 @@ ChunkedSegmentSealedImpl::search_sorted_pk(const PkType& pk,
 
             auto num_chunk = pk_column->num_chunks();
             for (int i = 0; i < num_chunk; ++i) {
-                auto pw = pk_column->GetChunk(i);
+                auto pw = pk_column->DataOfChunk(i);
                 auto src = reinterpret_cast<const int64_t*>(pw.get());
                 auto chunk_row_num = pk_column->chunk_row_nums(i);
                 auto it = std::lower_bound(

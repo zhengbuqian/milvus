@@ -43,7 +43,6 @@ namespace milvus {
 
 using namespace milvus::cachinglayer;
 
-// 只有sealed在用
 class ChunkedColumnBase {
  public:
     // memory mode ctor
@@ -52,6 +51,7 @@ class ChunkedColumnBase {
         : nullable_(field_meta.is_nullable()),
           num_chunks_(translator->num_cells()),
           slot_(Manager::GetInstance().CreateCacheSlot(std::move(translator))) {
+        num_rows_ = GetNumRowsUntilChunk().back();
     }
 
     virtual ~ChunkedColumnBase() = default;

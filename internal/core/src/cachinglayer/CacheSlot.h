@@ -45,6 +45,7 @@ class CacheSlot final : public std::enable_shared_from_this<CacheSlot<CellT>> {
         "CellT must have a CellByteSize() method that returns a size_t "
         "representing the memory consumption of the cell");
 
+    // TODO(tiered storage 1): 添加配置：允许配置为总是加载所有cell且不evict
     CacheSlot(std::unique_ptr<Translator<CellT>> translator,
               EvictionManager* eviction_manager)
         : cells_(translator->num_cells()),
