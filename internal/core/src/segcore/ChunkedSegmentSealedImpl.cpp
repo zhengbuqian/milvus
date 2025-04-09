@@ -303,9 +303,8 @@ ChunkedSegmentSealedImpl::LoadFieldData(const LoadFieldDataInfo& load_info) {
                         field_id, num_rows, column->DataByteSize());
                 } else {
                     auto num_chunk = column->num_chunks();
-                    auto col = std::dynamic_pointer_cast<ChunkedColumn>(column);
                     for (int i = 0; i < num_chunk; ++i) {
-                        auto pw = col->Span(i);
+                        auto pw = column->Span(i);
                         LoadPrimitiveSkipIndex(field_id,
                                                i,
                                                data_type,
@@ -436,8 +435,7 @@ ChunkedSegmentSealedImpl::chunk_data_impl(FieldId field_id,
     AssertInfo(get_bit(field_data_ready_bitset_, field_id),
                "Can't get bitset element at " + std::to_string(field_id.get()));
     if (auto it = fields_.find(field_id); it != fields_.end()) {
-        auto column = std::dynamic_pointer_cast<ChunkedColumn>(it->second);
-        return column->Span(chunk_id);
+        return it->second->Span(chunk_id);
     }
     // // TODO(tiered storage 1): 真的有可能调用到这儿么？应该不会，先注释，测试没有问题了再删掉
     // auto ir_accessor = pin_insert_record();
@@ -458,8 +456,7 @@ ChunkedSegmentSealedImpl::chunk_array_view_impl(
     AssertInfo(get_bit(field_data_ready_bitset_, field_id),
                "Can't get bitset element at " + std::to_string(field_id.get()));
     if (auto it = fields_.find(field_id); it != fields_.end()) {
-        auto array_column = std::dynamic_pointer_cast<ChunkedArrayColumn>(it->second);
-        return array_column->ArrayViews(chunk_id, offset_len);
+        return it->second->ArrayViews(chunk_id, offset_len);
     }
     PanicInfo(ErrorCode::UnexpectedError,
               "chunk_array_view_impl only used for chunk column field ");
@@ -476,14 +473,7 @@ ChunkedSegmentSealedImpl::chunk_string_view_impl(
                "Can't get bitset element at " + std::to_string(field_id.get()));
     if (auto it = fields_.find(field_id); it != fields_.end()) {
         auto column = it->second;
-        auto str_column = std::dynamic_pointer_cast<ChunkedVariableColumn<std::string>>(column);
-        if (str_column) {
-            return str_column->StringViews(chunk_id, offset_len);
-        }
-        auto json_column = std::dynamic_pointer_cast<ChunkedVariableColumn<milvus::Json>>(column);
-        if (json_column) {
-            return json_column->StringViews(chunk_id, offset_len);
-        }
+        return column->StringViews(chunk_id, offset_len);
     }
     PanicInfo(ErrorCode::UnexpectedError,
               "chunk_string_view_impl only used for variable column field ");
@@ -498,15 +488,7 @@ ChunkedSegmentSealedImpl::chunk_view_by_offsets(
     AssertInfo(get_bit(field_data_ready_bitset_, field_id),
                "Can't get bitset element at " + std::to_string(field_id.get()));
     if (auto it = fields_.find(field_id); it != fields_.end()) {
-        auto column = it->second;
-        auto str_column = std::dynamic_pointer_cast<ChunkedVariableColumn<std::string>>(column);
-        if (str_column) {
-            return str_column->ViewsByOffsets(chunk_id, offsets);
-        }
-        auto json_column = std::dynamic_pointer_cast<ChunkedVariableColumn<milvus::Json>>(column);
-        if (json_column) {
-            return json_column->ViewsByOffsets(chunk_id, offsets);
-        }
+        return it->second->ViewsByOffsets(chunk_id, offsets);
     }
     PanicInfo(ErrorCode::UnexpectedError,
               "chunk_view_by_offsets only used for variable column field ");
