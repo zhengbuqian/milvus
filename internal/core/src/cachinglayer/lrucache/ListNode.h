@@ -52,7 +52,6 @@ class ListNode {
     // ListNode is not movable/copyable because it contains a shared_mutex.
     // ListNode also should not be movable/copyable because that would make
     // all Pins::node_ dangling pointers.
-
     folly::SemiFuture<NodePin>
     pin();
 

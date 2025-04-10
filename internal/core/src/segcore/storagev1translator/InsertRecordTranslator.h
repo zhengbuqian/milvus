@@ -6,7 +6,6 @@
 #include "cachinglayer/Translator.h"
 #include "cachinglayer/Utils.h"
 #include "common/Schema.h"
-#include "common/Types.h"
 #include "segcore/InsertRecord.h"
 #include "segcore/ChunkedSegmentSealedImpl.h"
 

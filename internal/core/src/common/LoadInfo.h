@@ -21,7 +21,7 @@
 #include <vector>
 
 #include "Types.h"
-#include "common/CDataType.h"
+#include "common/ArrowDataWrapper.h"
 
 // NOTE: field_id can be system field
 // NOTE: Refer to common/SystemProperty.cpp for details
@@ -31,6 +31,8 @@ struct FieldBinlogInfo {
     std::vector<int64_t> entries_nums;
     bool enable_mmap{false};
     std::vector<std::string> insert_files;
+
+    std::vector<std::shared_ptr<milvus::ArrowDataWrapper>> data_FOR_TEST{};
 };
 
 struct LoadFieldDataInfo {
@@ -40,6 +42,8 @@ struct LoadFieldDataInfo {
     std::string mmap_dir_path = "";
     std::string url;
     int64_t storage_version = 0;
+
+    bool FOR_TEST{false};
 };
 
 struct LoadDeletedRecordInfo {

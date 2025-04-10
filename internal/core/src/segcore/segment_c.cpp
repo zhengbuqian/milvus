@@ -306,7 +306,6 @@ PreInsert(CSegmentInterface c_segment, int64_t size, int64_t* offset) {
 
 CStatus
 Delete(CSegmentInterface c_segment,
-       int64_t reserved_offset,  // deprecated
        int64_t size,
        const uint8_t* ids,
        const uint64_t ids_size,
@@ -317,7 +316,7 @@ Delete(CSegmentInterface c_segment,
     AssertInfo(suc, "failed to parse pks from ids");
     try {
         auto res =
-            segment->Delete(reserved_offset, size, pks.get(), timestamps);
+            segment->Delete(size, pks.get(), timestamps);
         return milvus::SuccessCStatus();
     } catch (std::exception& e) {
         return milvus::FailureCStatus(&e);

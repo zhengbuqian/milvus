@@ -179,8 +179,6 @@ ChunkedSegmentSealedImpl::LoadScalarIndex(const LoadIndexInfo& info) {
         fields_.erase(field_id);
         set_bit(field_data_ready_bitset_, field_id, false);
     }
-
-    lck.unlock();
 }
 
 void
@@ -201,13 +199,14 @@ ChunkedSegmentSealedImpl::LoadFieldData(const LoadFieldDataInfo& load_info) {
                              std::stol(b.substr(b.find_last_of('/') + 1));
                   });
 
-        auto field_data_info =
-            FieldDataInfo(field_id.get(), num_rows, load_info.mmap_dir_path);
+        auto field_data_info = FieldDataInfo(field_id.get(),
+                                             num_rows,
+                                             load_info.mmap_dir_path,
+                                             &(info.data_FOR_TEST));
         LOG_INFO("segment {} loads field {} with num_rows {}",
                  this->get_segment_id(),
                  field_id.get(),
                  num_rows);
-
 
         auto field_meta = schema_->operator[](field_id);
         if (SystemProperty::Instance().IsSystem(field_id)) {
@@ -250,7 +249,8 @@ ChunkedSegmentSealedImpl::LoadFieldData(const LoadFieldDataInfo& load_info) {
                     insert_files,
                     info.enable_mmap
                         ? StorageType::FILE_MMAP
-                        : StorageType::MEMORY);
+                        : StorageType::MEMORY,
+                    load_info.FOR_TEST);
 
             std::shared_ptr<milvus::ChunkedColumnBase> column{};
 
@@ -414,20 +414,6 @@ ChunkedSegmentSealedImpl::is_mmap_field(FieldId field_id) const {
     return mmap_fields_.find(field_id) != mmap_fields_.end();
 }
 
-// TODO(tiered storage 1) for tiered storage support:
-// Design a generic Pin interface.
-// Some methods returns a view, those view must carry a Pin so that the pinned cell
-// stays in memory during the view's lifetime.
-// 1. SpanBase
-// 2. BufferView
-// 3. method: chunk_string_view_impl/chunk_array_view_impl/chunk_view_by_offsets
-// 4. get_timestamps returns a const ConcurrentVector<Timestamp>&.
-// 5. if possible, pin only necessary cells, not all.
-// 6. InsertRecord 把 is_sealed 和 not 用模板分开，然后把 CacheSlot 塞进去？
-// 7. search_sorted_pk 需要 capture Pin
-//
-// These TODOs must be implemented before we can enable eviction in caching layer.
-
 PinWrapper<SpanBase>
 ChunkedSegmentSealedImpl::chunk_data_impl(FieldId field_id,
                                           int64_t chunk_id) const {
@@ -437,11 +423,6 @@ ChunkedSegmentSealedImpl::chunk_data_impl(FieldId field_id,
     if (auto it = fields_.find(field_id); it != fields_.end()) {
         return it->second->Span(chunk_id);
     }
-    // // TODO(tiered storage 1): 真的有可能调用到这儿么？应该不会，先注释，测试没有问题了再删掉
-    // auto ir_accessor = pin_insert_record();
-    // auto field_data = ir_accessor->get_cell_of(0)->get_data_base(field_id);
-    // // system field
-    // return field_data->get_span_base(0);
     PanicInfo(ErrorCode::UnexpectedError,
               "chunk_data_impl only used for chunk column field ");
 }
@@ -939,20 +920,6 @@ ChunkedSegmentSealedImpl::bulk_subscript_impl(ChunkedColumnBase* field,
             static_cast<const void*>(column->ValueAt(offset)));
     }
 }
-
-// template <typename S, typename T>
-// void
-// ChunkedSegmentSealedImpl::bulk_subscript_impl(ChunkedColumnBase* column,
-//                                               const int64_t* seg_offsets,
-//                                               int64_t count,
-//                                               void* dst_raw) {
-//     auto field = reinterpret_cast<ChunkedVariableColumn<S>*>(column);
-//     auto dst = reinterpret_cast<T*>(dst_raw);
-//     for (int64_t i = 0; i < count; ++i) {
-//         auto offset = seg_offsets[i];
-//         dst[i] = std::move(T(field->RawAt(offset)));
-//     }
-// }
 
 template <typename S, typename T>
 void
@@ -1478,8 +1445,7 @@ ChunkedSegmentSealedImpl::search_ids(const IdArray& id_array,
 }
 
 SegcoreError
-ChunkedSegmentSealedImpl::Delete(int64_t reserved_offset,  // deprecated
-                                 int64_t size,
+ChunkedSegmentSealedImpl::Delete(int64_t size,
                                  const IdArray* ids,
                                  const Timestamp* timestamps_raw) {
     auto field_id = schema_->get_primary_field_id().value_or(FieldId(-1));

@@ -57,8 +57,7 @@ class SegmentGrowingImpl : public SegmentGrowing {
 
     // TODO: add id into delete log, possibly bitmap
     SegcoreError
-    Delete(int64_t reserved_offset,
-           int64_t size,
+    Delete(int64_t size,
            const IdArray* pks,
            const Timestamp* timestamps) override;
 

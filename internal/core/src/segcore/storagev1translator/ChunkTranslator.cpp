@@ -1,3 +1,14 @@
+// Copyright (C) 2019-2025 Zilliz. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance
+// with the License. You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software distributed under the License
+// is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+// or implied. See the License for the specific language governing permissions and limitations under the License
+
 #include "segcore/storagev1translator/ChunkTranslator.h"
 
 #include <filesystem>
@@ -21,7 +32,8 @@ ChunkTranslator::ChunkTranslator(int64_t segment_id,
                                  FieldMeta field_meta,
                                  FieldDataInfo field_data_info,
                                  std::vector<std::string> insert_files,
-                                 milvus::cachinglayer::StorageType storage_type)
+                                 milvus::cachinglayer::StorageType storage_type,
+                                 bool FOR_TEST)
     : segment_id_(segment_id),
       key_(fmt::format("seg_{}_f_{}", segment_id, field_data_info.field_id)),
       storage_type_(storage_type) {
@@ -29,16 +41,19 @@ ChunkTranslator::ChunkTranslator(int64_t segment_id,
     AssertInfo(
         !SystemProperty::Instance().IsSystem(FieldId(field_data_info.field_id)),
         "ChunkTranslator not supported for system field");
-    auto parallel_degree =
-        static_cast<uint64_t>(DEFAULT_FIELD_MAX_MEMORY_LIMIT / FILE_SLICE_SIZE);
-    // TODO(tiered storage 4): storagev2 should use executor to perform download.
-    auto& pool = ThreadPools::GetThreadPool(milvus::ThreadPoolPriority::MIDDLE);
-    pool.Submit(LoadArrowReaderFromRemote,
-                insert_files,
-                field_data_info.arrow_reader_channel);
-    LOG_INFO("segment {} submits load field {} task to thread pool",
-             segment_id_,
-             field_data_info.field_id);
+
+    if (!FOR_TEST) {
+        auto parallel_degree = static_cast<uint64_t>(
+            DEFAULT_FIELD_MAX_MEMORY_LIMIT / FILE_SLICE_SIZE);
+        auto& pool =
+            ThreadPools::GetThreadPool(milvus::ThreadPoolPriority::MIDDLE);
+        pool.Submit(LoadArrowReaderFromRemote,
+                    insert_files,
+                    field_data_info.arrow_reader_channel);
+        LOG_INFO("segment {} submits load field {} task to thread pool",
+                 segment_id_,
+                 field_data_info.field_id);
+    }
 
     auto data_type = field_meta.get_data_type();
     auto cid = 0;

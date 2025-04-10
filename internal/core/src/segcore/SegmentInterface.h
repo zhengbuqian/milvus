@@ -105,12 +105,8 @@ class SegmentInterface {
                        int64_t num_rows,
                        int64_t field_size) = 0;
 
-    //  virtual int64_t
-    //  PreDelete(int64_t size) = 0;
-
     virtual SegcoreError
-    Delete(int64_t reserved_offset,
-           int64_t size,
+    Delete(int64_t size,
            const IdArray* pks,
            const Timestamp* timestamps) = 0;
 
@@ -318,7 +314,7 @@ class SegmentInternalInterface : public SegmentInterface {
     void
     LoadStringSkipIndex(FieldId field_id,
                         int64_t chunk_id,
-                        T& var_column) {
+                        const T& var_column) {
         skip_index_.LoadString(field_id, chunk_id, var_column);
     }
 

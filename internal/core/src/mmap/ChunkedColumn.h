@@ -57,14 +57,14 @@ class ChunkedColumnBase {
     virtual ~ChunkedColumnBase() = default;
 
     PinWrapper<const char*>
-    DataOfChunk(int chunk_id) {
+    DataOfChunk(int chunk_id) const {
         auto ca = SemiInlineGet(slot_->PinCells({chunk_id}));
         auto chunk = ca->get_cell_of(chunk_id);
         return PinWrapper<const char*>(ca, chunk->Data());
     }
 
     bool
-    IsValid(size_t offset) {
+    IsValid(size_t offset) const {
         if (!nullable_) {
             return true;
         }
@@ -73,7 +73,7 @@ class ChunkedColumnBase {
     }
 
     bool
-    IsValid(int64_t chunk_id, int64_t offset) {
+    IsValid(int64_t chunk_id, int64_t offset) const {
         if (nullable_) {
             auto ca =
                 SemiInlineGet(slot_->PinCells({static_cast<cid_t>(chunk_id)}));
@@ -108,7 +108,7 @@ class ChunkedColumnBase {
     }
 
     int64_t
-    chunk_row_nums(int64_t chunk_id) {
+    chunk_row_nums(int64_t chunk_id) const {
         auto ca = SemiInlineGet(slot_->PinCells({chunk_id}));
         auto chunk = ca->get_cell_of(chunk_id);
         return chunk->RowNums();
@@ -159,7 +159,7 @@ class ChunkedColumnBase {
     }
 
     PinWrapper<Chunk*>
-    GetChunk(int64_t chunk_id) {
+    GetChunk(int64_t chunk_id) const {
         auto ca = SemiInlineGet(slot_->PinCells({chunk_id}));
         auto chunk = ca->get_cell_of(chunk_id);
         return PinWrapper<Chunk*>(ca, chunk);
@@ -246,13 +246,13 @@ class ChunkedVariableColumn : public ChunkedColumnBase {
 
     // 这个代码本来就有bug？如果operator[]返回的是值类型，RawAt返回的string_view可能是无效的，因为指向的内存可能已经被释放了。
     std::string_view
-    RawAt(const int i) {
+    RawAt(const int i) const {
         return std::string_view((*this)[i]);
     }
 
  private:
     ViewType
-    operator[](const int i) {
+    operator[](const int i) const {
         if (i < 0 || i > num_rows_) {
             PanicInfo(ErrorCode::OutOfRange, "index out of range");
         }
@@ -277,7 +277,7 @@ class ChunkedArrayColumn : public ChunkedColumnBase {
     }
 
     ScalarArray
-    RawAt(const int i) {
+    RawAt(const int i) const {
         auto [chunk_id, offset_in_chunk] = GetChunkIDByOffset(i);
         auto ca =
             SemiInlineGet(slot_->PinCells({static_cast<cid_t>(chunk_id)}));

@@ -335,8 +335,7 @@ SegmentGrowingImpl::LoadFieldData(const LoadFieldDataInfo& infos) {
 }
 
 SegcoreError
-SegmentGrowingImpl::Delete(int64_t reserved_begin,
-                           int64_t size,
+SegmentGrowingImpl::Delete(int64_t size,
                            const IdArray* ids,
                            const Timestamp* timestamps_raw) {
     auto field_id = schema_->get_primary_field_id().value_or(FieldId(-1));

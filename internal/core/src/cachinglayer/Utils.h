@@ -31,7 +31,7 @@ enum class StorageType {
 };
 
 // TODO(tiered storage 4): this is a temporary function to get the result of a future
-// by running it on the inline executor.
+// by running it on the inline executor. We don't need this once we are fully async.
 template <typename T>
 T
 SemiInlineGet(folly::SemiFuture<T>&& future) {

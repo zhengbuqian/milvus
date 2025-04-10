@@ -167,8 +167,7 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
     debug() const override;
 
     SegcoreError
-    Delete(int64_t reserved_offset,
-           int64_t size,
+    Delete(int64_t size,
            const IdArray* pks,
            const Timestamp* timestamps) override;
 
@@ -262,14 +261,6 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
                         const int64_t* seg_offsets,
                         int64_t count,
                         T* dst_raw);
-
-    // 这个好像从来没有调用
-    // template <typename S, typename T = S>
-    // static void
-    // bulk_subscript_impl(ChunkedColumnBase* field,
-    //                     const int64_t* seg_offsets,
-    //                     int64_t count,
-    //                     void* dst_raw);
 
     template <typename S, typename T = S>
     static void

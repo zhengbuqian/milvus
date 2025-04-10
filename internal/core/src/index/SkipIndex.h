@@ -102,7 +102,7 @@ class SkipIndex {
     void
     LoadString(milvus::FieldId field_id,
                int64_t chunk_id,
-               T& var_column) {
+               const T& var_column) {
         int num_rows = var_column.NumRows();
         auto chunkMetrics = std::make_unique<FieldChunkMetrics>();
         if (num_rows > 0) {
@@ -291,7 +291,7 @@ class SkipIndex {
 
     template <typename T>
     metricInfo<std::string>
-    ProcessStringFieldMetrics(T& var_column) {
+    ProcessStringFieldMetrics(const T& var_column) {
         int num_rows = var_column.NumRows();
         // find first not null value
         int64_t start = 0;
