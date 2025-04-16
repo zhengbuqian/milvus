@@ -212,7 +212,7 @@ class TestChunkSegment : public testing::TestWithParam<bool> {
         auto arrow_pk_field = arrow::field(
             "pk",
             pk_is_string ? arrow::utf8() : arrow::int64(),
-            true,
+            false,
             arrow::key_value_metadata({milvus_storage::ARROW_FIELD_ID_KEY},
                                       {std::to_string(101)}));
         auto arrow_ts_field = arrow::field(

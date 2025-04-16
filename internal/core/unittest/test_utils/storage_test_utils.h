@@ -157,8 +157,9 @@ PrepareSingleFieldInsertBinlog(int64_t collection_id,
         auto file = "./data/test" + std::to_string(field_id) + "/" + std::to_string(i);
         files.push_back(file);
         row_counts.push_back(row_count);
-
-        auto insert_data = std::make_shared<InsertData>(field_data);
+        auto payload_reader =
+            std::make_shared<milvus::storage::PayloadReader>(field_data);
+        auto insert_data = std::make_shared<InsertData>(payload_reader);
         FieldDataMeta field_data_meta{
             collection_id, partition_id, segment_id, field_id};
         insert_data->SetFieldDataMeta(field_data_meta);
