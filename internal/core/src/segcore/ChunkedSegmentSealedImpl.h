@@ -72,7 +72,7 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
 
     bool
     Contain(const PkType& pk) const override {
-        return pin_insert_record()->get_cell_of(0)->contain(pk);
+        return insert_record_.contain(pk);
     }
 
     void
@@ -134,7 +134,12 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
  public:
     size_t
     GetMemoryUsageInBytes() const override {
-        return stats_.mem_size.load() + deleted_record_->mem_size();
+        return stats_.mem_size.load() + deleted_record_.mem_size();
+    }
+
+    InsertRecord<true>&
+    get_insert_record() override {
+        return insert_record_;
     }
 
     int64_t
@@ -271,12 +276,12 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
 
     const ConcurrentVector<Timestamp>&
     get_timestamps() const override {
-        return pin_insert_record()->get_cell_of(0)->timestamps_;
+        return insert_record_.timestamps_;
     }
 
  private:
     void
-    LoadSystemFieldInternal(FieldId field_id, FieldDataInfo& data);
+    load_system_field_internal(FieldId field_id, FieldDataInfo& data);
 
     template <typename S, typename T = S>
     static void
@@ -287,28 +292,28 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
 
     template <typename S, typename T = S>
     static void
-    bulk_subscript_impl(ChunkedColumnBase* field,
+    bulk_subscript_impl(ChunkedColumnInterface* field,
                         const int64_t* seg_offsets,
                         int64_t count,
                         T* dst_raw);
 
     template <typename S, typename T = S>
     static void
-    bulk_subscript_ptr_impl(ChunkedColumnBase* field,
+    bulk_subscript_ptr_impl(ChunkedColumnInterface* field,
                             const int64_t* seg_offsets,
                             int64_t count,
                             google::protobuf::RepeatedPtrField<T>* dst_raw);
 
     template <typename T>
     static void
-    bulk_subscript_array_impl(ChunkedColumnBase* column,
+    bulk_subscript_array_impl(ChunkedColumnInterface* column,
                               const int64_t* seg_offsets,
                               int64_t count,
                               google::protobuf::RepeatedPtrField<T>* dst);
 
     static void
     bulk_subscript_impl(int64_t element_sizeof,
-                        ChunkedColumnBase* field,
+                        ChunkedColumnInterface* field,
                         const int64_t* seg_offsets,
                         int64_t count,
                         void* dst_raw);
@@ -325,7 +330,7 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
     void
     update_row_count(int64_t row_count) {
         num_rows_ = row_count;
-        deleted_record_->set_sealed_row_count(row_count);
+        deleted_record_.set_sealed_row_count(row_count);
     }
 
     void
@@ -362,11 +367,24 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
     bool
     generate_interim_index(const FieldId field_id);
 
-    // used only by unit test
-    std::shared_ptr<CacheSlot<InsertRecord<true>>>
-    get_insert_record_slot() const override {
-        return insert_record_slot_;
-    }
+    void
+    init_timestamp_index(const std::vector<Timestamp>& timestamps,
+                         size_t num_rows);
+
+    void
+    load_field_data_internal(const LoadFieldDataInfo& load_info);
+
+    void
+    load_column_group_data_internal(const LoadFieldDataInfo& load_info);
+
+    void
+    load_field_data_common(
+        FieldId field_id,
+        const std::shared_ptr<ChunkedColumnInterface>& column,
+        size_t num_rows,
+        DataType data_type,
+        bool enable_mmap,
+        bool is_proxy_column);
 
  private:
     // InsertRecord needs to pin pk column.
@@ -389,24 +407,17 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
     // vector field index
     SealedIndexingRecord vector_indexings_;
 
-    std::shared_ptr<CellAccessor<InsertRecord<true>>>
-    pin_insert_record() const {
-        return insert_record_slot_->PinCells({0})
-            .via(&folly::InlineExecutor::instance())
-            .get();
-    }
-
     // inserted fields data and row_ids, timestamps
-    mutable std::shared_ptr<CacheSlot<InsertRecord<true>>> insert_record_slot_;
+    InsertRecord<true> insert_record_;
 
     // deleted pks
-    mutable std::unique_ptr<DeletedRecord<true>> deleted_record_;
+    mutable DeletedRecord<true> deleted_record_;
 
     LoadFieldDataInfo field_data_info_;
 
     SchemaPtr schema_;
     int64_t id_;
-    mutable std::unordered_map<FieldId, std::shared_ptr<ChunkedColumnBase>>
+    mutable std::unordered_map<FieldId, std::shared_ptr<ChunkedColumnInterface>>
         fields_;
     std::unordered_set<FieldId> mmap_fields_;
 
