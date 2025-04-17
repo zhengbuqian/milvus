@@ -51,7 +51,7 @@ class ListNode {
 
     // ListNode is not movable/copyable because it contains a shared_mutex.
     // ListNode also should not be movable/copyable because that would make
-    // all Pins::node_ dangling pointers.
+    // all NodePin::node_ dangling pointers.
     folly::SemiFuture<NodePin>
     pin();
 
@@ -153,6 +153,7 @@ class ListNode {
 
     mutable std::shared_mutex mtx_;
     std::chrono::steady_clock::time_point last_touch_;
+    // a nullptr dlist_ means this node is not in any DList, and is not prone to cache management.
     DList* dlist_;
     ListNode* prev_ = nullptr;
     ListNode* next_ = nullptr;

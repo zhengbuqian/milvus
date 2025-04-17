@@ -71,6 +71,11 @@ struct ResourceUsage {
     operator!=(const ResourceUsage& rhs) const {
         return !(*this == rhs);
     }
+
+    bool
+    GreaterThanZero() const {
+        return memory_bytes > 0 || file_bytes > 0;
+    }
 };
 
 inline bool

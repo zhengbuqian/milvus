@@ -32,17 +32,30 @@ class DList {
         : max_memory_(max_memory), touch_config_(touch_config) {
     }
 
+    // This method should not fail: even if the new limit is 0, we can still succeed by evicting all items.
+    // Will throw if new_limit is negative.
+    void
+    UpdateLimit(const ResourceUsage& new_limit);
+
+    bool
+    IsEmpty() const;
+
  private:
     friend class ListNode;
 
     // this methods uses a global lock.
     bool
-    reserveMemory(ResourceUsage size);
+    reserveMemory(const ResourceUsage& size);
+    // try to evict some items so that after eviction, we have more slack than expected_slack.
+    // return the size that is evicted. 
+    // Must be called under the lock of list_mtx_.
+    ResourceUsage
+    tryEvict(const ResourceUsage& expected_slack);
     // used only when load failed, ListNode is not in the list, thus it's safe to substract on atomic without lock.
     // this will only cause used_memory_ to decrease, which will not affect the correctness of concurrent
     // reserveMemory().
     void
-    releaseMemoryWhenLoadFailed(ResourceUsage size);
+    releaseMemoryWhenLoadFailed(const ResourceUsage& size);
     // caller must guarantee that the current thread holds the lock of list_node->mtx_.
     void
     touchItem(ListNode* list_node);
@@ -59,8 +72,9 @@ class DList {
     ListNode* tail_ = nullptr;
     // TODO(tiered storage 3): benchmark folly::DistributedMutex for this usecase.
     mutable std::mutex list_mtx_;
+    // access to used_memory_ and max_memory_ must be done under the lock of list_mtx_
     std::atomic<ResourceUsage> used_memory_{};
-    const ResourceUsage max_memory_;
+    ResourceUsage max_memory_;
     const TouchConfig touch_config_;
 };
 

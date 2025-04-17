@@ -14,8 +14,9 @@
 #include <memory>
 
 #include "cachinglayer/CacheSlot.h"
-#include "cachinglayer/EvictionManager.h"
 #include "cachinglayer/Translator.h"
+#include "cachinglayer/lrucache/DList.h"
+#include "cachinglayer/Utils.h"
 
 namespace milvus::cachinglayer {
 
@@ -27,6 +28,13 @@ class Manager {
     static Manager&
     GetInstance();
 
+    // This function is not thread safe, must be called before any CacheSlot is created.
+    // Once created, CacheSlot is out of Manager's control, thus this function can't check
+    // the above condition. Calling this function in such a case is UB.
+    // TODO(tiered storage 2): 需要考虑是否需要支持动态更新，可以通过每一个cache slot销毁时的callback来实现感知是否为空。
+    static void
+    ConfigureTieredStorage(bool enabled_globally, int64_t memory_limit_bytes, int64_t disk_limit_bytes);
+
     Manager(const Manager&) = delete;
     Manager&
     operator=(const Manager&) = delete;
@@ -34,13 +42,13 @@ class Manager {
     Manager&
     operator=(Manager&&) = delete;
 
-    ~Manager();
+    ~Manager() = default;
 
     template <typename CellT>
     std::shared_ptr<CacheSlot<CellT>>
     CreateCacheSlot(std::unique_ptr<Translator<CellT>> translator) {
         return std::make_shared<CacheSlot<CellT>>(
-            std::move(translator), eviction_manager_.get());
+            std::move(translator), dlist_.get());
     }
 
     // memory overhead for managing all cache slots/cells/translators/policies.
@@ -48,8 +56,14 @@ class Manager {
     memory_overhead() const;
 
  private:
-    Manager();  // Private constructor
-    std::unique_ptr<EvictionManager> eviction_manager_;
+    friend void ConfigureTieredStorage(bool enabled_globally, int64_t memory_limit_bytes, int64_t disk_limit_bytes);
+
+    Manager() = default;  // Private constructor
+
+    std::unique_ptr<internal::DList> dlist_{nullptr};
+    bool enable_global_tiered_storage_{false};
+    int64_t memory_limit_bytes_{0};
+    int64_t disk_limit_bytes_{0};
 };  // class Manager
 
 }  // namespace milvus::cachinglayer

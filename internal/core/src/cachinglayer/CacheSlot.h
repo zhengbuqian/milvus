@@ -21,7 +21,7 @@
 #include <folly/futures/SharedPromise.h>
 #include <folly/Synchronized.h>
 
-#include "cachinglayer/EvictionManager.h"
+#include "cachinglayer/lrucache/DList.h"
 #include "cachinglayer/lrucache/ListNode.h"
 #include "cachinglayer/Translator.h"
 #include "cachinglayer/Utils.h"
@@ -47,10 +47,10 @@ class CacheSlot final : public std::enable_shared_from_this<CacheSlot<CellT>> {
 
     // TODO(tiered storage 1): 添加配置：允许配置为总是加载所有cell且不evict
     CacheSlot(std::unique_ptr<Translator<CellT>> translator,
-              EvictionManager* eviction_manager)
+              internal::DList* dlist)
         : cells_(translator->num_cells()),
           translator_(std::move(translator)),
-          em_(eviction_manager),
+          dlist_(dlist),
           load_delay_ms_(2) {
         for (cid_t i = 0; i < translator_->num_cells(); ++i) {
             new (&cells_[i])
@@ -185,7 +185,7 @@ class CacheSlot final : public std::enable_shared_from_this<CacheSlot<CellT>> {
      public:
         CacheCell() = default;
         CacheCell(CacheSlot<CellT>* slot, cid_t cid, ResourceUsage size)
-            : internal::ListNode(slot->em_->dlist()),
+            : internal::ListNode(slot->dlist_),
               slot_(slot),
               cid_(cid),
               size_(size) {
@@ -271,7 +271,7 @@ class CacheSlot final : public std::enable_shared_from_this<CacheSlot<CellT>> {
     // - Each CellT is pinned when attempting to be loaded(no matter already loaded or not), and
     //   unpinned when: 1. load failed; 2. load succeeded and CellAccessor destroyed.
     // - Each CellT is marked as inserted when load succeeds.
-    EvictionManager* em_;
+    internal::DList* dlist_;
 };
 
 // - A thin wrapper for accessing cells in a CacheSlot, does not own any logic of loading/eviction, etc.

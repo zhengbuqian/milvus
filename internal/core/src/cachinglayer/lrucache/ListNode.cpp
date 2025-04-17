@@ -52,8 +52,10 @@ ListNode::ListNode(DList* dlist)
 }
 
 ListNode::~ListNode() {
-    std::unique_lock<std::shared_mutex> lock(mtx_);
-    dlist_->popItem(this);
+    if (dlist_) {
+        std::unique_lock<std::shared_mutex> lock(mtx_);
+        dlist_->popItem(this);
+    }
 }
 
 folly::SemiFuture<ListNode::NodePin>
@@ -90,7 +92,7 @@ ListNode::pin() {
         state_ = State::LOADING;
         lock.unlock();
 
-        if (!dlist_->reserveMemory(size())) {
+        if (dlist_ && !dlist_->reserveMemory(size())) {
             lock.lock();
             state_ = State::ERROR;
             // TODO(tiered storage 2): better error handling.
@@ -108,7 +110,9 @@ ListNode::pin() {
                 return folly::makeSemiFuture<NodePin>(this);
             })
             .deferError([this](folly::exception_wrapper&& e) {
-                dlist_->releaseMemoryWhenLoadFailed(size());
+                if (dlist_) {
+                    dlist_->releaseMemoryWhenLoadFailed(size());
+                }
                 std::unique_lock<std::shared_mutex> lock(mtx_);
                 state_ = State::ERROR;
                 error_ = folly::make_exception_wrapper<std::runtime_error>(
@@ -151,7 +155,7 @@ ListNode::unpin() {
 void
 ListNode::touch() {
     auto now = std::chrono::steady_clock::now();
-    if (now - last_touch_ > dlist_->touch_config_.refresh_window) {
+    if (dlist_ && now - last_touch_ > dlist_->touch_config_.refresh_window) {
         dlist_->touchItem(this);
         last_touch_ = now;
     }
