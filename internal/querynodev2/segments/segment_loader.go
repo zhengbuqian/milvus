@@ -773,6 +773,7 @@ func (loader *segmentLoader) loadSealedSegment(ctx context.Context, loadInfo *qu
 		return nil
 	}
 	defer func() {
+		// TODO: do we need to call C.DeleteSegment(segment.ptr) here?
 		if err != nil {
 			// Release partial loaded segment data if load failed.
 			segment.ReleaseSegmentData()
@@ -808,7 +809,7 @@ func (loader *segmentLoader) loadSealedSegment(ctx context.Context, loadInfo *qu
 		if err != nil {
 			return err
 		}
-		if (!typeutil.IsVectorType(field.GetDataType()) && !segment.HasRawData(fieldID)) || field.GetIsPrimaryKey() {
+		if !segment.HasRawData(fieldID) || field.GetIsPrimaryKey() {
 			log.Info("field index doesn't include raw data, load binlog...",
 				zap.Int64("fieldID", fieldID),
 				zap.String("index", info.IndexInfo.GetIndexName()),

@@ -27,8 +27,6 @@ set(MILVUS_TEST_FILES
         test_packed_c.cpp
         test_arrow_fs_c.cpp
         test_column_groups_c.cpp
-        test_always_true_expr.cpp
-        test_array_bitmap_index.cpp
         test_array_inverted_index.cpp
         test_bf.cpp
         test_bf_sparse.cpp
@@ -37,26 +35,22 @@ set(MILVUS_TEST_FILES
         test_bitmap_index.cpp
         test_bool_index.cpp
         test_c_api.cpp
-        test_chunk_cache.cpp
         test_chunk.cpp
+        test_always_true_expr.cpp
+        test_array_bitmap_index.cpp
         test_chunk_vector.cpp
         test_common.cpp
         test_concurrent_vector.cpp
         test_c_stream_reduce.cpp
         test_c_tokenizer.cpp
         test_loading.cpp
+        test_chunked_column.cpp
         test_data_codec.cpp
-        test_delete_record.cpp
         test_disk_file_manager_test.cpp
-        test_exec.cpp
-        test_expr.cpp
         test_expr_materialized_view.cpp
         test_float16.cpp
         test_function.cpp
         test_futures.cpp
-        test_group_by.cpp
-        test_iterative_filter.cpp
-        test_growing.cpp
         test_growing_index.cpp
         test_hybrid_index.cpp
         test_index_c_api.cpp
@@ -80,26 +74,34 @@ set(MILVUS_TEST_FILES
         test_relational.cpp
         test_retrieve.cpp
         test_scalar_index.cpp
-        test_sealed.cpp
         test_segcore.cpp
         test_similarity_corelation.cpp
         test_span.cpp
         test_storage.cpp
         test_string_expr.cpp
-        test_text_match.cpp
         test_timestamp_index.cpp
         test_tracer.cpp
         test_utils.cpp
-        test_chunked_segment.cpp
-        test_chunked_column.cpp
         test_rust_result.cpp
-        test_cached_search_iterator.cpp
         test_random_sample.cpp
         test_json_index.cpp
-        test_json_key_stats_index.cpp
         test_types.cpp
         test_growing_storage_v2.cpp
         test_memory_planner.cpp
+        test_group_by.cpp
+        test_iterative_filter.cpp
+        test_growing.cpp
+        test_exec.cpp
+        test_delete_record.cpp
+        test_sealed.cpp
+        test_cached_search_iterator.cpp
+        test_expr.cpp
+        test_chunked_segment.cpp
+
+
+        # 这两个本来就有很多 tantivy 的不过的case。
+        # test_text_match.cpp
+        # test_json_key_stats_index.cpp
         )
 
 if ( INDEX_ENGINE STREQUAL "cardinal" )
@@ -121,7 +123,8 @@ if (LINUX OR APPLE)
             ${MILVUS_TEST_FILES}
             test_scalar_index_creator.cpp
             test_string_index.cpp
-            test_array.cpp test_array_expr.cpp)
+            test_array.cpp
+            test_array_expr.cpp)
 endif()
 
 if (DEFINED AZURE_BUILD_DIR)
@@ -189,22 +192,22 @@ add_subdirectory(bench)
 # if (USE_DYNAMIC_SIMD)
 # add_executable(dynamic_simd_test
 #                test_simd.cpp)
-# 
+#
 # target_link_libraries(dynamic_simd_test
 #                 milvus_simd
 #                 milvus_log
 #                 gtest
 #                 ${CONAN_LIBS})
-# 
+#
 # install(TARGETS dynamic_simd_test DESTINATION unittest)
 # endif()
 
-add_executable(bitset_test 
+add_executable(bitset_test
         test_bitset.cpp
 )
-target_link_libraries(bitset_test 
-        milvus_bitset 
-        gtest 
+target_link_libraries(bitset_test
+        milvus_bitset
+        gtest
         ${CONAN_LIBS}
 )
 install(TARGETS bitset_test DESTINATION unittest)

@@ -157,7 +157,7 @@ TEST_F(TestGrowingStorageV2, LoadFieldData) {
         schema->AddDebugField("str", milvus::DataType::VARCHAR, true);
     schema->set_primary_field_id(pk_fid);
     auto segment = milvus::segcore::CreateGrowingSegment(
-        schema, milvus::segcore::empty_index_meta);
+        schema, milvus::empty_index_meta);
     LoadFieldDataInfo load_info;
     load_info.field_infos = {
         {0,

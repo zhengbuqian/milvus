@@ -131,14 +131,6 @@ EncodeAndUploadIndexSlice(ChunkManager* chunk_manager,
                           FieldDataMeta field_meta,
                           std::string object_key);
 
-std::pair<std::string, size_t>
-EncodeAndUploadFieldSlice(ChunkManager* chunk_manager,
-                          void* buf,
-                          int64_t element_count,
-                          FieldDataMeta field_data_meta,
-                          const FieldMeta& field_meta,
-                          std::string object_key);
-
 std::vector<std::future<std::unique_ptr<DataCodec>>>
 GetObjectData(ChunkManager* remote_chunk_manager,
               const std::vector<std::string>& remote_files);
@@ -159,9 +151,6 @@ GetNumRowsForLoadInfo(const LoadFieldDataInfo& load_info);
 
 void
 ReleaseArrowUnused();
-
-// size_t
-// getCurrentRSS();
 
 ChunkManagerPtr
 CreateChunkManager(const StorageConfig& storage_config);
@@ -208,6 +197,7 @@ SortByPath(std::vector<std::string>& paths) {
               });
 }
 
+// used only for test
 inline std::shared_ptr<ArrowDataWrapper>
 ConvertFieldDataToArrowDataWrapper(const FieldDataPtr& field_data) {
     BaseEventData event_data;
