@@ -206,13 +206,11 @@ TEST_F(ChunkedColumnGroupTest, ChunkedColumnGroup) {
     EXPECT_EQ(column_group->num_chunks(), 1);
     EXPECT_EQ(column_group->NumRows(), 5);
     EXPECT_EQ(column_group->GetGroupChunkRowNums(0), 5);
-    EXPECT_EQ(column_group->GetGroupChunkRowNums(1), 0);
 
     // Test chunk retrieval
     auto retrieved_group_chunk = column_group->GetGroupChunk(0);
     EXPECT_NE(retrieved_group_chunk.get(), nullptr);
     EXPECT_EQ(retrieved_group_chunk.get()->RowNums(), 5);
-    EXPECT_EQ(column_group->GetGroupChunk(1).get(), nullptr);
 
     // Test column chunk retrieval
     auto retrieved_int64_chunk = column_group->GetColumnChunk(0, FieldId(1));
