@@ -202,17 +202,17 @@ TEST_F(ChunkedColumnGroupTest, ChunkedColumnGroup) {
         std::vector<int64_t>{5}, "test_key", std::move(group_chunks));
     auto column_group = std::make_shared<ChunkedColumnGroup>(std::move(translator));
 
-    // Test basic properties
+    // basic properties
     EXPECT_EQ(column_group->num_chunks(), 1);
     EXPECT_EQ(column_group->NumRows(), 5);
     EXPECT_EQ(column_group->GetGroupChunkRowNums(0), 5);
 
-    // Test chunk retrieval
+    // Get group chunk
     auto retrieved_group_chunk = column_group->GetGroupChunk(0);
     EXPECT_NE(retrieved_group_chunk.get(), nullptr);
     EXPECT_EQ(retrieved_group_chunk.get()->RowNums(), 5);
 
-    // Test column chunk retrieval
+    // column chunk retrieval
     auto retrieved_int64_chunk = column_group->GetColumnChunk(0, FieldId(1));
     auto retrieved_string_chunk = column_group->GetColumnChunk(0, FieldId(2));
     EXPECT_NE(retrieved_int64_chunk, nullptr);
@@ -221,17 +221,17 @@ TEST_F(ChunkedColumnGroupTest, ChunkedColumnGroup) {
     EXPECT_EQ(retrieved_string_chunk->RowNums(), 5);
     EXPECT_EQ(column_group->GetColumnChunk(0, FieldId(3)), nullptr);
 
-    // Test GetNumRowsUntilChunk
+    // GetNumRowsUntilChunk
     EXPECT_EQ(column_group->GetNumRowsUntilChunk(0), 0);
     EXPECT_EQ(column_group->GetNumRowsUntilChunk(1), 5);
     EXPECT_EQ(column_group->GetNumRowsUntilChunk(2), 5);
 
-    // Test GetNumRowsUntilChunk vector
+    // GetNumRowsUntilChunk vector
     const auto& rows_until_chunk = column_group->GetNumRowsUntilChunk();
     EXPECT_EQ(rows_until_chunk.size(), 1);
     EXPECT_EQ(rows_until_chunk[0], 0);
 
-    // Test boundary conditions
+    // boundary conditions
     EXPECT_EQ(column_group->GetGroupChunkRowNums(100), 0);  // Out of range
     EXPECT_EQ(column_group->GetColumnChunk(100, FieldId(1)), nullptr);  // Out of range
     EXPECT_EQ(column_group->GetColumnChunk(0, FieldId(100)), nullptr);  // Non-existent field
