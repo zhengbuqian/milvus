@@ -72,7 +72,7 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
 
     bool
     Contain(const PkType& pk) const override {
-        return pin_insert_record()->get_cell_of(0)->contain(pk);
+        return insert_record_.contain(pk);
     }
 
     void
@@ -133,6 +133,11 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
     size_t
     GetMemoryUsageInBytes() const override {
         return stats_.mem_size.load() + deleted_record_->mem_size();
+    }
+
+    InsertRecord<true>&
+    get_insert_record() override {
+        return insert_record_;
     }
 
     int64_t
@@ -269,7 +274,7 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
 
     const ConcurrentVector<Timestamp>&
     get_timestamps() const override {
-        return pin_insert_record()->get_cell_of(0)->timestamps_;
+        return insert_record_.timestamps_;
     }
 
  private:
@@ -285,28 +290,28 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
 
     template <typename S, typename T = S>
     static void
-    bulk_subscript_impl(ChunkedColumnBase* field,
+    bulk_subscript_impl(ChunkedColumnInterface* field,
                         const int64_t* seg_offsets,
                         int64_t count,
                         T* dst_raw);
 
     template <typename S, typename T = S>
     static void
-    bulk_subscript_ptr_impl(ChunkedColumnBase* field,
+    bulk_subscript_ptr_impl(ChunkedColumnInterface* field,
                             const int64_t* seg_offsets,
                             int64_t count,
                             google::protobuf::RepeatedPtrField<T>* dst_raw);
 
     template <typename T>
     static void
-    bulk_subscript_array_impl(ChunkedColumnBase* column,
+    bulk_subscript_array_impl(ChunkedColumnInterface* column,
                               const int64_t* seg_offsets,
                               int64_t count,
                               google::protobuf::RepeatedPtrField<T>* dst);
 
     static void
     bulk_subscript_impl(int64_t element_sizeof,
-                        ChunkedColumnBase* field,
+                        ChunkedColumnInterface* field,
                         const int64_t* seg_offsets,
                         int64_t count,
                         void* dst_raw);
@@ -360,11 +365,21 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
     bool
     generate_interim_index(const FieldId field_id);
 
-    // used only by unit test
-    std::shared_ptr<CacheSlot<InsertRecord<true>>>
-    get_insert_record_slot() const override {
-        return insert_record_slot_;
-    }
+    void
+    init_timestamp_index(const std::vector<Timestamp>& timestamps, size_t num_rows);
+
+    void
+    load_field_data_internal(const LoadFieldDataInfo& load_info);
+
+    void
+    load_column_group_data_internal(const LoadFieldDataInfo& load_info);
+
+    void load_field_data_common(FieldId field_id, 
+                                  const std::shared_ptr<ChunkedColumnInterface>& column,
+                                  size_t num_rows,
+                                  DataType data_type,
+                                  bool enable_mmap,
+                                  bool is_proxy_column);
 
  private:
     // InsertRecord needs to pin pk column.
@@ -387,16 +402,8 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
     // vector field index
     SealedIndexingRecord vector_indexings_;
 
-    std::shared_ptr<CellAccessor<InsertRecord<true>>>
-    pin_insert_record() const {
-        return insert_record_slot_->PinCells({0})
-                                 .via(&folly::InlineExecutor::instance())
-                                 .get();
-    }
-
     // inserted fields data and row_ids, timestamps
-    mutable std::shared_ptr<CacheSlot<InsertRecord<true>>>
-        insert_record_slot_;
+    InsertRecord<true> insert_record_;
 
     // deleted pks
     mutable std::unique_ptr<DeletedRecord<true>> deleted_record_;
@@ -406,7 +413,7 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
     SchemaPtr schema_;
     int64_t id_;
     // TODO(tiered storage 1): 检查所有删除了const标记的方法，也许应该把改动的缓存成员改成mutable，并保持方法是const。
-    mutable std::unordered_map<FieldId, std::shared_ptr<ChunkedColumnBase>>
+    mutable std::unordered_map<FieldId, std::shared_ptr<ChunkedColumnInterface>>
         fields_;
     std::unordered_set<FieldId> mmap_fields_;
 
