@@ -140,7 +140,13 @@ GroupChunkTranslator::get_cells(
                               std::move(strategy),
                               row_group_lists);
     });
-
+    LOG_INFO("segment {} submits load fields {} task to thread pool",
+            segment_id_,
+            field_id_list_.ToString());
+    for (size_t i = 0; i < field_id_list_.size(); ++i) {
+        auto field_id = field_id_list_.Get(i);
+        meta_.num_rows_until_chunk_[milvus::FieldId(field_id)].push_back(0);
+    }
     if (!use_mmap_) {
         load_column_group_in_memory();
     } else {
@@ -162,18 +168,18 @@ void
 GroupChunkTranslator::load_column_group_in_memory() {
     std::vector<size_t> row_counts(field_id_list_.size(), 0);
     std::shared_ptr<milvus::ArrowDataWrapper> r;
+    std::vector<std::string> files;
+    std::vector<size_t> file_offsets;
     while (column_group_info_.arrow_reader_channel->pop(r)) {
         for (const auto& table : r->arrow_tables) {
-            process_batch(table, nullptr, nullptr, row_counts);
+            process_batch(table, files, file_offsets, row_counts);
         }
     }
-
-
 }
 
 void
 GroupChunkTranslator::load_column_group_in_mmap() {
-    std::vector<std::shared_ptr<File>> files;
+    std::vector<std::string> files;
     std::vector<size_t> file_offsets;
     std::vector<size_t> row_counts;
 
@@ -185,8 +191,7 @@ GroupChunkTranslator::load_column_group_in_mmap() {
                 std::to_string(field_id);
         auto dir = filepath.parent_path();
         std::filesystem::create_directories(dir);
-        auto file = std::make_shared<File>(File::Open(filepath.string(), O_CREAT | O_TRUNC | O_RDWR));
-        files.push_back(std::move(file));
+        files.push_back(filepath.string());
         file_offsets.push_back(0);
         row_counts.push_back(0);
     }
@@ -194,7 +199,7 @@ GroupChunkTranslator::load_column_group_in_mmap() {
     std::shared_ptr<milvus::ArrowDataWrapper> r;
     while (column_group_info_.arrow_reader_channel->pop(r)) {
         for (const auto& table : r->arrow_tables) {
-            process_batch(table, &files, &file_offsets, row_counts);
+            process_batch(table, files, file_offsets, row_counts);
         }
     }
 }
@@ -202,8 +207,8 @@ GroupChunkTranslator::load_column_group_in_mmap() {
 void
 GroupChunkTranslator::process_batch(
     const std::shared_ptr<arrow::Table>& table,
-    const std::vector<std::shared_ptr<File>>* files,
-    std::vector<size_t>* file_offsets,
+    const std::vector<std::string>& files,
+    std::vector<size_t>& file_offsets,
     std::vector<size_t>& row_counts) {
     // Create chunks for each field in this batch
     std::unordered_map<FieldId, std::shared_ptr<Chunk>> chunks;
@@ -219,6 +224,7 @@ GroupChunkTranslator::process_batch(
         AssertInfo(it != field_metas_.end(), "Field id not found in field_metas");
         const auto& field_meta = it->second;
         const arrow::ArrayVector& array_vec = table->column(i)->chunks();
+        std::cout << "field_id: " << field_id << " array_vec: " << array_vec.size() << std::endl;
         auto dim = IsVectorDataType(field_meta.get_data_type()) &&
                     !IsSparseFloatVectorDataType(field_meta.get_data_type())
                     ? field_meta.get_dim()
@@ -229,8 +235,16 @@ GroupChunkTranslator::process_batch(
             chunk = create_chunk(field_meta, dim, array_vec);
         } else {
             // Mmap mode
-            chunk = create_chunk(field_meta, dim, *(*files)[i], (*file_offsets)[i], array_vec);
-            (*file_offsets)[i] += chunk->Size();
+            int flags = O_RDWR;
+            if (file_offsets[i] == 0) {
+                // First write to this file, create and truncate
+                flags |= O_CREAT | O_TRUNC;
+            }
+            auto file = File::Open(files[i], flags);
+            // should seek to the file offset before writing
+            file.Seek(file_offsets[i], SEEK_SET);
+            chunk = create_chunk(field_meta, dim, file, file_offsets[i], array_vec);
+            file_offsets[i] += chunk->Size();
         }
 
         row_counts[i] += chunk->RowNums();

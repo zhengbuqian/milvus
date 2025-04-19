@@ -81,8 +81,8 @@ class GroupChunkTranslator
 
     void process_batch(
         const std::shared_ptr<arrow::Table>& table,
-        const std::vector<std::shared_ptr<File>>* files,
-        std::vector<size_t>* file_offsets,
+        const std::vector<std::string>& files,
+        std::vector<size_t>& file_offsets,
         std::vector<size_t>& row_counts);
 
     int64_t segment_id_;
