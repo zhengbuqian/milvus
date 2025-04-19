@@ -1387,7 +1387,10 @@ ConvertToArrowRecordBatch(const GeneratedData& dataset,
             auto arrow_data_wrapper =
                 storage::ConvertFieldDataToArrowDataWrapper(field_data_ptr);
             std::shared_ptr<arrow::RecordBatch> batch;
-            arrow_data_wrapper->reader->ReadNext(&batch);
+            auto status = arrow_data_wrapper->reader->ReadNext(&batch);
+            if (!status.ok()) {
+                throw std::runtime_error("Failed to read next batch: " + status.ToString());
+            }
             if (batch) {
                 arrays.push_back(batch->column(0));
             }

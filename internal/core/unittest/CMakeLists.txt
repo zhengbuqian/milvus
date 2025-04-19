@@ -98,7 +98,8 @@ set(MILVUS_TEST_FILES
         test_expr.cpp
         test_chunked_segment.cpp
         test_chunked_column_group.cpp
-
+        test_group_chunk_translator.cpp
+        test_chunked_segment_storage_v2.cpp
 
         # 这两个本来就有很多 tantivy 的不过的case。
         # test_text_match.cpp

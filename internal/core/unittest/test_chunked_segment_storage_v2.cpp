@@ -14,56 +14,67 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <folly/Conv.h>
 #include <arrow/record_batch.h>
 #include <arrow/util/key_value_metadata.h>
+#include <arrow/table_builder.h>
+#include <arrow/type_fwd.h>
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <cstdint>
-#include "arrow/table_builder.h"
-#include "arrow/type_fwd.h"
+#include <iostream>
+#include <memory>
+#include <string>
+#include <vector>
+
 #include "common/Consts.h"
 #include "common/FieldDataInterface.h"
 #include "common/Schema.h"
 #include "common/Types.h"
 #include "expr/ITypeExpr.h"
-#include "gtest/gtest.h"
 #include "index/IndexFactory.h"
 #include "index/IndexInfo.h"
 #include "index/Meta.h"
 #include "milvus-storage/common/constants.h"
-#include "milvus-storage/common/metadata.h"
-#include "mmap/Types.h"
+#include "milvus-storage/filesystem/fs.h"
+#include "milvus-storage/packed/writer.h"
+#include "milvus-storage/format/parquet/file_reader.h"
 #include "pb/plan.pb.h"
 #include "pb/schema.pb.h"
 #include "query/ExecPlanNodeVisitor.h"
 #include "segcore/SegcoreConfig.h"
 #include "segcore/SegmentSealed.h"
-#include "segcore/SegmentSealedImpl.h"
+#include "segcore/ChunkedSegmentSealedImpl.h"
+#include "segcore/SegmentGrowing.h"
+#include "segcore/SegmentGrowingImpl.h"
+#include "segcore/Utils.h"
+#include "segcore/memory_planner.h"
 #include "segcore/Types.h"
-#include <memory>
-#include <numeric>
-#include <string>
-#include <unordered_map>
-#include <vector>
+#include "test_utils/DataGen.h"
 
 using namespace milvus;
+using namespace milvus::segcore;
+using namespace milvus::segcore::storagev1translator;
 
 class TestChunkSegmentStorageV2 : public testing::TestWithParam<bool> {
  protected:
     void
     SetUp() override {
         bool pk_is_string = GetParam();
-        auto schema = std::make_shared<Schema>();
-        auto int64_fid = schema->AddDebugField("int64", DataType::INT64, true);
+        auto schema = std::make_shared<milvus::Schema>();
+        auto int64_fid = schema->AddDebugField("int64", milvus::DataType::INT64, true);
 
         auto pk_fid = schema->AddDebugField(
-            "pk", pk_is_string ? DataType::VARCHAR : DataType::INT64, true);
+            "pk", pk_is_string ? milvus::DataType::VARCHAR : milvus::DataType::INT64, false);
         auto str_fid =
-            schema->AddDebugField("string1", DataType::VARCHAR, true);
+            schema->AddDebugField("string1", milvus::DataType::VARCHAR, true);
         auto str2_fid =
-            schema->AddDebugField("string2", DataType::VARCHAR, true);
-        schema->AddField(
-            FieldName("ts"), TimestampFieldID, DataType::INT64, true);
+            schema->AddDebugField("string2", milvus::DataType::VARCHAR, true);
+        schema->AddField(FieldName("ts"),
+                         TimestampFieldID,
+                         milvus::DataType::INT64,
+                         true,
+                         std::nullopt);
         schema->set_primary_field_id(pk_fid);
         segment = segcore::CreateSealedSegment(
             schema,
@@ -71,154 +82,69 @@ class TestChunkSegmentStorageV2 : public testing::TestWithParam<bool> {
             -1,
             segcore::SegcoreConfig::default_config(),
             false,
-            true,
             true);
-        test_data_count = 10000;
 
-        auto arrow_i64_field = arrow::field(
-            "int64",
-            arrow::int64(),
-            true,
-            arrow::key_value_metadata({milvus_storage::ARROW_FIELD_ID_KEY},
-                                      {std::to_string(100)}));
-        auto arrow_pk_field = arrow::field(
-            "pk",
-            pk_is_string ? arrow::utf8() : arrow::int64(),
-            true,
-            arrow::key_value_metadata({milvus_storage::ARROW_FIELD_ID_KEY},
-                                      {std::to_string(101)}));
-        auto arrow_ts_field = arrow::field(
-            "ts",
-            arrow::int64(),
-            true,
-            arrow::key_value_metadata({milvus_storage::ARROW_FIELD_ID_KEY},
-                                      {std::to_string(1)}));
-        auto arrow_str_field = arrow::field(
-            "string1",
-            arrow::utf8(),
-            true,
-            arrow::key_value_metadata({milvus_storage::ARROW_FIELD_ID_KEY},
-                                      {std::to_string(102)}));
-        auto arrow_str2_field = arrow::field(
-            "string2",
-            arrow::utf8(),
-            true,
-            arrow::key_value_metadata({milvus_storage::ARROW_FIELD_ID_KEY},
-                                      {std::to_string(103)}));
-        std::vector<std::shared_ptr<arrow::Field>> arrow_fields = {
-            arrow_ts_field,
-            arrow_str2_field,
-            arrow_str_field,
-            arrow_pk_field,
-            arrow_i64_field,
-        };
-        auto expected_arrow_schema =
-            std::make_shared<arrow::Schema>(arrow_fields);
-        ASSERT_EQ(schema->ConvertToArrowSchema()->ToString(),
-                  expected_arrow_schema->ToString());
+        // Initialize file system
+        auto conf = milvus_storage::ArrowFileSystemConfig();
+        conf.storage_type = "local";
+        conf.root_path = "/tmp";
+        milvus_storage::ArrowFileSystemSingleton::GetInstance().Init(conf);
+        auto fs = milvus_storage::ArrowFileSystemSingleton::GetInstance().GetArrowFileSystem();
 
-        std::vector<FieldId> field_ids = {
-            int64_fid, pk_fid, TimestampFieldID, str_fid, str2_fid};
-        fields = {{"int64", int64_fid},
-                  {"pk", pk_fid},
-                  {"ts", TimestampFieldID},
-                  {"string1", str_fid},
-                  {"string2", str2_fid}};
+        // Prepare paths and column groups
+        std::vector<std::string> paths = {"/tmp/0.parquet", "/tmp/1.parquet"};
+        std::vector<std::vector<int>> column_groups = {{0, 3, 4}, {1, 2}}; // short columns and long columns
+        auto writer_memory = 16 * 1024 * 1024;
+        auto storage_config = milvus_storage::StorageConfig();
 
-        int start_id = 0;
-        chunk_num = 2;
+        // Create writer
+        milvus_storage::PackedRecordBatchWriter writer(
+            fs, paths, schema->ConvertToArrowSchema(), storage_config, column_groups, writer_memory);
 
-        std::vector<FieldDataInfo> field_infos;
-        for (int i = 0; i < 2; i++) {
-            FieldDataInfo field_info;
-            field_info.field_id = int64_t(i);
-            field_info.row_count = test_data_count * chunk_num;
-            field_infos.push_back(field_info);
-        }
+        // Generate and write data
+        int64_t row_count = 0;
 
-        std::vector<std::string> str_data;
-        for (int i = 0; i < test_data_count * chunk_num; i++) {
-            str_data.push_back("test" + std::to_string(i));
-        }
-        std::sort(str_data.begin(), str_data.end());
-        std::vector<bool> validity(test_data_count, true);
-
-        // generate data
-        for (int chunk_id = 0; chunk_id < chunk_num;
-             chunk_id++, start_id += test_data_count) {
+        for (int chunk_id = 0; chunk_id < chunk_num; chunk_id++) {
             std::vector<int64_t> test_data(test_data_count);
-            std::iota(test_data.begin(), test_data.end(), start_id);
+            std::iota(test_data.begin(), test_data.end(), chunk_id * test_data_count);
 
-            auto builder = std::make_shared<arrow::Int64Builder>();
-            auto status = builder->AppendValues(
-                test_data.begin(), test_data.end(), validity.begin());
-            ASSERT_TRUE(status.ok());
-            auto res = builder->Finish();
-            ASSERT_TRUE(res.ok());
-            std::shared_ptr<arrow::Array> arrow_int64;
-            arrow_int64 = res.ValueOrDie();
-
-            auto str_builder = std::make_shared<arrow::StringBuilder>();
+            std::vector<std::string> str_data;
             for (int i = 0; i < test_data_count; i++) {
-                auto status = str_builder->Append(str_data[start_id + i]);
-                ASSERT_TRUE(status.ok());
+                str_data.push_back("test" + std::to_string(chunk_id * test_data_count + i));
             }
-            std::shared_ptr<arrow::Array> arrow_str;
-            status = str_builder->Finish(&arrow_str);
-            ASSERT_TRUE(status.ok());
+            std::sort(str_data.begin(), str_data.end());
 
-            auto short_column_schema = arrow::schema(
-                {arrow_fields[0], arrow_fields[3], arrow_fields[4]});
-            std::shared_ptr<arrow::RecordBatch> short_column_record_batch =
-                arrow::RecordBatch::Make(
-                    short_column_schema,
-                    arrow_int64->length(),
-                    {arrow_int64,
-                     pk_is_string ? arrow_str : arrow_int64,
-                     arrow_int64});
-
-            auto short_column_channel = std::make_shared<ArrowDataWrapper>();
-            short_column_channel->record_batches.push_back(
-                std::move(short_column_record_batch));
-
-            field_infos[0].arrow_reader_channel->push(short_column_channel);
-
-            auto long_column_schema =
-                arrow::schema({arrow_fields[1], arrow_fields[2]});
-            std::shared_ptr<arrow::RecordBatch> long_column_record_batch =
-                arrow::RecordBatch::Make(long_column_schema,
-                                         arrow_int64->length(),
-                                         {arrow_str, arrow_str});
-
-            auto long_column_channel = std::make_shared<ArrowDataWrapper>();
-            long_column_channel->record_batches.push_back(
-                std::move(long_column_record_batch));
-
-            field_infos[1].arrow_reader_channel->push(long_column_channel);
+            // Create record batch
+            auto dataset = DataGen(schema, test_data_count);
+            auto record_batch = ConvertToArrowRecordBatch(dataset, 0, schema->ConvertToArrowSchema());
+            row_count += test_data_count;
+            EXPECT_TRUE(writer.Write(record_batch).ok());
         }
+        EXPECT_TRUE(writer.Close().ok());
 
-        for (int i = 0; i < field_infos.size(); i++) {
-            field_infos[i].arrow_reader_channel->close();
-        }
-
-        // load
-        segment->LoadColumnGroupData(
-            FieldId(0),
-            field_infos[0],
-            milvus_storage::FieldIDList(
-                std::vector<milvus_storage::FieldID>{1, 101, 100}),
-            false);
-        segment->LoadColumnGroupData(
-            FieldId(1),
-            field_infos[1],
-            milvus_storage::FieldIDList(
-                std::vector<milvus_storage::FieldID>{103, 102}),
-            false);
+        LoadFieldDataInfo load_info;
+        load_info.field_infos.emplace(
+            int64_t(0),
+            FieldBinlogInfo{int64_t(0),
+                        static_cast<int64_t>(row_count),
+                        std::vector<int64_t>(chunk_num * test_data_count),
+                        false,
+                        std::vector<std::string>({paths[0]})});
+        load_info.field_infos.emplace(
+            int64_t(1),
+            FieldBinlogInfo{int64_t(1),
+                        static_cast<int64_t>(row_count),
+                        std::vector<int64_t>(chunk_num * test_data_count),
+                        false,
+                        std::vector<std::string>({paths[1]})});
+        load_info.mmap_dir_path = "";
+        load_info.storage_version = 2;
+        segment->LoadFieldData(load_info);
     }
 
     segcore::SegmentSealedUPtr segment;
-    int chunk_num;
-    int test_data_count;
+    int chunk_num = 2;
+    int test_data_count = 10000;
     std::unordered_map<std::string, FieldId> fields;
 };
 
@@ -236,7 +162,7 @@ TEST_P(TestChunkSegmentStorageV2, TestTermExpr) {
         filter_data.push_back(v);
     }
     auto term_filter_expr = std::make_shared<expr::TermFilterExpr>(
-        expr::ColumnInfo(fields.at("int64"), DataType::INT64), filter_data);
+        expr::ColumnInfo(fields.at("int64"), milvus::DataType::INT64), filter_data);
     BitsetType final;
     auto plan = std::make_shared<plan::FilterBitsNode>(DEFAULT_PLANNODE_ID,
                                                        term_filter_expr);
@@ -253,7 +179,7 @@ TEST_P(TestChunkSegmentStorageV2, TestTermExpr) {
     // query pk expr
     auto pk_term_filter_expr = std::make_shared<expr::TermFilterExpr>(
         expr::ColumnInfo(fields.at("pk"),
-                         pk_is_string ? DataType::VARCHAR : DataType::INT64),
+                         pk_is_string ? milvus::DataType::VARCHAR : milvus::DataType::INT64),
         pk_is_string ? filter_str_data : filter_data);
     plan = std::make_shared<plan::FilterBitsNode>(DEFAULT_PLANNODE_ID,
                                                   pk_term_filter_expr);
@@ -273,7 +199,7 @@ TEST_P(TestChunkSegmentStorageV2, TestTermExpr) {
 
     pk_term_filter_expr = std::make_shared<expr::TermFilterExpr>(
         expr::ColumnInfo(fields.at("pk"),
-                         pk_is_string ? DataType::VARCHAR : DataType::INT64),
+                         pk_is_string ? milvus::DataType::VARCHAR : milvus::DataType::INT64),
         filter_data2);
     plan = std::make_shared<plan::FilterBitsNode>(DEFAULT_PLANNODE_ID,
                                                   pk_term_filter_expr);
@@ -285,7 +211,7 @@ TEST_P(TestChunkSegmentStorageV2, TestTermExpr) {
 TEST_P(TestChunkSegmentStorageV2, TestCompareExpr) {
     srand(time(NULL));
     bool pk_is_string = GetParam();
-    DataType pk_data_type = pk_is_string ? DataType::VARCHAR : DataType::INT64;
+    milvus::DataType pk_data_type = pk_is_string ? milvus::DataType::VARCHAR : milvus::DataType::INT64;
     auto expr = std::make_shared<expr::CompareExpr>(
         pk_is_string ? fields.at("string1") : fields.at("int64"),
         fields.at("pk"),
@@ -300,8 +226,8 @@ TEST_P(TestChunkSegmentStorageV2, TestCompareExpr) {
 
     expr = std::make_shared<expr::CompareExpr>(fields.at("string1"),
                                                fields.at("string2"),
-                                               DataType::VARCHAR,
-                                               DataType::VARCHAR,
+                                               milvus::DataType::VARCHAR,
+                                               milvus::DataType::VARCHAR,
                                                proto::plan::OpType::Equal);
     plan = std::make_shared<plan::FilterBitsNode>(DEFAULT_PLANNODE_ID, expr);
     final = query::ExecuteQueryExpr(
@@ -321,13 +247,14 @@ TEST_P(TestChunkSegmentStorageV2, TestCompareExpr) {
     index_meta.index_version = rand();
     file_manager_ctx.indexMeta = index_meta;
     index::CreateIndexInfo create_index_info;
-    create_index_info.field_type = DataType::INT64;
+    create_index_info.field_type = milvus::DataType::INT64;
     create_index_info.index_type = index::INVERTED_INDEX_TYPE;
     auto index = index::IndexFactory::GetInstance().CreateScalarIndex(
         create_index_info, file_manager_ctx);
     std::vector<int64_t> data(test_data_count * chunk_num);
     for (int i = 0; i < chunk_num; i++) {
-        auto d = segment->chunk_data<int64_t>(fid, i);
+        auto pw = segment->chunk_data<int64_t>(fid, i);
+        auto d = pw.get();
         std::copy(d.data(),
                   d.data() + test_data_count,
                   data.begin() + i * test_data_count);

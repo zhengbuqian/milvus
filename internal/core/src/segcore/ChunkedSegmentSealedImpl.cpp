@@ -36,6 +36,7 @@
 #include "common/FieldMeta.h"
 #include "common/Json.h"
 #include "common/LoadInfo.h"
+#include "common/SystemProperty.h"
 #include "common/Tracer.h"
 #include "common/Types.h"
 #include "google/protobuf/message_lite.h"
@@ -276,7 +277,7 @@ ChunkedSegmentSealedImpl::load_column_group_data_internal(
             field_id_list);
 
         auto chunked_column_group = std::make_shared<ChunkedColumnGroup>(std::move(translator));
-            
+
         // Create ProxyChunkColumn for each field in this column group
         for (const auto& field_id : milvus_field_ids) {
             auto field_meta = field_metas.at(field_id);
@@ -284,7 +285,7 @@ ChunkedSegmentSealedImpl::load_column_group_data_internal(
                 chunked_column_group, field_id, field_meta);
             auto data_type = field_meta.get_data_type();
 
-            load_field_data_common(field_id, column, load_info, num_rows, data_type);
+            load_field_data_common(field_id, column, num_rows, data_type, info.enable_mmap, true);
         }
     }
 }
@@ -377,7 +378,7 @@ ChunkedSegmentSealedImpl::load_field_data_internal(
                 column = std::make_shared<ChunkedColumn>(std::move(translator), field_meta);
             }
 
-            load_field_data_common(field_id, column, load_info, num_rows, data_type);
+            load_field_data_common(field_id, column, num_rows, data_type, info.enable_mmap, false);
         }
     }
 }
@@ -1696,31 +1697,43 @@ ChunkedSegmentSealedImpl::RemoveFieldFile(const FieldId field_id) {
 void
 ChunkedSegmentSealedImpl::load_field_data_common(FieldId field_id, 
                                                    const std::shared_ptr<ChunkedColumnInterface>& column,
-                                                   const LoadFieldDataInfo& info,
                                                    size_t num_rows,
-                                                   DataType data_type) {
+                                                   DataType data_type,
+                                                   bool enable_mmap,
+                                                   bool is_proxy_column) {
     {
         std::unique_lock lck(mutex_);
         fields_.emplace(field_id, column);
-        if (info.field_infos.at(field_id.get()).enable_mmap) {
+        if (enable_mmap) {
             mmap_fields_.insert(field_id);
         }
         if (!num_rows_.has_value()) {
             num_rows_ = num_rows;
         }
     }
+    // system field only needs to emplace column to fields_ map
+    if (SystemProperty::Instance().IsSystem(field_id)) {
+        return;
+    }
 
-    if (!info.field_infos.at(field_id.get()).enable_mmap) {
+    if (!enable_mmap) {
         stats_.mem_size += column->DataByteSize();
         if (IsVariableDataType(data_type)) {
             if (data_type == milvus::DataType::STRING ||
                 data_type == milvus::DataType::VARCHAR ||
                 data_type == milvus::DataType::TEXT) {
-                auto var_column = std::dynamic_pointer_cast<ChunkedVariableColumn<std::string>>(column);
-                LoadStringSkipIndex(
+                if (!is_proxy_column) {
+                    auto var_column = std::dynamic_pointer_cast<ChunkedVariableColumn<std::string>>(column);
+                    LoadStringSkipIndex(
                     field_id,
                     0,
                     *var_column);
+                } else {
+                    LoadStringSkipIndex(
+                    field_id,
+                    0,
+                    *column);
+                }
             }
             // update average row data size
             SegmentInternalInterface::set_field_avg_size(
@@ -1728,15 +1741,25 @@ ChunkedSegmentSealedImpl::load_field_data_common(FieldId field_id,
         } else {
             auto num_chunk = column->num_chunks();
             for (int i = 0; i < num_chunk; ++i) {
-                auto primitive_column = std::dynamic_pointer_cast<ChunkedColumn>(column);
-                AssertInfo(primitive_column != nullptr, "column is not of primitive type");
-                auto pw = primitive_column->Span(i);
-                LoadPrimitiveSkipIndex(field_id,
-                                    i,
-                                    data_type,
-                                    pw.get().data(),
-                                    pw.get().valid_data(),
-                                    pw.get().row_count());
+                if (!is_proxy_column) {
+                    auto primitive_column = std::dynamic_pointer_cast<ChunkedColumn>(column);
+                    AssertInfo(primitive_column != nullptr, "column is not of primitive type");
+                    auto pw = primitive_column->Span(i);
+                    LoadPrimitiveSkipIndex(field_id,
+                                        i,
+                                        data_type,
+                                        pw.get().data(),
+                                        pw.get().valid_data(),
+                                        pw.get().row_count());
+                } else {
+                    auto pw = column->Span(i);
+                    LoadPrimitiveSkipIndex(field_id,
+                                        i,
+                                        data_type,
+                                        pw.get().data(),
+                                        pw.get().valid_data(),
+                                        pw.get().row_count());
+                }
             }
         }
     }

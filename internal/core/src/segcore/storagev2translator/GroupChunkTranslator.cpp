@@ -224,7 +224,6 @@ GroupChunkTranslator::process_batch(
         AssertInfo(it != field_metas_.end(), "Field id not found in field_metas");
         const auto& field_meta = it->second;
         const arrow::ArrayVector& array_vec = table->column(i)->chunks();
-        std::cout << "field_id: " << field_id << " array_vec: " << array_vec.size() << std::endl;
         auto dim = IsVectorDataType(field_meta.get_data_type()) &&
                     !IsSparseFloatVectorDataType(field_meta.get_data_type())
                     ? field_meta.get_dim()

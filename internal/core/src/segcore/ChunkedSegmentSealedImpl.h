@@ -376,9 +376,10 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
 
     void load_field_data_common(FieldId field_id, 
                                   const std::shared_ptr<ChunkedColumnInterface>& column,
-                                  const LoadFieldDataInfo& info,
                                   size_t num_rows,
-                                  DataType data_type);
+                                  DataType data_type,
+                                  bool enable_mmap,
+                                  bool is_proxy_column);
 
  private:
     // InsertRecord needs to pin pk column.

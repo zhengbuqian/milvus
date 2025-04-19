@@ -32,6 +32,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <filesystem>
 
 using namespace milvus;
 using namespace milvus::segcore;
@@ -71,6 +72,15 @@ class TestGroupChunkTranslator : public ::testing::TestWithParam<bool> {
     }
 
 protected:
+    ~TestGroupChunkTranslator() {
+        if (GetParam()) {  // if use_mmap is true
+            std::string mmap_dir = std::to_string(segment_id_);
+            if (std::filesystem::exists(mmap_dir)) {
+                std::filesystem::remove_all(mmap_dir);
+            }
+        }
+    }
+
     SchemaPtr schema_;
     milvus_storage::ArrowFileSystemPtr fs_;
     std::shared_ptr<arrow::Schema> arrow_schema_;
@@ -124,6 +134,19 @@ TEST_P(TestGroupChunkTranslator, TestWithMmap) {
     std::vector<cachinglayer::cid_t> cids = {0, 1};
     auto cells = translator.get_cells(cids);
     EXPECT_EQ(cells.size(), cids.size());
+
+    // Verify mmap directory and files if in mmap mode
+    if (use_mmap) {
+        std::string mmap_dir = std::to_string(segment_id_);
+        EXPECT_TRUE(std::filesystem::exists(mmap_dir));
+        
+        // Verify each field has a corresponding file
+        for (size_t i = 0; i < field_id_list.size(); ++i) {
+            auto field_id = field_id_list.Get(i);
+            std::string field_file = mmap_dir + "/" + std::to_string(field_id);
+            EXPECT_TRUE(std::filesystem::exists(field_file));
+        }
+    }
 }
 
 INSTANTIATE_TEST_SUITE_P(TestGroupChunkTranslator,
