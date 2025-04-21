@@ -649,31 +649,6 @@ EncodeAndUploadIndexSlice(ChunkManager* chunk_manager,
     return std::make_pair(std::move(object_key), serialized_index_size);
 }
 
-std::pair<std::string, size_t>
-EncodeAndUploadFieldSlice(ChunkManager* chunk_manager,
-                          void* buf,
-                          int64_t element_count,
-                          FieldDataMeta field_data_meta,
-                          const FieldMeta& field_meta,
-                          std::string object_key) {
-    // dim should not be used for sparse float vector field
-    auto dim = IsSparseFloatVectorDataType(field_meta.get_data_type())
-                   ? -1
-                   : field_meta.get_dim();
-    auto field_data =
-        CreateFieldData(field_meta.get_data_type(), false, dim, 0);
-    field_data->FillFieldData(buf, element_count);
-    auto payload_reader = std::make_shared<PayloadReader>(field_data);
-    auto insertData = std::make_shared<InsertData>(payload_reader);
-    insertData->SetFieldDataMeta(field_data_meta);
-    auto serialized_inserted_data = insertData->serialize_to_remote_file();
-    auto serialized_inserted_data_size = serialized_inserted_data.size();
-    chunk_manager->Write(object_key,
-                         serialized_inserted_data.data(),
-                         serialized_inserted_data_size);
-    return std::make_pair(std::move(object_key), serialized_inserted_data_size);
-}
-
 std::vector<std::future<std::unique_ptr<DataCodec>>>
 GetObjectData(ChunkManager* remote_chunk_manager,
               const std::vector<std::string>& remote_files) {
