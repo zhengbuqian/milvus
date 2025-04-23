@@ -70,8 +70,7 @@ class JsonInvertedIndex : public index::InvertedIndexTantivy<T> {
     JsonInvertedIndex(const JsonCastType& cast_type,
                       const std::string& nested_path,
                       const storage::FileManagerContext& ctx)
-        : nested_path_(nested_path),
-          cast_type_(cast_type) {
+        : nested_path_(nested_path), cast_type_(cast_type) {
         this->schema_ = ctx.fieldDataMeta.field_schema;
         this->mem_file_manager_ =
             std::make_shared<storage::MemFileManagerImpl>(ctx);
