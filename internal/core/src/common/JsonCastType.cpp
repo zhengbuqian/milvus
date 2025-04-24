@@ -57,7 +57,7 @@ JsonCastType::ToTantivyType() const {
         case JsonCastType::DataType::DOUBLE:
             return TantivyDataType::F64;
         case JsonCastType::DataType::VARCHAR:
-            return TantivyDataType::Text;
+            return TantivyDataType::Keyword;
         default:
             PanicInfo(DataTypeInvalid, "Invalid data type:{}", element_type());
     }
