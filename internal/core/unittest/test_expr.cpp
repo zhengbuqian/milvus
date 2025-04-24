@@ -16911,8 +16911,8 @@ class JsonIndexBinaryExprTest : public testing::TestWithParam<JsonCastType> {};
 
 INSTANTIATE_TEST_SUITE_P(JsonIndexBinaryExprTestParams,
                          JsonIndexBinaryExprTest,
-                         testing::Values(JsonCastType::DOUBLE,
-                                         JsonCastType::VARCHAR));
+                         testing::Values(JsonCastType::FromString("DOUBLE"),
+                                         JsonCastType::FromString("VARCHAR")));
 
 TEST_P(JsonIndexBinaryExprTest, TestBinaryRangeExpr) {
     auto json_strs = std::vector<std::string>{
