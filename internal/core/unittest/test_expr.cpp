@@ -16555,7 +16555,7 @@ class JsonIndexTestFixture : public testing::Test {
             json_path = "/int";
             lower_bound.set_int64_val(std::numeric_limits<int64_t>::min());
             upper_bound.set_int64_val(std::numeric_limits<int64_t>::max());
-            cast_type = JsonCastType::FromString("INT64");
+            cast_type = JsonCastType::FromString("DOUBLE");
             wrong_type_val.set_string_val("123");
         } else if constexpr (std::is_same_v<T, double>) {
             schema_data_type = proto::schema::Double;
