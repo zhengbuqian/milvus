@@ -114,7 +114,7 @@ JsonInvertedIndex<T>::build_index_for_json(
                     folly::SharedMutex::WriteHolder lock(this->mutex_);
                     this->null_offset_.push_back(offset);
                 }
-                this->wrapper_->template add_array_data<SIMDJSON_T>(
+                this->wrapper_->template add_array_data<T>(
                     nullptr, 0, offset++);
                 continue;
             }
@@ -126,11 +126,11 @@ JsonInvertedIndex<T>::build_index_for_json(
                 error_recorder_.Record(
                     *json_column, nested_path_, simdjson::NO_SUCH_FIELD);
                 this->null_offset_.push_back(offset);
-                this->wrapper_->template add_array_data<SIMDJSON_T>(
+                this->wrapper_->template add_array_data<T>(
                     nullptr, 0, offset++);
                 continue;
             }
-            folly::fbvector<SIMDJSON_T> values;
+            folly::fbvector<T> values;
             if (is_array) {
                 auto doc = json_column->dom_doc();
                 auto array_res = doc.at_pointer(nested_path_).get_array();
@@ -143,8 +143,7 @@ JsonInvertedIndex<T>::build_index_for_json(
                         auto val = value.get<SIMDJSON_T>();
 
                         if (val.error() == simdjson::SUCCESS) {
-                            values.push_back(
-                                static_cast<SIMDJSON_T>(val.value()));
+                            values.push_back(static_cast<T>(val.value()));
                         }
                     }
                 }
@@ -155,10 +154,10 @@ JsonInvertedIndex<T>::build_index_for_json(
                     error_recorder_.Record(
                         *json_column, nested_path_, res.error());
                 } else {
-                    values.push_back(res.value());
+                    values.push_back(static_cast<T>(res.value()));
                 }
             }
-            this->wrapper_->template add_array_data<SIMDJSON_T>(
+            this->wrapper_->template add_array_data<T>(
                 values.data(), values.size(), offset++);
         }
     }
