@@ -32,6 +32,7 @@
 #include "common/BitsetView.h"
 #include "common/QueryResult.h"
 #include "common/QueryInfo.h"
+#include "mmap/ChunkedColumnInterface.h"
 #include "query/Plan.h"
 #include "query/PlanNode.h"
 #include "pb/schema.pb.h"
@@ -146,16 +147,16 @@ class SegmentInterface {
     GetJsonData(FieldId field_id, size_t offset) const = 0;
 
     virtual void
-    lazy_check_schema(const query::Plan* plan) = 0;
+    LazyCheckSchema(const Schema& sch) = 0;
 
     // reopen segment with new schema
     virtual void
-    reopen(SchemaPtr sch) = 0;
+    Reopen(SchemaPtr sch) = 0;
 
-    // finish_load notifies the segment that all load operation are done
+    // FinishLoad notifies the segment that all load operation are done
     // currently it's used to sync field data list with updated schema.
     virtual void
-    finish_load() = 0;
+    FinishLoad() = 0;
 };
 
 // internal API for DSL calculation
@@ -236,14 +237,14 @@ class SegmentInternalInterface : public SegmentInterface {
     }
 
     template <typename T>
-    const index::ScalarIndex<T>&
+    PinWrapper<const index::ScalarIndex<T>*>
     chunk_scalar_index(FieldId field_id, int64_t chunk_id) const {
         static_assert(IsScalar<T>);
         using IndexType = index::ScalarIndex<T>;
-        auto base_ptr = chunk_index_impl(field_id, chunk_id);
-        auto ptr = dynamic_cast<const IndexType*>(base_ptr);
+        auto pw = chunk_index_impl(field_id, chunk_id);
+        auto ptr = dynamic_cast<const IndexType*>(pw.get());
         AssertInfo(ptr, "entry mismatch");
-        return *ptr;
+        return PinWrapper<const index::ScalarIndex<T>*>(pw, ptr);
     }
 
     // union(segment_id, field_id) as unique id
@@ -254,15 +255,15 @@ class SegmentInternalInterface : public SegmentInterface {
     }
 
     template <typename T>
-    const index::ScalarIndex<T>&
+    PinWrapper<const index::ScalarIndex<T>*>
     chunk_scalar_index(FieldId field_id,
                        std::string path,
                        int64_t chunk_id) const {
         using IndexType = index::ScalarIndex<T>;
-        auto base_ptr = chunk_index_impl(field_id, path, chunk_id);
-        auto ptr = dynamic_cast<const IndexType*>(base_ptr);
+        auto pw = chunk_index_impl(field_id, path, chunk_id);
+        auto ptr = dynamic_cast<const IndexType*>(pw.get());
         AssertInfo(ptr, "entry mismatch");
-        return *ptr;
+        return PinWrapper<const index::ScalarIndex<T>*>(pw, ptr);
     }
 
     std::unique_ptr<SearchResult>
@@ -334,12 +335,11 @@ class SegmentInternalInterface : public SegmentInterface {
                            const bool* valid_data,
                            int64_t count);
 
-    template <typename T>
     void
     LoadStringSkipIndex(FieldId field_id,
                         int64_t chunk_id,
-                        const T& var_column) {
-        skip_index_.LoadString(field_id, chunk_id, var_column);
+                        const ChunkedColumnInterface& column) {
+        skip_index_.LoadString(field_id, chunk_id, column);
     }
 
     virtual DataType
@@ -486,7 +486,7 @@ class SegmentInternalInterface : public SegmentInterface {
                           const FixedVector<int32_t>& offsets) const = 0;
 
     // internal API: return chunk_index in span, support scalar index only
-    virtual const index::IndexBase*
+    virtual PinWrapper<const index::IndexBase*>
     chunk_index_impl(FieldId field_id, int64_t chunk_id) const = 0;
     virtual void
     check_search(const query::Plan* plan) const = 0;
@@ -495,7 +495,7 @@ class SegmentInternalInterface : public SegmentInterface {
     get_timestamps() const = 0;
 
  public:
-    virtual const index::IndexBase*
+    virtual PinWrapper<const index::IndexBase*>
     chunk_index_impl(FieldId field_id,
                      std::string path,
                      int64_t chunk_id) const {

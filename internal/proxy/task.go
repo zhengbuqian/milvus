@@ -476,9 +476,6 @@ func (t *addCollectionFieldTask) PreExecute(ctx context.Context) error {
 	if t.oldSchema == nil {
 		return merr.WrapErrParameterInvalidMsg("empty old schema in add field task")
 	}
-	if t.oldSchema.EnableDynamicField {
-		return merr.WrapErrParameterInvalidMsg("not support to add field in an enable dynamic field collection")
-	}
 	t.fieldSchema = &schemapb.FieldSchema{}
 	err := proto.Unmarshal(t.GetSchema(), t.fieldSchema)
 	if err != nil {
@@ -512,6 +509,9 @@ func (t *addCollectionFieldTask) PreExecute(ctx context.Context) error {
 	}
 	if t.fieldSchema.AutoID {
 		return merr.WrapErrParameterInvalidMsg(fmt.Sprintf("only primary field can speficy AutoID with true, field name = %s", t.fieldSchema.Name))
+	}
+	if t.fieldSchema.IsPartitionKey {
+		return merr.WrapErrParameterInvalidMsg("not support to add partition key field, field name  = %s", t.fieldSchema.Name)
 	}
 	if t.fieldSchema.GetIsClusteringKey() {
 		for _, f := range t.oldSchema.Fields {
@@ -799,6 +799,7 @@ func (t *describeCollectionTask) Execute(ctx context.Context) error {
 	t.result.DbName = result.GetDbName()
 	t.result.NumPartitions = result.NumPartitions
 	t.result.UpdateTimestamp = result.UpdateTimestamp
+	t.result.UpdateTimestampStr = result.UpdateTimestampStr
 	for _, field := range result.Schema.Fields {
 		if field.IsDynamic {
 			continue

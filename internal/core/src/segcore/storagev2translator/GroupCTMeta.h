@@ -13,35 +13,21 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#pragma once
 
-package nmq
+#include "cachinglayer/Translator.h"
 
-import (
-	"context"
-	"testing"
+namespace milvus::segcore::storagev2translator {
 
-	"github.com/stretchr/testify/assert"
+struct GroupCTMeta : public milvus::cachinglayer::Meta {
+    std::vector<int64_t> num_rows_until_chunk_;
+    std::vector<int64_t> chunk_memory_size_;
+    GroupCTMeta(milvus::cachinglayer::StorageType storage_type,
+                CacheWarmupPolicy cache_warmup_policy,
+                bool support_eviction)
+        : milvus::cachinglayer::Meta(
+              storage_type, cache_warmup_policy, support_eviction) {
+    }
+};
 
-	"github.com/milvus-io/milvus/pkg/v2/mq/common"
-)
-
-func TestNatsMQProducer(t *testing.T) {
-	c, err := createNmqClient()
-	assert.NoError(t, err)
-	defer c.Close()
-	topic := t.Name()
-	pOpts := common.ProducerOptions{Topic: topic}
-
-	// Check Topic()
-	p, err := c.CreateProducer(context.TODO(), pOpts)
-	assert.NoError(t, err)
-	assert.Equal(t, p.(*nmqProducer).Topic(), topic)
-
-	// Check Send()
-	msg := &common.ProducerMessage{
-		Payload:    []byte{},
-		Properties: map[string]string{},
-	}
-	_, err = p.Send(context.TODO(), msg)
-	assert.NoError(t, err)
-}
+}  // namespace milvus::segcore::storagev2translator
