@@ -168,6 +168,29 @@ struct CacheWarmupPolicies {
           scalarIndexCacheWarmupPolicy(scalarIndexCacheWarmupPolicy),
           vectorIndexCacheWarmupPolicy(vectorIndexCacheWarmupPolicy) {
     }
+
+    std::string
+    DebugString() const {
+        return fmt::format(
+            "scalarFieldCacheWarmupPolicy: {}, vectorFieldCacheWarmupPolicy: "
+            "{}, scalarIndexCacheWarmupPolicy: {}, "
+            "vectorIndexCacheWarmupPolicy: {}",
+            cacheWarmupPolicyToString(scalarFieldCacheWarmupPolicy),
+            cacheWarmupPolicyToString(vectorFieldCacheWarmupPolicy),
+            cacheWarmupPolicyToString(scalarIndexCacheWarmupPolicy),
+            cacheWarmupPolicyToString(vectorIndexCacheWarmupPolicy));
+    }
+
+ private:
+    std::string
+    cacheWarmupPolicyToString(CacheWarmupPolicy policy) const {
+        switch (policy) {
+            case CacheWarmupPolicy::CacheWarmupPolicy_Sync:
+                return "sync";
+            case CacheWarmupPolicy::CacheWarmupPolicy_Disable:
+                return "disable";
+        }
+    }
 };
 
 struct CacheLimit {
