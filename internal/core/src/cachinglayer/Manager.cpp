@@ -35,9 +35,13 @@ Manager::ConfigureTieredStorage(CacheWarmupPolicies warmup_policies,
         manager.cache_limit_ = cache_limit;
         manager.evictionEnabled_ = evictionEnabled;
 
+        auto warmup_policies_str = warmup_policies.DebugString();
+
         if (!evictionEnabled) {
             LOG_INFO(
-                "Tiered Storage manager is configured with disabled eviction");
+                "Tiered Storage manager is configured with disabled eviction, "
+                "warmup policies: {}",
+                warmup_policies_str);
             return;
         }
 
@@ -67,7 +71,7 @@ Manager::ConfigureTieredStorage(CacheWarmupPolicies warmup_policies,
             "({:.2} GB), disk watermark: low "
             "{} bytes ({:.2} GB), high {} bytes ({:.2} GB), max {} bytes "
             "({:.2} GB), cache touch "
-            "window: {} ms, eviction interval: {} ms",
+            "window: {} ms, eviction interval: {} ms, warmup policies: {}",
             low_watermark.memory_bytes,
             low_watermark.memory_bytes / (1024.0 * 1024.0 * 1024.0),
             high_watermark.memory_bytes,
@@ -81,7 +85,8 @@ Manager::ConfigureTieredStorage(CacheWarmupPolicies warmup_policies,
             max.file_bytes,
             max.file_bytes / (1024.0 * 1024.0 * 1024.0),
             eviction_config.cache_touch_window.count(),
-            eviction_config.eviction_interval.count());
+            eviction_config.eviction_interval.count(),
+            warmup_policies_str);
     });
 }
 

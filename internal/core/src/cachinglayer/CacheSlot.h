@@ -81,6 +81,8 @@ class CacheSlot final : public std::enable_shared_from_this<CacheSlot<CellT>> {
             return;
         }
 
+        LOG_INFO("Warming up CacheSlot {}.", translator_->key());
+
         std::vector<cid_t> cids;
         cids.reserve(translator_->num_cells());
         for (cid_t i = 0; i < translator_->num_cells(); ++i) {
