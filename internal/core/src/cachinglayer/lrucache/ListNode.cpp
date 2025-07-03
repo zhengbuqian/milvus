@@ -90,6 +90,12 @@ ListNode::manual_evict() {
     return true;
 }
 
+ListNode::State
+ListNode::get_state() const {
+    std::shared_lock<std::shared_mutex> lock(mtx_);
+    return state_;
+}
+
 ResourceUsage&
 ListNode::size() {
     return size_;

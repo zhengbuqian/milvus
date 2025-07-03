@@ -11,9 +11,13 @@
 #include "cachinglayer/Manager.h"
 
 #include <memory>
+#include <shared_mutex>
+#include <unordered_set>
 
+#include "cachinglayer/CacheSlotBase.h"
 #include "cachinglayer/Utils.h"
 #include "log/Log.h"
+#include "pb/cgo_msg.pb.h"
 
 namespace milvus::cachinglayer {
 
@@ -90,5 +94,72 @@ Manager::memory_overhead() const {
     // TODO(tiered storage 2): calculate memory overhead
     return 0;
 }
+
+void
+Manager::registerCacheSlot(const std::string& key, std::weak_ptr<CacheSlotBase> slot) {
+    std::unique_lock<std::shared_mutex> lock(slots_mutex_);
+    registered_slots_[key] = slot;
+}
+
+void
+Manager::unregisterCacheSlot(const std::string& key) {
+    std::unique_lock<std::shared_mutex> lock(slots_mutex_);
+    registered_slots_.erase(key);
+}
+
+milvus::proto::cgo::SegmentListResponse
+Manager::listSegments() const {
+    std::shared_lock<std::shared_mutex> lock(slots_mutex_);
+    std::unordered_set<int64_t> segment_ids;
+    
+    for (const auto& [key, slot] : registered_slots_) {
+        if (auto locked_slot = slot.lock()) {
+            int64_t seg_id = extractSegmentId(key);
+            if (seg_id != -1) {
+                segment_ids.insert(seg_id);
+            }
+        }
+    }
+    
+    milvus::proto::cgo::SegmentListResponse response;
+    for (auto seg_id : segment_ids) {
+        response.add_segment_ids(seg_id);
+    }
+    return response;
+}
+
+milvus::proto::cgo::CacheSlotListResponse
+Manager::getCacheSlotsBySegmentId(int64_t segment_id) const {
+    std::shared_lock<std::shared_mutex> lock(slots_mutex_);
+    milvus::proto::cgo::CacheSlotListResponse response;
+    
+    for (const auto& [key, slot] : registered_slots_) {
+        if (auto locked_slot = slot.lock()) {
+            int64_t seg_id = extractSegmentId(key);
+            if (seg_id == segment_id) {
+                auto slot_info = locked_slot->get_usage_proto();
+                *response.add_cache_slots() = slot_info;
+            }
+        }
+    }
+    
+    return response;
+}
+
+const std::function<void(const std::string&)>&
+Manager::getUnregisterFunction() {
+    static const std::function<void(const std::string&)> unregister_fn = 
+        [](const std::string& key) {
+            Manager::GetInstance().unregisterCacheSlot(key);
+        };
+    return unregister_fn;
+}
+
+// Global function to get unregister function (for CacheSlot.h)
+const std::function<void(const std::string&)>&
+getManagerUnregisterFunction() {
+    return Manager::getUnregisterFunction();
+}
+
 
 }  // namespace milvus::cachinglayer

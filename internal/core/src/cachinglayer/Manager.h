@@ -12,12 +12,17 @@
 #pragma once
 
 #include <memory>
+#include <unordered_map>
+#include <shared_mutex>
+#include <functional>
 
 #include "cachinglayer/CacheSlot.h"
+#include "cachinglayer/CacheSlotBase.h"
 #include "cachinglayer/lrucache/DList.h"
 #include "cachinglayer/Translator.h"
 #include "cachinglayer/Utils.h"
 #include "common/type_c.h"
+#include "pb/cgo_msg.pb.h"
 
 namespace milvus::cachinglayer {
 
@@ -52,8 +57,12 @@ class Manager {
         auto dlist = (translator->meta()->support_eviction && evictionEnabled_)
                          ? dlist_.get()
                          : nullptr;
+        auto key = translator->key();
         auto cache_slot =
             std::make_shared<CacheSlot<CellT>>(std::move(translator), dlist);
+
+        registerCacheSlot(key, std::weak_ptr<CacheSlotBase>(cache_slot));
+        
         cache_slot->Warmup();
         return cache_slot;
     }
@@ -87,6 +96,31 @@ class Manager {
         return evictionEnabled_;
     }
 
+
+// ------ Those methods are used for online debugging, to inspect the cache status ------
+
+    // Register a CacheSlot for global tracking
+    void
+    registerCacheSlot(const std::string& key, std::weak_ptr<CacheSlotBase> slot);
+
+    // Unregister a CacheSlot
+    void
+    unregisterCacheSlot(const std::string& key);
+
+    // Get unregister function for CacheSlot destructor use
+    static const std::function<void(const std::string&)>&
+    getUnregisterFunction();
+
+    // List all segment IDs based on cache slot keys
+    milvus::proto::cgo::SegmentListResponse
+    listSegments() const;
+
+    // Get cache slots information by segment ID
+    milvus::proto::cgo::CacheSlotListResponse
+    getCacheSlotsBySegmentId(int64_t segment_id) const;
+
+// ------ End of online debugging methods ------
+
  private:
     friend void
     ConfigureTieredStorage(CacheWarmupPolicies warmup_policies,
@@ -100,6 +134,10 @@ class Manager {
     CacheWarmupPolicies warmup_policies_{};
     bool evictionEnabled_{false};
     CacheLimit cache_limit_{};
+
+    // Global registry for all CacheSlots
+    mutable std::shared_mutex slots_mutex_;
+    std::unordered_map<std::string, std::weak_ptr<CacheSlotBase>> registered_slots_;
 };  // class Manager
 
 }  // namespace milvus::cachinglayer

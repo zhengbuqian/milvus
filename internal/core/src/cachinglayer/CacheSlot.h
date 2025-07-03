@@ -17,6 +17,7 @@
 #include <memory>
 #include <type_traits>
 #include <vector>
+#include <functional>
 
 #include <folly/futures/Future.h>
 #include <folly/futures/SharedPromise.h>
@@ -24,15 +25,19 @@
 
 #include "cachinglayer/lrucache/DList.h"
 #include "cachinglayer/lrucache/ListNode.h"
+#include "cachinglayer/CacheSlotBase.h"
 #include "cachinglayer/Translator.h"
 #include "cachinglayer/Utils.h"
-#include "common/EasyAssert.h"
 #include "common/type_c.h"
 #include "log/Log.h"
 #include "monitor/prometheus_client.h"
-#include "storage/ThreadPools.h"
+#include "pb/cgo_msg.pb.h"
 
 namespace milvus::cachinglayer {
+
+// Forward declaration and function to get unregister function
+const std::function<void(const std::string&)>&
+getManagerUnregisterFunction();
 
 template <typename CellT>
 class CellAccessor;
@@ -41,7 +46,8 @@ class CellAccessor;
 // - Once the future is scheduled, CacheSlot must live until the future is ready.
 // - The returned CellAccessor stores a shared_ptr of CacheSlot, thus will keep CacheSlot alive.
 template <typename CellT>
-class CacheSlot final : public std::enable_shared_from_this<CacheSlot<CellT>> {
+class CacheSlot final : public CacheSlotBase,
+                        public std::enable_shared_from_this<CacheSlot<CellT>> {
  public:
     // TODO(tiered storage 1): the CellT should return its actual usage, once loaded. And we use this to report metrics.
     static_assert(
@@ -190,7 +196,86 @@ class CacheSlot final : public std::enable_shared_from_this<CacheSlot<CellT>> {
         return translator_->meta();
     }
 
-    ~CacheSlot() {
+    milvus::proto::cgo::CacheSlotInfo
+    get_usage_proto() const override {
+        milvus::proto::cgo::CacheSlotInfo info;
+
+        // Basic information
+        info.set_key(translator_->key());
+        info.set_segment_id(extractSegmentId(translator_->key()));
+        info.set_slot_type(dlist_ != nullptr ? "EVICTABLE" : "NON_EVICTABLE");
+
+        // Initialize counters and sizes
+        int32_t loaded = 0, loading = 0, not_loaded = 0;
+        ResourceUsage total_size{}, loaded_size{}, loading_size{};
+
+        // Single loop through cells to collect all information
+        for (cid_t i = 0; i < cells_.size(); ++i) {
+            auto state = cells_[i].get_state();
+            auto estimated_size = translator_->estimated_byte_size_of_cell(i);
+
+            // Accumulate total size
+            total_size += estimated_size;
+
+            // Add individual cell information
+            auto* cell_info = info.add_cells();
+            cell_info->set_cell_id(i);
+
+            // Set status and update counters/sizes based on state
+            switch (state) {
+                case internal::ListNode::State::LOADED:
+                    cell_info->set_status("loaded");
+                    loaded++;
+                    loaded_size += estimated_size;
+                    break;
+                case internal::ListNode::State::LOADING:
+                    cell_info->set_status("loading");
+                    loading++;
+                    loading_size += estimated_size;
+                    break;
+                case internal::ListNode::State::ERROR:
+                    cell_info->set_status("error");
+                    not_loaded++;
+                    break;
+                default:
+                    cell_info->set_status("not_loaded");
+                    not_loaded++;
+                    break;
+            }
+
+            // Set estimated size for this cell
+            auto* size_proto = cell_info->mutable_size();
+            size_proto->set_memory_bytes(estimated_size.memory_bytes);
+            size_proto->set_file_bytes(estimated_size.file_bytes);
+        }
+
+        // Set statistics
+        info.set_total_cells(static_cast<int32_t>(cells_.size()));
+        info.set_loaded_cells(loaded);
+        info.set_loading_cells(loading);
+        info.set_not_loaded_cells(not_loaded);
+
+        // Set resource usage
+        auto* total = info.mutable_total_size();
+        total->set_memory_bytes(total_size.memory_bytes);
+        total->set_file_bytes(total_size.file_bytes);
+
+        auto* loaded_proto = info.mutable_loaded_size();
+        loaded_proto->set_memory_bytes(loaded_size.memory_bytes);
+        loaded_proto->set_file_bytes(loaded_size.file_bytes);
+
+        auto* loading_proto = info.mutable_loading_size();
+        loading_proto->set_memory_bytes(loading_size.memory_bytes);
+        loading_proto->set_file_bytes(loading_size.file_bytes);
+
+        return info;
+    }
+
+    ~CacheSlot() override {
+        // Unregister from global manager using function reference to avoid circular dependency
+        const auto& unregister_fn = getManagerUnregisterFunction();
+        unregister_fn(translator_->key());
+
         internal::cache_slot_count(translator_->meta()->storage_type)
             .Decrement();
         internal::cache_cell_count(translator_->meta()->storage_type)
@@ -225,11 +310,11 @@ class CacheSlot final : public std::enable_shared_from_this<CacheSlot<CellT>> {
         return std::move(load_future)
             .deferValue(
                 [this, futures = std::move(futures)](auto&&) mutable
-                -> folly::SemiFuture<std::shared_ptr<CellAccessor<CellT>>> {
+                    -> folly::SemiFuture<std::shared_ptr<CellAccessor<CellT>>> {
                     return folly::collect(futures).deferValue(
                         [this](std::vector<internal::ListNode::NodePin>&&
                                    pins) mutable
-                        -> std::shared_ptr<CellAccessor<CellT>> {
+                            -> std::shared_ptr<CellAccessor<CellT>> {
                             return std::make_shared<CellAccessor<CellT>>(
                                 this->shared_from_this(), std::move(pins));
                         });

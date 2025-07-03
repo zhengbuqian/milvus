@@ -86,6 +86,10 @@ class ListNode {
     //      |------- LOADED
     enum class State { NOT_LOADED, LOADING, LOADED, ERROR };
 
+    // Get current state for status reporting
+    State
+    get_state() const;
+
  protected:
     // will be called during eviction, implementation should release all resources.
     virtual void

@@ -32,3 +32,39 @@ message SerializedIndexFileInfo {
   string file_name = 1;
   int64 file_size = 2;
 }
+
+// Resource usage information
+message ResourceUsageInfo {
+  int64 memory_bytes = 1;
+  int64 file_bytes = 2;
+}
+
+// Individual cache cell information
+message CacheCellInfo {
+  int64 cell_id = 1;
+  string status = 2;  // "loaded", "loading", "not_loaded"
+  ResourceUsageInfo size = 3;
+}
+
+// Complete CacheSlot information
+message CacheSlotInfo {
+  string key = 1;
+  int64 segment_id = 2;
+  ResourceUsageInfo total_size = 3;        // total size
+  ResourceUsageInfo loaded_size = 4;       // loaded portion size
+  ResourceUsageInfo loading_size = 5;      // loading portion size
+  int32 total_cells = 6;
+  int32 loaded_cells = 7;
+  int32 loading_cells = 8;
+  int32 not_loaded_cells = 9;
+  string slot_type = 10;                   // "EVICTABLE", "NON_EVICTABLE"
+  repeated CacheCellInfo cells = 11;       // detailed information for each cell
+}
+
+message CacheSlotListResponse {
+  repeated CacheSlotInfo cache_slots = 1;
+}
+
+message SegmentListResponse {
+  repeated int64 segment_ids = 1;
+}

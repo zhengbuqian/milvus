@@ -13,6 +13,8 @@
 
 #include <atomic>
 #include <cstdint>
+#include <regex>
+#include <string>
 
 #include "common/EasyAssert.h"
 #include "folly/executors/InlineExecutor.h"
@@ -40,6 +42,25 @@ template <typename T>
 T
 SemiInlineGet(folly::SemiFuture<T>&& future) {
     return std::move(future).via(&folly::InlineExecutor::instance()).get();
+}
+
+// Extract segment ID from cache slot key (format: "seg_{segmentId}_...")
+// Returns -1 if parsing fails
+inline int64_t
+extractSegmentId(const std::string& key) {
+    static const std::regex seg_pattern(R"(^seg_(\d+)_)");
+    std::smatch match;
+    
+    if (std::regex_search(key, match, seg_pattern) && match.size() > 1) {
+        try {
+            return std::stoll(match[1].str());
+        } catch (const std::exception& e) {
+            // Note: LOG_WARN is not available in Utils.h, so we silently return -1
+            return -1;
+        }
+    }
+    
+    return -1;
 }
 
 struct ResourceUsage {

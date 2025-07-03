@@ -290,6 +290,348 @@ func (x *SerializedIndexFileInfo) GetFileSize() int64 {
 	return 0
 }
 
+// Resource usage information
+type ResourceUsageInfo struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	MemoryBytes int64 `protobuf:"varint,1,opt,name=memory_bytes,json=memoryBytes,proto3" json:"memory_bytes,omitempty"`
+	FileBytes   int64 `protobuf:"varint,2,opt,name=file_bytes,json=fileBytes,proto3" json:"file_bytes,omitempty"`
+}
+
+func (x *ResourceUsageInfo) Reset() {
+	*x = ResourceUsageInfo{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_cgo_msg_proto_msgTypes[3]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *ResourceUsageInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResourceUsageInfo) ProtoMessage() {}
+
+func (x *ResourceUsageInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_cgo_msg_proto_msgTypes[3]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResourceUsageInfo.ProtoReflect.Descriptor instead.
+func (*ResourceUsageInfo) Descriptor() ([]byte, []int) {
+	return file_cgo_msg_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *ResourceUsageInfo) GetMemoryBytes() int64 {
+	if x != nil {
+		return x.MemoryBytes
+	}
+	return 0
+}
+
+func (x *ResourceUsageInfo) GetFileBytes() int64 {
+	if x != nil {
+		return x.FileBytes
+	}
+	return 0
+}
+
+// Individual cache cell information
+type CacheCellInfo struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	CellId int64              `protobuf:"varint,1,opt,name=cell_id,json=cellId,proto3" json:"cell_id,omitempty"`
+	Status string             `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"` // "loaded", "loading", "not_loaded"
+	Size   *ResourceUsageInfo `protobuf:"bytes,3,opt,name=size,proto3" json:"size,omitempty"`
+}
+
+func (x *CacheCellInfo) Reset() {
+	*x = CacheCellInfo{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_cgo_msg_proto_msgTypes[4]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *CacheCellInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CacheCellInfo) ProtoMessage() {}
+
+func (x *CacheCellInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_cgo_msg_proto_msgTypes[4]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CacheCellInfo.ProtoReflect.Descriptor instead.
+func (*CacheCellInfo) Descriptor() ([]byte, []int) {
+	return file_cgo_msg_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *CacheCellInfo) GetCellId() int64 {
+	if x != nil {
+		return x.CellId
+	}
+	return 0
+}
+
+func (x *CacheCellInfo) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *CacheCellInfo) GetSize() *ResourceUsageInfo {
+	if x != nil {
+		return x.Size
+	}
+	return nil
+}
+
+// Complete CacheSlot information
+type CacheSlotInfo struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	Key            string             `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	SegmentId      int64              `protobuf:"varint,2,opt,name=segment_id,json=segmentId,proto3" json:"segment_id,omitempty"`
+	TotalSize      *ResourceUsageInfo `protobuf:"bytes,3,opt,name=total_size,json=totalSize,proto3" json:"total_size,omitempty"`       // total size
+	LoadedSize     *ResourceUsageInfo `protobuf:"bytes,4,opt,name=loaded_size,json=loadedSize,proto3" json:"loaded_size,omitempty"`    // loaded portion size
+	LoadingSize    *ResourceUsageInfo `protobuf:"bytes,5,opt,name=loading_size,json=loadingSize,proto3" json:"loading_size,omitempty"` // loading portion size
+	TotalCells     int32              `protobuf:"varint,6,opt,name=total_cells,json=totalCells,proto3" json:"total_cells,omitempty"`
+	LoadedCells    int32              `protobuf:"varint,7,opt,name=loaded_cells,json=loadedCells,proto3" json:"loaded_cells,omitempty"`
+	LoadingCells   int32              `protobuf:"varint,8,opt,name=loading_cells,json=loadingCells,proto3" json:"loading_cells,omitempty"`
+	NotLoadedCells int32              `protobuf:"varint,9,opt,name=not_loaded_cells,json=notLoadedCells,proto3" json:"not_loaded_cells,omitempty"`
+	SlotType       string             `protobuf:"bytes,10,opt,name=slot_type,json=slotType,proto3" json:"slot_type,omitempty"` // "EVICTABLE", "NON_EVICTABLE"
+	Cells          []*CacheCellInfo   `protobuf:"bytes,11,rep,name=cells,proto3" json:"cells,omitempty"`                       // detailed information for each cell
+}
+
+func (x *CacheSlotInfo) Reset() {
+	*x = CacheSlotInfo{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_cgo_msg_proto_msgTypes[5]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *CacheSlotInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CacheSlotInfo) ProtoMessage() {}
+
+func (x *CacheSlotInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_cgo_msg_proto_msgTypes[5]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CacheSlotInfo.ProtoReflect.Descriptor instead.
+func (*CacheSlotInfo) Descriptor() ([]byte, []int) {
+	return file_cgo_msg_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *CacheSlotInfo) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *CacheSlotInfo) GetSegmentId() int64 {
+	if x != nil {
+		return x.SegmentId
+	}
+	return 0
+}
+
+func (x *CacheSlotInfo) GetTotalSize() *ResourceUsageInfo {
+	if x != nil {
+		return x.TotalSize
+	}
+	return nil
+}
+
+func (x *CacheSlotInfo) GetLoadedSize() *ResourceUsageInfo {
+	if x != nil {
+		return x.LoadedSize
+	}
+	return nil
+}
+
+func (x *CacheSlotInfo) GetLoadingSize() *ResourceUsageInfo {
+	if x != nil {
+		return x.LoadingSize
+	}
+	return nil
+}
+
+func (x *CacheSlotInfo) GetTotalCells() int32 {
+	if x != nil {
+		return x.TotalCells
+	}
+	return 0
+}
+
+func (x *CacheSlotInfo) GetLoadedCells() int32 {
+	if x != nil {
+		return x.LoadedCells
+	}
+	return 0
+}
+
+func (x *CacheSlotInfo) GetLoadingCells() int32 {
+	if x != nil {
+		return x.LoadingCells
+	}
+	return 0
+}
+
+func (x *CacheSlotInfo) GetNotLoadedCells() int32 {
+	if x != nil {
+		return x.NotLoadedCells
+	}
+	return 0
+}
+
+func (x *CacheSlotInfo) GetSlotType() string {
+	if x != nil {
+		return x.SlotType
+	}
+	return ""
+}
+
+func (x *CacheSlotInfo) GetCells() []*CacheCellInfo {
+	if x != nil {
+		return x.Cells
+	}
+	return nil
+}
+
+type CacheSlotListResponse struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	CacheSlots []*CacheSlotInfo `protobuf:"bytes,1,rep,name=cache_slots,json=cacheSlots,proto3" json:"cache_slots,omitempty"`
+}
+
+func (x *CacheSlotListResponse) Reset() {
+	*x = CacheSlotListResponse{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_cgo_msg_proto_msgTypes[6]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *CacheSlotListResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CacheSlotListResponse) ProtoMessage() {}
+
+func (x *CacheSlotListResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_cgo_msg_proto_msgTypes[6]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CacheSlotListResponse.ProtoReflect.Descriptor instead.
+func (*CacheSlotListResponse) Descriptor() ([]byte, []int) {
+	return file_cgo_msg_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *CacheSlotListResponse) GetCacheSlots() []*CacheSlotInfo {
+	if x != nil {
+		return x.CacheSlots
+	}
+	return nil
+}
+
+type SegmentListResponse struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	SegmentIds []int64 `protobuf:"varint,1,rep,packed,name=segment_ids,json=segmentIds,proto3" json:"segment_ids,omitempty"`
+}
+
+func (x *SegmentListResponse) Reset() {
+	*x = SegmentListResponse{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_cgo_msg_proto_msgTypes[7]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *SegmentListResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SegmentListResponse) ProtoMessage() {}
+
+func (x *SegmentListResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_cgo_msg_proto_msgTypes[7]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SegmentListResponse.ProtoReflect.Descriptor instead.
+func (*SegmentListResponse) Descriptor() ([]byte, []int) {
+	return file_cgo_msg_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *SegmentListResponse) GetSegmentIds() []int64 {
+	if x != nil {
+		return x.SegmentIds
+	}
+	return nil
+}
+
 var File_cgo_msg_proto protoreflect.FileDescriptor
 
 var file_cgo_msg_proto_rawDesc = []byte{
@@ -352,11 +694,65 @@ var file_cgo_msg_proto_rawDesc = []byte{
 	0x0a, 0x09, 0x66, 0x69, 0x6c, 0x65, 0x5f, 0x6e, 0x61, 0x6d, 0x65, 0x18, 0x01, 0x20, 0x01, 0x28,
 	0x09, 0x52, 0x08, 0x66, 0x69, 0x6c, 0x65, 0x4e, 0x61, 0x6d, 0x65, 0x12, 0x1b, 0x0a, 0x09, 0x66,
 	0x69, 0x6c, 0x65, 0x5f, 0x73, 0x69, 0x7a, 0x65, 0x18, 0x02, 0x20, 0x01, 0x28, 0x03, 0x52, 0x08,
-	0x66, 0x69, 0x6c, 0x65, 0x53, 0x69, 0x7a, 0x65, 0x42, 0x30, 0x5a, 0x2e, 0x67, 0x69, 0x74, 0x68,
-	0x75, 0x62, 0x2e, 0x63, 0x6f, 0x6d, 0x2f, 0x6d, 0x69, 0x6c, 0x76, 0x75, 0x73, 0x2d, 0x69, 0x6f,
-	0x2f, 0x6d, 0x69, 0x6c, 0x76, 0x75, 0x73, 0x2f, 0x70, 0x6b, 0x67, 0x2f, 0x76, 0x32, 0x2f, 0x70,
-	0x72, 0x6f, 0x74, 0x6f, 0x2f, 0x63, 0x67, 0x6f, 0x70, 0x62, 0x62, 0x06, 0x70, 0x72, 0x6f, 0x74,
-	0x6f, 0x33,
+	0x66, 0x69, 0x6c, 0x65, 0x53, 0x69, 0x7a, 0x65, 0x22, 0x55, 0x0a, 0x11, 0x52, 0x65, 0x73, 0x6f,
+	0x75, 0x72, 0x63, 0x65, 0x55, 0x73, 0x61, 0x67, 0x65, 0x49, 0x6e, 0x66, 0x6f, 0x12, 0x21, 0x0a,
+	0x0c, 0x6d, 0x65, 0x6d, 0x6f, 0x72, 0x79, 0x5f, 0x62, 0x79, 0x74, 0x65, 0x73, 0x18, 0x01, 0x20,
+	0x01, 0x28, 0x03, 0x52, 0x0b, 0x6d, 0x65, 0x6d, 0x6f, 0x72, 0x79, 0x42, 0x79, 0x74, 0x65, 0x73,
+	0x12, 0x1d, 0x0a, 0x0a, 0x66, 0x69, 0x6c, 0x65, 0x5f, 0x62, 0x79, 0x74, 0x65, 0x73, 0x18, 0x02,
+	0x20, 0x01, 0x28, 0x03, 0x52, 0x09, 0x66, 0x69, 0x6c, 0x65, 0x42, 0x79, 0x74, 0x65, 0x73, 0x22,
+	0x79, 0x0a, 0x0d, 0x43, 0x61, 0x63, 0x68, 0x65, 0x43, 0x65, 0x6c, 0x6c, 0x49, 0x6e, 0x66, 0x6f,
+	0x12, 0x17, 0x0a, 0x07, 0x63, 0x65, 0x6c, 0x6c, 0x5f, 0x69, 0x64, 0x18, 0x01, 0x20, 0x01, 0x28,
+	0x03, 0x52, 0x06, 0x63, 0x65, 0x6c, 0x6c, 0x49, 0x64, 0x12, 0x16, 0x0a, 0x06, 0x73, 0x74, 0x61,
+	0x74, 0x75, 0x73, 0x18, 0x02, 0x20, 0x01, 0x28, 0x09, 0x52, 0x06, 0x73, 0x74, 0x61, 0x74, 0x75,
+	0x73, 0x12, 0x37, 0x0a, 0x04, 0x73, 0x69, 0x7a, 0x65, 0x18, 0x03, 0x20, 0x01, 0x28, 0x0b, 0x32,
+	0x23, 0x2e, 0x6d, 0x69, 0x6c, 0x76, 0x75, 0x73, 0x2e, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x2e, 0x63,
+	0x67, 0x6f, 0x2e, 0x52, 0x65, 0x73, 0x6f, 0x75, 0x72, 0x63, 0x65, 0x55, 0x73, 0x61, 0x67, 0x65,
+	0x49, 0x6e, 0x66, 0x6f, 0x52, 0x04, 0x73, 0x69, 0x7a, 0x65, 0x22, 0xf9, 0x03, 0x0a, 0x0d, 0x43,
+	0x61, 0x63, 0x68, 0x65, 0x53, 0x6c, 0x6f, 0x74, 0x49, 0x6e, 0x66, 0x6f, 0x12, 0x10, 0x0a, 0x03,
+	0x6b, 0x65, 0x79, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x03, 0x6b, 0x65, 0x79, 0x12, 0x1d,
+	0x0a, 0x0a, 0x73, 0x65, 0x67, 0x6d, 0x65, 0x6e, 0x74, 0x5f, 0x69, 0x64, 0x18, 0x02, 0x20, 0x01,
+	0x28, 0x03, 0x52, 0x09, 0x73, 0x65, 0x67, 0x6d, 0x65, 0x6e, 0x74, 0x49, 0x64, 0x12, 0x42, 0x0a,
+	0x0a, 0x74, 0x6f, 0x74, 0x61, 0x6c, 0x5f, 0x73, 0x69, 0x7a, 0x65, 0x18, 0x03, 0x20, 0x01, 0x28,
+	0x0b, 0x32, 0x23, 0x2e, 0x6d, 0x69, 0x6c, 0x76, 0x75, 0x73, 0x2e, 0x70, 0x72, 0x6f, 0x74, 0x6f,
+	0x2e, 0x63, 0x67, 0x6f, 0x2e, 0x52, 0x65, 0x73, 0x6f, 0x75, 0x72, 0x63, 0x65, 0x55, 0x73, 0x61,
+	0x67, 0x65, 0x49, 0x6e, 0x66, 0x6f, 0x52, 0x09, 0x74, 0x6f, 0x74, 0x61, 0x6c, 0x53, 0x69, 0x7a,
+	0x65, 0x12, 0x44, 0x0a, 0x0b, 0x6c, 0x6f, 0x61, 0x64, 0x65, 0x64, 0x5f, 0x73, 0x69, 0x7a, 0x65,
+	0x18, 0x04, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x23, 0x2e, 0x6d, 0x69, 0x6c, 0x76, 0x75, 0x73, 0x2e,
+	0x70, 0x72, 0x6f, 0x74, 0x6f, 0x2e, 0x63, 0x67, 0x6f, 0x2e, 0x52, 0x65, 0x73, 0x6f, 0x75, 0x72,
+	0x63, 0x65, 0x55, 0x73, 0x61, 0x67, 0x65, 0x49, 0x6e, 0x66, 0x6f, 0x52, 0x0a, 0x6c, 0x6f, 0x61,
+	0x64, 0x65, 0x64, 0x53, 0x69, 0x7a, 0x65, 0x12, 0x46, 0x0a, 0x0c, 0x6c, 0x6f, 0x61, 0x64, 0x69,
+	0x6e, 0x67, 0x5f, 0x73, 0x69, 0x7a, 0x65, 0x18, 0x05, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x23, 0x2e,
+	0x6d, 0x69, 0x6c, 0x76, 0x75, 0x73, 0x2e, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x2e, 0x63, 0x67, 0x6f,
+	0x2e, 0x52, 0x65, 0x73, 0x6f, 0x75, 0x72, 0x63, 0x65, 0x55, 0x73, 0x61, 0x67, 0x65, 0x49, 0x6e,
+	0x66, 0x6f, 0x52, 0x0b, 0x6c, 0x6f, 0x61, 0x64, 0x69, 0x6e, 0x67, 0x53, 0x69, 0x7a, 0x65, 0x12,
+	0x1f, 0x0a, 0x0b, 0x74, 0x6f, 0x74, 0x61, 0x6c, 0x5f, 0x63, 0x65, 0x6c, 0x6c, 0x73, 0x18, 0x06,
+	0x20, 0x01, 0x28, 0x05, 0x52, 0x0a, 0x74, 0x6f, 0x74, 0x61, 0x6c, 0x43, 0x65, 0x6c, 0x6c, 0x73,
+	0x12, 0x21, 0x0a, 0x0c, 0x6c, 0x6f, 0x61, 0x64, 0x65, 0x64, 0x5f, 0x63, 0x65, 0x6c, 0x6c, 0x73,
+	0x18, 0x07, 0x20, 0x01, 0x28, 0x05, 0x52, 0x0b, 0x6c, 0x6f, 0x61, 0x64, 0x65, 0x64, 0x43, 0x65,
+	0x6c, 0x6c, 0x73, 0x12, 0x23, 0x0a, 0x0d, 0x6c, 0x6f, 0x61, 0x64, 0x69, 0x6e, 0x67, 0x5f, 0x63,
+	0x65, 0x6c, 0x6c, 0x73, 0x18, 0x08, 0x20, 0x01, 0x28, 0x05, 0x52, 0x0c, 0x6c, 0x6f, 0x61, 0x64,
+	0x69, 0x6e, 0x67, 0x43, 0x65, 0x6c, 0x6c, 0x73, 0x12, 0x28, 0x0a, 0x10, 0x6e, 0x6f, 0x74, 0x5f,
+	0x6c, 0x6f, 0x61, 0x64, 0x65, 0x64, 0x5f, 0x63, 0x65, 0x6c, 0x6c, 0x73, 0x18, 0x09, 0x20, 0x01,
+	0x28, 0x05, 0x52, 0x0e, 0x6e, 0x6f, 0x74, 0x4c, 0x6f, 0x61, 0x64, 0x65, 0x64, 0x43, 0x65, 0x6c,
+	0x6c, 0x73, 0x12, 0x1b, 0x0a, 0x09, 0x73, 0x6c, 0x6f, 0x74, 0x5f, 0x74, 0x79, 0x70, 0x65, 0x18,
+	0x0a, 0x20, 0x01, 0x28, 0x09, 0x52, 0x08, 0x73, 0x6c, 0x6f, 0x74, 0x54, 0x79, 0x70, 0x65, 0x12,
+	0x35, 0x0a, 0x05, 0x63, 0x65, 0x6c, 0x6c, 0x73, 0x18, 0x0b, 0x20, 0x03, 0x28, 0x0b, 0x32, 0x1f,
+	0x2e, 0x6d, 0x69, 0x6c, 0x76, 0x75, 0x73, 0x2e, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x2e, 0x63, 0x67,
+	0x6f, 0x2e, 0x43, 0x61, 0x63, 0x68, 0x65, 0x43, 0x65, 0x6c, 0x6c, 0x49, 0x6e, 0x66, 0x6f, 0x52,
+	0x05, 0x63, 0x65, 0x6c, 0x6c, 0x73, 0x22, 0x59, 0x0a, 0x15, 0x43, 0x61, 0x63, 0x68, 0x65, 0x53,
+	0x6c, 0x6f, 0x74, 0x4c, 0x69, 0x73, 0x74, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x12,
+	0x40, 0x0a, 0x0b, 0x63, 0x61, 0x63, 0x68, 0x65, 0x5f, 0x73, 0x6c, 0x6f, 0x74, 0x73, 0x18, 0x01,
+	0x20, 0x03, 0x28, 0x0b, 0x32, 0x1f, 0x2e, 0x6d, 0x69, 0x6c, 0x76, 0x75, 0x73, 0x2e, 0x70, 0x72,
+	0x6f, 0x74, 0x6f, 0x2e, 0x63, 0x67, 0x6f, 0x2e, 0x43, 0x61, 0x63, 0x68, 0x65, 0x53, 0x6c, 0x6f,
+	0x74, 0x49, 0x6e, 0x66, 0x6f, 0x52, 0x0a, 0x63, 0x61, 0x63, 0x68, 0x65, 0x53, 0x6c, 0x6f, 0x74,
+	0x73, 0x22, 0x36, 0x0a, 0x13, 0x53, 0x65, 0x67, 0x6d, 0x65, 0x6e, 0x74, 0x4c, 0x69, 0x73, 0x74,
+	0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x12, 0x1f, 0x0a, 0x0b, 0x73, 0x65, 0x67, 0x6d,
+	0x65, 0x6e, 0x74, 0x5f, 0x69, 0x64, 0x73, 0x18, 0x01, 0x20, 0x03, 0x28, 0x03, 0x52, 0x0a, 0x73,
+	0x65, 0x67, 0x6d, 0x65, 0x6e, 0x74, 0x49, 0x64, 0x73, 0x42, 0x30, 0x5a, 0x2e, 0x67, 0x69, 0x74,
+	0x68, 0x75, 0x62, 0x2e, 0x63, 0x6f, 0x6d, 0x2f, 0x6d, 0x69, 0x6c, 0x76, 0x75, 0x73, 0x2d, 0x69,
+	0x6f, 0x2f, 0x6d, 0x69, 0x6c, 0x76, 0x75, 0x73, 0x2f, 0x70, 0x6b, 0x67, 0x2f, 0x76, 0x32, 0x2f,
+	0x70, 0x72, 0x6f, 0x74, 0x6f, 0x2f, 0x63, 0x67, 0x6f, 0x70, 0x62, 0x62, 0x06, 0x70, 0x72, 0x6f,
+	0x74, 0x6f, 0x33,
 }
 
 var (
@@ -371,23 +767,34 @@ func file_cgo_msg_proto_rawDescGZIP() []byte {
 	return file_cgo_msg_proto_rawDescData
 }
 
-var file_cgo_msg_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_cgo_msg_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_cgo_msg_proto_goTypes = []interface{}{
 	(*LoadIndexInfo)(nil),           // 0: milvus.proto.cgo.LoadIndexInfo
 	(*IndexStats)(nil),              // 1: milvus.proto.cgo.IndexStats
 	(*SerializedIndexFileInfo)(nil), // 2: milvus.proto.cgo.SerializedIndexFileInfo
-	nil,                             // 3: milvus.proto.cgo.LoadIndexInfo.IndexParamsEntry
-	(*schemapb.FieldSchema)(nil),    // 4: milvus.proto.schema.FieldSchema
+	(*ResourceUsageInfo)(nil),       // 3: milvus.proto.cgo.ResourceUsageInfo
+	(*CacheCellInfo)(nil),           // 4: milvus.proto.cgo.CacheCellInfo
+	(*CacheSlotInfo)(nil),           // 5: milvus.proto.cgo.CacheSlotInfo
+	(*CacheSlotListResponse)(nil),   // 6: milvus.proto.cgo.CacheSlotListResponse
+	(*SegmentListResponse)(nil),     // 7: milvus.proto.cgo.SegmentListResponse
+	nil,                             // 8: milvus.proto.cgo.LoadIndexInfo.IndexParamsEntry
+	(*schemapb.FieldSchema)(nil),    // 9: milvus.proto.schema.FieldSchema
 }
 var file_cgo_msg_proto_depIdxs = []int32{
-	4, // 0: milvus.proto.cgo.LoadIndexInfo.field:type_name -> milvus.proto.schema.FieldSchema
-	3, // 1: milvus.proto.cgo.LoadIndexInfo.index_params:type_name -> milvus.proto.cgo.LoadIndexInfo.IndexParamsEntry
+	9, // 0: milvus.proto.cgo.LoadIndexInfo.field:type_name -> milvus.proto.schema.FieldSchema
+	8, // 1: milvus.proto.cgo.LoadIndexInfo.index_params:type_name -> milvus.proto.cgo.LoadIndexInfo.IndexParamsEntry
 	2, // 2: milvus.proto.cgo.IndexStats.serialized_index_infos:type_name -> milvus.proto.cgo.SerializedIndexFileInfo
-	3, // [3:3] is the sub-list for method output_type
-	3, // [3:3] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	3, // 3: milvus.proto.cgo.CacheCellInfo.size:type_name -> milvus.proto.cgo.ResourceUsageInfo
+	3, // 4: milvus.proto.cgo.CacheSlotInfo.total_size:type_name -> milvus.proto.cgo.ResourceUsageInfo
+	3, // 5: milvus.proto.cgo.CacheSlotInfo.loaded_size:type_name -> milvus.proto.cgo.ResourceUsageInfo
+	3, // 6: milvus.proto.cgo.CacheSlotInfo.loading_size:type_name -> milvus.proto.cgo.ResourceUsageInfo
+	4, // 7: milvus.proto.cgo.CacheSlotInfo.cells:type_name -> milvus.proto.cgo.CacheCellInfo
+	5, // 8: milvus.proto.cgo.CacheSlotListResponse.cache_slots:type_name -> milvus.proto.cgo.CacheSlotInfo
+	9, // [9:9] is the sub-list for method output_type
+	9, // [9:9] is the sub-list for method input_type
+	9, // [9:9] is the sub-list for extension type_name
+	9, // [9:9] is the sub-list for extension extendee
+	0, // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_cgo_msg_proto_init() }
@@ -432,6 +839,66 @@ func file_cgo_msg_proto_init() {
 				return nil
 			}
 		}
+		file_cgo_msg_proto_msgTypes[3].Exporter = func(v interface{}, i int) interface{} {
+			switch v := v.(*ResourceUsageInfo); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
+		file_cgo_msg_proto_msgTypes[4].Exporter = func(v interface{}, i int) interface{} {
+			switch v := v.(*CacheCellInfo); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
+		file_cgo_msg_proto_msgTypes[5].Exporter = func(v interface{}, i int) interface{} {
+			switch v := v.(*CacheSlotInfo); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
+		file_cgo_msg_proto_msgTypes[6].Exporter = func(v interface{}, i int) interface{} {
+			switch v := v.(*CacheSlotListResponse); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
+		file_cgo_msg_proto_msgTypes[7].Exporter = func(v interface{}, i int) interface{} {
+			switch v := v.(*SegmentListResponse); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -439,7 +906,7 @@ func file_cgo_msg_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: file_cgo_msg_proto_rawDesc,
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
