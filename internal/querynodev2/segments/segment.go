@@ -1325,10 +1325,6 @@ func (s *LocalSegment) Release(ctx context.Context, opts ...releaseOption) {
 		C.ExprResCacheEraseSegment(C.int64_t(s.ID()))
 	}
 
-	GetDynamicPool().Submit(func() (any, error) {
-		C.DeleteSegment(ptr)
-		return nil, nil
-	}).Await()
 
 	// release reserved resource after the segment resource is really released.
 	usage := s.ResourceUsageEstimate()
