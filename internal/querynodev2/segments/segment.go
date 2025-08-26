@@ -1326,9 +1326,6 @@ func (s *LocalSegment) Release(ctx context.Context, opts ...releaseOption) {
 	}
 
 
-	// release reserved resource after the segment resource is really released.
-	usage := s.ResourceUsageEstimate()
-	s.manager.SubLogicalResource(usage)
 
 	log.Info("delete segment from memory")
 }
