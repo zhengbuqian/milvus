@@ -114,3 +114,14 @@ pkg/streaming/proto/**/*.pb.go
 
 #AI rules
 WARP.md
+
+.serena
+.claude
+
+cgo_interface/
+compile.sh
+compile_log.txt
+scalar_filtering_benchmark.md
+segcore_scalar_filter_benchmark_design.md
+storage_paths.md
+benchmark_results.csv

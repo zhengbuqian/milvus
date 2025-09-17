@@ -1,4 +1,4 @@
-# Copyright (C) 2019-2020 Zilliz. All rights reserved.
+# Copyright (C) 2019-2024 Zilliz. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance
 # with the License. You may obtain a copy of the License at
@@ -11,15 +11,29 @@
 
 include_directories(${CMAKE_HOME_DIRECTORY}/src)
 include_directories(${CMAKE_HOME_DIRECTORY}/unittest)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
-file(GLOB bench_srcs "${CMAKE_HOME_DIRECTORY}/unittest/bench/*.cpp")
+file(GLOB SCALAR_BENCH_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
 
-add_executable(all_bench ${bench_srcs})
-target_link_libraries(all_bench
-        milvus_core
-        knowhere
-        pthread
-        )
+add_executable(scalar_filter_bench ${SCALAR_BENCH_SRCS})
 
-target_link_libraries(all_bench benchmark_main)
-install(TARGETS all_bench DESTINATION unittest)
+target_link_libraries(scalar_filter_bench
+    milvus_core
+    milvus-storage
+    milvus-common
+    pthread
+)
+
+# Set C++ standard
+set_target_properties(scalar_filter_bench PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
+
+# Add compile options for performance
+target_compile_options(scalar_filter_bench PRIVATE
+    -O3
+    -march=native
+)
+
+install(TARGETS scalar_filter_bench DESTINATION unittest)

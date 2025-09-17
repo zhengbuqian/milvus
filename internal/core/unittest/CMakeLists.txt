@@ -118,6 +118,7 @@ install(TARGETS all_tests DESTINATION unittest)
 
 add_subdirectory(bench)
 add_subdirectory(test_json_stats)
+add_subdirectory(scalar_bench)
 
 # bitset unit test
 include(CheckCXXCompilerFlag)
