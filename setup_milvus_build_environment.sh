@@ -156,10 +156,29 @@ install_go() {
 
     log_info "Installing Go..."
     GO_VERSION_TO_INSTALL="1.24.4"
-    GO_ARCH="amd64"
-    if [[ "$OS" == "macos" ]] && [[ $(arch) == 'arm64' ]]; then
-        GO_ARCH="arm64"
-    fi
+    
+    # Detect architecture for Go installation
+    MACHINE_ARCH=$(uname -m)
+    case "$MACHINE_ARCH" in
+        x86_64)
+            GO_ARCH="amd64"
+            ;;
+        aarch64|arm64)
+            GO_ARCH="arm64"
+            ;;
+        armv6l)
+            GO_ARCH="armv6l"
+            ;;
+        armv7l)
+            GO_ARCH="armv7l"
+            ;;
+        *)
+            log_error "Unsupported architecture for Go: $MACHINE_ARCH"
+            exit 1
+            ;;
+    esac
+    
+    log_info "Detected architecture: $MACHINE_ARCH, using Go arch: $GO_ARCH"
 
     GO_TARBALL="go${GO_VERSION_TO_INSTALL}.linux-${GO_ARCH}.tar.gz"
     if [[ "$OS" == "macos" ]]; then
@@ -167,10 +186,17 @@ install_go() {
     fi
 
     cd /tmp
-    wget -q "https://golang.org/dl/${GO_TARBALL}"
-    ${USE_SUDO} rm -rf /usr/local/go
-    ${USE_SUDO} tar -C /usr/local -xzf "${GO_TARBALL}"
-    rm "${GO_TARBALL}"
+    log_info "Downloading Go from: https://golang.org/dl/${GO_TARBALL}"
+    if wget -q "https://golang.org/dl/${GO_TARBALL}"; then
+        ${USE_SUDO} rm -rf /usr/local/go
+        ${USE_SUDO} tar -C /usr/local -xzf "${GO_TARBALL}"
+        rm "${GO_TARBALL}"
+    else
+        log_error "Failed to download Go for architecture: $MACHINE_ARCH"
+        log_error "Please check if Go ${GO_VERSION_TO_INSTALL} is available for ${GO_ARCH}"
+        log_info "You can check available versions at: https://golang.org/dl/"
+        exit 1
+    fi
 
     # Add Go to PATH if not already there
     if ! echo "$PATH" | grep -q "/usr/local/go/bin"; then
@@ -204,11 +230,48 @@ install_cmake() {
     else
         log_info "Installing CMake..."
         CMAKE_VERSION_TO_INSTALL="3.26.5"
-        ARCH=$(uname -m)
+        MACHINE_ARCH=$(uname -m)
+        
+        # Map architecture for CMake binary
+        case "$MACHINE_ARCH" in
+            x86_64)
+                CMAKE_ARCH="x86_64"
+                ;;
+            aarch64)
+                CMAKE_ARCH="aarch64"
+                ;;
+            *)
+                log_warning "CMake binary not available for architecture: $MACHINE_ARCH"
+                log_info "Attempting to install CMake from system packages..."
+                ${USE_SUDO} apt update
+                ${USE_SUDO} apt install -y cmake
+                if command -v cmake &> /dev/null; then
+                    log_success "CMake installed from system packages"
+                    return 0
+                else
+                    log_error "Failed to install CMake for architecture: $MACHINE_ARCH"
+                    exit 1
+                fi
+                ;;
+        esac
+        
+        log_info "Detected architecture: $MACHINE_ARCH, using CMake arch: $CMAKE_ARCH"
         cd /tmp
-        wget -q "https://cmake.org/files/v3.26/cmake-${CMAKE_VERSION_TO_INSTALL}-linux-${ARCH}.tar.gz"
-        ${USE_SUDO} tar --strip-components=1 -xz -C /usr/local -f "cmake-${CMAKE_VERSION_TO_INSTALL}-linux-${ARCH}.tar.gz"
-        rm "cmake-${CMAKE_VERSION_TO_INSTALL}-linux-${ARCH}.tar.gz"
+        CMAKE_URL="https://cmake.org/files/v3.26/cmake-${CMAKE_VERSION_TO_INSTALL}-linux-${CMAKE_ARCH}.tar.gz"
+        log_info "Downloading CMake from: $CMAKE_URL"
+        
+        if wget -q "$CMAKE_URL"; then
+            ${USE_SUDO} tar --strip-components=1 -xz -C /usr/local -f "cmake-${CMAKE_VERSION_TO_INSTALL}-linux-${CMAKE_ARCH}.tar.gz"
+            rm "cmake-${CMAKE_VERSION_TO_INSTALL}-linux-${CMAKE_ARCH}.tar.gz"
+        else
+            log_warning "Failed to download CMake binary, trying system packages..."
+            ${USE_SUDO} apt update
+            ${USE_SUDO} apt install -y cmake
+            if ! command -v cmake &> /dev/null; then
+                log_error "Failed to install CMake"
+                exit 1
+            fi
+        fi
     fi
 
     log_success "CMake installed successfully"
