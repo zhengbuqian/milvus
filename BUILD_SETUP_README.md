@@ -4,6 +4,7 @@ This repository contains scripts to automatically set up all prerequisites neede
 
 ## Quick Start
 
+### On Host Systems (regular user)
 1. **Run the setup script:**
    ```bash
    ./setup_milvus_build_environment.sh
@@ -24,6 +25,25 @@ This repository contains scripts to automatically set up all prerequisites neede
    make
    # or for unit tests
    make build-cpp-with-unittest
+   ```
+
+### In Docker Containers (as root)
+1. **Start a container:**
+   ```bash
+   docker run -it ubuntu:latest bash
+   # You're now root in the container
+   ```
+
+2. **Run the setup script:**
+   ```bash
+   ./setup_milvus_build_environment.sh
+   # Works perfectly as root - no sudo needed!
+   ```
+
+3. **Test and build:**
+   ```bash
+   ./test_milvus_build.sh
+   make
    ```
 
 ## What the Setup Script Does
@@ -71,7 +91,9 @@ The `setup_milvus_build_environment.sh` script automatically:
 - Multi-core CPU (recommended for faster builds)
 
 ### Software Prerequisites
-- **Linux**: `sudo` privileges for package installation
+- **Linux**: 
+  - As regular user: `sudo` privileges for package installation
+  - As root user (e.g., in containers): No additional requirements
 - **macOS**: Xcode command line tools, Homebrew
 
 ## Files Included
@@ -90,19 +112,28 @@ The `setup_milvus_build_environment.sh` script automatically:
    chmod +x test_milvus_build.sh
    ```
 
-2. **Conan Profile Issues**
+2. **Running in Docker Containers**
+   - ✅ **Works as root**: The script automatically detects root user and runs commands directly
+   - ✅ **No sudo needed**: Perfect for minimal container images
+   - ✅ **Container-friendly**: Handles environments where sudo isn't installed
+
+3. **Running on Host Systems**
+   - ✅ **Works as regular user**: Automatically uses sudo for system operations
+   - ✅ **Works as root**: Also supported if you prefer to run as root
+
+4. **Conan Profile Issues**
    ```bash
    rm -rf ~/.conan
    # Re-run the setup script
    ```
 
-3. **Environment Variables Not Set**
+5. **Environment Variables Not Set**
    ```bash
    source ~/.bashrc
    # or restart your terminal
    ```
 
-4. **GCC Version Issues**
+6. **GCC Version Issues**
    - The script automatically installs and configures GCC-12
    - Conan requires a supported GCC version (12 is recommended)
 

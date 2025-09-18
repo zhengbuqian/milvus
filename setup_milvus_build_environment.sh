@@ -13,6 +13,9 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# Global variables
+USE_SUDO=""
+
 # Logging functions
 log_info() {
     echo -e "${BLUE}[INFO]${NC} $1"
@@ -30,19 +33,23 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# Check if running as root
-check_root() {
+# Set up sudo usage based on current user
+setup_sudo() {
     if [[ $EUID -eq 0 ]]; then
-        log_error "This script should not be run as root. Please run as a regular user with sudo privileges."
-        exit 1
-    fi
-}
-
-# Check if sudo is available
-check_sudo() {
-    if ! sudo -n true 2>/dev/null; then
-        log_error "This script requires sudo privileges. Please run: sudo -v"
-        exit 1
+        log_info "Running as root - will execute commands directly"
+        USE_SUDO=""
+    else
+        log_info "Running as regular user - will use sudo for system operations"
+        USE_SUDO="sudo"
+        # Check if sudo is available for non-root users
+        if ! command -v sudo &> /dev/null; then
+            log_error "sudo is required but not installed"
+            exit 1
+        fi
+        if ! sudo -n true 2>/dev/null; then
+            log_error "This script requires sudo privileges. Please run: sudo -v"
+            exit 1
+        fi
     fi
 }
 
@@ -71,10 +78,10 @@ detect_os() {
 # Install system dependencies for Ubuntu/Debian
 install_ubuntu_deps() {
     log_info "Updating package lists..."
-    sudo apt update
+    ${USE_SUDO} apt update
 
     log_info "Installing system dependencies..."
-    sudo apt install -y \
+    ${USE_SUDO} apt install -y \
         wget curl ca-certificates gnupg2 \
         gcc-12 g++-12 gfortran git make ccache \
         libssl-dev zlib1g-dev zip unzip \
@@ -85,28 +92,28 @@ install_ubuntu_deps() {
 
     # Set GCC-12 as default
     log_info "Setting up GCC-12 as default compiler..."
-    sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 60 --slave /usr/bin/g++ g++ /usr/bin/g++-12
+    ${USE_SUDO} update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 60 --slave /usr/bin/g++ g++ /usr/bin/g++-12
     if command -v gcc-14 &> /dev/null; then
-        sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 40 --slave /usr/bin/g++ g++ /usr/bin/g++-14
+        ${USE_SUDO} update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 40 --slave /usr/bin/g++ g++ /usr/bin/g++-14
     fi
 }
 
 # Install system dependencies for CentOS/RHEL
 install_centos_deps() {
     log_info "Installing EPEL and SCL repositories..."
-    sudo yum install -y epel-release centos-release-scl-rh
+    ${USE_SUDO} yum install -y epel-release centos-release-scl-rh
 
     log_info "Installing system dependencies..."
-    sudo yum install -y \
+    ${USE_SUDO} yum install -y \
         wget curl which git make automake python3-devel \
         devtoolset-11-gcc devtoolset-11-gcc-c++ devtoolset-11-gcc-gfortran devtoolset-11-libatomic-devel \
         llvm-toolset-11.0-clang llvm-toolset-11.0-clang-tools-extra openblas-devel \
         libaio libuuid-devel zip unzip ccache lcov libtool m4 autoconf automake
 
     # Set up SCL environment
-    echo "source scl_source enable devtoolset-11" | sudo tee -a /etc/profile.d/devtoolset-11.sh
-    echo "source scl_source enable llvm-toolset-11.0" | sudo tee -a /etc/profile.d/llvm-toolset-11.sh
-    echo "export CLANG_TOOLS_PATH=/opt/rh/llvm-toolset-11.0/root/usr/bin" | sudo tee -a /etc/profile.d/llvm-toolset-11.sh
+    echo "source scl_source enable devtoolset-11" | ${USE_SUDO} tee -a /etc/profile.d/devtoolset-11.sh
+    echo "source scl_source enable llvm-toolset-11.0" | ${USE_SUDO} tee -a /etc/profile.d/llvm-toolset-11.sh
+    echo "export CLANG_TOOLS_PATH=/opt/rh/llvm-toolset-11.0/root/usr/bin" | ${USE_SUDO} tee -a /etc/profile.d/llvm-toolset-11.sh
 }
 
 # Install system dependencies for macOS
@@ -127,7 +134,7 @@ install_macos_deps() {
         brew install openssl librdkafka
     fi
 
-    sudo ln -sf "$(brew --prefix llvm@15)" "/usr/local/opt/llvm" 2>/dev/null || true
+    ${USE_SUDO} ln -sf "$(brew --prefix llvm@15)" "/usr/local/opt/llvm" 2>/dev/null || true
     export PATH="/usr/local/opt/grep/libexec/gnubin:$PATH"
 }
 
@@ -161,8 +168,8 @@ install_go() {
 
     cd /tmp
     wget -q "https://golang.org/dl/${GO_TARBALL}"
-    sudo rm -rf /usr/local/go
-    sudo tar -C /usr/local -xzf "${GO_TARBALL}"
+    ${USE_SUDO} rm -rf /usr/local/go
+    ${USE_SUDO} tar -C /usr/local -xzf "${GO_TARBALL}"
     rm "${GO_TARBALL}"
 
     # Add Go to PATH if not already there
@@ -200,7 +207,7 @@ install_cmake() {
         ARCH=$(uname -m)
         cd /tmp
         wget -q "https://cmake.org/files/v3.26/cmake-${CMAKE_VERSION_TO_INSTALL}-linux-${ARCH}.tar.gz"
-        sudo tar --strip-components=1 -xz -C /usr/local -f "cmake-${CMAKE_VERSION_TO_INSTALL}-linux-${ARCH}.tar.gz"
+        ${USE_SUDO} tar --strip-components=1 -xz -C /usr/local -f "cmake-${CMAKE_VERSION_TO_INSTALL}-linux-${ARCH}.tar.gz"
         rm "cmake-${CMAKE_VERSION_TO_INSTALL}-linux-${ARCH}.tar.gz"
     fi
 
@@ -370,8 +377,7 @@ verify_installation() {
 main() {
     log_info "Starting Milvus build environment setup..."
     
-    check_root
-    check_sudo
+    setup_sudo
     detect_os
     
     # Install system dependencies based on OS
