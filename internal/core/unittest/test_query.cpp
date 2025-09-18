@@ -84,6 +84,7 @@ TEST(Query, ExecWithPredicateLoader) {
                                     >
                                     placeholder_tag: "$0"
      >)";
+    std::cout << "ZBQ raw_plan: " << raw_plan << std::endl;
     int64_t N = ROW_COUNT;
     auto dataset = DataGen(schema, N);
     auto segment = CreateGrowingSegment(schema, empty_index_meta);

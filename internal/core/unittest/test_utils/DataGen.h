@@ -1485,6 +1485,7 @@ GenScalarIndexing(int64_t N, const T* data) {
     return indexing;
 }
 
+// TODO: 这个返回的buffer和text_plan有什么区别？
 inline std::vector<char>
 translate_text_plan_to_binary_plan(const char* text_plan) {
     proto::plan::PlanNode plan_node;
@@ -1493,6 +1494,8 @@ translate_text_plan_to_binary_plan(const char* text_plan) {
     AssertInfo(ok, "Failed to parse");
     std::string binary_plan;
     plan_node.SerializeToString(&binary_plan);
+
+    std::cout << "ZBQ binary_plan: " << binary_plan << std::endl;
 
     std::vector<char> ret;
     ret.resize(binary_plan.size());
