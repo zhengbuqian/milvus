@@ -84,7 +84,7 @@ JsonInvertedIndex<T>::Exists() {
     };
 
     if (this->is_growing_) {
-        folly::SharedMutex::ReadHolder lock(this->mutex_);
+        std::shared_lock<folly::SharedMutexWritePriority> lock(this->mutex_);
         fill_bitset();
     } else {
         fill_bitset();

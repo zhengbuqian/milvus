@@ -134,7 +134,7 @@ class JsonInvertedIndex : public index::InvertedIndexTantivy<T> {
 
     BinarySet
     Serialize(const Config& config) override {
-        folly::SharedMutex::ReadHolder lock(this->mutex_);
+        std::shared_lock<folly::SharedMutexWritePriority> lock(this->mutex_);
         auto index_valid_data_length =
             this->null_offset_.size() * sizeof(size_t);
         std::shared_ptr<uint8_t[]> index_valid_data(

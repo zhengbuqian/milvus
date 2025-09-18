@@ -105,7 +105,7 @@ InvertedIndexTantivy<T>::finish() {
 template <typename T>
 BinarySet
 InvertedIndexTantivy<T>::Serialize(const Config& config) {
-    folly::SharedMutex::ReadHolder lock(mutex_);
+    std::shared_lock<folly::SharedMutexWritePriority> lock(mutex_);
     auto index_valid_data_length = null_offset_.size() * sizeof(size_t);
     std::shared_ptr<uint8_t[]> index_valid_data(
         new uint8_t[index_valid_data_length]);
@@ -293,7 +293,7 @@ InvertedIndexTantivy<T>::IsNull() {
     };
 
     if (is_growing_) {
-        folly::SharedMutex::ReadHolder lock(mutex_);
+        std::shared_lock<folly::SharedMutexWritePriority> lock(mutex_);
         fill_bitset();
     } else {
         fill_bitset();
@@ -317,7 +317,7 @@ InvertedIndexTantivy<T>::IsNotNull() {
     };
 
     if (is_growing_) {
-        folly::SharedMutex::ReadHolder lock(mutex_);
+        std::shared_lock<folly::SharedMutexWritePriority> lock(mutex_);
         fill_bitset();
     } else {
         fill_bitset();
@@ -365,7 +365,7 @@ InvertedIndexTantivy<T>::NotIn(size_t n, const T* values) {
     };
 
     if (is_growing_) {
-        folly::SharedMutex::ReadHolder lock(mutex_);
+        std::shared_lock<folly::SharedMutexWritePriority> lock(mutex_);
         fill_bitset();
     } else {
         fill_bitset();
