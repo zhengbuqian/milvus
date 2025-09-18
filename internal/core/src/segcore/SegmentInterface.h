@@ -62,10 +62,12 @@ class SegmentInterface {
     virtual ~SegmentInterface() = default;
 
     virtual void
-    FillPrimaryKeys(const query::Plan* plan, SearchResult& results) const = 0;
+    FillPrimaryKeys(const query::Plan* plan,
+                    SearchResult& results) const = 0;
 
     virtual void
-    FillTargetEntry(const query::Plan* plan, SearchResult& results) const = 0;
+    FillTargetEntry(const query::Plan* plan,
+                    SearchResult& results) const = 0;
 
     virtual bool
     Contain(const PkType& pk) const = 0;
