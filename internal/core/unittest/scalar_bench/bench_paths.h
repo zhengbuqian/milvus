@@ -26,6 +26,7 @@ std::string GetStorageRoot();   // base path
 std::string GetStorageDir();    // for LocalChunkManagerSingleton and general storage
 std::string GetSegmentsDir();   // for per-segment local chunk manager data
 std::string GetResultsDir();    // for benchmark outputs like CSV, logs, reports
+std::string GetTempDir();        // for temporary files like perf data
 
 // Utilities
 std::string PathJoin(const std::string& base, const std::string& name);

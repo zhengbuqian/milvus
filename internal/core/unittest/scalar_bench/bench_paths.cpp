@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <limits.h>
 
 #include <cstring>
 
@@ -21,11 +22,27 @@ namespace milvus {
 namespace scalar_bench {
 
 namespace {
-static const char* kDefaultBase = "/tmp/milvus/scalar_bench/";
+// 使用相对于项目的路径
+std::string GetProjectRelativePath() {
+    // 获取当前工作目录
+    char cwd[PATH_MAX];
+    if (getcwd(cwd, sizeof(cwd)) != nullptr) {
+        std::string current_dir(cwd);
+        // 如果当前在milvus项目目录下，使用相对路径
+        if (current_dir.find("/milvus") != std::string::npos) {
+            // 找到milvus项目根目录
+            size_t pos = current_dir.find("/milvus");
+            std::string project_root = current_dir.substr(0, pos + 7); // 包含/milvus
+            return project_root + "/internal/core/unittest/scalar_bench/_artifacts/";
+        }
+    }
+    // 默认使用绝对路径
+    return "/home/zilliz/milvus/internal/core/unittest/scalar_bench/_artifacts/";
+}
 }
 
 const std::string& GetBasePath() {
-    static const std::string base_path = kDefaultBase;
+    static const std::string base_path = GetProjectRelativePath();
     return base_path;
 }
 
@@ -91,6 +108,12 @@ std::string GetSegmentsDir() {
 
 std::string GetResultsDir() {
     auto path = PathJoin(GetBasePath(), "results");
+    EnsureDirExists(path);
+    return path + "/";
+}
+
+std::string GetTempDir() {
+    auto path = PathJoin(GetBasePath(), "temp");
     EnsureDirExists(path);
     return path + "/";
 }

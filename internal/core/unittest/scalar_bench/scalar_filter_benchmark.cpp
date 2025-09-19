@@ -21,7 +21,8 @@
 #include <fstream>
 #include <iomanip>
 #include <cmath>
-#include <thread>
+#include <set>
+#include <string>
 #include "bench_paths.h"
 
 namespace milvus {
@@ -325,6 +326,143 @@ ScalarFilterBenchmark::GenerateReport(const std::vector<BenchmarkResult>& result
 
     std::cout << "Run configuration saved to: " << run_dir << "run_config.json" << std::endl;
     std::cout << "\n📁 All results saved in folder: " << run_dir << std::endl;
+
+    // 生成 meta.json：run 元信息与去重后的配置清单
+    {
+        std::set<std::string> unique_data_configs2;
+        std::set<std::string> unique_index_configs2;
+        std::set<std::string> unique_expressions2;
+        for (const auto& r : results) {
+            unique_data_configs2.insert(r.data_config_name);
+            unique_index_configs2.insert(r.index_config_name);
+            unique_expressions2.insert(r.actual_expression);
+        }
+
+        std::ofstream meta(run_dir + "meta.json");
+        meta << "{\n";
+        meta << "  \"id\": \"" << run_id << "\",\n";
+        meta << "  \"timestamp_ms\": " << run_id << ",\n";
+        meta << "  \"label\": \"\",\n";
+        meta << "  \"summary\": { \"total_cases\": " << results.size() << " },\n";
+        meta << "  \"data_configs\": [";
+        bool first = true;
+        for (const auto& s : unique_data_configs2) { if (!first) meta << ", "; meta << "\"" << s << "\""; first = false; }
+        meta << "],\n";
+        meta << "  \"index_configs\": [";
+        first = true;
+        for (const auto& s : unique_index_configs2) { if (!first) meta << ", "; meta << "\"" << s << "\""; first = false; }
+        meta << "],\n";
+        meta << "  \"expressions\": [";
+        first = true;
+        for (const auto& s : unique_expressions2) { if (!first) meta << ", "; meta << "\"" << s << "\""; first = false; }
+        meta << "]\n";
+        meta << "}\n";
+    }
+
+    // 生成 metrics.json：按 case_run_id 索引的详细指标
+    {
+        std::ofstream metrics(run_dir + "metrics.json");
+        metrics << "{\n  \"cases\": {\n";
+        bool first_case = true;
+        for (const auto& r : results) {
+            if (!first_case) metrics << ",\n";
+            first_case = false;
+            metrics << "    \"" << r.case_run_id << "\": {\n";
+            metrics << "      \"data_config\": \"" << r.data_config_name << "\",\n";
+            metrics << "      \"index_config\": \"" << r.index_config_name << "\",\n";
+            metrics << "      \"expression\": \"" << r.actual_expression << "\",\n";
+            metrics << "      \"latency_ms\": { \"avg\": " << r.latency_avg_ms
+                    << ", \"p50\": " << r.latency_p50_ms
+                    << ", \"p90\": " << r.latency_p90_ms
+                    << ", \"p99\": " << r.latency_p99_ms
+                    << ", \"p999\": " << r.latency_p999_ms
+                    << ", \"min\": " << r.latency_min_ms
+                    << ", \"max\": " << r.latency_max_ms << " },\n";
+            metrics << "      \"qps\": " << r.qps << ",\n";
+            metrics << "      \"matched_rows\": " << r.matched_rows << ",\n";
+            metrics << "      \"total_rows\": " << r.total_rows << ",\n";
+            metrics << "      \"selectivity\": " << r.actual_selectivity << ",\n";
+            metrics << "      \"index_build_ms\": " << r.index_build_time_ms << ",\n";
+            metrics << "      \"memory\": { \"index_mb\": " << (r.index_memory_bytes / (1024.0 * 1024.0))
+                    << ", \"exec_peak_mb\": " << (r.exec_memory_peak_bytes / (1024.0 * 1024.0)) << " },\n";
+            metrics << "      \"cpu_pct\": " << r.cpu_usage_percent << ",\n";
+            metrics << "      \"flamegraph\": \"flamegraphs/" << r.case_run_id << ".svg\"\n";
+            metrics << "    }";
+        }
+        metrics << "\n  }\n}\n";
+    }
+
+    // 顶层 index.json：读取-合并-去重-再写入（按 run_id 合并摘要）
+    {
+        auto results_root = GetResultsDir();
+        std::string index_path = results_root + "index.json";
+
+        // 构造当前 run 的条目
+        std::string new_entry;
+        new_entry += "    {\n";
+        new_entry += "      \"id\": \"" + std::to_string(run_id) + "\",\n";
+        new_entry += "      \"timestamp_ms\": " + std::to_string(run_id) + ",\n";
+        new_entry += "      \"label\": \"\",\n";
+        new_entry += "      \"summary\": { \"total_cases\": " + std::to_string(results.size()) + " }\n";
+        new_entry += "    }";
+
+        // 读取现有 index.json
+        std::string existing;
+        {
+            std::ifstream in(index_path);
+            if (in.good()) {
+                std::string line;
+                while (std::getline(in, line)) {
+                    existing += line;
+                    existing += "\n";
+                }
+            }
+        }
+
+        auto has_non_ws = [](const std::string& s) {
+            for (char c : s) {
+                if (c != ' ' && c != '\n' && c != '\t' && c != '\r') return true;
+            }
+            return false;
+        };
+
+        std::string merged_body;
+        if (!existing.empty()) {
+            // 寻找 runs 数组内容
+            size_t runs_pos = existing.find("\"runs\"");
+            if (runs_pos != std::string::npos) {
+                size_t lb = existing.find('[', runs_pos);
+                size_t rb = (lb != std::string::npos) ? existing.find(']', lb) : std::string::npos;
+                if (lb != std::string::npos && rb != std::string::npos && rb > lb) {
+                    std::string body = existing.substr(lb + 1, rb - lb - 1);
+                    std::string id_key = "\"id\": \"" + std::to_string(run_id) + "\"";
+                    if (body.find(id_key) == std::string::npos) {
+                        if (has_non_ws(body)) {
+                            merged_body = body + ",\n" + new_entry;
+                        } else {
+                            merged_body = new_entry;
+                        }
+                    } else {
+                        // 已存在该 run，保持原内容
+                        merged_body = body;
+                    }
+                }
+            }
+        }
+
+        if (merged_body.empty()) {
+            merged_body = new_entry; // 无历史或解析失败，写入当前 run
+        }
+
+        std::ofstream out(index_path, std::ios::out | std::ios::trunc);
+        if (!out.good()) {
+            std::cerr << "Failed to write index.json at: " << index_path << std::endl;
+        } else {
+            out << "{\n  \"runs\": [\n";
+            out << merged_body << "\n";
+            out << "  ]\n}";
+        }
+    }
 }
 
 BenchmarkConfig
@@ -500,7 +638,7 @@ ScalarFilterBenchmark::ExecuteSingleBenchmark(const std::shared_ptr<SegmentBundl
     // 如果启用了火焰图生成且没有错误，进行性能分析
     if (params.enable_flame_graph && result.correctness_verified && !results_dir.empty()) {
         // 确保结果目录存在
-        std::string mkdir_cmd = "mkdir -p " + results_dir;
+        std::string mkdir_cmd = "mkdir -p " + results_dir + "flamegraphs";
         std::system(mkdir_cmd.c_str());
 
         // 创建火焰图分析器
@@ -516,7 +654,7 @@ ScalarFilterBenchmark::ExecuteSingleBenchmark(const std::shared_ptr<SegmentBundl
         // 验证环境
         if (profiler.ValidateEnvironment()) {
             // 生成火焰图文件名
-            std::string svg_filename = results_dir + std::to_string(case_run_id) + ".svg";
+            std::string svg_filename = results_dir + "flamegraphs/" + std::to_string(case_run_id) + ".svg";
 
             // 创建工作负载函数
             auto workload = [&]() {

@@ -10,6 +10,7 @@
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
 #include "flame_graph_profiler.h"
+#include "bench_paths.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -50,9 +51,12 @@ FlameGraphProfiler::ProfileAndGenerateFlameGraph(
         return false;
     }
 
-    // 生成临时perf数据文件名
+    // 生成临时perf数据文件名（使用项目的artifacts目录）
     auto timestamp = std::chrono::system_clock::now().time_since_epoch().count();
-    std::string perf_data_path = "/tmp/perf_" + std::to_string(timestamp) + ".data";
+
+    // 使用bench_paths中的临时目录
+    std::string temp_dir = GetTempDir();
+    std::string perf_data_path = temp_dir + "perf_" + std::to_string(timestamp) + ".data";
 
     // 获取perf路径
     std::string perf_path = FindPerfPath();
