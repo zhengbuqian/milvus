@@ -20,6 +20,7 @@
 #include "scalar_filter_benchmark.h"
 #include "data_generator.h"
 #include "bench_paths.h"
+#include "benchmark_presets.h"
 #include "storage/MmapManager.h"
 #include "storage/LocalChunkManagerSingleton.h"
 #include "storage/RemoteChunkManagerSingleton.h"
@@ -83,127 +84,6 @@ InitializeGlobals(int argc, char* argv[]) {
         {10, true, 30});
 }
 
-BenchmarkConfig
-CreateSimpleTestConfig() {
-    BenchmarkConfig config;
-
-    // 数据配置：测试不同的数据分布和基数
-    config.data_configs = {{.name = "uniform_int64_high_card",
-                            .segment_size = 100'000,
-                            .data_type = "INT64",
-                            .distribution = Distribution::UNIFORM,
-                            .cardinality = 70'000,  // 高基数
-                            .null_ratio = 0.0,
-                            .value_range = {.min = 0, .max = 100'000}},
-                           {.name = "zipf_int64_low_card",
-                            .segment_size = 100'000,
-                            .data_type = "INT64",
-                            .distribution = Distribution::ZIPF,
-                            .cardinality = 100,  // 低基数，在值范围内（0-999有1000个可能值）
-                            .null_ratio = 0.05,
-                            .value_range = {.min = 0, .max = 999}}
-                        //    {.name = "uniform_varchar_medium_card",
-                        //     .segment_size = 100'000,
-                        //     .data_type = "VARCHAR",
-                        //     .distribution = Distribution::UNIFORM,
-                        //     .cardinality = 10'000,  // 中基数
-                        //     .null_ratio = 0.0}
-                        };
-
-    // 索引配置：测试不同的索引类型
-    config.index_configs = {
-        {.name = "no_index", .type = ScalarIndexType::NONE, .params = {}},
-        {.name = "bitmap",
-         .type = ScalarIndexType::BITMAP,
-         .params = {{"chunk_size", "8192"}}},
-        {.name = "inverted", .type = ScalarIndexType::INVERTED, .params = {}}};
-
-    // 表达式模板：使用 text proto 格式
-    config.expr_templates = {
-        {.name = "equal_5000",
-         .expr_template = R"(
-output_field_ids: 101
-query {
-  predicates {
-    unary_range_expr {
-      column_info {
-        field_id: 101
-        data_type: Int64
-      }
-      op: Equal
-      value { int64_val: 5000 }
-    }
-  }
-})",
-         .type = ExpressionTemplate::Type::COMPARISON},
-        {.name = "greater_than_50000",
-         .expr_template = R"(
-output_field_ids: 101
-query {
-  predicates {
-    unary_range_expr {
-      column_info {
-        field_id: 101
-        data_type: Int64
-      }
-      op: GreaterThan
-      value { int64_val: 50000 }
-    }
-  }
-})",
-         .type = ExpressionTemplate::Type::COMPARISON},
-        {.name = "range_10000_to_30000",
-         .expr_template = R"(
-output_field_ids: 101
-query {
-  predicates {
-    binary_range_expr {
-      column_info {
-        field_id: 101
-        data_type: Int64
-      }
-      lower_inclusive: true
-      upper_inclusive: true
-      lower_value { int64_val: 10000 }
-      upper_value { int64_val: 30000 }
-    }
-  }
-})",
-         .type = ExpressionTemplate::Type::RANGE},
-        {.name = "in_specific_values",
-         .expr_template = R"(
-output_field_ids: 101
-query {
-  predicates {
-    term_expr {
-      column_info {
-        field_id: 101
-        data_type: Int64
-      }
-      values { int64_val: 100 }
-      values { int64_val: 200 }
-      values { int64_val: 300 }
-      values { int64_val: 400 }
-      values { int64_val: 500 }
-    }
-  }
-})",
-         .type = ExpressionTemplate::Type::SET_OPERATION}};
-
-    // 查询值：不再需要，因为 text proto 已经包含了所有参数
-    // 每个 expr_template 都是完整的、独立的查询
-    config.query_values = {};
-
-    // 测试参数
-    config.test_params.warmup_iterations = 5;
-    config.test_params.test_iterations = 200;
-    config.test_params.verify_correctness = true;
-    config.test_params.collect_memory_stats = true;
-    config.test_params.enable_flame_graph = true;
-    config.test_params.flamegraph_repo_path = "/home/zilliz/FlameGraph";
-
-    return config;
-}
 
 // 演示数据生成器的使用
 void
@@ -251,6 +131,27 @@ DemoDataGenerator() {
     }
 }
 
+// 打印使用帮助
+void
+PrintUsage(const char* program_name) {
+    std::cout << "Usage: " << program_name << " [options]" << std::endl;
+    std::cout << "Options:" << std::endl;
+    std::cout << "  --help              Show this help message" << std::endl;
+    std::cout << "  --demo              Run data generator demo" << std::endl;
+    std::cout << "  --preset <name>     Use a preset configuration (default: simple)" << std::endl;
+    std::cout << "  --list-presets      List all available presets" << std::endl;
+    std::cout << "  --config <file>     Load configuration from YAML file" << std::endl;
+    std::cout << "\nAvailable presets:" << std::endl;
+    auto presets = BenchmarkPresets::GetPresetNames();
+    for (const auto& name : presets) {
+        std::cout << "  - " << name;
+        if (name == BenchmarkPresets::GetDefaultPresetName()) {
+            std::cout << " (default)";
+        }
+        std::cout << std::endl;
+    }
+}
+
 int
 main(int argc, char* argv[]) {
     std::cout << "====================================" << std::endl;
@@ -263,26 +164,91 @@ main(int argc, char* argv[]) {
     // 初始化全局单例和管理器
     InitializeGlobals(argc, argv);
 
-    if (argc > 1 && std::string(argv[1]) == "--demo") {
-        // 演示数据生成器
-        DemoDataGenerator();
-        return 0;
+    // 解析命令行参数
+    std::string preset_name = BenchmarkPresets::GetDefaultPresetName();
+    std::string config_file;
+    bool use_config_file = false;
+
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+
+        if (arg == "--help" || arg == "-h") {
+            PrintUsage(argv[0]);
+            return 0;
+        } else if (arg == "--demo") {
+            // 演示数据生成器
+            DemoDataGenerator();
+            return 0;
+        } else if (arg == "--list-presets") {
+            std::cout << "\nAvailable benchmark presets:" << std::endl;
+            auto presets = BenchmarkPresets::GetPresetNames();
+            for (const auto& name : presets) {
+                std::cout << "  - " << name;
+                if (name == BenchmarkPresets::GetDefaultPresetName()) {
+                    std::cout << " (default)";
+                }
+                std::cout << std::endl;
+            }
+            return 0;
+        } else if (arg == "--preset") {
+            if (i + 1 < argc) {
+                preset_name = argv[++i];
+                if (!BenchmarkPresets::HasPreset(preset_name)) {
+                    std::cerr << "Error: Unknown preset '" << preset_name << "'" << std::endl;
+                    std::cerr << "Use --list-presets to see available presets" << std::endl;
+                    return 1;
+                }
+            } else {
+                std::cerr << "Error: --preset requires an argument" << std::endl;
+                return 1;
+            }
+        } else if (arg == "--config") {
+            if (i + 1 < argc) {
+                config_file = argv[++i];
+                use_config_file = true;
+            } else {
+                std::cerr << "Error: --config requires a file path" << std::endl;
+                return 1;
+            }
+        } else if (arg[0] != '-') {
+            // 兼容旧的用法：直接提供配置文件路径
+            config_file = arg;
+            use_config_file = true;
+        } else {
+            std::cerr << "Error: Unknown option '" << arg << "'" << std::endl;
+            std::cerr << "Use --help for usage information" << std::endl;
+            return 1;
+        }
     }
 
     // 创建基准测试实例
     auto benchmark = std::make_unique<ScalarFilterBenchmark>();
 
-    // 加载或创建配置
+    // 加载配置
     BenchmarkConfig config;
-    if (argc > 1) {
+    if (use_config_file) {
         // 从YAML文件加载配置
-        std::cout << "Loading config from: " << argv[1] << std::endl;
-        config = ScalarFilterBenchmark::LoadConfig(argv[1]);
+        std::cout << "Loading config from: " << config_file << std::endl;
+        config = ScalarFilterBenchmark::LoadConfig(config_file);
     } else {
-        // 使用默认的简单配置
-        std::cout << "Using default test configuration" << std::endl;
-        config = CreateSimpleTestConfig();
+        // 使用预设配置
+        std::cout << "Using preset configuration: " << preset_name << std::endl;
+        try {
+            config = BenchmarkPresets::GetPreset(preset_name);
+        } catch (const std::exception& e) {
+            std::cerr << "Error loading preset: " << e.what() << std::endl;
+            return 1;
+        }
     }
+
+    // 显示配置摘要
+    std::cout << "\nConfiguration summary:" << std::endl;
+    std::cout << "  Data configs: " << config.data_configs.size() << std::endl;
+    std::cout << "  Index configs: " << config.index_configs.size() << std::endl;
+    std::cout << "  Expression templates: " << config.expr_templates.size() << std::endl;
+    std::cout << "  Warmup iterations: " << config.test_params.warmup_iterations << std::endl;
+    std::cout << "  Test iterations: " << config.test_params.test_iterations << std::endl;
+    std::cout << "  Flame graph enabled: " << (config.test_params.enable_flame_graph ? "yes" : "no") << std::endl;
 
     // 运行基准测试
     std::cout << "\nStarting benchmark..." << std::endl;

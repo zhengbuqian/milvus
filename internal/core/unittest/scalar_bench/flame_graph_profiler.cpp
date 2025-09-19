@@ -264,7 +264,7 @@ FlameGraphProfiler::GenerateFlameGraph(const std::string& perf_data_path,
     if (!case_name.empty()) {
         flamegraph_cmd << "--title \"" << case_name << "\" ";
     }
-    flamegraph_cmd << "--width 1800 "
+    flamegraph_cmd << "--width 1500 "
                    << folded_output << " > " << svg_output_path;
 
     if (!ExecuteCommand(flamegraph_cmd.str())) {
