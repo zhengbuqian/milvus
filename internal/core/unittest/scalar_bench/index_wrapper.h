@@ -14,6 +14,8 @@
 #include <memory>
 #include <string>
 #include <map>
+#include <unordered_map>
+#include <vector>
 #include <chrono>
 
 #include "index/IndexFactory.h"
@@ -51,13 +53,17 @@ public:
                                     const std::string& field_name,
                                     const IndexConfig& config) = 0;
 
-    // 加载索引到Segment
+    // 加载索引到Segment (提供默认实现)
     virtual bool LoadToSegment(SegmentWrapper& segment,
                                 const std::string& field_name,
-                                const IndexBuildResult& build_result) = 0;
+                                const IndexBuildResult& build_result);
 
     // 获取索引类型名称
     virtual std::string GetTypeName() const = 0;
+
+protected:
+    // 缓存构建的索引对象
+    std::unordered_map<int64_t, milvus::index::IndexBasePtr> index_cache_;
 };
 
 // 具体索引包装器
@@ -66,10 +72,6 @@ public:
     IndexBuildResult Build(const SegmentWrapper& segment,
                            const std::string& field_name,
                            const IndexConfig& config) override;
-
-    bool LoadToSegment(SegmentWrapper& segment,
-                       const std::string& field_name,
-                       const IndexBuildResult& build_result) override;
 
     std::string GetTypeName() const override { return "BITMAP"; }
 };
@@ -80,10 +82,6 @@ public:
                            const std::string& field_name,
                            const IndexConfig& config) override;
 
-    bool LoadToSegment(SegmentWrapper& segment,
-                       const std::string& field_name,
-                       const IndexBuildResult& build_result) override;
-
     std::string GetTypeName() const override { return "INVERTED"; }
 };
 
@@ -92,10 +90,6 @@ public:
     IndexBuildResult Build(const SegmentWrapper& segment,
                            const std::string& field_name,
                            const IndexConfig& config) override;
-
-    bool LoadToSegment(SegmentWrapper& segment,
-                       const std::string& field_name,
-                       const IndexBuildResult& build_result) override;
 
     std::string GetTypeName() const override { return "STL_SORT"; }
 };

@@ -214,24 +214,27 @@ std::vector<YourType> GenerateYourTypeData(
 
 ### ✅ 已完成功能
 1. **真实数据生成** - 支持INT64、FLOAT、VARCHAR、BOOL类型，多种分布
-2. **真实Segment创建** - 数据已加载到Milvus SegmentSealed
+2. **真实Segment创建** - 数据已加载到Milvus SegmentSealed，包含系统字段(row id, timestamp)
 3. **Schema构建** - 自动根据数据配置生成Schema
 4. **真实索引构建** - Bitmap、Inverted、STL_SORT索引已完全实现
 5. **索引管理** - IndexManager统一管理索引构建和加载
-6. **全局初始化** - MmapManager、ChunkManager等已正确初始化
-7. **索引冲突处理** - 实现DropIndex机制避免重复加载
+6. **索引加载优化** - 使用基类统一实现LoadToSegment，减少代码重复
+7. **全局初始化** - MmapManager、ChunkManager等已正确初始化
+8. **索引冲突处理** - 实现DropIndex机制避免重复加载
+9. **Text Proto查询** - 使用Text Proto格式直接定义查询表达式，避免C++表达式解析
+10. **真实查询执行** - 通过QueryExecutor执行真实的Segment查询
+11. **性能测量** - 测量真实的查询延迟(P50/P99)和选择率
+12. **结果报告** - 生成格式化的性能报告，支持排序和CSV导出
 
-### 🚧 下一步工作
-1. **表达式解析** - 需要集成planparserv2解析查询表达式
-2. **查询执行** - 需要实现真实的查询执行逻辑
-3. **性能测量** - 基于真实查询测量准确的性能指标
+### 🚧 下一步优化
+1. **性能监控增强** - 更精确的内存和CPU使用率监控
+2. **并发测试** - 实现多线程并发查询测试
+3. **更多索引类型** - 支持Trie、Hybrid等高级索引
 
-### ⏳ 未实现功能
-1. **表达式解析器** - 需要集成planparserv2
-2. **查询执行器** - 需要实现ExecPlanNode
-3. **YAML配置** - 需要集成yaml-cpp
-4. **并发测试** - 需要实现线程池
-5. **高级索引特性** - 索引序列化、持久化等
+### ⏳ 可选功能
+1. **YAML配置** - 集成yaml-cpp支持配置文件
+2. **HTML报告** - 生成可视化的HTML性能报告
+3. **高级索引特性** - 索引序列化、持久化等
 
 ## 注意事项
 
@@ -300,35 +303,61 @@ class IndexWrapperBase {
 - [x] 测量索引构建时间（真实计时）
 - **当前状态**：索引构建和管理已完全实现
 
-### 第三阶段：表达式解析和执行（可运行，开始真实查询）
+### 第三阶段：表达式解析和执行 ✅ **已完成**
 
-#### Step 3.1: 集成表达式解析器
+#### Step 3.1: 使用Text Proto定义查询表达式 ✅
 ```cpp
-// expr_parser.h
-class ExpressionParser {
-    std::shared_ptr<expr::Expr> Parse(const std::string& expr_str);
-    std::shared_ptr<Plan> CreatePlan(const expr::Expr& expr);
+// 在main.cpp中直接使用text proto格式的查询表达式
+config.expr_templates = {
+    {.name = "equal_5000",
+     .expr_template = R"(
+output_field_ids: 101
+query {
+  predicates {
+    unary_range_expr {
+      column_info {
+        field_id: 101
+        data_type: Int64
+      }
+      op: Equal
+      value { int64_val: 5000 }
+    }
+  }
+})",
+     .type = ExpressionTemplate::Type::COMPARISON}
 };
 ```
-- [ ] 创建 `expr_parser.h/cpp`
-- [ ] 集成 planparserv2 解析器
-- [ ] 实现表达式字符串到AST的转换
-- **测试程序仍可运行**：表达式已解析但执行仍模拟
+- [x] 实现text proto字符串读取和解析
+- [x] 使用google::protobuf::TextFormat反序列化
+- [x] 支持各种表达式类型的text proto模板
+- **测试程序已运行**：表达式通过text proto定义
 
-#### Step 3.2: 实现查询执行器
-- [ ] 创建 `query_executor.h/cpp`
-- [ ] 实现ExecPlanNode执行逻辑
-- [ ] 集成BitsetView结果处理
-- [ ] 实现不同索引类型的查询路径
-- **测试程序仍可运行**：开始返回真实查询结果
+#### Step 3.2: 执行真实查询 ✅
+```cpp
+// query_executor.cpp中实现的真实查询执行
+auto plan = BuildPlan(text_proto_plan);
+auto retrieve_result = segment->Retrieve(
+    nullptr,  // RetrieveContext
+    plan.get(),
+    MAX_TIMESTAMP,
+    limit > 0 ? limit : DEFAULT_MAX_OUTPUT_SIZE,
+    false  // ignore_non_pk
+);
+```
+- [x] 使用ProtoParser::CreateRetrievePlan创建查询计划
+- [x] 调用segment->Retrieve执行真实查询
+- [x] 处理返回的查询结果
+- [x] 测量查询执行时间和匹配行数
+- **测试程序已运行**：返回真实查询结果
 
-#### Step 3.3: 完善表达式支持
-- [ ] 支持比较运算（>, <, ==, !=, >=, <=）
-- [ ] 支持IN/NOT IN操作
-- [ ] 支持字符串LIKE操作
-- [ ] 支持NULL处理
-- [ ] 支持逻辑运算（AND, OR, NOT）
-- **测试程序仍可运行**：所有表达式类型都返回真实结果
+#### Step 3.3: 支持多种表达式类型的Text Proto模板 ✅
+- [x] UnaryRangeExpr: 比较运算 (>, <, ==, !=, >=, <=)
+- [x] TermExpr: IN/NOT IN操作
+- [x] BinaryRangeExpr: 范围查询 (BETWEEN)
+- [x] CompareExpr: 字段间比较（已在测试中实现）
+- [x] BinaryExpr/UnaryExpr: 逻辑运算 (AND, OR, NOT)（支持框架已有）
+- [ ] NullExpr: NULL值处理（可选）
+- **测试程序已运行**：主要表达式类型都通过text proto定义并执行
 
 ### 第四阶段：性能测量和优化（可运行，真实性能数据）
 

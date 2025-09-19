@@ -54,23 +54,24 @@ CreateSimpleTestConfig() {
 
     // 数据配置：测试不同的数据分布和基数
     config.data_configs = {{.name = "uniform_int64_high_card",
-                            .segment_size = 100'000,  // 10万行用于快速测试
+                            .segment_size = 1'000'000,  // 10万行用于快速测试
                             .data_type = "INT64",
                             .distribution = Distribution::UNIFORM,
-                            .cardinality = 90'000,  // 高基数
+                            .cardinality = 700'000,  // 高基数
                             .null_ratio = 0.0},
                            {.name = "zipf_int64_low_card",
-                            .segment_size = 100'000,
+                            .segment_size = 1'000'000,
                             .data_type = "INT64",
                             .distribution = Distribution::ZIPF,
                             .cardinality = 100,  // 低基数
-                            .null_ratio = 0.05},
-                           {.name = "uniform_varchar_medium_card",
-                            .segment_size = 100'000,
-                            .data_type = "VARCHAR",
-                            .distribution = Distribution::UNIFORM,
-                            .cardinality = 10'000,  // 中基数
-                            .null_ratio = 0.0}};
+                            .null_ratio = 0.05}
+                        //    {.name = "uniform_varchar_medium_card",
+                        //     .segment_size = 100'000,
+                        //     .data_type = "VARCHAR",
+                        //     .distribution = Distribution::UNIFORM,
+                        //     .cardinality = 10'000,  // 中基数
+                        //     .null_ratio = 0.0}
+                        };
 
     // 索引配置：测试不同的索引类型
     config.index_configs = {
@@ -80,46 +81,85 @@ CreateSimpleTestConfig() {
          .params = {{"chunk_size", "8192"}}},
         {.name = "inverted", .type = ScalarIndexType::INVERTED, .params = {}}};
 
-    // 表达式模板：测试不同的查询类型
+    // 表达式模板：使用 text proto 格式
     config.expr_templates = {
-        {.name = "equal",
-         .expr_template = "field == {value}",
+        {.name = "equal_5000",
+         .expr_template = R"(
+output_field_ids: 101
+query {
+  predicates {
+    unary_range_expr {
+      column_info {
+        field_id: 101
+        data_type: Int64
+      }
+      op: Equal
+      value { int64_val: 5000 }
+    }
+  }
+})",
          .type = ExpressionTemplate::Type::COMPARISON},
-        {.name = "greater",
-         .expr_template = "field > {value}",
+        {.name = "greater_than_50000",
+         .expr_template = R"(
+output_field_ids: 101
+query {
+  predicates {
+    unary_range_expr {
+      column_info {
+        field_id: 101
+        data_type: Int64
+      }
+      op: GreaterThan
+      value { int64_val: 50000 }
+    }
+  }
+})",
          .type = ExpressionTemplate::Type::COMPARISON},
-        {.name = "range",
-         .expr_template = "field >= {lower} AND field <= {upper}",
+        {.name = "range_10000_to_30000",
+         .expr_template = R"(
+output_field_ids: 101
+query {
+  predicates {
+    binary_range_expr {
+      column_info {
+        field_id: 101
+        data_type: Int64
+      }
+      lower_inclusive: true
+      upper_inclusive: true
+      lower_value { int64_val: 10000 }
+      upper_value { int64_val: 30000 }
+    }
+  }
+})",
          .type = ExpressionTemplate::Type::RANGE},
-        {.name = "in_set",
-         .expr_template = "field IN {list}",
+        {.name = "in_specific_values",
+         .expr_template = R"(
+output_field_ids: 101
+query {
+  predicates {
+    term_expr {
+      column_info {
+        field_id: 101
+        data_type: Int64
+      }
+      values { int64_val: 100 }
+      values { int64_val: 200 }
+      values { int64_val: 300 }
+      values { int64_val: 400 }
+      values { int64_val: 500 }
+    }
+  }
+})",
          .type = ExpressionTemplate::Type::SET_OPERATION}};
 
-    // 查询值：测试不同的选择率
-    config.query_values = {
-        {.name = "selectivity_1p",
-         .values = {{"value", 99'000},
-                    {"lower", 99'000},
-                    {"upper", 100'000},
-                    {"list", std::string("[99001, 99002, 99003]")}},
-         .expected_selectivity = 0.01},
-        {.name = "selectivity_10p",
-         .values = {{"value", 90'000},
-                    {"lower", 90'000},
-                    {"upper", 100'000},
-                    {"list",
-                     std::string("[90001, 90002, 90003, 90004, 90005]")}},
-         .expected_selectivity = 0.10},
-        {.name = "selectivity_50p",
-         .values = {{"value", 50'000},
-                    {"lower", 50'000},
-                    {"upper", 100'000},
-                    {"list", std::string("[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]")}},
-         .expected_selectivity = 0.50}};
+    // 查询值：不再需要，因为 text proto 已经包含了所有参数
+    // 每个 expr_template 都是完整的、独立的查询
+    config.query_values = {};
 
     // 测试参数
     config.test_params = {.warmup_iterations = 5,
-                          .test_iterations = 20,
+                          .test_iterations = 200,
                           .verify_correctness = true,
                           .collect_memory_stats = true};
 

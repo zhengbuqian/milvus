@@ -282,9 +282,7 @@ ProtoParser::RetrievePlanNodeFromProto(
                             sources));
                     sources = std::vector<milvus::plan::PlanNodePtr>{plannode};
                 } else {
-                    auto expr_parser =
-                        parse_expr_to_filter_node(query.predicates());
-                    plannode = std::move(expr_parser);
+                    plannode = parse_expr_to_filter_node(query.predicates());
                     sources = std::vector<milvus::plan::PlanNodePtr>{plannode};
                 }
             }
@@ -319,7 +317,7 @@ ProtoParser::CreatePlan(const proto::plan::PlanNode& plan_node_proto) {
 
     auto plan_node = PlanNodeFromProto(plan_node_proto);
     plan->plan_node_ = std::move(plan_node);
-    plan->tag2field_["$0"] = plan_node->plan_node_->search_info_.field_id_;
+    plan->tag2field_["$0"] = plan->plan_node_->search_info_.field_id_;
     ExtractedPlanInfo extra_info(schema->size());
     extra_info.add_involved_field(plan->plan_node_->search_info_.field_id_);
     plan->extra_info_opt_ = std::move(extra_info);

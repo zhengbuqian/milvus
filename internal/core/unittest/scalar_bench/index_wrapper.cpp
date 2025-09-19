@@ -13,6 +13,7 @@
 #include "segcore/load_index_c.h"
 #include "test_utils/indexbuilder_test_utils.h"
 #include "test_utils/storage_test_utils.h"
+#include "test_utils/cachinglayer_test_utils.h"
 #include "storage/Util.h"
 #include "storage/InsertData.h"
 #include "indexbuilder/IndexFactory.h"
@@ -21,6 +22,46 @@
 
 namespace milvus {
 namespace scalar_bench {
+
+// IndexWrapperBase 的默认 LoadToSegment 实现
+bool
+IndexWrapperBase::LoadToSegment(SegmentWrapper& segment,
+                                const std::string& field_name,
+                                const IndexBuildResult& build_result) {
+    try {
+        auto field_id = segment.GetFieldId(field_name);
+        auto sealed_seg = segment.GetSealedSegment();
+
+        // 从缓存中获取索引对象
+        auto it = index_cache_.find(field_id.get());
+        if (it == index_cache_.end()) {
+            std::cerr << "Index not found in cache for field " << field_name << std::endl;
+            return false;
+        }
+
+        // 参考 ChunkedSegmentSealedTest 的实现
+        milvus::segcore::LoadIndexInfo load_info;
+
+        // 使用 GenIndexParams 辅助函数
+        load_info.index_params = GenIndexParams(it->second.get());
+
+        // 创建测试用的 CacheIndex
+        load_info.cache_index = CreateTestCacheIndex(field_name, std::move(it->second));
+
+        load_info.field_id = field_id.get();
+
+        // 加载索引到segment
+        sealed_seg->LoadIndex(load_info);
+
+        // 从缓存中移除，因为已经移动给了 segment
+        index_cache_.erase(it);
+
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to load index to segment: " << e.what() << std::endl;
+        return false;
+    }
+}
 
 // Helper function to get raw data from segment
 template<typename T>
@@ -141,6 +182,9 @@ BitmapIndexWrapper::Build(const SegmentWrapper& segment,
             return result;
         }
 
+        // 保存索引对象用于后续加载
+        index_cache_[field_id.get()] = std::move(index);
+
         // 获取索引统计信息
         result.success = true;
         result.memory_bytes = 1024 * 1024;  // 暂时使用估算值
@@ -163,36 +207,7 @@ BitmapIndexWrapper::Build(const SegmentWrapper& segment,
     return result;
 }
 
-bool
-BitmapIndexWrapper::LoadToSegment(SegmentWrapper& segment,
-                                  const std::string& field_name,
-                                  const IndexBuildResult& build_result) {
-    try {
-        auto field_id = segment.GetFieldId(field_name);
-        auto sealed_seg = segment.GetSealedSegment();
-
-        // 准备LoadIndexInfo
-        milvus::segcore::LoadIndexInfo load_info;
-        load_info.collection_id = segment.GetCollectionId();
-        load_info.partition_id = segment.GetPartitionId();
-        load_info.segment_id = segment.GetSegmentId();
-        load_info.field_id = field_id.get();
-        load_info.field_type = segment.GetSchema()->operator[](field_id).get_data_type();
-        load_info.index_params = {
-            {milvus::index::INDEX_TYPE, milvus::index::BITMAP_INDEX_TYPE}
-        };
-        load_info.index_files = build_result.index_files;
-        load_info.index_size = build_result.serialized_size;
-
-        // 加载索引到segment
-        sealed_seg->LoadIndex(load_info);
-
-        return true;
-    } catch (const std::exception& e) {
-        std::cerr << "Failed to load index to segment: " << e.what() << std::endl;
-        return false;
-    }
-}
+// BitmapIndexWrapper::LoadToSegment 使用基类的默认实现
 
 // InvertedIndexWrapper 实现
 IndexBuildResult
@@ -283,6 +298,9 @@ InvertedIndexWrapper::Build(const SegmentWrapper& segment,
                 index->BuildWithRawDataForUT(row_count, data.data());
             }
 
+            // 保存索引对象用于后续加载（使用move避免拷贝）
+            index_cache_[field_id.get()] = std::move(index);
+
             result.success = true;
             result.memory_bytes = 1024 * 1024;  // 暂时使用估算值
             result.serialized_size = 512 * 1024;  // 暂时使用估算值
@@ -305,34 +323,7 @@ InvertedIndexWrapper::Build(const SegmentWrapper& segment,
     return result;
 }
 
-bool
-InvertedIndexWrapper::LoadToSegment(SegmentWrapper& segment,
-                                    const std::string& field_name,
-                                    const IndexBuildResult& build_result) {
-    try {
-        auto field_id = segment.GetFieldId(field_name);
-        auto sealed_seg = segment.GetSealedSegment();
-
-        milvus::segcore::LoadIndexInfo load_info;
-        load_info.collection_id = segment.GetCollectionId();
-        load_info.partition_id = segment.GetPartitionId();
-        load_info.segment_id = segment.GetSegmentId();
-        load_info.field_id = field_id.get();
-        load_info.field_type = segment.GetSchema()->operator[](field_id).get_data_type();
-        load_info.index_params = {
-            {milvus::index::INDEX_TYPE, milvus::index::INVERTED_INDEX_TYPE}
-        };
-        load_info.index_files = build_result.index_files;
-        load_info.index_size = build_result.serialized_size;
-
-        sealed_seg->LoadIndex(load_info);
-
-        return true;
-    } catch (const std::exception& e) {
-        std::cerr << "Failed to load index to segment: " << e.what() << std::endl;
-        return false;
-    }
-}
+// InvertedIndexWrapper::LoadToSegment 使用基类的默认实现
 
 // STLSortIndexWrapper 实现
 IndexBuildResult
@@ -417,6 +408,9 @@ STLSortIndexWrapper::Build(const SegmentWrapper& segment,
             index->BuildWithRawDataForUT(row_count, data.data());
         }
 
+        // 保存索引对象用于后续加载
+        index_cache_[field_id.get()] = std::move(index);
+
         result.success = true;
         result.memory_bytes = 1024 * 1024;  // 暂时使用估算值
         result.serialized_size = 512 * 1024;  // 暂时使用估算值
@@ -438,34 +432,7 @@ STLSortIndexWrapper::Build(const SegmentWrapper& segment,
     return result;
 }
 
-bool
-STLSortIndexWrapper::LoadToSegment(SegmentWrapper& segment,
-                                   const std::string& field_name,
-                                   const IndexBuildResult& build_result) {
-    try {
-        auto field_id = segment.GetFieldId(field_name);
-        auto sealed_seg = segment.GetSealedSegment();
-
-        milvus::segcore::LoadIndexInfo load_info;
-        load_info.collection_id = segment.GetCollectionId();
-        load_info.partition_id = segment.GetPartitionId();
-        load_info.segment_id = segment.GetSegmentId();
-        load_info.field_id = field_id.get();
-        load_info.field_type = segment.GetSchema()->operator[](field_id).get_data_type();
-        load_info.index_params = {
-            {milvus::index::INDEX_TYPE, milvus::index::ASCENDING_SORT}
-        };
-        load_info.index_files = build_result.index_files;
-        load_info.index_size = build_result.serialized_size;
-
-        sealed_seg->LoadIndex(load_info);
-
-        return true;
-    } catch (const std::exception& e) {
-        std::cerr << "Failed to load index to segment: " << e.what() << std::endl;
-        return false;
-    }
-}
+// STLSortIndexWrapper::LoadToSegment 使用基类的默认实现
 
 // IndexWrapperFactory 实现
 std::unique_ptr<IndexWrapperBase>

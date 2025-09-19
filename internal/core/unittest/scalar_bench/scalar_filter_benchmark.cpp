@@ -13,6 +13,7 @@
 #include "segment_data.h"
 #include "segment_wrapper.h"
 #include "index_wrapper.h"
+#include "query_executor.h"
 #include <algorithm>
 #include <numeric>
 #include <iostream>
@@ -70,11 +71,7 @@ ScalarFilterBenchmark::RunBenchmark(const BenchmarkConfig& config) {
             // 如果不是第一个索引，需要先删除之前的索引
             if (idx > 0) {
                 // 从segment bundle中获取segment wrapper
-                struct SegmentBundle {
-                    std::shared_ptr<SegmentWrapper> wrapper;
-                    std::shared_ptr<SegmentData> data;
-                };
-                auto bundle = std::static_pointer_cast<SegmentBundle>(segment);
+                auto bundle = segment;
                 auto& segment_wrapper = bundle->wrapper;
 
                 // 删除field字段上的索引
@@ -90,42 +87,34 @@ ScalarFilterBenchmark::RunBenchmark(const BenchmarkConfig& config) {
 
             std::cout << "  ✓ Index built in " << index_build_time << " ms" << std::endl;
 
-            // 第三级循环：表达式模板
+            // 第三级循环：表达式模板（每个都是完整的 text proto）
             for (const auto& expr_template : config.expr_templates) {
                 // 检查表达式适用性
                 if (!IsExpressionApplicable(expr_template, data_config)) {
                     continue;
                 }
 
-                // 第四级循环：查询参数值
-                for (const auto& query_value : config.query_values) {
-                    // 格式化表达式
-                    auto expression = FormatExpression(expr_template, query_value);
+                std::cout << "    Testing: " << expr_template.name << std::endl;
 
-                    std::cout << "    Testing: " << expression
-                              << " (expected selectivity: " << query_value.expected_selectivity * 100 << "%)"
-                              << std::endl;
+                // 执行基准测试（直接使用 text proto）
+                auto result = ExecuteSingleBenchmark(segment, index, expr_template.expr_template, config.test_params);
 
-                    // 执行基准测试
-                    auto result = ExecuteSingleBenchmark(segment, index, expression, config.test_params);
+                // 填充元信息
+                result.data_config_name = data_config.name;
+                result.index_config_name = index_config.name;
+                result.expr_template_name = expr_template.name;
+                result.query_value_name = "";  // 不再需要
+                result.actual_expression = expr_template.name;  // 使用模板名称作为表达式描述
+                result.expected_selectivity = -1;  // 由查询结果决定
+                result.index_build_time_ms = index_build_time;
 
-                    // 填充元信息
-                    result.data_config_name = data_config.name;
-                    result.index_config_name = index_config.name;
-                    result.expr_template_name = expr_template.name;
-                    result.query_value_name = query_value.name;
-                    result.actual_expression = expression;
-                    result.expected_selectivity = query_value.expected_selectivity;
-                    result.index_build_time_ms = index_build_time;
+                // 输出即时结果
+                std::cout << "      → P50: " << std::fixed << std::setprecision(2) << result.latency_p50_ms << "ms"
+                          << ", P99: " << result.latency_p99_ms << "ms"
+                          << ", Matched: " << result.matched_rows << "/" << result.total_rows
+                          << " (" << result.actual_selectivity * 100 << "%)" << std::endl;
 
-                    // 输出即时结果
-                    std::cout << "      → P50: " << std::fixed << std::setprecision(2) << result.latency_p50_ms << "ms"
-                              << ", P99: " << result.latency_p99_ms << "ms"
-                              << ", Matched: " << result.matched_rows << "/" << result.total_rows
-                              << " (" << result.actual_selectivity * 100 << "%)" << std::endl;
-
-                    all_results.push_back(result);
-                }
+                all_results.push_back(result);
             }
         }
 
@@ -157,25 +146,41 @@ ScalarFilterBenchmark::GenerateReport(const std::vector<BenchmarkResult>& result
                   << " (" << slowest->index_config_name << ", " << slowest->actual_expression << ")" << std::endl;
     }
 
+    // 复制结果并排序：先按data config，再按expression，最后按index
+    std::vector<BenchmarkResult> sorted_results = results;
+    std::sort(sorted_results.begin(), sorted_results.end(),
+        [](const BenchmarkResult& a, const BenchmarkResult& b) {
+            // 1. 先按 data_config_name 排序
+            if (a.data_config_name != b.data_config_name) {
+                return a.data_config_name < b.data_config_name;
+            }
+            // 2. 再按 expression 排序
+            if (a.actual_expression != b.actual_expression) {
+                return a.actual_expression < b.actual_expression;
+            }
+            // 3. 最后按 index 排序
+            return a.index_config_name < b.index_config_name;
+        });
+
     // 详细结果表
     std::cout << "\nDetailed Results:" << std::endl;
-    std::cout << std::setw(20) << "Data Config"
-              << std::setw(15) << "Index"
+    std::cout << std::setw(30) << std::left << "Data Config"
               << std::setw(30) << "Expression"
-              << std::setw(10) << "P50(ms)"
+              << std::setw(20) << "Index"
+              << std::setw(10) << std::right << "P50(ms)"
               << std::setw(10) << "P99(ms)"
               << std::setw(12) << "Selectivity"
               << std::setw(12) << "Memory(MB)" << std::endl;
-    std::cout << std::string(119, '-') << std::endl;
+    std::cout << std::string(134, '-') << std::endl;
 
-    for (const auto& result : results) {
-        std::cout << std::setw(20) << result.data_config_name.substr(0, 19)
-                  << std::setw(15) << result.index_config_name.substr(0, 14)
-                  << std::setw(30) << result.actual_expression.substr(0, 29)
-                  << std::setw(10) << std::fixed << std::setprecision(2) << result.latency_p50_ms
+    for (const auto& result : sorted_results) {
+        std::cout << std::setw(30) << std::left << result.data_config_name
+                  << std::setw(30) << result.actual_expression
+                  << std::setw(20) << result.index_config_name
+                  << std::setw(10) << std::right << std::fixed << std::setprecision(2) << result.latency_p50_ms
                   << std::setw(10) << result.latency_p99_ms
                   << std::setw(11) << std::setprecision(1) << result.actual_selectivity * 100 << "%"
-                  << std::setw(12) << result.index_memory_bytes / (1024.0 * 1024.0) << std::endl;
+                  << std::setw(12) << std::setprecision(1) << result.index_memory_bytes / (1024.0 * 1024.0) << std::endl;
     }
 
     // 保存到CSV文件
@@ -243,7 +248,7 @@ ScalarFilterBenchmark::LoadConfig(const std::string& yaml_file) {
     return config;
 }
 
-std::shared_ptr<void>
+std::shared_ptr<SegmentBundle>
 ScalarFilterBenchmark::GenerateSegment(const DataConfig& config) {
     std::cout << "    Generating " << config.segment_size << " rows of "
               << config.data_type << " data..." << std::endl;
@@ -273,10 +278,6 @@ ScalarFilterBenchmark::GenerateSegment(const DataConfig& config) {
     }
 
     // 返回包含segment和数据的结构
-    struct SegmentBundle {
-        std::shared_ptr<SegmentWrapper> wrapper;
-        std::shared_ptr<SegmentData> data;
-    };
     auto bundle = std::make_shared<SegmentBundle>();
     bundle->wrapper = segment_wrapper;
     bundle->data = segment_data;
@@ -284,15 +285,11 @@ ScalarFilterBenchmark::GenerateSegment(const DataConfig& config) {
     return bundle;
 }
 
-std::shared_ptr<void>
-ScalarFilterBenchmark::BuildIndex(const std::shared_ptr<void>& segment_bundle,
+std::shared_ptr<IndexBundle>
+ScalarFilterBenchmark::BuildIndex(const std::shared_ptr<SegmentBundle>& segment_bundle,
                                    const IndexConfig& config) {
-    // 从bundle中获取segment wrapper
-    struct SegmentBundle {
-        std::shared_ptr<SegmentWrapper> wrapper;
-        std::shared_ptr<SegmentData> data;
-    };
-    auto bundle = std::static_pointer_cast<SegmentBundle>(segment_bundle);
+    // 直接使用segment bundle
+    auto bundle = segment_bundle;
     auto& segment_wrapper = bundle->wrapper;
 
     // 创建 IndexManager（use bench_paths helpers for disk paths）
@@ -305,13 +302,9 @@ ScalarFilterBenchmark::BuildIndex(const std::shared_ptr<void>& segment_bundle,
     auto result = index_manager.BuildAndLoadIndex(*segment_wrapper, "field", config);
 
     // 创建索引结果bundle
-    struct IndexBundle {
-        IndexBuildResult result;
-        std::shared_ptr<SegmentWrapper> segment_wrapper;
-    };
     auto index_bundle = std::make_shared<IndexBundle>();
-    index_bundle->result = result;
-    index_bundle->segment_wrapper = segment_wrapper;
+    index_bundle->wrapper = nullptr;  // 暂时设置为nullptr，因为索引已经加载到segment中
+    index_bundle->config = config;
 
     if (result.success) {
         std::cout << "      ✓ Index built in " << std::fixed << std::setprecision(2)
@@ -324,36 +317,61 @@ ScalarFilterBenchmark::BuildIndex(const std::shared_ptr<void>& segment_bundle,
 }
 
 BenchmarkResult
-ScalarFilterBenchmark::ExecuteSingleBenchmark(const std::shared_ptr<void>& segment,
-                                               const std::shared_ptr<void>& index,
+ScalarFilterBenchmark::ExecuteSingleBenchmark(const std::shared_ptr<SegmentBundle>& segment,
+                                               const std::shared_ptr<IndexBundle>& index,
                                                const std::string& expression,
                                                const TestParams& params) {
     BenchmarkResult result;
     std::vector<double> latencies;
+    std::vector<int64_t> matched_rows_list;
+
+    // 获取 SegmentWrapper 和 Schema
+    auto segment_wrapper = segment->wrapper;
+    auto schema = segment_wrapper->GetSchema();
+    auto sealed_segment = segment_wrapper->GetSealedSegment();
+
+    // 创建 QueryExecutor
+    QueryExecutor executor(schema);
 
     // 预热
     for (int i = 0; i < params.warmup_iterations; ++i) {
-        // TODO: 执行实际的查询
-        auto start = std::chrono::high_resolution_clock::now();
-        // 模拟查询执行
-        std::this_thread::sleep_for(std::chrono::microseconds(100));
-        auto end = std::chrono::high_resolution_clock::now();
+        // 执行真实查询（text proto 格式）
+        auto query_result = executor.ExecuteQuery(sealed_segment.get(), expression);
+        if (!query_result.success && i == 0) {
+            // 第一次失败时报告错误
+            result.error_message = query_result.error_message;
+            result.correctness_verified = false;
+            return result;
+        }
     }
 
     // 测试执行
     for (int i = 0; i < params.test_iterations; ++i) {
-        auto start = std::chrono::high_resolution_clock::now();
-        // TODO: 执行实际的查询
-        // 模拟查询执行
-        std::this_thread::sleep_for(std::chrono::microseconds(100));
-        auto end = std::chrono::high_resolution_clock::now();
+        // 执行真实查询
+        auto query_result = executor.ExecuteQuery(sealed_segment.get(), expression);
 
-        double latency = std::chrono::duration<double, std::milli>(end - start).count();
-        latencies.push_back(latency);
+        if (query_result.success) {
+            latencies.push_back(query_result.execution_time_ms);
+            matched_rows_list.push_back(query_result.matched_rows);
+        } else {
+            // 记录错误但继续
+            if (result.error_message.empty()) {
+                result.error_message = query_result.error_message;
+            }
+        }
+    }
+
+    // 如果没有成功的查询，返回错误
+    if (latencies.empty()) {
+        result.correctness_verified = false;
+        if (result.error_message.empty()) {
+            result.error_message = "All queries failed";
+        }
+        return result;
     }
 
     // 计算统计指标
-    result = CalculateStatistics(latencies, {100000}, 1000000);
+    result = CalculateStatistics(latencies, matched_rows_list, segment_wrapper->GetRowCount());
     result.correctness_verified = true;
 
     return result;
@@ -371,37 +389,9 @@ ScalarFilterBenchmark::IsIndexApplicable(const IndexConfig& index, const DataCon
 
 bool
 ScalarFilterBenchmark::IsExpressionApplicable(const ExpressionTemplate& expr, const DataConfig& data) {
-    // 检查表达式是否适用于数据类型
-    if (data.data_type == "VARCHAR" && expr.type == ExpressionTemplate::Type::RANGE) {
-        return false;  // 字符串不支持范围查询
-    }
     return true;
 }
 
-std::string
-ScalarFilterBenchmark::FormatExpression(const ExpressionTemplate& tmpl, const QueryValue& value) {
-    std::string expr = tmpl.expr_template;
-
-    // 简单的字符串替换
-    for (const auto& [key, val] : value.values) {
-        std::string placeholder = "{" + key + "}";
-        size_t pos = expr.find(placeholder);
-        if (pos != std::string::npos) {
-            // 根据类型转换值
-            std::string str_val;
-            if (val.type() == typeid(int)) {
-                str_val = std::to_string(std::any_cast<int>(val));
-            } else if (val.type() == typeid(double)) {
-                str_val = std::to_string(std::any_cast<double>(val));
-            } else if (val.type() == typeid(std::string)) {
-                str_val = "'" + std::any_cast<std::string>(val) + "'";
-            }
-            expr.replace(pos, placeholder.length(), str_val);
-        }
-    }
-
-    return expr;
-}
 
 BenchmarkResult
 ScalarFilterBenchmark::CalculateStatistics(const std::vector<double>& latencies,

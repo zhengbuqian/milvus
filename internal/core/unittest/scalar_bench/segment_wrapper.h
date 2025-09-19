@@ -94,6 +94,9 @@ private:
         FieldId field_id,
         const FieldData& field_data);
 
+    // 加载系统字段
+    void LoadSystemFields(const SegmentData& segment_data);
+
 private:
     std::shared_ptr<milvus::Schema> schema_;
     std::shared_ptr<milvus::segcore::SegmentSealed> sealed_segment_;

@@ -13,10 +13,12 @@
 #include "storage/Util.h"
 #include "bench_paths.h"
 #include "segcore/ChunkedSegmentSealedImpl.h"
+#include "common/Consts.h"
 // #include "storage/RemoteChunkManagerSingleton.h" // not used directly here
 // #include "storage/LocalChunkManagerSingleton.h" // not used directly here
 // #include "test_utils/DataGen.h" // not used directly here
 #include <iostream>
+#include <numeric>
 
 namespace milvus {
 namespace scalar_bench {
@@ -116,6 +118,9 @@ SegmentWrapper::Initialize(const DataConfig& config) {
 void
 SegmentWrapper::LoadFromSegmentData(const SegmentData& segment_data) {
     row_count_ = segment_data.GetRowCount();
+
+    // 首先加载系统字段 (row id 和 timestamp)
+    LoadSystemFields(segment_data);
 
     // 为每个字段准备并加载数据
     for (const auto& field_name : segment_data.GetFieldNames()) {
@@ -228,6 +233,52 @@ SegmentWrapper::DropIndex(FieldId field_id) {
         if (chunked_segment) {
             chunked_segment->DropIndex(field_id);
         }
+    }
+}
+
+void
+SegmentWrapper::LoadSystemFields(const SegmentData& segment_data) {
+    int64_t row_count = segment_data.GetRowCount();
+
+    // 生成 row id 数据 (从 0 开始递增)
+    std::vector<int64_t> row_ids(row_count);
+    std::iota(row_ids.begin(), row_ids.end(), 0);
+
+    // 生成 timestamp 数据 (使用相同的值，表示批量插入)
+    std::vector<int64_t> timestamps(row_count, 1000000);  // 使用固定时间戳
+
+    // 加载 row id
+    {
+        auto field_data = milvus::storage::CreateFieldData(
+            DataType::INT64, DataType::NONE, false, 1, 0);
+        field_data->FillFieldData(row_ids.data(), row_count);
+
+        auto field_data_info = PrepareSingleFieldInsertBinlog(
+            collection_id_,
+            partition_id_,
+            segment_id_,
+            RowFieldID.get(),
+            {field_data},
+            chunk_manager_);
+
+        sealed_segment_->LoadFieldData(field_data_info);
+    }
+
+    // 加载 timestamp
+    {
+        auto field_data = milvus::storage::CreateFieldData(
+            DataType::INT64, DataType::NONE, false, 1, 0);
+        field_data->FillFieldData(timestamps.data(), row_count);
+
+        auto field_data_info = PrepareSingleFieldInsertBinlog(
+            collection_id_,
+            partition_id_,
+            segment_id_,
+            TimestampFieldID.get(),
+            {field_data},
+            chunk_manager_);
+
+        sealed_segment_->LoadFieldData(field_data_info);
     }
 }
 

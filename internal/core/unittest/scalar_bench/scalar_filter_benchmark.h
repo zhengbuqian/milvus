@@ -21,6 +21,10 @@
 namespace milvus {
 namespace scalar_bench {
 
+// 前向声明
+class SegmentWrapper;
+class SegmentData;
+
 // 数据分布类型
 enum class Distribution {
     UNIFORM,    // 均匀分布
@@ -142,6 +146,18 @@ struct BenchmarkResult {
     std::string error_message;
 };
 
+// 数据和segment的组合
+struct SegmentBundle {
+    std::shared_ptr<SegmentWrapper> wrapper;
+    std::shared_ptr<SegmentData> data;
+};
+
+// 索引信息的组合
+struct IndexBundle {
+    std::shared_ptr<void> wrapper;  // 可以是 IndexWrapperBase 或其他索引对象
+    IndexConfig config;
+};
+
 // 主测试框架类
 class ScalarFilterBenchmark {
 public:
@@ -159,24 +175,23 @@ public:
 
 protected:
     // 生成测试数据
-    virtual std::shared_ptr<void> GenerateSegment(const DataConfig& config);
+    virtual std::shared_ptr<SegmentBundle> GenerateSegment(const DataConfig& config);
 
     // 构建索引
-    virtual std::shared_ptr<void> BuildIndex(
-        const std::shared_ptr<void>& segment,
+    virtual std::shared_ptr<IndexBundle> BuildIndex(
+        const std::shared_ptr<SegmentBundle>& segment,
         const IndexConfig& config);
 
     // 执行单个测试
     virtual BenchmarkResult ExecuteSingleBenchmark(
-        const std::shared_ptr<void>& segment,
-        const std::shared_ptr<void>& index,
+        const std::shared_ptr<SegmentBundle>& segment,
+        const std::shared_ptr<IndexBundle>& index,
         const std::string& expression,
         const TestParams& params);
 
     // 辅助方法
     bool IsIndexApplicable(const IndexConfig& index, const DataConfig& data);
     bool IsExpressionApplicable(const ExpressionTemplate& expr, const DataConfig& data);
-    std::string FormatExpression(const ExpressionTemplate& tmpl, const QueryValue& value);
 
 private:
     // 性能统计
