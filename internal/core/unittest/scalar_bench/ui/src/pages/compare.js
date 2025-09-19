@@ -1,6 +1,9 @@
 import { getIndex, getRunMeta, getRunMetrics, buildAssetUrl } from '../api.js';
+import { buildFlamegraphGrid, updateFlamegraphGridColumns } from '../components/flamegraphs.js';
+import { buildCasesTable } from '../components/casesTable.js';
 import { formatTimestamp, setSelectedRuns, getSelectedRuns, setSelectedCases, getSelectedCases } from '../state.js';
 import { navigateTo } from '../router.js';
+import { escapeHtml, formatNumber, formatPercentage } from '../utils/format.js';
 
 const METRIC_KEYS = [
   { key: 'qps', label: 'QPS', formatter: formatNumber },
@@ -87,24 +90,7 @@ async function renderComparison(container, allRuns, activeRunIds, metricKey, act
 
   topPanel.appendChild(runSelector);
 
-  // Local state for buttons (no full page refresh)
-  let currentMetric = metricKey || '';
-  let currentOrder = 'desc';
   let currentCols = Math.max(1, Math.min(5, Number(cols) || 2));
-
-  const metricButtons = buildMetricButtons(currentMetric, (newMetric, updateActive) => {
-    currentMetric = newMetric || '';
-    if (typeof updateActive === 'function') updateActive(newMetric);
-    renderBodies();
-  });
-  topPanel.appendChild(metricButtons);
-
-  const orderButtons = buildOrderButtons(currentOrder, (newOrder, updateActive) => {
-    currentOrder = newOrder === 'asc' ? 'asc' : 'desc';
-    if (typeof updateActive === 'function') updateActive(currentOrder);
-    renderBodies();
-  });
-  topPanel.appendChild(orderButtons);
 
   const columnsButtons = buildColumnsButtons(currentCols, (newCols, updateActive) => {
     currentCols = Math.max(1, Math.min(5, Number(newCols) || 1));
@@ -141,12 +127,36 @@ async function renderComparison(container, allRuns, activeRunIds, metricKey, act
   container.appendChild(flamesContainer);
 
   function renderBodies() {
-    // Table
-    const table = activeCaseKeys && activeCaseKeys.length
-      ? buildCaseComparisonTable(data, activeCaseKeys, currentMetric, currentOrder)
-      : buildComparisonTable(data, currentMetric, currentOrder);
+    // Build rows for cases table
+    const allRows = [];
+    data.forEach(({ runId, meta, metrics }) => {
+      const cases = metrics?.cases ? Object.entries(metrics.cases) : [];
+      cases.forEach(([caseId, values]) => {
+        allRows.push({
+          runId,
+          caseId,
+          dataConfig: values.data_config,
+          indexConfig: values.index_config,
+          expression: values.expression,
+          metrics: values,
+          timestamp: meta.timestamp_ms || runId,
+        });
+      });
+    });
+
+    const rows = activeCaseKeys && activeCaseKeys.length
+      ? allRows.filter((r) => activeCaseKeys.includes(`${r.runId}:${r.caseId}`))
+      : allRows;
+
+    const casesTable = buildCasesTable(rows, {
+      metricKeys: METRIC_KEYS,
+      showRunId: true,
+      allowSelection: false,
+      showFlamegraphLink: true,
+      buildFlamegraphUrl: (row) => row.metrics.flamegraph ? buildAssetUrl(`${row.runId}/${row.metrics.flamegraph}`) : null,
+    });
     tableContainer.innerHTML = '';
-    tableContainer.appendChild(table);
+    tableContainer.appendChild(casesTable);
 
     // Flamegraphs
     const existingGrid = flamesContainer.querySelector('.flamegraph-grid');
@@ -160,92 +170,11 @@ async function renderComparison(container, allRuns, activeRunIds, metricKey, act
         flamesContainer.appendChild(flameWrapper);
       }
     } else {
-      const colNum = Math.max(1, Math.min(5, Number(currentCols) || 1));
-      existingGrid.className = `flamegraph-grid columns-${colNum}`;
+      updateFlamegraphGridColumns(existingGrid, currentCols);
     }
   }
 
   renderBodies();
-}
-
-function buildCaseComparisonTable(data, activeCaseKeys, metricKey, order) {
-  const rows = [];
-  const active = new Set(activeCaseKeys.map(String));
-  data.forEach(({ runId, meta, metrics }) => {
-    const cases = metrics?.cases ? Object.entries(metrics.cases) : [];
-    cases.forEach(([caseId, values]) => {
-      const key = `${runId}:${caseId}`;
-      if (active.has(key)) {
-        rows.push({
-          runId,
-          caseId,
-          dataConfig: values.data_config,
-          indexConfig: values.index_config,
-          expression: values.expression,
-          metrics: values,
-          timestamp: meta.timestamp_ms || runId,
-        });
-      }
-    });
-  });
-
-  if (!rows.length) {
-    const div = document.createElement('div');
-    div.className = 'empty-state';
-    div.textContent = 'No selected cases to compare.';
-    return div;
-  }
-
-  if (metricKey) {
-    rows.sort((a, b) => {
-      const av = getMetricValue(a.metrics, metricKey);
-      const bv = getMetricValue(b.metrics, metricKey);
-      return order === 'asc' ? av - bv : bv - av;
-    });
-  } else {
-    rows.sort((a, b) => Number(b.timestamp) - Number(a.timestamp));
-  }
-
-  const wrapper = document.createElement('div');
-  wrapper.className = 'table-scroll';
-  const table = document.createElement('table');
-  table.className = 'data-table';
-  table.innerHTML = `
-    <thead>
-      <tr>
-        <th>Run</th>
-        <th>Case</th>
-        <th>Dataset</th>
-        <th>Index</th>
-        <th>Expression</th>
-        ${METRIC_KEYS.map((metric) => `<th class="numeric">${metric.label}</th>`).join('')}
-        <th>Flamegraph</th>
-      </tr>
-    </thead>
-    <tbody></tbody>
-  `;
-  const tbody = table.querySelector('tbody');
-  rows.forEach((row) => {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td>${row.runId}</td>
-      <td>${row.caseId}</td>
-      <td>${row.dataConfig ?? '—'}</td>
-      <td>${row.indexConfig ?? '—'}</td>
-      <td><code>${escapeHtml(row.expression ?? '—')}</code></td>
-      ${METRIC_KEYS.map((metric) => {
-        const value = getMetricValue(row.metrics, metric.key);
-        const formatted = metric.formatter(value);
-        const highlight = metricKey === metric.key ? ' style="background: rgba(56,189,248,0.12);"' : '';
-        return `<td class="numeric"${highlight}>${formatted}</td>`;
-      }).join('')}
-      <td>${row.metrics.flamegraph ? `<a href="${buildAssetUrl(`${row.runId}/${row.metrics.flamegraph}`)}" target="_blank">View</a>` : '—'}</td>
-    `;
-    tbody.appendChild(tr);
-  });
-
-  wrapper.appendChild(table);
-  return wrapper;
 }
 
 function buildRunSelector(allRuns, activeRunIds, onChange) {
@@ -319,7 +248,7 @@ function buildMetricButtons(selectedKey, onChange) {
   });
 
   wrapper.appendChild(bar);
-  wrapper.appendChild(createCaption('Sort cases by metric (desc).'));
+  wrapper.appendChild(createCaption('Groups ordered by Dataset → Expression. Sort within groups by metric.'));
   return wrapper;
 }
 
@@ -420,15 +349,7 @@ function buildComparisonTable(data, metricKey, order) {
     });
   });
 
-  if (metricKey) {
-    rows.sort((a, b) => {
-      const av = getMetricValue(a.metrics, metricKey);
-      const bv = getMetricValue(b.metrics, metricKey);
-      return order === 'asc' ? av - bv : bv - av;
-    });
-  } else {
-    rows.sort((a, b) => Number(b.timestamp) - Number(a.timestamp));
-  }
+  const sorted = sortRowsGrouped(rows, metricKey, order);
 
   const wrapper = document.createElement('div');
   wrapper.className = 'table-scroll';
@@ -440,8 +361,8 @@ function buildComparisonTable(data, metricKey, order) {
         <th>Run</th>
         <th>Case</th>
         <th>Dataset</th>
-        <th>Index</th>
         <th>Expression</th>
+        <th>Index</th>
         ${METRIC_KEYS.map((metric) => `<th class="numeric">${metric.label}</th>`).join('')}
         <th>Flamegraph</th>
       </tr>
@@ -450,14 +371,14 @@ function buildComparisonTable(data, metricKey, order) {
   `;
 
   const tbody = table.querySelector('tbody');
-  rows.forEach((row) => {
+  sorted.forEach((row) => {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${row.runId}</td>
       <td>${row.caseId}</td>
       <td>${row.dataConfig ?? '—'}</td>
-      <td>${row.indexConfig ?? '—'}</td>
       <td><code>${escapeHtml(row.expression ?? '—')}</code></td>
+      <td>${row.indexConfig ?? '—'}</td>
       ${METRIC_KEYS.map((metric) => {
         const value = getMetricValue(row.metrics, metric.key);
         const formatted = metric.formatter(value);
@@ -490,76 +411,11 @@ function buildFlamegraphGallery(data, activeCaseKeys, cols) {
       });
   });
   if (!cards.length) return null;
-
-  const grid = document.createElement('div');
-  const colNum = Math.max(1, Math.min(5, Number(cols) || 1));
-  grid.className = `flamegraph-grid columns-${colNum}`;
-  cards.forEach((cardData) => {
-    const card = document.createElement('div');
-    card.className = 'flamegraph-card';
-    card.innerHTML = `
-      <div class="svg-container limit-400"><object data="${buildAssetUrl(`${cardData.runId}/${cardData.values.flamegraph}`)}" type="image/svg+xml" class="flamegraph-embed tall-embed"></object></div>
-      <div class="text-muted small">Run ${cardData.runId} • Case ${cardData.caseId}</div>
-      <div class="links">
-        <a href="${buildAssetUrl(`${cardData.runId}/${cardData.values.flamegraph}`)}" target="_blank">Open</a>
-        <button class="ghost" data-action="reset" data-src="${buildAssetUrl(`${cardData.runId}/${cardData.values.flamegraph}`)}">Reset view</button>
-        <span class="tag">${cardData.values.data_config ?? 'n/a'}</span>
-        <span class="tag">${cardData.values.index_config ?? 'n/a'}</span>
-      </div>
-    `;
-    // Default scroll to bottom after SVG loads
-    const obj = card.querySelector('object.flamegraph-embed');
-    obj.addEventListener('load', () => {
-      const cont = card.querySelector('.svg-container');
-      if (cont) {
-        cont.scrollTop = cont.scrollHeight;
-      }
-    });
-    grid.appendChild(card);
-  });
-  // Reset buttons reload the object to reset zoom/pan
-  grid.querySelectorAll('button[data-action="reset"]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const src = btn.getAttribute('data-src');
-      const wrapper = btn.closest('.flamegraph-card');
-      if (!wrapper) return;
-      const obj = wrapper.querySelector('object.flamegraph-embed');
-      if (!obj) return;
-      obj.setAttribute('data', '');
-      setTimeout(() => obj.setAttribute('data', src), 0);
-    });
-  });
-  return grid;
+  return buildFlamegraphGrid(cards, Math.max(1, Math.min(5, Number(cols) || 1)));
 }
 
 function getMetricValue(obj, path) {
   return path.split('.').reduce((acc, key) => (acc ? acc[key] : undefined), obj);
-}
-
-function escapeHtml(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-function formatNumber(value) {
-  if (value === undefined || value === null || Number.isNaN(value)) return '—';
-  if (typeof value !== 'number') value = Number(value);
-  if (!Number.isFinite(value)) return String(value);
-  if (Math.abs(value) >= 100) {
-    return value.toFixed(0);
-  }
-  return value.toFixed(2);
-}
-
-function formatPercentage(value) {
-  if (value === undefined || value === null) return '—';
-  if (typeof value !== 'number') value = Number(value);
-  if (!Number.isFinite(value)) return String(value);
-  return `${(value * 100).toFixed(2)}%`;
 }
 
 function createCaption(text) {

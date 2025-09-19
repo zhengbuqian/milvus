@@ -1,6 +1,8 @@
 import { getIndex, getRunMeta, getRunMetrics } from '../api.js';
 import { formatTimestamp, getSelectedRuns, toggleRunSelection, getSelectedCases, toggleCaseSelection } from '../state.js';
 import { navigateTo } from '../router.js';
+import { escapeHtml, formatNumber } from '../utils/format.js';
+import { buildCasesTable } from '../components/casesTable.js';
 
 export async function renderRunsPage(root) {
   root.innerHTML = '';
@@ -81,16 +83,16 @@ function renderRunsTable(container, runs) {
         ${filters.datasets.map((d) => `<option value="${d}">${d}</option>`).join('')}
       </select>
     </label>
-    <label>Index
-      <select data-filter="index">
-        <option value="">All</option>
-        ${filters.indexes.map((d) => `<option value="${d}">${d}</option>`).join('')}
-      </select>
-    </label>
     <label>Expression
       <select data-filter="expression">
         <option value="">All</option>
         ${filters.expressions.map((d) => `<option value="${d}">${d}</option>`).join('')}
+      </select>
+    </label>
+    <label>Index
+      <select data-filter="index">
+        <option value="">All</option>
+        ${filters.indexes.map((d) => `<option value="${d}">${d}</option>`).join('')}
       </select>
     </label>
     <label>Search
@@ -110,8 +112,8 @@ function renderRunsTable(container, runs) {
         <th>Timestamp</th>
         <th>Total cases</th>
         <th>Datasets</th>
-        <th>Indexes</th>
         <th>Expressions</th>
+        <th>Indexes</th>
         <th>Label</th>
         <th>Actions</th>
       </tr>
@@ -166,8 +168,8 @@ function renderRunsTable(container, runs) {
         <td>${formatTimestamp(run.timestamp_ms || run.id)}</td>
         <td class="numeric">${meta?.summary?.total_cases ?? '—'}</td>
         <td>${renderTagList(meta?.data_configs)}</td>
-        <td>${renderTagList(meta?.index_configs)}</td>
         <td>${renderTagList(meta?.expressions)}</td>
+        <td>${renderTagList(meta?.index_configs)}</td>
         <td>${meta?.label || run.label || '—'}</td>
         <td>
           <div class="table-actions">
@@ -234,61 +236,36 @@ function renderCasesList(container, runId, metrics) {
     return;
   }
 
-  const wrapper = document.createElement('div');
-  wrapper.className = 'table-scroll';
-  const table = document.createElement('table');
-  table.className = 'data-table';
-  table.innerHTML = `
-    <thead>
-      <tr>
-        <th></th>
-        <th>Case ID</th>
-        <th>Dataset</th>
-        <th>Index</th>
-        <th>Expression</th>
-        <th class="numeric">QPS</th>
-        <th class="numeric">P99</th>
-      </tr>
-    </thead>
-    <tbody></tbody>
-  `;
-  const tbody = table.querySelector('tbody');
-  cases
-    .sort((a, b) => Number(b[0]) - Number(a[0]))
-    .forEach(([caseId, data]) => {
-      const tr = document.createElement('tr');
-      const key = `${runId}:${caseId}`;
-      const checked = getSelectedCases().includes(key);
-      tr.innerHTML = `
-        <td><input type="checkbox" ${checked ? 'checked' : ''} data-case-select="${key}" /></td>
-        <td>${caseId}</td>
-        <td>${data.data_config ?? '—'}</td>
-        <td>${data.index_config ?? '—'}</td>
-        <td><code>${(data.expression ?? '').slice(0, 40)}${(data.expression || '').length > 40 ? '…' : ''}</code></td>
-        <td class="numeric">${Number(data.qps).toFixed(2)}</td>
-        <td class="numeric">${Number(data.latency_ms?.p99 ?? 0).toFixed(2)}</td>
-      `;
-      tbody.appendChild(tr);
-    });
+  const rows = cases.map(([caseId, data]) => ({
+    runId,
+    caseId,
+    dataConfig: data.data_config,
+    indexConfig: data.index_config,
+    expression: data.expression,
+    metrics: data,
+  }));
 
-  tbody.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
-    cb.addEventListener('change', (event) => {
-      const key = event.target.dataset.caseSelect;
+  const casesTable = buildCasesTable(rows, {
+    metricKeys: [
+      { key: 'qps', label: 'QPS', formatter: formatNumber },
+      { key: 'latency_ms.p99', label: 'P99', formatter: formatNumber },
+    ],
+    showRunId: false,
+    allowSelection: true,
+    isSelected: (key) => getSelectedCases().includes(key),
+    getSelectionKey: (row) => `${row.runId}:${row.caseId}`,
+    onToggleSelect: (key, checked, row) => {
       const [rid, cid] = key.split(':');
-      toggleCaseSelection(rid, cid, event.target.checked);
+      toggleCaseSelection(rid, cid, checked);
       const selectedCasesCount = document.getElementById('selected-cases-count');
-      if (selectedCasesCount) {
-        selectedCasesCount.textContent = getSelectedCases().length;
-      }
+      if (selectedCasesCount) selectedCasesCount.textContent = getSelectedCases().length;
       const compareCasesBtn = document.getElementById('compare-cases-btn');
-      if (compareCasesBtn) {
-        compareCasesBtn.disabled = getSelectedCases().length < 2;
-      }
-    });
+      if (compareCasesBtn) compareCasesBtn.disabled = getSelectedCases().length < 2;
+    },
+    showFlamegraphLink: false,
   });
 
-  wrapper.appendChild(table);
-  container.appendChild(wrapper);
+  container.appendChild(casesTable);
 }
 
 function buildFilters(runs) {
@@ -312,6 +289,6 @@ function renderTagList(items) {
     return '<span class="text-muted">—</span>';
   }
   return `<div class="tag-list">${items
-    .map((item) => `<span class="tag">${item}</span>`)
+    .map((item) => `<span class="tag">${escapeHtml(String(item))}</span>`)
     .join('')}</div>`;
 }

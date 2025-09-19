@@ -1,6 +1,19 @@
 import { getRunMeta, getRunMetrics, getRunSummary, buildAssetUrl } from '../api.js';
+import { buildFlamegraphGrid, updateFlamegraphGridColumns } from '../components/flamegraphs.js';
 import { formatTimestamp, getSelectedRuns, toggleRunSelection } from '../state.js';
 import { navigateTo } from '../router.js';
+import { escapeHtml, formatNumber, formatPercentage } from '../utils/format.js';
+import { buildCasesTable } from '../components/casesTable.js';
+
+const METRIC_KEYS = [
+  { key: 'qps', label: 'QPS', formatter: formatNumber },
+  { key: 'latency_ms.avg', label: 'Avg ms', formatter: formatNumber },
+  { key: 'latency_ms.p50', label: 'P50 ms', formatter: formatNumber },
+  { key: 'latency_ms.p90', label: 'P90 ms', formatter: formatNumber },
+  { key: 'latency_ms.p99', label: 'P99 ms', formatter: formatNumber },
+  { key: 'selectivity', label: 'Selectivity', formatter: formatPercentage },
+  { key: 'index_build_ms', label: 'Index build ms', formatter: formatNumber },
+];
 
 export async function renderRunDetailPage(root, runId) {
   root.innerHTML = '';
@@ -73,9 +86,33 @@ function renderRunDetails(container, runId, meta, metrics, summaryText) {
 
   const summaryBlock = document.createElement('div');
   summaryBlock.className = 'code-block';
-  summaryBlock.innerHTML = `<pre>${summaryText || 'run_summary.txt not found.'}</pre>`;
+  const pre = document.createElement('pre');
+  pre.textContent = summaryText || 'run_summary.txt not found.';
+  summaryBlock.appendChild(pre);
 
-  const metricsTable = buildMetricsTable(runId, metrics);
+  const tableContainer = document.createElement('div');
+
+  const rows = [];
+  const cases = metrics?.cases ? Object.entries(metrics.cases) : [];
+  cases.forEach(([caseId, data]) => {
+    rows.push({
+      runId,
+      caseId,
+      dataConfig: data.data_config,
+      indexConfig: data.index_config,
+      expression: data.expression,
+      metrics: data,
+    });
+  });
+
+  const casesTable = buildCasesTable(rows, {
+    metricKeys: METRIC_KEYS,
+    showRunId: false,
+    allowSelection: false,
+    showFlamegraphLink: true,
+    buildFlamegraphUrl: (row) => row.metrics.flamegraph ? buildAssetUrl(`${runId}/${row.metrics.flamegraph}`) : null,
+  });
+  tableContainer.appendChild(casesTable);
   const flamegraphSection = buildFlamegraphSection(runId, metrics);
 
   container.innerHTML = '';
@@ -96,84 +133,49 @@ function renderRunDetails(container, runId, meta, metrics, summaryText) {
   const metricsWrapper = document.createElement('div');
   metricsWrapper.style.marginTop = '1.5rem';
   metricsWrapper.innerHTML = '<h3>Case metrics</h3>';
-  metricsWrapper.appendChild(metricsTable);
+  metricsWrapper.appendChild(tableContainer);
   container.appendChild(metricsWrapper);
 
   if (flamegraphSection) {
     const flameWrapper = document.createElement('div');
     flameWrapper.style.marginTop = '1.5rem';
     flameWrapper.innerHTML = '<h3>Flamegraphs</h3>';
+
+    const controlBar = document.createElement('div');
+    controlBar.className = 'section-card';
+    controlBar.innerHTML = '<h3 style="margin-top:0">Flamegraphs per row</h3>';
+    const segmented = document.createElement('div');
+    segmented.className = 'segmented';
+    let currentCols = 2;
+    for (let n = 1; n <= 5; n++) {
+      const btn = document.createElement('button');
+      btn.className = `segmented-btn${n === currentCols ? ' active' : ''}`;
+      btn.textContent = String(n);
+      btn.addEventListener('click', () => {
+        currentCols = n;
+        segmented.querySelectorAll('button').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+        const grid = flameWrapper.querySelector('.flamegraph-grid');
+        if (grid) updateFlamegraphGridColumns(grid, currentCols);
+      });
+      segmented.appendChild(btn);
+    }
+    controlBar.appendChild(segmented);
+
+    flameWrapper.appendChild(controlBar);
     flameWrapper.appendChild(flamegraphSection);
     container.appendChild(flameWrapper);
   }
 }
 
 function renderMetaItem(label, value) {
+  const safe = escapeHtml(String(value));
   return `
     <div class="meta-item">
-      <span class="label">${label}</span>
-      <span class="value">${value}</span>
+      <span class="label">${escapeHtml(String(label))}</span>
+      <span class="value">${safe}</span>
     </div>
   `;
-}
-
-function buildMetricsTable(runId, metrics) {
-  const cases = metrics?.cases ? Object.entries(metrics.cases) : [];
-  if (!cases.length) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    empty.textContent = 'metrics.json has no cases.';
-    return empty;
-  }
-
-  const wrapper = document.createElement('div');
-  wrapper.className = 'table-scroll';
-  const table = document.createElement('table');
-  table.className = 'data-table';
-  table.innerHTML = `
-    <thead>
-      <tr>
-        <th>Case ID</th>
-        <th>Dataset</th>
-        <th>Index</th>
-        <th>Expression</th>
-        <th class="numeric">QPS</th>
-        <th class="numeric">Avg ms</th>
-        <th class="numeric">P50</th>
-        <th class="numeric">P90</th>
-        <th class="numeric">P99</th>
-        <th class="numeric">Selectivity</th>
-        <th class="numeric">Index build (ms)</th>
-        <th>Flamegraph</th>
-      </tr>
-    </thead>
-    <tbody></tbody>
-  `;
-  const tbody = table.querySelector('tbody');
-  cases
-    .sort((a, b) => Number(b[0]) - Number(a[0]))
-    .forEach(([caseId, data]) => {
-      const flamegraphPath = data.flamegraph ? buildAssetUrl(`${runId}/${data.flamegraph}`) : null;
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td>${caseId}</td>
-        <td>${data.data_config ?? '—'}</td>
-        <td>${data.index_config ?? '—'}</td>
-        <td><code>${escapeHtml(data.expression ?? '—')}</code></td>
-        <td class="numeric">${formatNumber(data.qps)}</td>
-        <td class="numeric">${formatNumber(data.latency_ms?.avg)}</td>
-        <td class="numeric">${formatNumber(data.latency_ms?.p50)}</td>
-        <td class="numeric">${formatNumber(data.latency_ms?.p90)}</td>
-        <td class="numeric">${formatNumber(data.latency_ms?.p99)}</td>
-        <td class="numeric">${formatPercentage(data.selectivity)}</td>
-        <td class="numeric">${formatNumber(data.index_build_ms)}</td>
-        <td>${flamegraphPath ? `<a href="${flamegraphPath}" target="_blank">View</a>` : '—'}</td>
-      `;
-      tbody.appendChild(tr);
-    });
-
-  wrapper.appendChild(table);
-  return wrapper;
 }
 
 function buildFlamegraphSection(runId, metrics) {
@@ -182,64 +184,8 @@ function buildFlamegraphSection(runId, metrics) {
   if (!withFlamegraphs.length) {
     return null;
   }
-  const grid = document.createElement('div');
-  grid.className = 'flamegraph-grid';
-  withFlamegraphs.forEach(([caseId, data]) => {
-    const card = document.createElement('div');
-    card.className = 'flamegraph-card';
-    const src = buildAssetUrl(`${runId}/${data.flamegraph}`);
-    card.innerHTML = `
-      <div class="case-name">${caseId}</div>
-      <div class="text-muted small">${data.data_config} • ${data.index_config}</div>
-      <div class="svg-container"><object data="${src}" type="image/svg+xml" class="flamegraph-embed"></object></div>
-      <div class="links">
-        <a href="${src}" target="_blank">Open</a>
-        <button class="ghost" data-action="reset" data-src="${src}">Reset view</button>
-        ${data.expression ? `<span class="tag">${escapeHtml(data.expression).slice(0, 40)}${
-          data.expression.length > 40 ? '…' : ''
-        }</span>` : ''}
-      </div>
-    `;
-    grid.appendChild(card);
-  });
-  // Reset buttons reload the object to reset zoom/pan
-  grid.querySelectorAll('button[data-action="reset"]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const src = btn.getAttribute('data-src');
-      const wrapper = btn.closest('.flamegraph-card');
-      if (!wrapper) return;
-      const obj = wrapper.querySelector('object.flamegraph-embed');
-      if (!obj) return;
-      obj.setAttribute('data', '');
-      // force reflow then set back
-      setTimeout(() => obj.setAttribute('data', src), 0);
-    });
-  });
-  return grid;
+  const cards = withFlamegraphs.map(([caseId, data]) => ({ runId, caseId, values: data }));
+  return buildFlamegraphGrid(cards);
 }
 
-function escapeHtml(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-function formatNumber(value) {
-  if (value === undefined || value === null || Number.isNaN(value)) return '—';
-  if (typeof value !== 'number') value = Number(value);
-  if (!Number.isFinite(value)) return String(value);
-  if (Math.abs(value) >= 100) {
-    return value.toFixed(0);
-  }
-  return value.toFixed(2);
-}
-
-function formatPercentage(value) {
-  if (value === undefined || value === null) return '—';
-  if (typeof value !== 'number') value = Number(value);
-  if (!Number.isFinite(value)) return String(value);
-  return `${(value * 100).toFixed(2)}%`;
-}
+// formatting helpers moved to ../utils/format.js
