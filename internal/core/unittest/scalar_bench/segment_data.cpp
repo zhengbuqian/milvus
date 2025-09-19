@@ -190,6 +190,25 @@ SegmentData::PrintSummary() const {
 
 std::shared_ptr<SegmentData>
 SegmentDataGenerator::GenerateSegmentData(const DataConfig& config) {
+    // 验证 cardinality
+    if (config.cardinality > config.segment_size) {
+        throw std::invalid_argument(
+            "Cardinality (" + std::to_string(config.cardinality) +
+            ") cannot exceed segment size (" + std::to_string(config.segment_size) + ")");
+    }
+
+    // 对于整数类型，cardinality 也不能超过值范围
+    if ((config.data_type == "INT64" || config.data_type == "INT32") && config.cardinality > 0) {
+        int64_t value_range_size = config.value_range.max - config.value_range.min + 1;
+        if (config.cardinality > value_range_size) {
+            throw std::invalid_argument(
+                "Cardinality (" + std::to_string(config.cardinality) +
+                ") cannot exceed value range size (" + std::to_string(value_range_size) +
+                ") for integer type. Value range: [" + std::to_string(config.value_range.min) +
+                ", " + std::to_string(config.value_range.max) + "]");
+        }
+    }
+
     auto segment_data = std::make_shared<SegmentData>(config);
 
     // 生成主键字段（始终为INT64）
@@ -232,8 +251,8 @@ SegmentDataGenerator::GenerateIntFieldData(const DataConfig& config) {
     auto data = gen.GenerateIntData(
         config.segment_size,
         config.distribution,
-        0,                      // min_val
-        config.segment_size,    // max_val
+        config.value_range.min,    // 使用配置的最小值
+        config.value_range.max,    // 使用配置的最大值
         config.cardinality
     );
 
@@ -246,8 +265,8 @@ SegmentDataGenerator::GenerateFloatFieldData(const DataConfig& config) {
     auto data = gen.GenerateFloatData(
         config.segment_size,
         config.distribution,
-        0.0,                         // min_val
-        static_cast<double>(config.segment_size)  // max_val
+        static_cast<double>(config.value_range.min),  // 使用配置的最小值
+        static_cast<double>(config.value_range.max)   // 使用配置的最大值
     );
 
     // 应用基数限制（如果需要）

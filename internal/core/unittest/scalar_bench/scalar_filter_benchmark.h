@@ -52,6 +52,12 @@ struct DataConfig {
     int64_t cardinality;
     double null_ratio;
 
+    // 数值类型的值范围
+    struct {
+        int64_t min = 0;
+        int64_t max = 100000;
+    } value_range;
+
     struct {
         double skewness = 0.0;
         double sparsity = 0.0;
@@ -94,6 +100,8 @@ struct TestParams {
     int test_iterations = 100;
     bool verify_correctness = true;
     bool collect_memory_stats = true;
+    bool enable_flame_graph = false;
+    std::string flamegraph_repo_path = "~/FlameGraph";
 };
 
 // 基准测试配置
@@ -107,6 +115,10 @@ struct BenchmarkConfig {
 
 // 基准测试结果
 struct BenchmarkResult {
+    // 运行标识
+    int64_t run_id;           // 整个运行的时间戳（毫秒）
+    int64_t case_run_id;      // 每个测试用例的时间戳（毫秒）
+
     // 测试标识
     std::string data_config_name;
     std::string index_config_name;
@@ -187,7 +199,9 @@ protected:
         const std::shared_ptr<SegmentBundle>& segment,
         const std::shared_ptr<IndexBundle>& index,
         const std::string& expression,
-        const TestParams& params);
+        const TestParams& params,
+        int64_t case_run_id = 0,
+        const std::string& results_dir = "");
 
     // 辅助方法
     bool IsIndexApplicable(const IndexConfig& index, const DataConfig& data);

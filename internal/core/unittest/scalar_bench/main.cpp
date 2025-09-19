@@ -11,6 +11,9 @@
 
 #include <iostream>
 #include <memory>
+#include <signal.h>
+#include <atomic>
+#include <cstdlib>
 
 // #include "folly/init/Init.h" // not used
 
@@ -24,6 +27,38 @@
 // #include "test_utils/Constants.h" // not used
 
 using namespace milvus::scalar_bench;
+
+// 全局变量用于信号处理
+static std::atomic<bool> g_interrupted{false};
+
+namespace milvus {
+namespace scalar_bench {
+std::string g_current_run_dir;  // 定义在namespace内，与extern声明匹配
+}
+}
+
+// 信号处理函数
+void SignalHandler(int signum) {
+    if (signum == SIGINT) {
+        std::cout << "\n\n[INTERRUPTED] Caught Ctrl+C signal..." << std::endl;
+        g_interrupted = true;
+
+        // 如果有当前运行的结果文件夹，删除它
+        if (!milvus::scalar_bench::g_current_run_dir.empty()) {
+            std::cout << "[CLEANUP] Removing incomplete results directory: " << milvus::scalar_bench::g_current_run_dir << std::endl;
+            std::string rm_cmd = "rm -rf " + milvus::scalar_bench::g_current_run_dir;
+            int result = std::system(rm_cmd.c_str());
+            if (result == 0) {
+                std::cout << "[CLEANUP] Successfully removed " << milvus::scalar_bench::g_current_run_dir << std::endl;
+            } else {
+                std::cerr << "[ERROR] Failed to remove " << milvus::scalar_bench::g_current_run_dir << std::endl;
+            }
+        }
+
+        std::cout << "[EXIT] Benchmark interrupted and cleaned up." << std::endl;
+        std::exit(1);
+    }
+}
 
 // 全局初始化函数
 void
@@ -54,17 +89,19 @@ CreateSimpleTestConfig() {
 
     // 数据配置：测试不同的数据分布和基数
     config.data_configs = {{.name = "uniform_int64_high_card",
-                            .segment_size = 1'000'000,  // 10万行用于快速测试
+                            .segment_size = 100'000,
                             .data_type = "INT64",
                             .distribution = Distribution::UNIFORM,
-                            .cardinality = 700'000,  // 高基数
-                            .null_ratio = 0.0},
+                            .cardinality = 70'000,  // 高基数
+                            .null_ratio = 0.0,
+                            .value_range = {.min = 0, .max = 100'000}},
                            {.name = "zipf_int64_low_card",
-                            .segment_size = 1'000'000,
+                            .segment_size = 100'000,
                             .data_type = "INT64",
                             .distribution = Distribution::ZIPF,
-                            .cardinality = 100,  // 低基数
-                            .null_ratio = 0.05}
+                            .cardinality = 100,  // 低基数，在值范围内（0-999有1000个可能值）
+                            .null_ratio = 0.05,
+                            .value_range = {.min = 0, .max = 999}}
                         //    {.name = "uniform_varchar_medium_card",
                         //     .segment_size = 100'000,
                         //     .data_type = "VARCHAR",
@@ -158,10 +195,12 @@ query {
     config.query_values = {};
 
     // 测试参数
-    config.test_params = {.warmup_iterations = 5,
-                          .test_iterations = 200,
-                          .verify_correctness = true,
-                          .collect_memory_stats = true};
+    config.test_params.warmup_iterations = 5;
+    config.test_params.test_iterations = 200;
+    config.test_params.verify_correctness = true;
+    config.test_params.collect_memory_stats = true;
+    config.test_params.enable_flame_graph = true;
+    config.test_params.flamegraph_repo_path = "/home/zilliz/FlameGraph";
 
     return config;
 }
@@ -218,6 +257,9 @@ main(int argc, char* argv[]) {
     std::cout << "Milvus Scalar Filter Benchmark Tool" << std::endl;
     std::cout << "====================================" << std::endl;
 
+    // 注册信号处理器
+    signal(SIGINT, SignalHandler);
+
     // 初始化全局单例和管理器
     InitializeGlobals(argc, argv);
 
@@ -249,6 +291,9 @@ main(int argc, char* argv[]) {
     // 生成报告
     std::cout << "\nGenerating report..." << std::endl;
     benchmark->GenerateReport(results);
+
+    // 清除当前运行目录（成功完成，不需要删除）
+    milvus::scalar_bench::g_current_run_dir.clear();
 
     std::cout << "\nBenchmark completed successfully!" << std::endl;
 

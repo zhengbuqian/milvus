@@ -14,6 +14,7 @@
 #include "segment_wrapper.h"
 #include "index_wrapper.h"
 #include "query_executor.h"
+#include "flame_graph_profiler.h"
 #include <algorithm>
 #include <numeric>
 #include <iostream>
@@ -26,11 +27,20 @@
 namespace milvus {
 namespace scalar_bench {
 
+// 外部全局变量声明
+extern std::string g_current_run_dir;
+
 std::vector<BenchmarkResult>
 ScalarFilterBenchmark::RunBenchmark(const BenchmarkConfig& config) {
     std::vector<BenchmarkResult> all_results;
 
+    // 生成运行ID（当前时间的毫秒时间戳）
+    auto now = std::chrono::system_clock::now();
+    auto run_id = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()).count();
+
     std::cout << "Starting Scalar Filter Benchmark..." << std::endl;
+    std::cout << "Run ID: " << run_id << std::endl;
     std::cout << "Total configurations: "
               << config.data_configs.size() << " data configs x "
               << config.index_configs.size() << " index configs x "
@@ -96,10 +106,22 @@ ScalarFilterBenchmark::RunBenchmark(const BenchmarkConfig& config) {
 
                 std::cout << "    Testing: " << expr_template.name << std::endl;
 
+                // 生成case run ID（当前时间的毫秒时间戳）
+                auto case_now = std::chrono::system_clock::now();
+                auto case_run_id = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    case_now.time_since_epoch()).count();
+
+                // 为这次运行创建专门的文件夹
+                auto base_results_dir = GetResultsDir();
+                std::string run_dir = base_results_dir + std::to_string(run_id) + "/";
+
                 // 执行基准测试（直接使用 text proto）
-                auto result = ExecuteSingleBenchmark(segment, index, expr_template.expr_template, config.test_params);
+                auto result = ExecuteSingleBenchmark(segment, index, expr_template.expr_template,
+                                                    config.test_params, case_run_id, run_dir);
 
                 // 填充元信息
+                result.run_id = run_id;
+                result.case_run_id = case_run_id;
                 result.data_config_name = data_config.name;
                 result.index_config_name = index_config.name;
                 result.expr_template_name = expr_template.name;
@@ -162,41 +184,59 @@ ScalarFilterBenchmark::GenerateReport(const std::vector<BenchmarkResult>& result
             return a.index_config_name < b.index_config_name;
         });
 
-    // 详细结果表
-    std::cout << "\nDetailed Results:" << std::endl;
-    std::cout << std::setw(30) << std::left << "Data Config"
+    // 详细结果表（每一行是一个case）
+    std::cout << "\nDetailed Results (Run ID: " << (sorted_results.empty() ? 0 : sorted_results[0].run_id) << "):" << std::endl;
+    std::cout << std::setw(15) << std::left << "Case ID"
+              << std::setw(30) << "Data Config"
               << std::setw(30) << "Expression"
               << std::setw(20) << "Index"
-              << std::setw(10) << std::right << "P50(ms)"
+              << std::setw(10) << std::right << "Avg(ms)"
+              << std::setw(10) << "P50(ms)"
               << std::setw(10) << "P99(ms)"
               << std::setw(12) << "Selectivity"
               << std::setw(12) << "Memory(MB)" << std::endl;
-    std::cout << std::string(134, '-') << std::endl;
+    std::cout << std::string(159, '-') << std::endl;
 
     for (const auto& result : sorted_results) {
-        std::cout << std::setw(30) << std::left << result.data_config_name
+        std::cout << std::setw(15) << std::left << result.case_run_id
+                  << std::setw(30) << result.data_config_name
                   << std::setw(30) << result.actual_expression
                   << std::setw(20) << result.index_config_name
-                  << std::setw(10) << std::right << std::fixed << std::setprecision(2) << result.latency_p50_ms
+                  << std::setw(10) << std::right << std::fixed << std::setprecision(2) << result.latency_avg_ms
+                  << std::setw(10) << result.latency_p50_ms
                   << std::setw(10) << result.latency_p99_ms
                   << std::setw(11) << std::setprecision(1) << result.actual_selectivity * 100 << "%"
                   << std::setw(12) << std::setprecision(1) << result.index_memory_bytes / (1024.0 * 1024.0) << std::endl;
     }
 
+    // 为这次运行创建专门的文件夹
+    auto base_results_dir = GetResultsDir();
+    int64_t run_id = sorted_results.empty() ? 0 : sorted_results[0].run_id;
+    std::string run_dir = base_results_dir + std::to_string(run_id) + "/";
+
+    // 创建运行目录
+    std::string mkdir_cmd = "mkdir -p " + run_dir;
+    std::system(mkdir_cmd.c_str());
+
+    // 设置当前运行目录（用于中断时清理）
+    g_current_run_dir = run_dir;
+
     // 保存到CSV文件
-    auto results_dir = GetResultsDir();
-    std::ofstream csv(results_dir + "benchmark_results.csv");
-    csv << "data_config,index_config,expression,p50_ms,p90_ms,p99_ms,avg_ms,"
+    std::string csv_filename = "benchmark_results.csv";
+    std::ofstream csv(run_dir + csv_filename);
+    csv << "run_id,case_run_id,data_config,expression,index_config,avg_ms,p50_ms,p90_ms,p99_ms,"
         << "matched_rows,total_rows,selectivity,index_build_ms,memory_mb\n";
 
     for (const auto& result : results) {
-        csv << result.data_config_name << ","
-            << result.index_config_name << ","
+        csv << result.run_id << ","
+            << result.case_run_id << ","
+            << result.data_config_name << ","
             << "\"" << result.actual_expression << "\","
+            << result.index_config_name << ","
+            << result.latency_avg_ms << ","
             << result.latency_p50_ms << ","
             << result.latency_p90_ms << ","
             << result.latency_p99_ms << ","
-            << result.latency_avg_ms << ","
             << result.matched_rows << ","
             << result.total_rows << ","
             << result.actual_selectivity << ","
@@ -205,7 +245,86 @@ ScalarFilterBenchmark::GenerateReport(const std::vector<BenchmarkResult>& result
     }
     csv.close();
 
-    std::cout << "\nResults saved to: " << results_dir << "benchmark_results.csv" << std::endl;
+    std::cout << "\nResults saved to: " << run_dir << csv_filename << std::endl;
+
+    // 保存运行摘要到同一文件夹
+    std::ofstream summary(run_dir + "run_summary.txt");
+    summary << "Benchmark Run Summary" << std::endl;
+    summary << "=====================" << std::endl;
+    summary << "Run ID: " << run_id << std::endl;
+    summary << "Total Cases: " << results.size() << std::endl;
+    summary << "Start Time: " << run_id << " ms since epoch" << std::endl;
+
+    if (!results.empty()) {
+        // 找出最慢和最快的查询
+        auto slowest = std::max_element(results.begin(), results.end(),
+            [](const auto& a, const auto& b) { return a.latency_p99_ms < b.latency_p99_ms; });
+        auto fastest = std::min_element(results.begin(), results.end(),
+            [](const auto& a, const auto& b) { return a.latency_p99_ms < b.latency_p99_ms; });
+
+        summary << "\nPerformance Highlights:" << std::endl;
+        summary << "  Fastest query (P99): " << fastest->latency_p99_ms << " ms" << std::endl;
+        summary << "    - Config: " << fastest->data_config_name << std::endl;
+        summary << "    - Index: " << fastest->index_config_name << std::endl;
+        summary << "    - Expression: " << fastest->actual_expression << std::endl;
+        summary << "  Slowest query (P99): " << slowest->latency_p99_ms << " ms" << std::endl;
+        summary << "    - Config: " << slowest->data_config_name << std::endl;
+        summary << "    - Index: " << slowest->index_config_name << std::endl;
+        summary << "    - Expression: " << slowest->actual_expression << std::endl;
+    }
+    summary.close();
+
+    std::cout << "Run summary saved to: " << run_dir << "run_summary.txt" << std::endl;
+
+    // 保存配置信息到同一文件夹
+    std::ofstream config_file(run_dir + "run_config.json");
+    config_file << "{" << std::endl;
+    config_file << "  \"run_id\": " << run_id << "," << std::endl;
+    config_file << "  \"data_configs\": [";
+
+    // 获取唯一的数据配置
+    std::set<std::string> unique_data_configs;
+    for (const auto& result : results) {
+        unique_data_configs.insert(result.data_config_name);
+    }
+    bool first_data = true;
+    for (const auto& config_name : unique_data_configs) {
+        if (!first_data) config_file << ", ";
+        config_file << "\"" << config_name << "\"";
+        first_data = false;
+    }
+    config_file << "]," << std::endl;
+
+    config_file << "  \"index_configs\": [";
+    std::set<std::string> unique_index_configs;
+    for (const auto& result : results) {
+        unique_index_configs.insert(result.index_config_name);
+    }
+    bool first_index = true;
+    for (const auto& index_name : unique_index_configs) {
+        if (!first_index) config_file << ", ";
+        config_file << "\"" << index_name << "\"";
+        first_index = false;
+    }
+    config_file << "]," << std::endl;
+
+    config_file << "  \"expressions\": [";
+    std::set<std::string> unique_expressions;
+    for (const auto& result : results) {
+        unique_expressions.insert(result.actual_expression);
+    }
+    bool first_expr = true;
+    for (const auto& expr : unique_expressions) {
+        if (!first_expr) config_file << ", ";
+        config_file << "\"" << expr << "\"";
+        first_expr = false;
+    }
+    config_file << "]" << std::endl;
+    config_file << "}" << std::endl;
+    config_file.close();
+
+    std::cout << "Run configuration saved to: " << run_dir << "run_config.json" << std::endl;
+    std::cout << "\n📁 All results saved in folder: " << run_dir << std::endl;
 }
 
 BenchmarkConfig
@@ -320,10 +439,14 @@ BenchmarkResult
 ScalarFilterBenchmark::ExecuteSingleBenchmark(const std::shared_ptr<SegmentBundle>& segment,
                                                const std::shared_ptr<IndexBundle>& index,
                                                const std::string& expression,
-                                               const TestParams& params) {
+                                               const TestParams& params,
+                                               int64_t case_run_id,
+                                               const std::string& results_dir) {
     BenchmarkResult result;
     std::vector<double> latencies;
     std::vector<int64_t> matched_rows_list;
+    latencies.reserve(params.test_iterations);
+    matched_rows_list.reserve(params.test_iterations);
 
     // 获取 SegmentWrapper 和 Schema
     auto segment_wrapper = segment->wrapper;
@@ -373,6 +496,51 @@ ScalarFilterBenchmark::ExecuteSingleBenchmark(const std::shared_ptr<SegmentBundl
     // 计算统计指标
     result = CalculateStatistics(latencies, matched_rows_list, segment_wrapper->GetRowCount());
     result.correctness_verified = true;
+
+    // 如果启用了火焰图生成且没有错误，进行性能分析
+    if (params.enable_flame_graph && result.correctness_verified && !results_dir.empty()) {
+        // 确保结果目录存在
+        std::string mkdir_cmd = "mkdir -p " + results_dir;
+        std::system(mkdir_cmd.c_str());
+
+        // 创建火焰图分析器
+        FlameGraphProfiler::Config profiler_config;
+        profiler_config.flamegraph_repo_path = params.flamegraph_repo_path;
+        profiler_config.profile_duration_seconds = 1.0;  // 采集1秒
+        profiler_config.total_duration_seconds = 1.5;    // 总运行1.5秒
+        profiler_config.pre_buffer_seconds = 0.25;       // 前置缓冲
+        profiler_config.post_buffer_seconds = 0.25;      // 后置缓冲
+
+        FlameGraphProfiler profiler(profiler_config);
+
+        // 验证环境
+        if (profiler.ValidateEnvironment()) {
+            // 生成火焰图文件名
+            std::string svg_filename = results_dir + std::to_string(case_run_id) + ".svg";
+
+            // 创建工作负载函数
+            auto workload = [&]() {
+                auto query_result = executor.ExecuteQuery(sealed_segment.get(), expression);
+            };
+
+            // 生成case名称用于火焰图标题
+            std::string case_name = segment->data->GetConfig().name + "_" +
+                                  index->config.name + "_" +
+                                  expression.substr(0, 50);  // 截取表达式前50字符
+
+            // 执行性能分析并生成火焰图
+            bool profiling_success = profiler.ProfileAndGenerateFlameGraph(
+                workload, svg_filename, case_name);
+
+            if (profiling_success) {
+                std::cout << "      ✓ Flame graph generated: " << svg_filename << std::endl;
+            } else {
+                std::cout << "      ⚠ Flame graph generation failed: " << profiler.GetLastError() << std::endl;
+            }
+        } else {
+            std::cout << "      ⚠ Flame graph profiling skipped: " << profiler.GetLastError() << std::endl;
+        }
+    }
 
     return result;
 }
