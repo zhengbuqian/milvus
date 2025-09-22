@@ -92,7 +92,7 @@ export function CasesTable({
                 style={allowSelection ? { cursor: 'pointer' } : undefined}
               >
                 {allowSelection && (
-                  <td onClick={(e) => e.stopPropagation()}>
+                  <td onClick={(e) => { e.stopPropagation(); onToggleSelect(key, !selected, row); }}>
                     <input
                       type="checkbox"
                       checked={selected}

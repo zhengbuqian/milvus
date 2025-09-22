@@ -10,7 +10,7 @@
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
 #include "segment_data.h"
-#include "data_generator.h"
+#include "../generators/field_generator.h"
 #include <iostream>
 #include <iomanip>
 #include <algorithm>
@@ -25,8 +25,22 @@ SegmentData::SegmentData(const DataConfig& config)
 }
 
 void
-SegmentData::AddFieldData(const std::string& field_name, FieldData data) {
+SegmentData::AddFieldData(const std::string& field_name, FieldColumn data) {
     field_data_[field_name] = std::move(data);
+}
+
+void
+SegmentData::AddFieldConfig(const std::string& field_name, const FieldConfig& config) {
+    field_configs_[field_name] = config;
+}
+
+const FieldConfig*
+SegmentData::GetFieldConfig(const std::string& field_name) const {
+    auto it = field_configs_.find(field_name);
+    if (it == field_configs_.end()) {
+        return nullptr;
+    }
+    return &it->second;
 }
 
 std::vector<std::string>
@@ -54,7 +68,7 @@ SegmentData::GetMemoryBytes() const {
 }
 
 size_t
-SegmentData::GetFieldMemoryBytes(const FieldData& data) const {
+SegmentData::GetFieldMemoryBytes(const FieldColumn& data) const {
     return std::visit([](const auto& vec) -> size_t {
         using T = typename std::decay_t<decltype(vec)>::value_type;
         if constexpr (std::is_same_v<T, std::string>) {
@@ -190,28 +204,27 @@ SegmentData::PrintSummary() const {
 
 std::shared_ptr<SegmentData>
 SegmentDataGenerator::GenerateSegmentData(const DataConfig& config) {
-    // 验证 cardinality
-    if (config.cardinality > config.segment_size) {
-        throw std::invalid_argument(
-            "Cardinality (" + std::to_string(config.cardinality) +
-            ") cannot exceed segment size (" + std::to_string(config.segment_size) + ")");
+    // Check if this is a multi-field configuration
+    if (!config.fields.empty()) {
+        return GenerateMultiFieldData(config);
     }
 
-    // 对于整数类型，cardinality 也不能超过值范围
-    if ((config.data_type == "INT64" || config.data_type == "INT32") && config.cardinality > 0) {
-        int64_t value_range_size = config.value_range.max - config.value_range.min + 1;
-        if (config.cardinality > value_range_size) {
-            throw std::invalid_argument(
-                "Cardinality (" + std::to_string(config.cardinality) +
-                ") cannot exceed value range size (" + std::to_string(value_range_size) +
-                ") for integer type. Value range: [" + std::to_string(config.value_range.min) +
-                ", " + std::to_string(config.value_range.max) + "]");
-        }
-    }
+    // Legacy single-field generation is no longer supported
+    // All data generation must use the multi-field configuration
+    throw std::runtime_error(
+        "Single-field data generation is no longer supported. "
+        "Please use multi-field configuration with 'fields' array.");
+}
 
+
+std::shared_ptr<SegmentData>
+SegmentDataGenerator::GenerateMultiFieldData(const DataConfig& config) {
     auto segment_data = std::make_shared<SegmentData>(config);
 
-    // 生成主键字段（始终为INT64）
+    // Create random context with seed
+    RandomContext ctx(config.segment_seed > 0 ? config.segment_seed : 42);
+
+    // Always generate primary key field first
     {
         std::vector<int64_t> pk_data;
         pk_data.reserve(config.segment_size);
@@ -221,113 +234,29 @@ SegmentDataGenerator::GenerateSegmentData(const DataConfig& config) {
         segment_data->AddFieldData("pk", std::move(pk_data));
     }
 
-    // 根据数据类型生成主要测试字段
-    if (config.data_type == "INT64") {
-        segment_data->AddFieldData("field", GenerateIntFieldData(config));
-    } else if (config.data_type == "FLOAT" || config.data_type == "DOUBLE") {
-        segment_data->AddFieldData("field", GenerateFloatFieldData(config));
-    } else if (config.data_type == "VARCHAR") {
-        segment_data->AddFieldData("field", GenerateStringFieldData(config));
-    } else if (config.data_type == "BOOL") {
-        segment_data->AddFieldData("field", GenerateBoolFieldData(config));
-    } else {
-        // 默认生成INT64
-        segment_data->AddFieldData("field", GenerateIntFieldData(config));
-    }
+    // Generate data for each configured field
+    for (const auto& field_config : config.fields) {
+        try {
+            // Create generator for this field
+            auto generator = FieldGeneratorFactory::CreateGenerator(field_config);
 
-    // 添加额外的测试字段（用于复合条件测试）
-    {
-        DataConfig int_config = config;
-        int_config.cardinality = 100;
-        segment_data->AddFieldData("field2", GenerateIntFieldData(int_config));
-    }
+            // Generate data
+            FieldColumn field_data = generator->Generate(config.segment_size, ctx);
 
-    return segment_data;
-}
+            // Add to segment
+            segment_data->AddFieldData(field_config.field_name, std::move(field_data));
+            segment_data->AddFieldConfig(field_config.field_name, field_config);
 
-FieldData
-SegmentDataGenerator::GenerateIntFieldData(const DataConfig& config) {
-    DataGenerator gen;
-    auto data = gen.GenerateIntData(
-        config.segment_size,
-        config.distribution,
-        config.value_range.min,    // 使用配置的最小值
-        config.value_range.max,    // 使用配置的最大值
-        config.cardinality
-    );
+            std::cout << "Generated field: " << field_config.field_name
+                      << " (rows=" << config.segment_size << ")" << std::endl;
 
-    return data;
-}
-
-FieldData
-SegmentDataGenerator::GenerateFloatFieldData(const DataConfig& config) {
-    DataGenerator gen;
-    auto data = gen.GenerateFloatData(
-        config.segment_size,
-        config.distribution,
-        static_cast<double>(config.value_range.min),  // 使用配置的最小值
-        static_cast<double>(config.value_range.max)   // 使用配置的最大值
-    );
-
-    // 应用基数限制（如果需要）
-    if (config.cardinality > 0 && config.cardinality < data.size()) {
-        // 简单的基数限制：将数据量化到指定数量的桶
-        double range = config.segment_size;
-        double bucket_size = range / config.cardinality;
-
-        for (auto& val : data) {
-            int bucket = static_cast<int>(val / bucket_size);
-            val = bucket * bucket_size + bucket_size / 2;
+        } catch (const std::exception& e) {
+            throw std::runtime_error(
+                "Failed to generate field '" + field_config.field_name + "': " + e.what());
         }
     }
 
-    return data;
-}
-
-FieldData
-SegmentDataGenerator::GenerateStringFieldData(const DataConfig& config) {
-    DataGenerator gen;
-
-    StringGenConfig string_config;
-    // 根据基数选择合适的字符串生成模式
-    if (config.cardinality < 100) {
-        // 低基数：使用模板模式
-        string_config.pattern = StringGenConfig::Pattern::TEMPLATE;
-        string_config.template_config.prefix = "status_";
-        string_config.template_config.numeric_digits = 3;
-        string_config.template_config.zero_padding = false;
-    } else if (config.cardinality < 10000) {
-        // 中基数：使用模板模式
-        string_config.pattern = StringGenConfig::Pattern::TEMPLATE;
-        string_config.template_config.prefix = "user_";
-        string_config.template_config.suffix = "_data";
-        string_config.template_config.numeric_digits = 7;
-    } else {
-        // 高基数：使用UUID模式
-        string_config.pattern = StringGenConfig::Pattern::UUID_LIKE;
-    }
-
-    string_config.distribution = config.distribution;
-    string_config.cardinality = config.cardinality;
-
-    auto data = gen.GenerateStringData(config.segment_size, string_config);
-
-    return data;
-}
-
-FieldData
-SegmentDataGenerator::GenerateBoolFieldData(const DataConfig& config) {
-    DataGenerator gen;
-
-    // 对于布尔类型，基数最多为2
-    double true_ratio = 0.5;
-    if (config.cardinality == 1) {
-        true_ratio = 1.0;  // 全部为true或全部为false
-    }
-
-    auto data = gen.GenerateBoolData(config.segment_size, true_ratio);
-
-    return data;
+    return segment_data;
 }
 
 } // namespace scalar_bench

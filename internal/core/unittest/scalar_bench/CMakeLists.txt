@@ -13,9 +13,31 @@ include_directories(${CMAKE_HOME_DIRECTORY}/src)
 include_directories(${CMAKE_HOME_DIRECTORY}/unittest)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
-file(GLOB SCALAR_BENCH_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
+# Collect source files from main directory and subdirectories
+set(MAIN_SRCS
+    ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/scalar_filter_benchmark.cpp
+)
+file(GLOB CONFIG_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/config/*.cpp")
+file(GLOB CORE_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/core/*.cpp")
+file(GLOB DICT_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/dictionaries/*.cpp")
+file(GLOB GEN_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/generators/*.cpp")
+file(GLOB UTILS_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/utils/*.cpp")
+
+set(SCALAR_BENCH_SRCS
+    ${MAIN_SRCS}
+    ${CONFIG_SRCS}
+    ${CORE_SRCS}
+    ${DICT_SRCS}
+    ${GEN_SRCS}
+    ${UTILS_SRCS}
+)
 
 add_executable(scalar_filter_bench ${SCALAR_BENCH_SRCS})
+
+target_compile_definitions(scalar_filter_bench
+    PRIVATE SCALAR_BENCH_CASES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/bench_cases"
+)
 
 target_link_libraries(scalar_filter_bench
     milvus_core

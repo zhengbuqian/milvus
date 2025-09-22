@@ -1,0 +1,123 @@
+version: 1
+preset_name: comprehensive
+data_configs:
+  - path: data_configs/uniform_int64_high_card.yaml
+  - path: data_configs/zipf_int64_low_card.yaml
+  - path: data_configs/ecommerce_clicks.yaml
+index_configs:
+  - name: baseline_no_index
+    field_configs: {}  # All fields use NONE
+  - name: standard_indexes
+    field_configs:
+      user_id:
+        type: BITMAP
+        params:
+          chunk_size: "8192"
+      category_id:
+        type: BITMAP
+        params:
+          chunk_size: "4096"
+      score:
+        type: STL_SORT
+        params: {}
+      price:
+        type: STL_SORT
+        params: {}
+      status:
+        type: INVERTED
+        params: {}
+      tags:
+        type: INVERTED
+        params: {}
+      location_h3:
+        type: INVERTED
+        params: {}
+  - name: optimized_indexes
+    field_configs:
+      user_id:
+        type: INVERTED
+        params: {}
+      category_id:
+        type: INVERTED
+        params: {}
+      price:
+        type: BITMAP
+        params:
+          chunk_size: "8192"
+      is_active:
+        type: BITMAP
+        params:
+          chunk_size: "1024"
+expr_templates:
+  - name: user_id_equal
+    expr_template: |
+      output_field_ids: {field_id:user_id}
+      query {
+        predicates {
+          unary_range_expr {
+            column_info {
+              field_id: {field_id:user_id}
+              data_type: Int64
+            }
+            op: Equal
+            value { int64_val: 5000 }
+          }
+        }
+      }
+  - name: price_range
+    expr_template: |
+      output_field_ids: {field_id:price}
+      query {
+        predicates {
+          binary_range_expr {
+            column_info {
+              field_id: {field_id:price}
+              data_type: Float
+            }
+            lower_inclusive: true
+            upper_inclusive: true
+            lower_value { float_val: 100.0 }
+            upper_value { float_val: 500.0 }
+          }
+        }
+      }
+  - name: status_in_set
+    type: SET_OPERATION
+    expr_template: |
+      output_field_ids: {field_id:status}
+      query {
+        predicates {
+          term_expr {
+            column_info {
+              field_id: {field_id:status}
+              data_type: VarChar
+            }
+            values { string_val: "active" }
+            values { string_val: "pending" }
+          }
+        }
+      }
+  - name: tags_contains
+    type: ARRAY_OP
+    expr_template: |
+      output_field_ids: {field_id:tags}
+      query {
+        predicates {
+          array_contains_expr {
+            column_info {
+              field_id: {field_id:tags}
+              data_type: Array
+              element_type: VarChar
+            }
+            values { string_val: "sale" }
+            values { string_val: "discount" }
+          }
+        }
+      }
+query_values: []
+test_params:
+  warmup_iterations: 10
+  test_iterations: 100
+  collect_memory_stats: true
+  enable_flame_graph: true
+  flamegraph_repo_path: /home/zilliz/FlameGraph

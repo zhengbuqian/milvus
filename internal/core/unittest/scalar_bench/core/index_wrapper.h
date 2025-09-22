@@ -105,10 +105,15 @@ class IndexManager {
 public:
     IndexManager(std::shared_ptr<milvus::storage::ChunkManager> chunk_manager);
 
-    // 构建并加载索引
+    // 构建并加载索引 (legacy - for backward compatibility)
     IndexBuildResult BuildAndLoadIndex(SegmentWrapper& segment,
                                         const std::string& field_name,
                                         const IndexConfig& config);
+
+    // 构建并加载索引 (field-specific configuration)
+    IndexBuildResult BuildAndLoadIndexForField(SegmentWrapper& segment,
+                                                const std::string& field_name,
+                                                const FieldIndexConfig& field_config);
 
 private:
     std::shared_ptr<milvus::storage::ChunkManager> chunk_manager_;

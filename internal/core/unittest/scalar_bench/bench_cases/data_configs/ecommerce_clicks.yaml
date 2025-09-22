@@ -1,0 +1,120 @@
+name: ecommerce_clicks
+segment_size: 1000000
+segment_seed: 42
+global_dictionaries:
+  cities_small:
+    items: ["Beijing", "Shanghai", "Shenzhen", "Guangzhou", "Chengdu", "Hangzhou"]
+  ecommerce_tags:
+    items_file: datasets/tags.txt
+fields:
+  - field_name: user_id
+    generator: categorical
+    type: VARCHAR
+    max_length: 36
+    values:
+      dictionary: uuid_v4_lower
+  - field_name: location_h3
+    generator: categorical
+    type: VARCHAR
+    max_length: 16
+    values:
+      dictionary: h3_level8
+    duplication_ratios: [0.25, 0.2, 0.15, 0.15, 0.15, 0.1]
+  - field_name: price
+    generator: numeric
+    type: DOUBLE
+    range:
+      min: 1.0
+      max: 5000.0
+    distribution: CUSTOM_HIST
+    buckets:
+      - weight: 0.6
+        min: 1.0
+        max: 200.0
+      - weight: 0.3
+        min: 200.0
+        max: 1000.0
+      - weight: 0.1
+        min: 1000.0
+        max: 5000.0
+    outliers:
+      ratio: 0.002
+      values: [9999.0]
+    precision: 2
+  - field_name: tags
+    generator: array
+    max_capacity: 8
+    element:
+      generator: categorical
+      type: VARCHAR
+      max_length: 32
+      values:
+        dictionary: ecommerce_tags
+      duplication_ratios: [0.3, 0.2, 0.2, 0.15, 0.1, 0.05]
+    length:
+      min: 1
+      max: 5
+      distribution: ZIPF
+    contains:
+      - include: ["sale", "discount"]
+        probability: 0.15
+    unique: true
+  - field_name: created_at
+    generator: timestamp
+    range:
+      start: 1704067200000
+      end: 1727731199000
+    hotspots:
+      - window:
+          start: 1711046400000
+          end: 1713657600000
+        weight: 0.35
+      - window:
+          start: 1720396800000
+          end: 1721087999000
+        weight: 0.25
+    jitter: 500
+  - field_name: product_title
+    generator: varchar
+    max_length: 128
+    mode: template
+    template: "{adjective} {product_type} - {brand} {model}"
+    pools:
+      adjective: ["Premium", "Professional", "Portable", "Advanced"]
+      product_type: ["Laptop", "Desktop", "Monitor", "Keyboard"]
+      brand: ["TechPro", "UltraMax", "PowerTech"]
+      model: ["X1", "Pro", "Plus", "Elite"]
+  - field_name: category
+    generator: categorical
+    type: VARCHAR
+    max_length: 32
+    values:
+      inline: ["electronics", "computers", "accessories", "gaming", "office", "home"]
+    duplication_ratios: [0.3, 0.25, 0.2, 0.15, 0.08, 0.02]
+  - field_name: search_text
+    generator: varchar
+    max_length: 256
+    mode: random
+    values:
+      inline: ["laptop", "desktop", "monitor", "keyboard", "mouse", "portable", "wireless", "bluetooth", "USB", "HDMI", "4K", "HD", "ultra", "pro", "gaming", "office", "sale", "discount", "free", "shipping", "best", "seller"]
+    token_count:
+      min: 5
+      max: 25
+      distribution: UNIFORM
+    keywords:
+      - token: "sale"
+        frequency: 0.25
+      - token: "discount"
+        frequency: 0.15
+    phrase_sets:
+      - ["free", "shipping"]
+      - ["best", "seller"]
+  - field_name: description
+    generator: varchar
+    max_length: 512
+    mode: corpus
+    corpus_file: datasets/product_descriptions.txt
+  - field_name: is_active
+    generator: boolean
+    true_ratio: 0.55
+

@@ -15,6 +15,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <limits.h>
+#include <stdexcept>
 
 #include <cstring>
 
@@ -57,34 +58,14 @@ std::string PathJoin(const std::string& base, const std::string& name) {
 }
 
 void EnsureDirExists(const std::string& path) {
-    // Create nested directories. Simple implementation: iterate segments.
     if (path.empty()) {
         return;
     }
-
-    std::string current;
-    if (path[0] == '/') {
-        current = "/";
-    }
-
-    size_t start = (path[0] == '/') ? 1 : 0;
-    while (start <= path.size()) {
-        size_t pos = path.find('/', start);
-        std::string part = path.substr(start, pos == std::string::npos ? std::string::npos : pos - start);
-        if (!part.empty()) {
-            if (current.size() > 1 && current.back() != '/') {
-                current.push_back('/');
-            }
-            current += part;
-            struct stat st;
-            if (stat(current.c_str(), &st) != 0) {
-                ::mkdir(current.c_str(), 0755);
-            }
-        }
-        if (pos == std::string::npos) {
-            break;
-        }
-        start = pos + 1;
+    // Use system call to create directories recursively (like mkdir -p)
+    std::string cmd = "mkdir -p \"" + path + "\"";
+    int ret = std::system(cmd.c_str());
+    if (ret != 0) {
+        throw std::runtime_error("Failed to create directory: " + path);
     }
 }
 
@@ -96,6 +77,12 @@ std::string GetStorageRoot() {
 
 std::string GetStorageDir() {
     auto path = PathJoin(GetBasePath(), "storage");
+    EnsureDirExists(path);
+    return path + "/";
+}
+
+std::string GetTestRemotePath() {
+    auto path = PathJoin(GetBasePath(), "test_remote");
     EnsureDirExists(path);
     return path + "/";
 }

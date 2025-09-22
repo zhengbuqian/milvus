@@ -17,21 +17,25 @@
 #include <variant>
 #include <unordered_map>
 #include <stdexcept>
-#include "scalar_filter_benchmark.h"
+#include "../config/benchmark_config.h"
+#include "../generators/field_generator.h"
+#include "knowhere/dataset.h"
 
 namespace milvus {
 namespace scalar_bench {
 
-// 字段数据的变体类型
-using FieldData = std::variant<
+// Use FieldColumn type from field_generator.h instead of FieldData
+// FieldColumn supports all field types including arrays
+using FieldColumn = std::variant<
     std::vector<int8_t>,
     std::vector<int16_t>,
     std::vector<int32_t>,
     std::vector<int64_t>,
     std::vector<float>,
     std::vector<double>,
-    std::vector<bool>,
-    std::vector<std::string>
+    std::vector<std::string>,
+    std::vector<bool>
+    // Note: ArrayVal support temporarily removed due to header dependency issues
 >;
 
 // Segment数据包装类
@@ -41,7 +45,10 @@ public:
     ~SegmentData() = default;
 
     // 添加字段数据
-    void AddFieldData(const std::string& field_name, FieldData data);
+    void AddFieldData(const std::string& field_name, FieldColumn data);
+
+    // Add field configuration
+    void AddFieldConfig(const std::string& field_name, const FieldConfig& config);
 
     // 获取字段数据
     template<typename T>
@@ -61,6 +68,9 @@ public:
 
     // 获取数据配置
     const DataConfig& GetConfig() const { return config_; }
+
+    // Get field configuration
+    const FieldConfig* GetFieldConfig(const std::string& field_name) const;
 
     // 计算内存使用
     size_t GetMemoryBytes() const;
@@ -88,25 +98,23 @@ public:
 private:
     DataConfig config_;
     int64_t row_count_;
-    std::unordered_map<std::string, FieldData> field_data_;
+    std::unordered_map<std::string, FieldColumn> field_data_;
     std::unordered_map<std::string, std::vector<bool>> null_masks_;
+    std::unordered_map<std::string, FieldConfig> field_configs_;  // Store field configurations
 
     // 计算字段内存大小
-    size_t GetFieldMemoryBytes(const FieldData& data) const;
+    size_t GetFieldMemoryBytes(const FieldColumn& data) const;
 };
 
 // Segment数据生成器
 class SegmentDataGenerator {
 public:
-    // 生成完整的Segment数据
+    // 生成完整的Segment数据 - Only supports multi-field generation
     static std::shared_ptr<SegmentData> GenerateSegmentData(const DataConfig& config);
 
 private:
-    // 生成不同类型的字段数据
-    static FieldData GenerateIntFieldData(const DataConfig& config);
-    static FieldData GenerateFloatFieldData(const DataConfig& config);
-    static FieldData GenerateStringFieldData(const DataConfig& config);
-    static FieldData GenerateBoolFieldData(const DataConfig& config);
+    // Multi-field generator using field generators
+    static std::shared_ptr<SegmentData> GenerateMultiFieldData(const DataConfig& config);
 };
 
 } // namespace scalar_bench

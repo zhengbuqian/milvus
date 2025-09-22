@@ -166,14 +166,6 @@ export default function RunsPage(): JSX.Element {
                         style={{ cursor: 'pointer' }}
                       >
                         <td>
-                          <InlineExpander open={isOpen} setOpen={(next) => {
-                            setOpenIds((prev) => {
-                              const s = new Set(Array.from(prev));
-                              const id = String(run.id);
-                              if (next) s.add(id); else s.delete(id);
-                              return s;
-                            });
-                          }} />
                           <input type="checkbox" checked={isSelected} onClick={(e) => e.stopPropagation()} onChange={(e) => {
                             toggleRunSelection(run.id, e.target.checked);
                             setSelectedRunsCount(getSelectedRuns().length);
@@ -275,6 +267,14 @@ function renderTagList(items?: string[]): JSX.Element {
   if (!items || !items.length) return <span className="text-muted">—</span>;
   return (
     <div className="tag-list">
+      {items.map((item) => (
+        <span className="tag" key={item} dangerouslySetInnerHTML={{ __html: escapeHtml(String(item)) }} />
+      ))}
+    </div>
+  );
+}
+
+
       {items.map((item) => (
         <span className="tag" key={item} dangerouslySetInnerHTML={{ __html: escapeHtml(String(item)) }} />
       ))}

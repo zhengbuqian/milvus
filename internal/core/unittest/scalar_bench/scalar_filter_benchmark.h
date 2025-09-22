@@ -14,9 +14,9 @@
 #include <memory>
 #include <vector>
 #include <string>
-#include <map>
 #include <chrono>
-#include <any>
+
+#include "config/benchmark_config.h"
 
 namespace milvus {
 namespace scalar_bench {
@@ -24,94 +24,6 @@ namespace scalar_bench {
 // 前向声明
 class SegmentWrapper;
 class SegmentData;
-
-// 数据分布类型
-enum class Distribution {
-    UNIFORM,    // 均匀分布
-    NORMAL,     // 正态分布
-    ZIPF,       // 幂律分布
-    SEQUENTIAL  // 顺序分布
-};
-
-// 标量索引类型
-enum class ScalarIndexType {
-    NONE,       // 无索引（暴力搜索）
-    BITMAP,     // 位图索引
-    STL_SORT,   // 排序索引
-    INVERTED,   // 倒排索引
-    TRIE,       // 前缀树索引
-    HYBRID      // 混合索引
-};
-
-// 数据配置
-struct DataConfig {
-    std::string name;
-    int64_t segment_size;
-    std::string data_type;  // INT64, FLOAT, VARCHAR等
-    Distribution distribution;
-    int64_t cardinality;
-    double null_ratio;
-
-    // 数值类型的值范围
-    struct {
-        int64_t min = 0;
-        int64_t max = 100000;
-    } value_range;
-
-    struct {
-        double skewness = 0.0;
-        double sparsity = 0.0;
-        int64_t unique_values = 0;
-    } characteristics;
-};
-
-// 索引配置
-struct IndexConfig {
-    std::string name;
-    ScalarIndexType type;
-    std::map<std::string, std::string> params;
-};
-
-// 表达式模板
-struct ExpressionTemplate {
-    std::string name;
-    std::string expr_template;
-    enum Type {
-        COMPARISON,
-        RANGE,
-        SET_OPERATION,
-        STRING_MATCH,
-        ARRAY_OP,
-        LOGICAL,
-        NULL_CHECK
-    } type;
-};
-
-// 查询参数值
-struct QueryValue {
-    std::string name;
-    std::map<std::string, std::any> values;
-    double expected_selectivity;
-};
-
-// 测试参数
-struct TestParams {
-    int warmup_iterations = 10;
-    int test_iterations = 100;
-    bool verify_correctness = true;
-    bool collect_memory_stats = true;
-    bool enable_flame_graph = false;
-    std::string flamegraph_repo_path = "~/FlameGraph";
-};
-
-// 基准测试配置
-struct BenchmarkConfig {
-    std::vector<DataConfig> data_configs;
-    std::vector<IndexConfig> index_configs;
-    std::vector<ExpressionTemplate> expr_templates;
-    std::vector<QueryValue> query_values;
-    TestParams test_params;
-};
 
 // 基准测试结果
 struct BenchmarkResult {
@@ -206,6 +118,15 @@ protected:
     // 辅助方法
     bool IsIndexApplicable(const IndexConfig& index, const DataConfig& data);
     bool IsExpressionApplicable(const ExpressionTemplate& expr, const DataConfig& data);
+
+    // Resolve field name placeholders in expression template
+    std::string ResolveFieldPlaceholders(const std::string& expr_template,
+                                         const SegmentWrapper& segment);
+
+    // Validate field references in expression template
+    bool ValidateFieldReferences(const std::string& expr_template,
+                                 const SegmentWrapper& segment,
+                                 std::string& error_msg);
 
 private:
     // 性能统计

@@ -10,8 +10,9 @@
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
 #include "segment_wrapper.h"
+#include "segment_data.h"
 #include "storage/Util.h"
-#include "bench_paths.h"
+#include "../utils/bench_paths.h"
 #include "segcore/ChunkedSegmentSealedImpl.h"
 #include "common/Consts.h"
 // #include "storage/RemoteChunkManagerSingleton.h" // not used directly here
@@ -38,6 +39,11 @@ SchemaBuilder::AddPrimaryKeyField(const std::string& name) {
 }
 
 void
+SchemaBuilder::AddInt32Field(const std::string& name) {
+    schema_->AddDebugField(name, DataType::INT32);
+}
+
+void
 SchemaBuilder::AddInt64Field(const std::string& name) {
     schema_->AddDebugField(name, DataType::INT64);
 }
@@ -48,7 +54,14 @@ SchemaBuilder::AddFloatField(const std::string& name) {
 }
 
 void
-SchemaBuilder::AddVarCharField(const std::string& name) {
+SchemaBuilder::AddDoubleField(const std::string& name) {
+    schema_->AddDebugField(name, DataType::DOUBLE);
+}
+
+void
+SchemaBuilder::AddVarCharField(const std::string& name, size_t max_length) {
+    // Note: DataType::VARCHAR doesn't have explicit max_length in AddDebugField
+    // The max_length is handled internally by Milvus
     schema_->AddDebugField(name, DataType::VARCHAR);
 }
 
@@ -74,24 +87,66 @@ void
 SegmentWrapper::Initialize(const DataConfig& config) {
     // 构建Schema
     SchemaBuilder builder;
-    builder.AddPrimaryKeyField("pk");
 
-    // 根据数据类型添加主要字段
-    if (config.data_type == "INT64") {
-        builder.AddInt64Field("field");
-    } else if (config.data_type == "FLOAT" || config.data_type == "DOUBLE") {
-        builder.AddFloatField("field");
-    } else if (config.data_type == "VARCHAR") {
-        builder.AddVarCharField("field");
-    } else if (config.data_type == "BOOL") {
-        builder.AddBoolField("field");
+    // Check if using new multi-field configuration
+    if (!config.fields.empty()) {
+        // Check if pk field is already defined in the field configs
+        bool has_pk = false;
+        for (const auto& field_config : config.fields) {
+            if (field_config.field_name == "pk") {
+                has_pk = true;
+                // TODO: 支持生成 字符串类型的 pk
+                // Add pk as primary key field
+                builder.AddPrimaryKeyField("pk");
+                break;
+            }
+        }
+
+        // If no pk field defined, add a default one
+        if (!has_pk) {
+            builder.AddPrimaryKeyField("pk");
+        }
+
+        // Build schema from field configurations (skip pk if already added)
+        for (const auto& field_config : config.fields) {
+            if (field_config.field_name == "pk") {
+                continue;  // Already added as primary key
+            }
+            // Map field_type to schema field type
+            switch (field_config.field_type) {
+                case FieldDataType::INT64:
+                    builder.AddInt64Field(field_config.field_name);
+                    break;
+                case FieldDataType::DOUBLE:
+                    builder.AddDoubleField(field_config.field_name);
+                    break;
+                case FieldDataType::VARCHAR: {
+                    // Get max length from string config if using string generator
+                    size_t max_len = 256;
+                    if (field_config.generator == FieldGeneratorType::CATEGORICAL) {
+                        max_len = field_config.categorical_config.max_length > 0 ? field_config.categorical_config.max_length : 256;
+                    } else if (field_config.generator == FieldGeneratorType::VARCHAR) {
+                        max_len = field_config.varchar_config.max_length > 0 ? field_config.varchar_config.max_length : 512;
+                    }
+                    builder.AddVarCharField(field_config.field_name, max_len);
+                    break;
+                }
+                case FieldDataType::BOOL:
+                    builder.AddBoolField(field_config.field_name);
+                    break;
+                case FieldDataType::ARRAY:
+                    // TODO: Add array field support in schema builder
+                    builder.AddInt64Field(field_config.field_name); // Temporary fallback
+                    break;
+                default:
+                    builder.AddInt64Field(field_config.field_name); // Default fallback
+                    break;
+            }
+        }
     } else {
-        // 默认INT64
-        builder.AddInt64Field("field");
+        // No fields defined - this is an error
+        throw std::runtime_error("No fields defined in data config");
     }
-
-    // 添加辅助字段（用于复合查询）
-    builder.AddInt64Field("field2");
 
     schema_ = builder.Build();
 
@@ -136,20 +191,41 @@ SegmentWrapper::LoadFromSegmentData(const SegmentData& segment_data) {
 
         // 根据数据类型获取字段数据
         try {
-            if (data_type == DataType::INT64) {
+            if (data_type == DataType::INT8) {
+                const auto& data = segment_data.GetFieldData<int8_t>(field_name);
+                PrepareInsertData(field_name, field_id, data);
+            } else if (data_type == DataType::INT16) {
+                const auto& data = segment_data.GetFieldData<int16_t>(field_name);
+                PrepareInsertData(field_name, field_id, data);
+            } else if (data_type == DataType::INT32) {
+                const auto& data = segment_data.GetFieldData<int32_t>(field_name);
+                PrepareInsertData(field_name, field_id, data);
+            } else if (data_type == DataType::INT64) {
                 const auto& data = segment_data.GetFieldData<int64_t>(field_name);
                 PrepareInsertData(field_name, field_id, data);
             } else if (data_type == DataType::FLOAT) {
+                // Try to get float data first, then double
+                try {
+                    const auto& data = segment_data.GetFieldData<float>(field_name);
+                    PrepareInsertData(field_name, field_id, data);
+                } catch (...) {
+                    const auto& data = segment_data.GetFieldData<double>(field_name);
+                    // 转换为float
+                    std::vector<float> float_data(data.begin(), data.end());
+                    PrepareInsertData(field_name, field_id, float_data);
+                }
+            } else if (data_type == DataType::DOUBLE) {
                 const auto& data = segment_data.GetFieldData<double>(field_name);
-                // 转换为float
-                std::vector<float> float_data(data.begin(), data.end());
-                PrepareInsertData(field_name, field_id, float_data);
+                PrepareInsertData(field_name, field_id, data);
             } else if (data_type == DataType::VARCHAR) {
                 const auto& data = segment_data.GetFieldData<std::string>(field_name);
                 PrepareInsertData(field_name, field_id, data);
             } else if (data_type == DataType::BOOL) {
                 const auto& data = segment_data.GetFieldData<bool>(field_name);
                 PrepareInsertData(field_name, field_id, data);
+            } else if (data_type == DataType::ARRAY) {
+                // TODO: Handle array type
+                std::cerr << "Warning: Array field loading not yet implemented for " << field_name << std::endl;
             }
         } catch (const std::exception& e) {
             std::cerr << "Error loading field " << field_name << ": " << e.what() << std::endl;
@@ -162,7 +238,7 @@ SegmentWrapper::LoadFromSegmentData(const SegmentData& segment_data) {
 void
 SegmentWrapper::PrepareInsertData(const std::string& field_name,
                                    FieldId field_id,
-                                   const FieldData& field_data) {
+                                   const FieldColumn& field_data) {
     const auto& field_schema = schema_->operator[](field_id);
     DataType data_type = field_schema.get_data_type();
 
@@ -184,22 +260,32 @@ SegmentWrapper::PrepareInsertData(const std::string& field_name,
 
 std::shared_ptr<milvus::FieldDataBase>
 SegmentWrapper::CreateFieldDataFromVector(DataType data_type,
-                                           const FieldData& field_data) {
+                                           const FieldColumn& field_data) {
     auto storage_field_data = milvus::storage::CreateFieldData(
         data_type, DataType::NONE, false, 1, 0);
 
     // 根据类型填充数据
-    std::visit([&storage_field_data](const auto& vec) {
+    std::visit([&storage_field_data, data_type](const auto& vec) {
         using T = typename std::decay_t<decltype(vec)>::value_type;
 
-        if constexpr (std::is_same_v<T, int64_t>) {
+        if constexpr (std::is_same_v<T, int8_t>) {
+            storage_field_data->FillFieldData(vec.data(), vec.size());
+        } else if constexpr (std::is_same_v<T, int16_t>) {
+            storage_field_data->FillFieldData(vec.data(), vec.size());
+        } else if constexpr (std::is_same_v<T, int32_t>) {
+            storage_field_data->FillFieldData(vec.data(), vec.size());
+        } else if constexpr (std::is_same_v<T, int64_t>) {
             storage_field_data->FillFieldData(vec.data(), vec.size());
         } else if constexpr (std::is_same_v<T, float>) {
             storage_field_data->FillFieldData(vec.data(), vec.size());
         } else if constexpr (std::is_same_v<T, double>) {
-            // 转换为float
-            std::vector<float> float_vec(vec.begin(), vec.end());
-            storage_field_data->FillFieldData(float_vec.data(), float_vec.size());
+            if (data_type == DataType::DOUBLE) {
+                storage_field_data->FillFieldData(vec.data(), vec.size());
+            } else {
+                // 转换为float for FLOAT type
+                std::vector<float> float_vec(vec.begin(), vec.end());
+                storage_field_data->FillFieldData(float_vec.data(), float_vec.size());
+            }
         } else if constexpr (std::is_same_v<T, bool>) {
             // vector<bool> is specialized and doesn't have a data() method,
             // so we need to convert to a regular vector of uint8_t
@@ -240,6 +326,7 @@ void
 SegmentWrapper::LoadSystemFields(const SegmentData& segment_data) {
     int64_t row_count = segment_data.GetRowCount();
 
+    // TODO: 允许生成 row id 和 timestamp 
     // 生成 row id 数据 (从 0 开始递增)
     std::vector<int64_t> row_ids(row_count);
     std::iota(row_ids.begin(), row_ids.end(), 0);

@@ -24,6 +24,7 @@ const std::string& GetBasePath();
 // These functions ensure the directories exist.
 std::string GetStorageRoot();   // base path
 std::string GetStorageDir();    // for LocalChunkManagerSingleton and general storage
+std::string GetTestRemotePath(); // for test RemoteChunkManagerSingleton
 std::string GetSegmentsDir();   // for per-segment local chunk manager data
 std::string GetResultsDir();    // for benchmark outputs like CSV, logs, reports
 std::string GetTempDir();        // for temporary files like perf data

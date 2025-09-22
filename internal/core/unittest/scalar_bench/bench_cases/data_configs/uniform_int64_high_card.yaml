@@ -1,0 +1,33 @@
+name: uniform_int64_high_card
+segment_size: 100000
+segment_seed: 42
+fields:
+  - field_name: pk
+    generator: numeric
+    type: INT64
+    range:
+      min: 1
+      max: 100000
+    distribution: UNIFORM
+  - field_name: user_id
+    generator: numeric
+    type: INT64
+    range:
+      min: 0
+      max: 100000
+    distribution: UNIFORM
+    null_ratio: 0.0
+  - field_name: score
+    generator: numeric
+    type: INT64
+    range:
+      min: 0
+      max: 1000
+    distribution: UNIFORM
+  - field_name: score2
+    generator: numeric
+    type: INT64
+    range:
+      min: 0
+      max: 1000
+    distribution: UNIFORM

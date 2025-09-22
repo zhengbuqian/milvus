@@ -10,11 +10,11 @@
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
 #include "scalar_filter_benchmark.h"
-#include "segment_data.h"
-#include "segment_wrapper.h"
-#include "index_wrapper.h"
-#include "query_executor.h"
-#include "flame_graph_profiler.h"
+#include "core/segment_data.h"
+#include "core/segment_wrapper.h"
+#include "core/index_wrapper.h"
+#include "core/query_executor.h"
+#include "utils/flame_graph_profiler.h"
 #include <algorithm>
 #include <numeric>
 #include <iostream>
@@ -23,7 +23,10 @@
 #include <cmath>
 #include <set>
 #include <string>
-#include "bench_paths.h"
+#include <regex>
+#include "utils/bench_paths.h"
+
+#include "config/benchmark_config_loader.h"
 
 namespace milvus {
 namespace scalar_bench {
@@ -52,9 +55,8 @@ ScalarFilterBenchmark::RunBenchmark(const BenchmarkConfig& config) {
     for (const auto& data_config : config.data_configs) {
         std::cout << "\n========================================" << std::endl;
         std::cout << "Level 1: Data Config - " << data_config.name << std::endl;
-        std::cout << "  Size: " << data_config.segment_size
-                  << ", Type: " << data_config.data_type
-                  << ", Cardinality: " << data_config.cardinality << std::endl;
+        std::cout << "  Segment Size: " << data_config.segment_size
+                  << ", Fields: " << data_config.fields.size() << std::endl;
         std::cout << "========================================" << std::endl;
 
         // 生成数据（只生成一次）
@@ -81,13 +83,26 @@ ScalarFilterBenchmark::RunBenchmark(const BenchmarkConfig& config) {
 
             // 如果不是第一个索引，需要先删除之前的索引
             if (idx > 0) {
-                // 从segment bundle中获取segment wrapper
+                // Drop indexes for all fields that had indexes built in previous config
                 auto bundle = segment;
                 auto& segment_wrapper = bundle->wrapper;
 
-                // 删除field字段上的索引
-                auto field_id = segment_wrapper->GetFieldId("field");
-                segment_wrapper->DropIndex(field_id);
+                // Get the previous index config to know which fields had indexes
+                if (idx > 0 && idx - 1 < config.index_configs.size()) {
+                    const auto& prev_index_config = config.index_configs[idx - 1];
+                    for (const auto& [field_name, field_index_config] : prev_index_config.field_configs) {
+                        if (field_index_config.type != ScalarIndexType::NONE) {
+                            try {
+                                auto field_id = segment_wrapper->GetFieldId(field_name);
+                                segment_wrapper->DropIndex(field_id);
+                            } catch (const std::exception& e) {
+                                // Field might not exist or might not have index, continue
+                                std::cerr << "Warning: Could not drop index for field " << field_name
+                                          << ": " << e.what() << std::endl;
+                            }
+                        }
+                    }
+                }
             }
 
             // 构建索引
@@ -116,8 +131,20 @@ ScalarFilterBenchmark::RunBenchmark(const BenchmarkConfig& config) {
                 auto base_results_dir = GetResultsDir();
                 std::string run_dir = base_results_dir + std::to_string(run_id) + "/";
 
-                // 执行基准测试（直接使用 text proto）
-                auto result = ExecuteSingleBenchmark(segment, index, expr_template.expr_template,
+                // Validate field references before resolving
+                std::string validation_error;
+                if (!ValidateFieldReferences(expr_template.expr_template, *segment->wrapper, validation_error)) {
+                    std::cerr << "    ⚠ Warning: Invalid field references in template '"
+                             << expr_template.name << "': " << validation_error << std::endl;
+                    continue;  // Skip this expression template
+                }
+
+                // Resolve field placeholders in expression template
+                std::string resolved_expression = ResolveFieldPlaceholders(
+                    expr_template.expr_template, *segment->wrapper);
+
+                // 执行基准测试（使用解析后的表达式）
+                auto result = ExecuteSingleBenchmark(segment, index, resolved_expression,
                                                     config.test_params, case_run_id, run_dir);
 
                 // 填充元信息
@@ -127,7 +154,7 @@ ScalarFilterBenchmark::RunBenchmark(const BenchmarkConfig& config) {
                 result.index_config_name = index_config.name;
                 result.expr_template_name = expr_template.name;
                 result.query_value_name = "";  // 不再需要
-                result.actual_expression = expr_template.name;  // 使用模板名称作为表达式描述
+                result.actual_expression = resolved_expression;  // 使用解析后的实际表达式
                 result.expected_selectivity = -1;  // 由查询结果决定
                 result.index_build_time_ms = index_build_time;
 
@@ -467,48 +494,13 @@ ScalarFilterBenchmark::GenerateReport(const std::vector<BenchmarkResult>& result
 
 BenchmarkConfig
 ScalarFilterBenchmark::LoadConfig(const std::string& yaml_file) {
-    // TODO: 实现YAML配置加载
-    BenchmarkConfig config;
-
-    // 暂时返回硬编码的测试配置
-    // 数据配置
-    config.data_configs.push_back({
-        .name = "uniform_int64_1m",
-        .segment_size = 1000000,
-        .data_type = "INT64",
-        .distribution = Distribution::UNIFORM,
-        .cardinality = 100000,
-        .null_ratio = 0.0
-    });
-
-    // 索引配置
-    config.index_configs.push_back({
-        .name = "no_index",
-        .type = ScalarIndexType::NONE,
-        .params = {}
-    });
-
-    // 表达式模板
-    config.expr_templates.push_back({
-        .name = "greater_than",
-        .expr_template = "field > {value}",
-        .type = ExpressionTemplate::Type::COMPARISON
-    });
-
-    // 查询值
-    config.query_values.push_back({
-        .name = "selectivity_10p",
-        .values = {{"value", 900000}},
-        .expected_selectivity = 0.1
-    });
-
-    return config;
+    return BenchmarkConfigLoader::FromYamlFile(yaml_file);
 }
 
 std::shared_ptr<SegmentBundle>
 ScalarFilterBenchmark::GenerateSegment(const DataConfig& config) {
-    std::cout << "    Generating " << config.segment_size << " rows of "
-              << config.data_type << " data..." << std::endl;
+    std::cout << "    Generating " << config.segment_size << " rows with "
+              << config.fields.size() << " fields..." << std::endl;
 
     // 使用真实的数据生成器生成数据
     auto segment_data = SegmentDataGenerator::GenerateSegmentData(config);
@@ -555,20 +547,30 @@ ScalarFilterBenchmark::BuildIndex(const std::shared_ptr<SegmentBundle>& segment_
     auto chunk_manager = milvus::storage::CreateChunkManager(storage_config);
     IndexManager index_manager(chunk_manager);
 
-    // 构建并加载索引
-    auto result = index_manager.BuildAndLoadIndex(*segment_wrapper, "field", config);
+    // Check if this is a per-field index configuration
+    if (!config.field_configs.empty()) {
+        std::cout << "    Building indexes for " << config.field_configs.size() << " fields:" << std::endl;
+        // Build indexes for each configured field
+        for (const auto& [field_name, field_index_config] : config.field_configs) {
+            if (field_index_config.type != ScalarIndexType::NONE) {
+                std::cout << "      Building index for field: " << field_name
+                          << " with type: " << static_cast<int>(field_index_config.type) << std::endl;
+                auto result = index_manager.BuildAndLoadIndexForField(*segment_wrapper, field_name, field_index_config);
+                if (!result.success) {
+                    std::cerr << "Failed to build index for field " << field_name
+                              << ": " << result.error_message << std::endl;
+                }
+            }
+        }
+    } else {
+        // No field-specific index configs, indices remain unbuilt
+        std::cout << "    No field-specific index configurations found." << std::endl;
+    }
 
     // 创建索引结果bundle
     auto index_bundle = std::make_shared<IndexBundle>();
     index_bundle->wrapper = nullptr;  // 暂时设置为nullptr，因为索引已经加载到segment中
     index_bundle->config = config;
-
-    if (result.success) {
-        std::cout << "      ✓ Index built in " << std::fixed << std::setprecision(2)
-                  << result.build_time_ms << " ms" << std::endl;
-    } else {
-        std::cout << "      ✗ Index build failed: " << result.error_message << std::endl;
-    }
 
     return index_bundle;
 }
@@ -685,19 +687,103 @@ ScalarFilterBenchmark::ExecuteSingleBenchmark(const std::shared_ptr<SegmentBundl
 
 bool
 ScalarFilterBenchmark::IsIndexApplicable(const IndexConfig& index, const DataConfig& data) {
-    // 检查索引类型是否适用于数据类型
-    if (data.data_type == "VARCHAR") {
-        // 字符串类型不支持STL_SORT索引
-        return index.type != ScalarIndexType::STL_SORT;
-    }
+    // With multi-field support, index applicability is checked per field
+    // This method returns true as the actual validation happens at field level
     return true;
 }
 
 bool
 ScalarFilterBenchmark::IsExpressionApplicable(const ExpressionTemplate& expr, const DataConfig& data) {
+    // Expression applicability is determined by field availability during placeholder resolution
+    // This method returns true as the actual validation happens during query execution
     return true;
 }
 
+std::string
+ScalarFilterBenchmark::ResolveFieldPlaceholders(const std::string& expr_template,
+                                                const SegmentWrapper& segment) {
+    std::string result = expr_template;
+
+    // Pattern to match placeholders like {field_id:name} or {field_type:name}
+    std::regex placeholder_pattern(R"(\{(field_id|field_type):([^}]+)\})");
+    std::smatch match;
+
+    // Keep replacing until no more placeholders are found
+    while (std::regex_search(result, match, placeholder_pattern)) {
+        std::string placeholder = match[0];
+        std::string placeholder_type = match[1];
+        std::string field_name = match[2];
+
+        try {
+            if (placeholder_type == "field_id") {
+                // Get the field ID for the given field name
+                auto field_id = segment.GetFieldId(field_name);
+                // Replace placeholder with just the numeric field ID
+                std::string replacement = std::to_string(field_id.get());
+                result = std::regex_replace(result, std::regex(std::regex_replace(placeholder,
+                    std::regex(R"([\[\]\{\}\(\)\*\+\?\.\|\^\$])"), R"(\$&)")), replacement);
+            } else if (placeholder_type == "field_type") {
+                // For field_type, just replace with the field name directly
+                // This is used for expressions that reference fields by name
+                result = std::regex_replace(result, std::regex(std::regex_replace(placeholder,
+                    std::regex(R"([\[\]\{\}\(\)\*\+\?\.\|\^\$])"), R"(\$&)")), field_name);
+            }
+        } catch (const std::exception& e) {
+            // If field not found, log warning and leave placeholder as is
+            std::cerr << "Warning: Could not resolve placeholder " << placeholder
+                     << ": " << e.what() << std::endl;
+            // Move past this placeholder to avoid infinite loop
+            size_t pos = result.find(placeholder);
+            if (pos != std::string::npos) {
+                result = result.substr(0, pos) + "[UNRESOLVED:" + placeholder + "]"
+                       + result.substr(pos + placeholder.length());
+            }
+        }
+    }
+
+    return result;
+}
+
+bool
+ScalarFilterBenchmark::ValidateFieldReferences(const std::string& expr_template,
+                                               const SegmentWrapper& segment,
+                                               std::string& error_msg) {
+    // Pattern to match placeholders like {field_id:name} or {field_type:name}
+    std::regex placeholder_pattern(R"(\{(field_id|field_type):([^}]+)\})");
+    std::string::const_iterator search_start(expr_template.cbegin());
+    std::smatch match;
+
+    error_msg.clear();
+    bool all_valid = true;
+    std::set<std::string> checked_fields;
+
+    while (std::regex_search(search_start, expr_template.cend(), match, placeholder_pattern)) {
+        std::string placeholder_type = match[1];
+        std::string field_name = match[2];
+
+        // Check if we've already validated this field
+        if (checked_fields.find(field_name) == checked_fields.end()) {
+            checked_fields.insert(field_name);
+
+            try {
+                // Try to get the field ID to validate it exists
+                auto field_id = segment.GetFieldId(field_name);
+                // Field exists, continue
+            } catch (const std::exception& e) {
+                // Field doesn't exist
+                if (!error_msg.empty()) {
+                    error_msg += "; ";
+                }
+                error_msg += "Field '" + field_name + "' not found in schema";
+                all_valid = false;
+            }
+        }
+
+        search_start = match.suffix().first;
+    }
+
+    return all_valid;
+}
 
 BenchmarkResult
 ScalarFilterBenchmark::CalculateStatistics(const std::vector<double>& latencies,

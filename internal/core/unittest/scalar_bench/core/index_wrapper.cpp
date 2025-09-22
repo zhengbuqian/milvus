@@ -460,10 +460,25 @@ IndexBuildResult
 IndexManager::BuildAndLoadIndex(SegmentWrapper& segment,
                                 const std::string& field_name,
                                 const IndexConfig& config) {
+    // This method is deprecated - only kept for backward compatibility
+    // Convert to field-specific config and call the new method
+    FieldIndexConfig field_config;
+    // Note: This won't work because IndexConfig no longer has type/params fields
+    // This method should not be called in the new code
+    IndexBuildResult result;
+    result.success = false;
+    result.error_message = "Legacy BuildAndLoadIndex is no longer supported. Use BuildAndLoadIndexForField instead.";
+    return result;
+}
+
+IndexBuildResult
+IndexManager::BuildAndLoadIndexForField(SegmentWrapper& segment,
+                                        const std::string& field_name,
+                                        const FieldIndexConfig& field_config) {
     IndexBuildResult result;
 
     // 如果是NONE类型，不构建索引
-    if (config.type == ScalarIndexType::NONE) {
+    if (field_config.type == ScalarIndexType::NONE) {
         result.success = true;
         result.build_time_ms = 0;
         result.memory_bytes = 0;
@@ -473,15 +488,21 @@ IndexManager::BuildAndLoadIndex(SegmentWrapper& segment,
     }
 
     // 创建对应的索引包装器
-    auto wrapper = IndexWrapperFactory::CreateIndexWrapper(config.type);
+    auto wrapper = IndexWrapperFactory::CreateIndexWrapper(field_config.type);
     if (!wrapper) {
         result.success = false;
         result.error_message = "Unsupported index type";
         return result;
     }
 
+    // Create a temporary IndexConfig with the field-specific settings
+    // This is needed because Build() expects IndexConfig
+    IndexConfig temp_config;
+    temp_config.name = field_name + "_index";
+    temp_config.field_configs[field_name] = field_config;
+
     // 构建索引
-    result = wrapper->Build(segment, field_name, config);
+    result = wrapper->Build(segment, field_name, temp_config);
 
     if (result.success) {
         // 加载索引到segment

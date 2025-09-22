@@ -15,6 +15,7 @@
 #include <vector>
 #include <string>
 #include <map>
+#include <variant>
 
 #include "common/Schema.h"
 #include "segcore/SegmentGrowing.h"
@@ -24,10 +25,28 @@
 #include "storage/InsertData.h"
 #include "storage/ChunkManager.h"
 #include "test_utils/storage_test_utils.h"
-#include "segment_data.h"
+
+// Forward declarations from benchmark config
+#include "../config/benchmark_config.h"
 
 namespace milvus {
 namespace scalar_bench {
+
+// Forward declarations
+class SegmentData;
+
+// FieldColumn type definition (from segment_data.h)
+using FieldColumn = std::variant<
+    std::vector<int8_t>,
+    std::vector<int16_t>,
+    std::vector<int32_t>,
+    std::vector<int64_t>,
+    std::vector<float>,
+    std::vector<double>,
+    std::vector<std::string>,
+    std::vector<bool>
+    // Note: ArrayVal support temporarily removed due to header dependency issues
+>;
 
 // Schema构建器
 class SchemaBuilder {
@@ -36,9 +55,11 @@ public:
 
     // 添加字段
     void AddPrimaryKeyField(const std::string& name = "pk");
+    void AddInt32Field(const std::string& name);
     void AddInt64Field(const std::string& name);
     void AddFloatField(const std::string& name);
-    void AddVarCharField(const std::string& name);
+    void AddDoubleField(const std::string& name);
+    void AddVarCharField(const std::string& name, size_t max_length = 256);
     void AddBoolField(const std::string& name);
 
     // 构建Schema
@@ -86,13 +107,13 @@ private:
     // 创建字段数据
     std::shared_ptr<milvus::FieldDataBase> CreateFieldDataFromVector(
         DataType data_type,
-        const FieldData& field_data);
+        const FieldColumn& field_data);
 
     // 准备插入数据
     void PrepareInsertData(
         const std::string& field_name,
         FieldId field_id,
-        const FieldData& field_data);
+        const FieldColumn& field_data);
 
     // 加载系统字段
     void LoadSystemFields(const SegmentData& segment_data);
