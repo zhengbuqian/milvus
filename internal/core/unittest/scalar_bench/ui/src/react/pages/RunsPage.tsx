@@ -14,6 +14,7 @@ export default function RunsPage(): JSX.Element {
 
   const [selectedRunsCount, setSelectedRunsCount] = useState<number>(getSelectedRuns().length);
   const [selectedCasesCount, setSelectedCasesCount] = useState<number>(getSelectedCases().length);
+  const [openIds, setOpenIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     let mounted = true;
@@ -150,11 +151,19 @@ export default function RunsPage(): JSX.Element {
                 {filtered.map((run) => {
                   const meta = run.meta;
                   const isSelected = getSelectedRuns().includes(String(run.id));
+                  const isOpen = openIds.has(String(run.id));
                   return (
                     <React.Fragment key={run.id}>
                       <tr>
                         <td>
-                          <InlineExpander run={run} />
+                          <InlineExpander open={isOpen} setOpen={(next) => {
+                            setOpenIds((prev) => {
+                              const s = new Set(Array.from(prev));
+                              const id = String(run.id);
+                              if (next) s.add(id); else s.delete(id);
+                              return s;
+                            });
+                          }} />
                           <input type="checkbox" checked={isSelected} onChange={(e) => {
                             toggleRunSelection(run.id, e.target.checked);
                             setSelectedRunsCount(getSelectedRuns().length);
@@ -174,11 +183,13 @@ export default function RunsPage(): JSX.Element {
                           </div>
                         </td>
                       </tr>
-                      <tr>
-                        <td colSpan={9} style={{ padding: 0 }}>
-                          <InlineCases runId={run.id} metrics={run.metrics} onCasesChange={() => setSelectedCasesCount(getSelectedCases().length)} />
-                        </td>
-                      </tr>
+                      {isOpen && (
+                        <tr>
+                          <td colSpan={9} style={{ padding: 0 }}>
+                            <InlineCases runId={run.id} metrics={run.metrics} onCasesChange={() => setSelectedCasesCount(getSelectedCases().length)} />
+                          </td>
+                        </tr>
+                      )}
                     </React.Fragment>
                   );
                 })}
@@ -191,8 +202,7 @@ export default function RunsPage(): JSX.Element {
   );
 }
 
-function InlineExpander({ run }: { run: any }): JSX.Element {
-  const [open, setOpen] = useState(false);
+function InlineExpander({ open, setOpen }: { open: boolean; setOpen: (v: boolean) => void }): JSX.Element {
   return (
     <button className="ghost" title={open ? 'Collapse cases' : 'Expand cases'} onClick={() => setOpen(!open)}>
       {open ? '−' : '+'}
@@ -201,12 +211,6 @@ function InlineExpander({ run }: { run: any }): JSX.Element {
 }
 
 function InlineCases({ runId, metrics, onCasesChange }: { runId: string; metrics: any; onCasesChange: () => void }): JSX.Element {
-  const [open, setOpen] = useState(false);
-  useEffect(() => { setOpen(false); }, [runId]);
-  useEffect(() => {
-    const btn = document.querySelector(`button[title="Expand cases"]`);
-    // no-op; the explicit expand button in table header controls per row; this is embedded row content
-  }, []);
   if (!metrics?.cases) return <div className="empty-state" style={{ margin: '0.5rem 1rem' }}>No cases found in metrics.json.</div>;
 
   const rows: CaseRow[] = Object.entries(metrics.cases).map(([caseId, data]: any) => ({
