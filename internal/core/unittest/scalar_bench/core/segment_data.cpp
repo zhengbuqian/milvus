@@ -216,7 +216,6 @@ SegmentDataGenerator::GenerateSegmentData(const DataConfig& config) {
         "Please use multi-field configuration with 'fields' array.");
 }
 
-
 std::shared_ptr<SegmentData>
 SegmentDataGenerator::GenerateMultiFieldData(const DataConfig& config) {
     auto segment_data = std::make_shared<SegmentData>(config);

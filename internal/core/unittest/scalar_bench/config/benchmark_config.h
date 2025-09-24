@@ -9,8 +9,12 @@
 #include <utility>
 #include <vector>
 
+#include "common/Types.h"
+
 namespace milvus {
 namespace scalar_bench {
+
+using DataType = milvus::DataType;
 
 // 数据分布类型
 // TODO: 需要一个 DistributionConfig 类
@@ -23,25 +27,14 @@ enum class Distribution {
 };
 
 // 标量索引类型
-// TODO: 用 milvus 的类型替换？
 enum class ScalarIndexType {
     NONE,
-    BITMAP,
     STL_SORT,
-    INVERTED,
     TRIE,
-    HYBRID
-};
-
-// TODO: 用 milvus 的类型替换？
-enum class FieldDataType {
-    BOOL,
-    INT64,
-    FLOAT,
-    DOUBLE,
-    VARCHAR,
-    JSON,
-    ARRAY
+    INVERTED,
+    BITMAP,
+    HYBRID,
+    NGRAM,
 };
 
 enum class FieldGeneratorType {
@@ -52,6 +45,9 @@ enum class FieldGeneratorType {
     ARRAY,
     BOOLEAN
 };
+
+// TODO: 增加一个 stats config，处理 json stats/shredding 等
+
 
 // Forward declaration
 struct FieldConfig;
@@ -110,7 +106,7 @@ struct ValuePoolConfig {
 
 // ============== Categorical ==============
 struct CategoricalGeneratorConfig {
-    FieldDataType type;  // only INT64 and VARCHAR are currently supported
+    DataType type;  // only INT64 and VARCHAR are currently supported
     ValuePoolConfig values;
     std::vector<double> duplication_ratios;
     int max_length = 0;  // for VARCHAR
@@ -145,7 +141,7 @@ struct RangeDouble {
 //             so outlier values may lie outside `range`/buckets.
 // - precision: for FLOAT/DOUBLE, applied BEFORE outliers are injected.
 struct NumericGeneratorConfig {
-    FieldDataType type;
+    DataType type;
     RangeDouble range;  // required global domain and clamp
     Distribution distribution = Distribution::UNIFORM;
     std::vector<NumericBucketConfig> buckets;  // used only when distribution == CUSTOM_HIST
@@ -243,7 +239,7 @@ struct BooleanGeneratorConfig {
 struct FieldConfig {
     std::string field_name;
     FieldGeneratorType generator = FieldGeneratorType::CATEGORICAL;
-    FieldDataType field_type = FieldDataType::VARCHAR;
+    DataType field_type = DataType::VARCHAR;
     double null_ratio = 0.0;
 
     // Generator configs - using new unified schema

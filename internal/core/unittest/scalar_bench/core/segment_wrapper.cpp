@@ -85,67 +85,66 @@ SegmentWrapper::SegmentWrapper()
 
 void
 SegmentWrapper::Initialize(const DataConfig& config) {
+    if (config.fields.empty()) {
+        // No fields defined - this is an error
+        throw std::runtime_error("No fields defined in data config");
+    }
+    
     // 构建Schema
     SchemaBuilder builder;
 
-    // Check if using new multi-field configuration
-    if (!config.fields.empty()) {
-        // Check if pk field is already defined in the field configs
-        bool has_pk = false;
-        for (const auto& field_config : config.fields) {
-            if (field_config.field_name == "pk") {
-                has_pk = true;
-                // TODO: 支持生成 字符串类型的 pk
-                // Add pk as primary key field
-                builder.AddPrimaryKeyField("pk");
+    // Check if pk field is already defined in the field configs
+    bool has_pk = false;
+    for (const auto& field_config : config.fields) {
+        if (field_config.field_name == "pk") {
+            has_pk = true;
+            // TODO: 支持生成 字符串类型的 pk
+            // Add pk as primary key field
+            builder.AddPrimaryKeyField("pk");
+            break;
+        }
+    }
+
+    // If no pk field defined, add a default one
+    if (!has_pk) {
+        builder.AddPrimaryKeyField("pk");
+    }
+
+    // Build schema from field configurations (skip pk if already added)
+    for (const auto& field_config : config.fields) {
+        if (field_config.field_name == "pk") {
+            continue;  // Already added as primary key
+        }
+        // Map field_type to schema field type
+        switch (field_config.field_type) {
+            case DataType::INT64:
+                builder.AddInt64Field(field_config.field_name);
+                break;
+            case DataType::DOUBLE:
+                builder.AddDoubleField(field_config.field_name);
+                break;
+            case DataType::VARCHAR: {
+                // Get max length from string config if using string generator
+                size_t max_len = 256;
+                if (field_config.generator == FieldGeneratorType::CATEGORICAL) {
+                    max_len = field_config.categorical_config.max_length > 0 ? field_config.categorical_config.max_length : 256;
+                } else if (field_config.generator == FieldGeneratorType::VARCHAR) {
+                    max_len = field_config.varchar_config.max_length > 0 ? field_config.varchar_config.max_length : 512;
+                }
+                builder.AddVarCharField(field_config.field_name, max_len);
                 break;
             }
+            case DataType::BOOL:
+                builder.AddBoolField(field_config.field_name);
+                break;
+            case DataType::ARRAY:
+                // TODO: Add array field support in schema builder
+                builder.AddInt64Field(field_config.field_name); // Temporary fallback
+                break;
+            default:
+                builder.AddInt64Field(field_config.field_name); // Default fallback
+                break;
         }
-
-        // If no pk field defined, add a default one
-        if (!has_pk) {
-            builder.AddPrimaryKeyField("pk");
-        }
-
-        // Build schema from field configurations (skip pk if already added)
-        for (const auto& field_config : config.fields) {
-            if (field_config.field_name == "pk") {
-                continue;  // Already added as primary key
-            }
-            // Map field_type to schema field type
-            switch (field_config.field_type) {
-                case FieldDataType::INT64:
-                    builder.AddInt64Field(field_config.field_name);
-                    break;
-                case FieldDataType::DOUBLE:
-                    builder.AddDoubleField(field_config.field_name);
-                    break;
-                case FieldDataType::VARCHAR: {
-                    // Get max length from string config if using string generator
-                    size_t max_len = 256;
-                    if (field_config.generator == FieldGeneratorType::CATEGORICAL) {
-                        max_len = field_config.categorical_config.max_length > 0 ? field_config.categorical_config.max_length : 256;
-                    } else if (field_config.generator == FieldGeneratorType::VARCHAR) {
-                        max_len = field_config.varchar_config.max_length > 0 ? field_config.varchar_config.max_length : 512;
-                    }
-                    builder.AddVarCharField(field_config.field_name, max_len);
-                    break;
-                }
-                case FieldDataType::BOOL:
-                    builder.AddBoolField(field_config.field_name);
-                    break;
-                case FieldDataType::ARRAY:
-                    // TODO: Add array field support in schema builder
-                    builder.AddInt64Field(field_config.field_name); // Temporary fallback
-                    break;
-                default:
-                    builder.AddInt64Field(field_config.field_name); // Default fallback
-                    break;
-            }
-        }
-    } else {
-        // No fields defined - this is an error
-        throw std::runtime_error("No fields defined in data config");
     }
 
     schema_ = builder.Build();

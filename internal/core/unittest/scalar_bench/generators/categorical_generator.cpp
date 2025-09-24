@@ -31,7 +31,7 @@ void CategoricalGenerator::LoadValues() {
         throw std::runtime_error("Categorical generator has no values");
     }
 
-    if (config_.categorical_config.type == FieldDataType::INT64) {
+    if (config_.categorical_config.type == DataType::INT64) {
         for (const auto& value : values_) {
             try {
                 std::stoll(value);
@@ -124,7 +124,7 @@ FieldColumn CategoricalGenerator::Generate(size_t num_rows, RandomContext& ctx) 
     const auto& cat_config = config_.categorical_config;
 
     // Generate based on type
-    if (cat_config.type == FieldDataType::VARCHAR) {
+    if (cat_config.type == DataType::VARCHAR) {
         // VARCHAR is default
         std::vector<std::string> result;
         result.reserve(num_rows);
@@ -147,7 +147,7 @@ FieldColumn CategoricalGenerator::Generate(size_t num_rows, RandomContext& ctx) 
         }
 
         return result;
-    } else if (cat_config.type == FieldDataType::INT64) {
+    } else if (cat_config.type == DataType::INT64) {
         return GenerateTyped<int64_t>(num_rows, ctx);
     } else {
         throw std::runtime_error("Unsupported categorical type.");

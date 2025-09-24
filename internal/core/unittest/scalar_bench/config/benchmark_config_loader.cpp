@@ -10,6 +10,9 @@
 #include <iostream>
 #include <yaml-cpp/yaml.h>
 
+#include "common/Types.h"
+#include "pb/schema.pb.h"
+
 namespace milvus {
 namespace scalar_bench {
 namespace {
@@ -90,16 +93,25 @@ ParseGeneratorType(const std::string& type_str) {
 }
 
 // Parse field data type
-FieldDataType
-ParseFieldDataType(const std::string& type_str) {
-    auto upper = ToUpper(type_str);
-    if (upper == "BOOL" || upper == "BOOLEAN") return FieldDataType::BOOL;
-    if (upper == "INT64" || upper == "INT") return FieldDataType::INT64;
-    if (upper == "FLOAT") return FieldDataType::FLOAT;
-    if (upper == "DOUBLE") return FieldDataType::DOUBLE;
-    if (upper == "VARCHAR" || upper == "STRING") return FieldDataType::VARCHAR;
-    if (upper == "JSON") return FieldDataType::JSON;
-    if (upper == "ARRAY") return FieldDataType::ARRAY;
+DataType
+ParseDataType(const std::string& type_str) {
+    proto::schema::DataType type;
+    if (proto::schema::DataType_Parse(type_str, &type)) {
+        auto res = static_cast<DataType>(type);
+        switch (res) {
+            case DataType::BOOL:
+            case DataType::INT64:
+            case DataType::FLOAT:
+            case DataType::DOUBLE:
+            case DataType::VARCHAR:
+            case DataType::JSON:
+            case DataType::ARRAY:
+                return res;
+            default:
+                throw std::runtime_error("Unsupported data type: " + type_str);
+        }
+    }
+    throw std::runtime_error("Unknown data type: " + type_str);
     throw std::runtime_error("Unknown field data type: " + type_str);
 }
 
@@ -217,7 +229,7 @@ ParseFieldConfig(const YAML::Node& node, const std::string& default_field_name =
 
     // Optional type (can be inferred from generator)
     if (node["type"]) {
-        config.field_type = ParseFieldDataType(node["type"].as<std::string>());
+        config.field_type = ParseDataType(node["type"].as<std::string>());
     }
 
     // Null ratio
@@ -230,7 +242,7 @@ ParseFieldConfig(const YAML::Node& node, const std::string& default_field_name =
             auto& cat = config.categorical_config;
 
             cat.type = config.field_type;
-            if (cat.type != FieldDataType::VARCHAR && cat.type != FieldDataType::INT64) {
+            if (cat.type != DataType::VARCHAR && cat.type != DataType::INT64) {
                 throw std::runtime_error("Categorical generator only supports VARCHAR and INT64");
             }
 
@@ -253,9 +265,9 @@ ParseFieldConfig(const YAML::Node& node, const std::string& default_field_name =
         case FieldGeneratorType::NUMERIC: {
             auto& num = config.numeric_config;
             num.type = config.field_type;
-            if (num.type != FieldDataType::INT64 &&
-                num.type != FieldDataType::FLOAT &&
-                num.type != FieldDataType::DOUBLE) {
+            if (num.type != DataType::INT64 &&
+                num.type != DataType::FLOAT &&
+                num.type != DataType::DOUBLE) {
                 throw std::runtime_error("Numeric generator only supports INT64/FLOAT/DOUBLE");
             }
 

@@ -59,6 +59,8 @@ fields:
     # ... field configuration
 ```
 
+If the `fields` array does not explicitly include a `pk` field, the generator still creates a synthetic INT64 primary key column. `SegmentDataGenerator::GenerateMultiFieldData` pre-populates the column with `0..segment_size-1`, so downstream steps always have a primary key available. When you define a `pk` field in the configuration, that user-provided column overrides the default.
+
 ## Supported Generators
 
 ### `categorical`

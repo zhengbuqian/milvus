@@ -18,7 +18,7 @@ NumericGenerator::Generate(size_t num_rows, RandomContext& ctx) {
     const auto& num_config = config_.numeric_config;
 
     // Generate based on type and distribution
-    if (num_config.type == FieldDataType::INT64) {
+    if (num_config.type == DataType::INT64) {
         std::vector<int64_t> result;
 
         switch (num_config.distribution) {
@@ -44,7 +44,7 @@ NumericGenerator::Generate(size_t num_rows, RandomContext& ctx) {
         ApplyOutliers(result, ctx);
         return result;
 
-    } else if (num_config.type == FieldDataType::FLOAT) {
+    } else if (num_config.type == DataType::FLOAT) {
         std::vector<float> result;
 
         switch (num_config.distribution) {
@@ -71,7 +71,7 @@ NumericGenerator::Generate(size_t num_rows, RandomContext& ctx) {
         ApplyOutliers(result, ctx);
         return result;
 
-    } else if (num_config.type == FieldDataType::DOUBLE) {
+    } else if (num_config.type == DataType::DOUBLE) {
         std::vector<double> result;
 
         switch (num_config.distribution) {
