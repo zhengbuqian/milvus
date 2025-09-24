@@ -163,6 +163,18 @@ DataArray ArrayGenerator::GenerateStringArrays(size_t num_rows, RandomContext& c
         }
         *(array_data->add_data()) = std::move(field_data);
     }
+    if (config_.nullable && config_.null_ratio > 0.0) {
+        auto* vd = data_array.mutable_valid_data();
+        vd->mutable_data()->Reserve(arrays.size());
+        for (size_t i = 0; i < arrays.size(); ++i) {
+            bool is_valid = !ctx.Bernoulli(config_.null_ratio);
+            vd->add_data(is_valid);
+            if (!is_valid) {
+                // Clear row data to a valid empty array when null
+                (*data_array.mutable_scalars()->mutable_array_data()->mutable_data(i)).Clear();
+            }
+        }
+    }
     return data_array;
 }
 
@@ -229,6 +241,17 @@ DataArray ArrayGenerator::GenerateNumericArrays(size_t num_rows,
     for (auto& r : rows) {
         *(array_data->add_data()) = std::move(r);
     }
+    if (config_.nullable && config_.null_ratio > 0.0) {
+        auto* vd = data_array.mutable_valid_data();
+        vd->mutable_data()->Reserve(rows.size());
+        for (size_t i = 0; i < rows.size(); ++i) {
+            bool is_valid = !ctx.Bernoulli(config_.null_ratio);
+            vd->add_data(is_valid);
+            if (!is_valid) {
+                (*data_array.mutable_scalars()->mutable_array_data()->mutable_data(i)).Clear();
+            }
+        }
+    }
     return data_array;
 }
 
@@ -283,6 +306,17 @@ DataArray ArrayGenerator::GenerateBooleanArrays(size_t num_rows, RandomContext& 
             field_data.mutable_bool_data()->add_data(v);
         }
         *(array_data->add_data()) = std::move(field_data);
+    }
+    if (config_.nullable && config_.null_ratio > 0.0) {
+        auto* vd = data_array.mutable_valid_data();
+        vd->mutable_data()->Reserve(arrays.size());
+        for (size_t i = 0; i < arrays.size(); ++i) {
+            bool is_valid = !ctx.Bernoulli(config_.null_ratio);
+            vd->add_data(is_valid);
+            if (!is_valid) {
+                (*data_array.mutable_scalars()->mutable_array_data()->mutable_data(i)).Clear();
+            }
+        }
     }
     return data_array;
 }

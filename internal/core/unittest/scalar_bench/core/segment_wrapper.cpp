@@ -124,10 +124,10 @@ SegmentWrapper::Initialize(const DataConfig& config) {
         // Map field_type to schema field type
         switch (field_config.field_type) {
             case DataType::INT64:
-                builder.AddInt64Field(field_config.field_name);
+                builder.AddInt64Field(field_config.field_name, field_config.nullable);
                 break;
             case DataType::DOUBLE:
-                builder.AddDoubleField(field_config.field_name);
+                builder.AddDoubleField(field_config.field_name, field_config.nullable);
                 break;
             case DataType::VARCHAR: {
                 // Get max length from string config if using string generator
@@ -137,11 +137,11 @@ SegmentWrapper::Initialize(const DataConfig& config) {
                 } else if (field_config.generator == FieldGeneratorType::VARCHAR) {
                     max_len = field_config.varchar_config.max_length > 0 ? field_config.varchar_config.max_length : 512;
                 }
-                builder.AddVarCharField(field_config.field_name, max_len);
+                builder.AddVarCharField(field_config.field_name, max_len, field_config.nullable);
                 break;
             }
             case DataType::BOOL:
-                builder.AddBoolField(field_config.field_name);
+                builder.AddBoolField(field_config.field_name, field_config.nullable);
                 break;
             case DataType::ARRAY: {
                 DataType element = DataType::NONE;
@@ -156,7 +156,7 @@ SegmentWrapper::Initialize(const DataConfig& config) {
                 break;
             }
             default:
-                builder.AddInt64Field(field_config.field_name); // Default fallback
+                builder.AddInt64Field(field_config.field_name, field_config.nullable); // Default fallback
                 break;
         }
     }
