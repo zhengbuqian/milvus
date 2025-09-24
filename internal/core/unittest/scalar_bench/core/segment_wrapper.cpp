@@ -39,36 +39,36 @@ SchemaBuilder::AddPrimaryKeyField(const std::string& name) {
 }
 
 void
-SchemaBuilder::AddInt32Field(const std::string& name) {
-    schema_->AddDebugField(name, DataType::INT32);
+SchemaBuilder::AddInt32Field(const std::string& name, bool nullable) {
+    schema_->AddDebugField(name, DataType::INT32, nullable);
 }
 
 void
-SchemaBuilder::AddInt64Field(const std::string& name) {
-    schema_->AddDebugField(name, DataType::INT64);
+SchemaBuilder::AddInt64Field(const std::string& name, bool nullable) {
+    schema_->AddDebugField(name, DataType::INT64, nullable);
 }
 
 void
-SchemaBuilder::AddFloatField(const std::string& name) {
-    schema_->AddDebugField(name, DataType::FLOAT);
+SchemaBuilder::AddFloatField(const std::string& name, bool nullable) {
+    schema_->AddDebugField(name, DataType::FLOAT, nullable);
 }
 
 void
-SchemaBuilder::AddDoubleField(const std::string& name) {
-    schema_->AddDebugField(name, DataType::DOUBLE);
+SchemaBuilder::AddDoubleField(const std::string& name, bool nullable) {
+    schema_->AddDebugField(name, DataType::DOUBLE, nullable);
 }
 
 void
-SchemaBuilder::AddVarCharField(const std::string& name, size_t max_length) {
+SchemaBuilder::AddVarCharField(const std::string& name, size_t max_length, bool nullable) {
     // Note: DataType::VARCHAR doesn't have explicit max_length in AddDebugField
     // The max_length is handled internally by Milvus
     (void)max_length;
-    schema_->AddDebugField(name, DataType::VARCHAR);
+    schema_->AddDebugField(name, DataType::VARCHAR, nullable);
 }
 
 void
-SchemaBuilder::AddBoolField(const std::string& name) {
-    schema_->AddDebugField(name, DataType::BOOL);
+SchemaBuilder::AddBoolField(const std::string& name, bool nullable) {
+    schema_->AddDebugField(name, DataType::BOOL, nullable);
 }
 
 void
