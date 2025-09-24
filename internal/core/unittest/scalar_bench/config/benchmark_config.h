@@ -240,6 +240,7 @@ struct FieldConfig {
     std::string field_name;
     FieldGeneratorType generator = FieldGeneratorType::CATEGORICAL;
     DataType field_type = DataType::VARCHAR;
+    bool nullable = false;
     double null_ratio = 0.0;
 
     // Generator configs - using new unified schema
