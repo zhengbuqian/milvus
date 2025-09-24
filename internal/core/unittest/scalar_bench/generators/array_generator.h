@@ -14,7 +14,7 @@ class ArrayGenerator : public IFieldGenerator {
 public:
     explicit ArrayGenerator(const FieldConfig& config);
 
-    FieldColumn Generate(size_t num_rows, RandomContext& ctx) override;
+    DataArray Generate(size_t num_rows, RandomContext& ctx) override;
     const FieldConfig& GetConfig() const override { return config_; }
 
 private:
@@ -26,16 +26,16 @@ private:
     size_t DetermineArrayLength(RandomContext& ctx);
     template <typename T>
     std::vector<std::vector<T>> GenerateTyped(size_t num_rows, RandomContext& ctx);
-    FieldColumn GenerateStringArrays(size_t num_rows, RandomContext& ctx);
-    FieldColumn GenerateNumericArrays(size_t num_rows, RandomContext& ctx,
+    DataArray GenerateStringArrays(size_t num_rows, RandomContext& ctx);
+    DataArray GenerateNumericArrays(size_t num_rows, RandomContext& ctx,
                                       DataType numeric_type);
-    FieldColumn GenerateFloatArrays(size_t num_rows, RandomContext& ctx,
+    DataArray GenerateFloatArrays(size_t num_rows, RandomContext& ctx,
                                     DataType numeric_type);
-    FieldColumn GenerateBooleanArrays(size_t num_rows, RandomContext& ctx);
+    DataArray GenerateBooleanArrays(size_t num_rows, RandomContext& ctx);
 
     template <typename T>
-    static std::vector<T> ExtractValues(FieldColumn&& column);
-    static std::vector<std::string> ExtractStringValues(FieldColumn&& column);
+    static std::vector<T> ExtractValuesFromDataArray(const DataArray& column);
+    static std::vector<std::string> ExtractStringValuesFromDataArray(const DataArray& column);
 
     template <typename T>
     void AppendGeneratedElements(std::vector<T>& values, size_t min_count, RandomContext& ctx);

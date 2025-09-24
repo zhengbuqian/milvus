@@ -13,7 +13,7 @@ NumericGenerator::NumericGenerator(const FieldConfig& config)
     }
 }
 
-FieldColumn
+DataArray
 NumericGenerator::Generate(size_t num_rows, RandomContext& ctx) {
     const auto& num_config = config_.numeric_config;
 
@@ -42,7 +42,14 @@ NumericGenerator::Generate(size_t num_rows, RandomContext& ctx) {
         }
 
         ApplyOutliers(result, ctx);
-        return result;
+        DataArray data_array;
+        data_array.set_type(milvus::proto::schema::DataType::Int64);
+        auto* long_array = data_array.mutable_scalars()->mutable_long_data();
+        long_array->mutable_data()->Reserve(result.size());
+        for (auto v : result) {
+            long_array->add_data(v);
+        }
+        return data_array;
 
     } else if (num_config.type == DataType::FLOAT) {
         std::vector<float> result;
@@ -69,7 +76,14 @@ NumericGenerator::Generate(size_t num_rows, RandomContext& ctx) {
 
         ApplyPrecision(result);
         ApplyOutliers(result, ctx);
-        return result;
+        DataArray data_array;
+        data_array.set_type(milvus::proto::schema::DataType::Float);
+        auto* float_array = data_array.mutable_scalars()->mutable_float_data();
+        float_array->mutable_data()->Reserve(result.size());
+        for (auto v : result) {
+            float_array->add_data(v);
+        }
+        return data_array;
 
     } else if (num_config.type == DataType::DOUBLE) {
         std::vector<double> result;
@@ -96,7 +110,14 @@ NumericGenerator::Generate(size_t num_rows, RandomContext& ctx) {
 
         ApplyPrecision(result);
         ApplyOutliers(result, ctx);
-        return result;
+        DataArray data_array;
+        data_array.set_type(milvus::proto::schema::DataType::Double);
+        auto* double_array = data_array.mutable_scalars()->mutable_double_data();
+        double_array->mutable_data()->Reserve(result.size());
+        for (auto v : result) {
+            double_array->add_data(v);
+        }
+        return data_array;
 
     } else {
         throw std::runtime_error("Unsupported numeric type.");

@@ -11,7 +11,7 @@ BooleanGenerator::BooleanGenerator(const FieldConfig& config)
     }
 }
 
-FieldColumn BooleanGenerator::Generate(size_t num_rows, RandomContext& ctx) {
+DataArray BooleanGenerator::Generate(size_t num_rows, RandomContext& ctx) {
     const auto& bool_config = config_.boolean_config;
     std::vector<bool> result;
     result.reserve(num_rows);
@@ -26,7 +26,14 @@ FieldColumn BooleanGenerator::Generate(size_t num_rows, RandomContext& ctx) {
         result.push_back(ctx.Bernoulli(true_prob));
     }
 
-    return result;
+    DataArray data_array;
+    data_array.set_type(milvus::proto::schema::DataType::Bool);
+    auto* bool_array = data_array.mutable_scalars()->mutable_bool_data();
+    bool_array->mutable_data()->Reserve(result.size());
+    for (bool v : result) {
+        bool_array->add_data(v);
+    }
+    return data_array;
 }
 
 } // namespace scalar_bench
