@@ -118,7 +118,7 @@ void VarcharGenerator::LoadCorpus() {
     }
 }
 
-FieldColumn VarcharGenerator::Generate(size_t num_rows, RandomContext& ctx) {
+DataArray VarcharGenerator::Generate(size_t num_rows, RandomContext& ctx) {
     const auto& varchar_config = config_.varchar_config;
     std::vector<std::string> result;
     result.reserve(num_rows);
@@ -142,7 +142,14 @@ FieldColumn VarcharGenerator::Generate(size_t num_rows, RandomContext& ctx) {
         result.push_back(text);
     }
 
-    return result;
+    DataArray data_array;
+    data_array.set_type(milvus::proto::schema::DataType::VarChar);
+    auto* string_array = data_array.mutable_scalars()->mutable_string_data();
+    string_array->mutable_data()->Reserve(result.size());
+    for (auto& s : result) {
+        string_array->add_data(std::move(s));
+    }
+    return data_array;
 }
 
 std::string VarcharGenerator::GenerateRandomText(RandomContext& ctx) {

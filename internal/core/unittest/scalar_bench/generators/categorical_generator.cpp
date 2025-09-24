@@ -120,7 +120,7 @@ size_t CategoricalGenerator::SelectValueIndex(RandomContext& ctx) {
     return std::distance(cumulative_ratios_.begin(), it);
 }
 
-FieldColumn CategoricalGenerator::Generate(size_t num_rows, RandomContext& ctx) {
+DataArray CategoricalGenerator::Generate(size_t num_rows, RandomContext& ctx) {
     const auto& cat_config = config_.categorical_config;
 
     // Generate based on type
@@ -146,9 +146,24 @@ FieldColumn CategoricalGenerator::Generate(size_t num_rows, RandomContext& ctx) 
             result.push_back(value);
         }
 
-        return result;
+        DataArray data_array;
+        data_array.set_type(milvus::proto::schema::DataType::VarChar);
+        auto* string_array = data_array.mutable_scalars()->mutable_string_data();
+        string_array->mutable_data()->Reserve(result.size());
+        for (auto& s : result) {
+            string_array->add_data(std::move(s));
+        }
+        return data_array;
     } else if (cat_config.type == DataType::INT64) {
-        return GenerateTyped<int64_t>(num_rows, ctx);
+        auto values = GenerateTyped<int64_t>(num_rows, ctx);
+        DataArray data_array;
+        data_array.set_type(milvus::proto::schema::DataType::Int64);
+        auto* long_array = data_array.mutable_scalars()->mutable_long_data();
+        long_array->mutable_data()->Reserve(values.size());
+        for (auto v : values) {
+            long_array->add_data(v);
+        }
+        return data_array;
     } else {
         throw std::runtime_error("Unsupported categorical type.");
     }

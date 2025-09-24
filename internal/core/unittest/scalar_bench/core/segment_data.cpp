@@ -25,8 +25,17 @@ SegmentData::SegmentData(const DataConfig& config)
 }
 
 void
-SegmentData::AddFieldData(const std::string& field_name, FieldColumn data) {
+SegmentData::AddFieldData(const std::string& field_name, const milvus::DataArray&& data) {
     field_data_[field_name] = std::move(data);
+}
+
+const milvus::DataArray&
+SegmentData::GetFieldDataArray(const std::string& field_name) const {
+    auto it = field_data_.find(field_name);
+    if (it == field_data_.end()) {
+        throw std::runtime_error("Field not found: " + field_name);
+    }
+    return it->second;
 }
 
 void
@@ -68,19 +77,47 @@ SegmentData::GetMemoryBytes() const {
 }
 
 size_t
-SegmentData::GetFieldMemoryBytes(const FieldColumn& data) const {
-    return std::visit([](const auto& vec) -> size_t {
-        using T = typename std::decay_t<decltype(vec)>::value_type;
-        if constexpr (std::is_same_v<T, std::string>) {
+SegmentData::GetFieldMemoryBytes(const milvus::DataArray& data) const {
+    // Rough estimate based on type content sizes
+    switch (data.type()) {
+        case milvus::proto::schema::DataType::Bool:
+            return data.scalars().bool_data().data().size() * sizeof(bool);
+        case milvus::proto::schema::DataType::Int8:
+        case milvus::proto::schema::DataType::Int16:
+        case milvus::proto::schema::DataType::Int32:
+            return data.scalars().int_data().data().size() * sizeof(int32_t);
+        case milvus::proto::schema::DataType::Int64:
+            return data.scalars().long_data().data().size() * sizeof(int64_t);
+        case milvus::proto::schema::DataType::Float:
+            return data.scalars().float_data().data().size() * sizeof(float);
+        case milvus::proto::schema::DataType::Double:
+            return data.scalars().double_data().data().size() * sizeof(double);
+        case milvus::proto::schema::DataType::VarChar:
+        case milvus::proto::schema::DataType::String: {
             size_t total = 0;
-            for (const auto& s : vec) {
+            for (const auto& s : data.scalars().string_data().data()) {
                 total += s.size() + sizeof(std::string);
             }
             return total;
-        } else {
-            return vec.size() * sizeof(T);
         }
-    }, data);
+        case milvus::proto::schema::DataType::Array: {
+            size_t total = 0;
+            for (const auto& sf : data.scalars().array_data().data()) {
+                // approximate scalar field sizes recursively for common cases
+                if (sf.has_int_data()) total += sf.int_data().data().size() * sizeof(int32_t);
+                if (sf.has_long_data()) total += sf.long_data().data().size() * sizeof(int64_t);
+                if (sf.has_float_data()) total += sf.float_data().data().size() * sizeof(float);
+                if (sf.has_double_data()) total += sf.double_data().data().size() * sizeof(double);
+                if (sf.has_bool_data()) total += sf.bool_data().data().size() * sizeof(bool);
+                if (sf.has_string_data()) {
+                    for (const auto& s : sf.string_data().data()) total += s.size() + sizeof(std::string);
+                }
+            }
+            return total;
+        }
+        default:
+            return 0;
+    }
 }
 
 SegmentData::Statistics
@@ -92,41 +129,82 @@ SegmentData::GetFieldStatistics(const std::string& field_name) const {
         return stats;
     }
 
-    std::visit([&stats](const auto& vec) {
-        using T = typename std::decay_t<decltype(vec)>::value_type;
-
-        if (vec.empty()) {
-            return;
-        }
-
-        if constexpr (std::is_arithmetic_v<T> && !std::is_same_v<T, bool>) {
-            // 数值类型统计
+    const auto& data = it->second;
+    switch (data.type()) {
+        case milvus::proto::schema::DataType::Int8:
+        case milvus::proto::schema::DataType::Int16:
+        case milvus::proto::schema::DataType::Int32: {
+            const auto& vec = data.scalars().int_data().data();
+            if (vec.empty()) break;
             auto [min_it, max_it] = std::minmax_element(vec.begin(), vec.end());
             stats.min_value = static_cast<double>(*min_it);
             stats.max_value = static_cast<double>(*max_it);
-
             double sum = std::accumulate(vec.begin(), vec.end(), 0.0);
             stats.avg_value = sum / vec.size();
-
-            std::set<T> unique_values(vec.begin(), vec.end());
-            stats.unique_count = unique_values.size();
-        } else if constexpr (std::is_same_v<T, std::string>) {
-            // 字符串类型统计
+            std::set<int32_t> uniq(vec.begin(), vec.end());
+            stats.unique_count = uniq.size();
+            break;
+        }
+        case milvus::proto::schema::DataType::Int64: {
+            const auto& vec = data.scalars().long_data().data();
+            if (vec.empty()) break;
             auto [min_it, max_it] = std::minmax_element(vec.begin(), vec.end());
-            stats.min_string = *min_it;
-            stats.max_string = *max_it;
-
-            std::set<std::string> unique_values(vec.begin(), vec.end());
-            stats.unique_count = unique_values.size();
-        } else if constexpr (std::is_same_v<T, bool>) {
-            // 布尔类型统计
+            stats.min_value = static_cast<double>(*min_it);
+            stats.max_value = static_cast<double>(*max_it);
+            double sum = std::accumulate(vec.begin(), vec.end(), 0.0);
+            stats.avg_value = sum / vec.size();
+            std::set<int64_t> uniq(vec.begin(), vec.end());
+            stats.unique_count = uniq.size();
+            break;
+        }
+        case milvus::proto::schema::DataType::Float: {
+            const auto& vec = data.scalars().float_data().data();
+            if (vec.empty()) break;
+            auto [min_it, max_it] = std::minmax_element(vec.begin(), vec.end());
+            stats.min_value = static_cast<double>(*min_it);
+            stats.max_value = static_cast<double>(*max_it);
+            double sum = std::accumulate(vec.begin(), vec.end(), 0.0);
+            stats.avg_value = sum / vec.size();
+            std::set<float> uniq(vec.begin(), vec.end());
+            stats.unique_count = uniq.size();
+            break;
+        }
+        case milvus::proto::schema::DataType::Double: {
+            const auto& vec = data.scalars().double_data().data();
+            if (vec.empty()) break;
+            auto [min_it, max_it] = std::minmax_element(vec.begin(), vec.end());
+            stats.min_value = static_cast<double>(*min_it);
+            stats.max_value = static_cast<double>(*max_it);
+            double sum = std::accumulate(vec.begin(), vec.end(), 0.0);
+            stats.avg_value = sum / vec.size();
+            std::set<double> uniq(vec.begin(), vec.end());
+            stats.unique_count = uniq.size();
+            break;
+        }
+        case milvus::proto::schema::DataType::Bool: {
+            const auto& vec = data.scalars().bool_data().data();
+            if (vec.empty()) break;
             int true_count = std::count(vec.begin(), vec.end(), true);
             stats.min_value = 0;
             stats.max_value = 1;
             stats.avg_value = static_cast<double>(true_count) / vec.size();
             stats.unique_count = (true_count > 0 && true_count < vec.size()) ? 2 : 1;
+            break;
         }
-    }, it->second);
+        case milvus::proto::schema::DataType::VarChar:
+        case milvus::proto::schema::DataType::String: {
+            const auto& vec = data.scalars().string_data().data();
+            if (vec.empty()) break;
+            auto [min_it, max_it] = std::minmax_element(vec.begin(), vec.end());
+            stats.min_string = *min_it;
+            stats.max_string = *max_it;
+            std::set<std::string> uniq(vec.begin(), vec.end());
+            stats.unique_count = uniq.size();
+            break;
+        }
+        default:
+            break;
+    }
 
     return stats;
 }
@@ -135,9 +213,35 @@ bool
 SegmentData::ValidateData() const {
     // 检查所有字段的行数是否一致
     for (const auto& [name, data] : field_data_) {
-        int64_t field_size = std::visit([](const auto& vec) -> int64_t {
-            return vec.size();
-        }, data);
+        int64_t field_size = 0;
+        switch (data.type()) {
+            case milvus::proto::schema::DataType::Bool:
+                field_size = data.scalars().bool_data().data_size();
+                break;
+            case milvus::proto::schema::DataType::Int8:
+            case milvus::proto::schema::DataType::Int16:
+            case milvus::proto::schema::DataType::Int32:
+                field_size = data.scalars().int_data().data_size();
+                break;
+            case milvus::proto::schema::DataType::Int64:
+                field_size = data.scalars().long_data().data_size();
+                break;
+            case milvus::proto::schema::DataType::Float:
+                field_size = data.scalars().float_data().data_size();
+                break;
+            case milvus::proto::schema::DataType::Double:
+                field_size = data.scalars().double_data().data_size();
+                break;
+            case milvus::proto::schema::DataType::VarChar:
+            case milvus::proto::schema::DataType::String:
+                field_size = data.scalars().string_data().data_size();
+                break;
+            case milvus::proto::schema::DataType::Array:
+                field_size = data.scalars().array_data().data_size();
+                break;
+            default:
+                field_size = 0;
+        }
 
         if (field_size != row_count_) {
             std::cerr << "Field " << name << " size mismatch: "
@@ -169,21 +273,8 @@ SegmentData::PrintSummary() const {
 
         std::cout << std::setw(20) << field_name;
 
-        // 打印类型
-        std::visit([](const auto& vec) {
-            using T = typename std::decay_t<decltype(vec)>::value_type;
-            if constexpr (std::is_same_v<T, int64_t>) {
-                std::cout << std::setw(15) << "INT64";
-            } else if constexpr (std::is_same_v<T, double>) {
-                std::cout << std::setw(15) << "DOUBLE";
-            } else if constexpr (std::is_same_v<T, std::string>) {
-                std::cout << std::setw(15) << "VARCHAR";
-            } else if constexpr (std::is_same_v<T, bool>) {
-                std::cout << std::setw(15) << "BOOL";
-            } else {
-                std::cout << std::setw(15) << "UNKNOWN";
-            }
-        }, field_data);
+        // 打印类型（简化）
+        std::cout << std::setw(15) << static_cast<int>(field_data.type());
 
         std::cout << std::setw(15) << stats.unique_count;
 
@@ -225,12 +316,14 @@ SegmentDataGenerator::GenerateMultiFieldData(const DataConfig& config) {
 
     // Always generate primary key field first
     {
-        std::vector<int64_t> pk_data;
-        pk_data.reserve(config.segment_size);
+        milvus::DataArray pk_array;
+        pk_array.set_type(milvus::proto::schema::DataType::Int64);
+        auto* long_array = pk_array.mutable_scalars()->mutable_long_data();
+        long_array->mutable_data()->Reserve(config.segment_size);
         for (int64_t i = 0; i < config.segment_size; ++i) {
-            pk_data.push_back(i);
+            long_array->add_data(i);
         }
-        segment_data->AddFieldData("pk", std::move(pk_data));
+        segment_data->AddFieldData("pk", std::move(pk_array));
     }
 
     // Generate data for each configured field
@@ -240,7 +333,7 @@ SegmentDataGenerator::GenerateMultiFieldData(const DataConfig& config) {
             auto generator = FieldGeneratorFactory::CreateGenerator(field_config);
 
             // Generate data
-            FieldColumn field_data = generator->Generate(config.segment_size, ctx);
+            DataArray field_data = generator->Generate(config.segment_size, ctx);
 
             // Add to segment
             segment_data->AddFieldData(field_config.field_name, std::move(field_data));

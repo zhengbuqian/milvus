@@ -26,11 +26,18 @@ TimestampGenerator::TimestampGenerator(const FieldConfig& config)
     }
 }
 
-FieldColumn TimestampGenerator::Generate(size_t num_rows, RandomContext& ctx) {
+DataArray TimestampGenerator::Generate(size_t num_rows, RandomContext& ctx) {
     auto timestamps = GenerateEpochValues(num_rows, ctx);
     ApplyHotspots(timestamps, ctx);
     ApplyJitter(timestamps, ctx);
-    return timestamps;
+    DataArray data_array;
+    data_array.set_type(milvus::proto::schema::DataType::Int64);
+    auto* long_array = data_array.mutable_scalars()->mutable_long_data();
+    long_array->mutable_data()->Reserve(timestamps.size());
+    for (auto v : timestamps) {
+        long_array->add_data(v);
+    }
+    return data_array;
 }
 
 std::vector<int64_t> TimestampGenerator::GenerateEpochValues(size_t num_rows, RandomContext& ctx) {

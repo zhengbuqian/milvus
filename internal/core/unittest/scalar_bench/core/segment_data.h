@@ -14,12 +14,9 @@
 #include <memory>
 #include <vector>
 #include <string>
-#include <variant>
 #include <unordered_map>
-#include <stdexcept>
 #include "../config/benchmark_config.h"
-#include "../generators/field_generator.h"
-#include "knowhere/dataset.h"
+#include "common/Types.h"
 
 namespace milvus {
 namespace scalar_bench {
@@ -31,20 +28,13 @@ public:
     ~SegmentData() = default;
 
     // 添加字段数据
-    void AddFieldData(const std::string& field_name, FieldColumn data);
+    void AddFieldData(const std::string& field_name, const milvus::DataArray&& data);
 
     // Add field configuration
     void AddFieldConfig(const std::string& field_name, const FieldConfig& config);
 
-    // 获取字段数据
-    template<typename T>
-    const std::vector<T>& GetFieldData(const std::string& field_name) const {
-        auto it = field_data_.find(field_name);
-        if (it == field_data_.end()) {
-            throw std::runtime_error("Field not found: " + field_name);
-        }
-        return std::get<std::vector<T>>(it->second);
-    }
+    // 获取字段数据（DataArray）
+    const milvus::DataArray& GetFieldDataArray(const std::string& field_name) const;
 
     // 获取行数
     int64_t GetRowCount() const { return row_count_; }
@@ -84,12 +74,12 @@ public:
 private:
     DataConfig config_;
     int64_t row_count_;
-    std::unordered_map<std::string, FieldColumn> field_data_;
+    std::unordered_map<std::string, milvus::DataArray> field_data_;
     std::unordered_map<std::string, std::vector<bool>> null_masks_;
     std::unordered_map<std::string, FieldConfig> field_configs_;  // Store field configurations
 
     // 计算字段内存大小
-    size_t GetFieldMemoryBytes(const FieldColumn& data) const;
+    size_t GetFieldMemoryBytes(const milvus::DataArray& data) const;
 };
 
 // Segment数据生成器

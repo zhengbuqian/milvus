@@ -9,7 +9,7 @@ class TimestampGenerator : public IFieldGenerator {
 public:
     explicit TimestampGenerator(const FieldConfig& config);
 
-    FieldColumn Generate(size_t num_rows, RandomContext& ctx) override;
+    DataArray Generate(size_t num_rows, RandomContext& ctx) override;
     const FieldConfig& GetConfig() const override { return config_; }
 
 private:

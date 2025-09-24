@@ -27,7 +27,7 @@ void ArrayGenerator::InitializeElementGenerator() {
     element_type_ = array_config.element->field_type;
 }
 
-FieldColumn ArrayGenerator::Generate(size_t num_rows, RandomContext& ctx) {
+DataArray ArrayGenerator::Generate(size_t num_rows, RandomContext& ctx) {
     switch (element_type_) {
         case DataType::BOOL:
             return GenerateBooleanArrays(num_rows, ctx);
@@ -118,7 +118,7 @@ ArrayGenerator::GenerateTyped(size_t num_rows, RandomContext& ctx) {
     return arrays;
 }
 
-FieldColumn ArrayGenerator::GenerateStringArrays(size_t num_rows, RandomContext& ctx) {
+DataArray ArrayGenerator::GenerateStringArrays(size_t num_rows, RandomContext& ctx) {
     std::vector<std::vector<std::string>> arrays;
     arrays.reserve(num_rows);
 
@@ -150,7 +150,18 @@ FieldColumn ArrayGenerator::GenerateStringArrays(size_t num_rows, RandomContext&
         }
         arrays.push_back(std::move(elements));
     }
-    return arrays;
+    DataArray data_array;
+    data_array.set_type(milvus::proto::schema::DataType::Array);
+    auto* array_data = data_array.mutable_scalars()->mutable_array_data();
+    array_data->set_element_type(static_cast<milvus::proto::schema::DataType>(milvus::DataType::VARCHAR));
+    for (auto& row : arrays) {
+        milvus::proto::schema::ScalarField field_data;
+        for (auto& s : row) {
+            field_data.mutable_string_data()->add_data(std::move(s));
+        }
+        *(array_data->add_data()) = std::move(field_data);
+    }
+    return data_array;
 }
 
 template <typename T>
@@ -158,8 +169,8 @@ void ArrayGenerator::AppendGeneratedElements(std::vector<T>& values,
                                              size_t min_count,
                                              RandomContext& ctx) {
     while (values.size() < min_count) {
-        FieldColumn element_column = element_generator_->Generate(min_count - values.size(), ctx);
-        auto batch = ExtractValues<T>(std::move(element_column));
+        DataArray element_column = element_generator_->Generate(min_count - values.size(), ctx);
+        auto batch = ExtractValuesFromDataArray<T>(element_column);
         values.insert(values.end(), batch.begin(), batch.end());
         if (batch.empty()) {
             break;
@@ -171,8 +182,8 @@ void ArrayGenerator::AppendGeneratedStringElements(std::vector<std::string>& val
                                                    size_t min_count,
                                                    RandomContext& ctx) {
     while (values.size() < min_count) {
-        FieldColumn element_column = element_generator_->Generate(min_count - values.size(), ctx);
-        auto batch = ExtractStringValues(std::move(element_column));
+        DataArray element_column = element_generator_->Generate(min_count - values.size(), ctx);
+        auto batch = ExtractStringValuesFromDataArray(element_column);
         values.insert(values.end(), batch.begin(), batch.end());
         if (batch.empty()) {
             break;
@@ -180,55 +191,147 @@ void ArrayGenerator::AppendGeneratedStringElements(std::vector<std::string>& val
     }
 }
 
-FieldColumn ArrayGenerator::GenerateNumericArrays(size_t num_rows,
-                                                  RandomContext& ctx,
-                                                  DataType numeric_type) {
+DataArray ArrayGenerator::GenerateNumericArrays(size_t num_rows,
+                                               RandomContext& ctx,
+                                               DataType numeric_type) {
+    std::vector<milvus::proto::schema::ScalarField> rows;
+    rows.reserve(num_rows);
+    auto fill_numeric = [&](auto tag) {
+        using T = decltype(tag);
+        auto arrays = GenerateTyped<T>(num_rows, ctx);
+        for (auto& row : arrays) {
+            milvus::proto::schema::ScalarField field_data;
+            for (auto& v : row) {
+                if constexpr (std::is_same_v<T, int8_t> || std::is_same_v<T, int16_t> || std::is_same_v<T, int32_t>) {
+                    field_data.mutable_int_data()->add_data(static_cast<int32_t>(v));
+                } else if constexpr (std::is_same_v<T, int64_t>) {
+                    field_data.mutable_long_data()->add_data(v);
+                }
+            }
+            rows.emplace_back(std::move(field_data));
+        }
+    };
     switch (numeric_type) {
-        case DataType::INT8:
-            return GenerateTyped<int8_t>(num_rows, ctx);
-        case DataType::INT16:
-            return GenerateTyped<int16_t>(num_rows, ctx);
-        case DataType::INT32:
-            return GenerateTyped<int32_t>(num_rows, ctx);
-        case DataType::INT64:
-            return GenerateTyped<int64_t>(num_rows, ctx);
-        default:
-            throw std::runtime_error("Unsupported integer array element type");
+        case DataType::INT8: fill_numeric(int8_t{}); break;
+        case DataType::INT16: fill_numeric(int16_t{}); break;
+        case DataType::INT32: fill_numeric(int32_t{}); break;
+        case DataType::INT64: fill_numeric(int64_t{}); break;
+        default: throw std::runtime_error("Unsupported integer array element type");
     }
+    DataArray data_array;
+    data_array.set_type(milvus::proto::schema::DataType::Array);
+    auto* array_data = data_array.mutable_scalars()->mutable_array_data();
+    array_data->set_element_type(static_cast<milvus::proto::schema::DataType>(numeric_type));
+    for (auto& r : rows) {
+        *(array_data->add_data()) = std::move(r);
+    }
+    return data_array;
 }
 
-FieldColumn ArrayGenerator::GenerateFloatArrays(size_t num_rows,
-                                                RandomContext& ctx,
-                                                DataType numeric_type) {
+DataArray ArrayGenerator::GenerateFloatArrays(size_t num_rows,
+                                             RandomContext& ctx,
+                                             DataType numeric_type) {
+    std::vector<milvus::proto::schema::ScalarField> rows;
+    rows.reserve(num_rows);
+    auto fill_float = [&](auto tag) {
+        using T = decltype(tag);
+        auto arrays = GenerateTyped<T>(num_rows, ctx);
+        for (auto& row : arrays) {
+            milvus::proto::schema::ScalarField field_data;
+            for (auto& v : row) {
+                if constexpr (std::is_same_v<T, float>) {
+                    field_data.mutable_float_data()->add_data(v);
+                } else if constexpr (std::is_same_v<T, double>) {
+                    field_data.mutable_double_data()->add_data(v);
+                }
+            }
+            rows.emplace_back(std::move(field_data));
+        }
+    };
     switch (numeric_type) {
-        case DataType::FLOAT:
-            return GenerateTyped<float>(num_rows, ctx);
-        case DataType::DOUBLE:
-            return GenerateTyped<double>(num_rows, ctx);
-        default:
-            throw std::runtime_error("Unsupported float array element type");
+        case DataType::FLOAT: fill_float(float{}); break;
+        case DataType::DOUBLE: fill_float(double{}); break;
+        default: throw std::runtime_error("Unsupported float array element type");
     }
+    DataArray data_array;
+    data_array.set_type(milvus::proto::schema::DataType::Array);
+    auto* array_data = data_array.mutable_scalars()->mutable_array_data();
+    array_data->set_element_type(static_cast<milvus::proto::schema::DataType>(numeric_type));
+    for (auto& r : rows) {
+        *(array_data->add_data()) = std::move(r);
+    }
+    return data_array;
 }
 
-FieldColumn ArrayGenerator::GenerateBooleanArrays(size_t num_rows, RandomContext& ctx) {
-    return GenerateTyped<bool>(num_rows, ctx);
+DataArray ArrayGenerator::GenerateBooleanArrays(size_t num_rows, RandomContext& ctx) {
+    auto arrays = GenerateTyped<bool>(num_rows, ctx);
+    DataArray data_array;
+    data_array.set_type(milvus::proto::schema::DataType::Array);
+    auto* array_data = data_array.mutable_scalars()->mutable_array_data();
+    array_data->set_element_type(static_cast<milvus::proto::schema::DataType>(milvus::DataType::BOOL));
+    for (auto& row : arrays) {
+        milvus::proto::schema::ScalarField field_data;
+        for (auto v : row) {
+            field_data.mutable_bool_data()->add_data(v);
+        }
+        *(array_data->add_data()) = std::move(field_data);
+    }
+    return data_array;
 }
 
 template <typename T>
 std::vector<T>
-ArrayGenerator::ExtractValues(FieldColumn&& column) {
-    if (auto values = std::get_if<std::vector<T>>(&column)) {
-        return std::move(*values);
+ArrayGenerator::ExtractValuesFromDataArray(const DataArray& column) {
+    std::vector<T> result;
+    switch (column.type()) {
+        case milvus::proto::schema::DataType::Int8:
+        case milvus::proto::schema::DataType::Int16:
+        case milvus::proto::schema::DataType::Int32: {
+            auto src = column.scalars().int_data().data();
+            result.reserve(src.size());
+            for (auto v : src) result.push_back(static_cast<T>(v));
+            break;
+        }
+        case milvus::proto::schema::DataType::Int64: {
+            auto src = column.scalars().long_data().data();
+            result.assign(src.begin(), src.end());
+            break;
+        }
+        case milvus::proto::schema::DataType::Float: {
+            auto src = column.scalars().float_data().data();
+            result.reserve(src.size());
+            for (auto v : src) result.push_back(static_cast<T>(v));
+            break;
+        }
+        case milvus::proto::schema::DataType::Double: {
+            auto src = column.scalars().double_data().data();
+            result.reserve(src.size());
+            for (auto v : src) result.push_back(static_cast<T>(v));
+            break;
+        }
+        case milvus::proto::schema::DataType::Bool: {
+            auto src = column.scalars().bool_data().data();
+            result.reserve(src.size());
+            for (auto v : src) result.push_back(static_cast<T>(v));
+            break;
+        }
+        default:
+            throw std::runtime_error("Array element generator returned unexpected type");
     }
-    throw std::runtime_error("Array element generator returned unexpected type");
+    return result;
 }
 
 std::vector<std::string>
-ArrayGenerator::ExtractStringValues(FieldColumn&& column) {
-    if (auto values = std::get_if<std::vector<std::string>>(&column)) {
-        return std::move(*values);
+ArrayGenerator::ExtractStringValuesFromDataArray(const DataArray& column) {
+    if (column.type() != milvus::proto::schema::DataType::VarChar &&
+        column.type() != milvus::proto::schema::DataType::String) {
+        throw std::runtime_error("Array element generator returned unexpected type");
     }
-    throw std::runtime_error("Array element generator returned unexpected type");
+    std::vector<std::string> result;
+    auto src = column.scalars().string_data().data();
+    result.reserve(src.size());
+    for (auto& s : src) result.emplace_back(s);
+    return result;
 }
 
 template <typename T>
