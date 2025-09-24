@@ -1,100 +1,46 @@
 #include "benchmark_config_loader.h"
 #include "../dictionaries/dictionary_registry.h"
-
-#include <algorithm>
-#include <cctype>
-#include <map>
-#include <stdexcept>
+#include "../utils/bench_paths.h"
+#include <yaml-cpp/yaml.h>
 #include <filesystem>
 #include <fstream>
-#include <iostream>
-#include <yaml-cpp/yaml.h>
-
-#include "common/Types.h"
-#include "pb/schema.pb.h"
+#include <sstream>
+#include <algorithm>
 
 namespace milvus {
 namespace scalar_bench {
 namespace {
 
-std::string
-ToUpper(const std::string& input) {
-    std::string upper = input;
-    std::transform(
-        upper.begin(),
-        upper.end(),
-        upper.begin(),
-        [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
-    return upper;
+static std::string ToUpper(const std::string& s) {
+    std::string r = s;
+    std::transform(r.begin(), r.end(), r.begin(), ::toupper);
+    return r;
 }
 
-Distribution
-ParseDistribution(const YAML::Node& node) {
-    if (!node || !node.IsScalar()) {
-        throw std::runtime_error("distribution must be a scalar string");
-    }
-    const auto value = ToUpper(node.as<std::string>());
-    if (value == "UNIFORM") {
-        return Distribution::UNIFORM;
-    }
-    if (value == "NORMAL") {
-        return Distribution::NORMAL;
-    }
-    if (value == "ZIPF") {
-        return Distribution::ZIPF;
-    }
-    if (value == "SEQUENTIAL") {
-        return Distribution::SEQUENTIAL;
-    }
-    if (value == "CUSTOM_HIST") {
-        return Distribution::CUSTOM_HIST;
-    }
-    throw std::runtime_error("Unknown distribution: " + value);
-}
-
-ScalarIndexType
-ParseIndexType(const YAML::Node& node) {
-    if (!node || !node.IsScalar()) {
-        throw std::runtime_error("index type must be a scalar string");
-    }
-    const auto value = ToUpper(node.as<std::string>());
-    if (value == "NONE") {
-        return ScalarIndexType::NONE;
-    }
-    if (value == "BITMAP") {
-        return ScalarIndexType::BITMAP;
-    }
-    if (value == "STL_SORT") {
-        return ScalarIndexType::STL_SORT;
-    }
-    if (value == "INVERTED") {
-        return ScalarIndexType::INVERTED;
-    }
-    if (value == "TRIE") {
-        return ScalarIndexType::TRIE;
-    }
-    if (value == "HYBRID") {
-        return ScalarIndexType::HYBRID;
-    }
+ScalarIndexType ParseIndexType(const std::string& value) {
+    auto upper = ToUpper(value);
+    if (upper == "NONE") return ScalarIndexType::NONE;
+    if (upper == "STL_SORT") return ScalarIndexType::STL_SORT;
+    if (upper == "TRIE") return ScalarIndexType::TRIE;
+    if (upper == "INVERTED") return ScalarIndexType::INVERTED;
+    if (upper == "BITMAP") return ScalarIndexType::BITMAP;
+    if (upper == "HYBRID") return ScalarIndexType::HYBRID;
+    if (upper == "NGRAM") return ScalarIndexType::NGRAM;
     throw std::runtime_error("Unknown scalar index type: " + value);
 }
 
-// Parse field generator type
-FieldGeneratorType
-ParseGeneratorType(const std::string& type_str) {
+FieldGeneratorType ParseGeneratorType(const std::string& type_str) {
     auto upper = ToUpper(type_str);
     if (upper == "CATEGORICAL") return FieldGeneratorType::CATEGORICAL;
     if (upper == "NUMERIC") return FieldGeneratorType::NUMERIC;
     if (upper == "TIMESTAMP") return FieldGeneratorType::TIMESTAMP;
-    if (upper == "VARCHAR" || upper == "TEXT") return FieldGeneratorType::VARCHAR;
+    if (upper == "VARCHAR") return FieldGeneratorType::VARCHAR;
     if (upper == "ARRAY") return FieldGeneratorType::ARRAY;
     if (upper == "BOOLEAN" || upper == "BOOL") return FieldGeneratorType::BOOLEAN;
     throw std::runtime_error("Unknown generator type: " + type_str);
 }
 
-// Parse field data type
-DataType
-ParseDataType(const std::string& type_str) {
+DataType ParseDataType(const std::string& type_str) {
     proto::schema::DataType type;
     if (proto::schema::DataType_Parse(type_str, &type)) {
         auto res = static_cast<DataType>(type);
@@ -115,8 +61,7 @@ ParseDataType(const std::string& type_str) {
     throw std::runtime_error("Unknown field data type: " + type_str);
 }
 
-VarcharMode
-ParseVarcharMode(const YAML::Node& node) {
+VarcharMode ParseVarcharMode(const YAML::Node& node) {
     if (!node || !node.IsScalar()) {
         return VarcharMode::RANDOM;
     }
@@ -131,12 +76,17 @@ ParseVarcharMode(const YAML::Node& node) {
     if (mode == "CORPUS") {
         return VarcharMode::CORPUS;
     }
+    if (mode == "SINGLE_UUID") {
+        return VarcharMode::SINGLE_UUID;
+    }
+    if (mode == "SINGLE_TIMESTAMP") {
+        return VarcharMode::SINGLE_TIMESTAMP;
+    }
 
     throw std::runtime_error("Unknown varchar mode: " + node.as<std::string>());
 }
 
-void
-ParseValuePool(const YAML::Node& node, ValuePoolConfig& config) {
+void ParseValuePool(const YAML::Node& node, ValuePoolConfig& config) {
     if (!node || !node.IsMap()) {
         return;
     }
@@ -157,31 +107,37 @@ ParseValuePool(const YAML::Node& node, ValuePoolConfig& config) {
     }
 }
 
-void
-ParsePhraseSets(const YAML::Node& node, std::vector<std::vector<std::string>>& phrase_sets) {
-    if (!node || !node.IsSequence()) {
-        return;
+Distribution ParseDistribution(const YAML::Node& node) {
+    if (!node || !node.IsScalar()) {
+        return Distribution::UNIFORM;
     }
 
-    for (const auto& phrase_node : node) {
-        std::vector<std::string> phrase;
-        if (phrase_node.IsSequence()) {
-            for (const auto& token : phrase_node) {
-                phrase.push_back(token.as<std::string>());
-            }
-        } else if (phrase_node.IsScalar()) {
-            phrase.push_back(phrase_node.as<std::string>());
-        }
+    auto dist = ToUpper(node.as<std::string>());
+    if (dist == "UNIFORM") return Distribution::UNIFORM;
+    if (dist == "NORMAL") return Distribution::NORMAL;
+    if (dist == "ZIPF") return Distribution::ZIPF;
+    if (dist == "SEQUENTIAL") return Distribution::SEQUENTIAL;
+    if (dist == "CUSTOM_HIST") return Distribution::CUSTOM_HIST;
 
-        if (!phrase.empty()) {
-            phrase_sets.push_back(std::move(phrase));
+    throw std::runtime_error("Unknown distribution: " + node.as<std::string>());
+}
+
+void ParsePhraseSets(const YAML::Node& node, std::vector<std::vector<std::string>>& dst) {
+    if (!node) return;
+    if (node.IsSequence()) {
+        for (const auto& seq : node) {
+            if (seq.IsSequence()) {
+                std::vector<std::string> items;
+                for (const auto& item : seq) {
+                    items.push_back(item.as<std::string>());
+                }
+                dst.push_back(std::move(items));
+            }
         }
     }
 }
 
-// Parse and register dictionary with the registry
-void
-ParseAndRegisterDictionary(const std::string& name, const YAML::Node& node) {
+void ParseAndRegisterDictionary(const std::string& name, const YAML::Node& node) {
     auto& registry = DictionaryRegistry::GetInstance();
 
     if (node["items"] && node["items"].IsSequence()) {
@@ -207,8 +163,7 @@ ParseAndRegisterDictionary(const std::string& name, const YAML::Node& node) {
 }
 
 // Parse field configuration
-FieldConfig
-ParseFieldConfig(const YAML::Node& node, const std::string& default_field_name = "") {
+FieldConfig ParseFieldConfig(const YAML::Node& node, const std::string& default_field_name) {
     FieldConfig config;
 
     // Required fields
@@ -389,66 +344,120 @@ ParseFieldConfig(const YAML::Node& node, const std::string& default_field_name =
 
             varchar.mode = ParseVarcharMode(node["mode"]);
 
-            if (node["values"]) {
-                ParseValuePool(node["values"], varchar.values);
-            }
-
-            if (node["token_count"]) {
-                auto token_node = node["token_count"];
-                if (token_node["min"]) {
-                    varchar.token_count.min = token_node["min"].as<int>();
+            if (varchar.mode == VarcharMode::RANDOM) {
+                if (node["values"]) {
+                    ParseValuePool(node["values"], varchar.values);
                 }
-                if (token_node["max"]) {
-                    varchar.token_count.max = token_node["max"].as<int>();
-                }
-                if (token_node["distribution"]) {
-                    varchar.token_count.distribution = ParseDistribution(token_node["distribution"]);
-                }
-            }
-
-            if (node["keywords"] && node["keywords"].IsSequence()) {
-                for (const auto& keyword_node : node["keywords"]) {
-                    if (!keyword_node["token"]) {
-                        throw std::runtime_error(
-                            "Keyword entry missing 'token' for field: " + config.field_name);
+                if (node["token_count"]) {
+                    auto token_node = node["token_count"];
+                    if (token_node["min"]) {
+                        varchar.token_count.min = token_node["min"].as<int>();
                     }
-                    KeywordConfig keyword;
-                    keyword.token = keyword_node["token"].as<std::string>();
-                    if (keyword_node["frequency"]) {
-                        keyword.frequency = keyword_node["frequency"].as<double>();
+                    if (token_node["max"]) {
+                        varchar.token_count.max = token_node["max"].as<int>();
                     }
-                    varchar.keywords.push_back(keyword);
-                }
-            }
-
-            if (node["phrase_sets"]) {
-                ParsePhraseSets(node["phrase_sets"], varchar.phrase_sets);
-            }
-
-            if (node["template"]) {
-                varchar.template_str = node["template"].as<std::string>();
-            } else if (node["template_str"]) {
-                varchar.template_str = node["template_str"].as<std::string>();
-            }
-
-            if (node["pools"] && node["pools"].IsMap()) {
-                for (auto it = node["pools"].begin(); it != node["pools"].end(); ++it) {
-                    const auto& pool_name = it->first.as<std::string>();
-                    const auto& pool_values = it->second;
-                    if (!pool_values.IsSequence()) {
-                        throw std::runtime_error(
-                            "pools entry must be a sequence for field: " + config.field_name);
-                    }
-
-                    auto& dest = varchar.pools[pool_name];
-                    for (const auto& value : pool_values) {
-                        dest.push_back(value.as<std::string>());
+                    if (token_node["distribution"]) {
+                        varchar.token_count.distribution = ParseDistribution(token_node["distribution"]);
                     }
                 }
-            }
+                if (node["keywords"] && node["keywords"].IsSequence()) {
+                    for (const auto& keyword_node : node["keywords"]) {
+                        if (!keyword_node["token"]) {
+                            throw std::runtime_error(
+                                "Keyword entry missing 'token' for field: " + config.field_name);
+                        }
+                        KeywordConfig keyword;
+                        keyword.token = keyword_node["token"].as<std::string>();
+                        if (keyword_node["frequency"]) {
+                            keyword.frequency = keyword_node["frequency"].as<double>();
+                        }
+                        varchar.keywords.push_back(keyword);
+                    }
+                }
+                if (node["phrase_sets"]) {
+                    ParsePhraseSets(node["phrase_sets"], varchar.phrase_sets);
+                }
+            } else if (varchar.mode == VarcharMode::TEMPLATE) {
+                if (node["template"]) {
+                    varchar.template_str = node["template"].as<std::string>();
+                } else if (node["template_str"]) {
+                    varchar.template_str = node["template_str"].as<std::string>();
+                }
+                if (node["pools"] && node["pools"].IsMap()) {
+                    for (auto it = node["pools"].begin(); it != node["pools"].end(); ++it) {
+                        const auto& pool_name = it->first.as<std::string>();
+                        const auto& pool_values = it->second;
+                        if (!pool_values.IsSequence()) {
+                            throw std::runtime_error(
+                                "pools entry must be a sequence for field: " + config.field_name);
+                        }
 
-            if (node["corpus_file"]) {
-                varchar.corpus_file = node["corpus_file"].as<std::string>();
+                        auto& dest = varchar.pools[pool_name];
+                        for (const auto& value : pool_values) {
+                            dest.push_back(value.as<std::string>());
+                        }
+                    }
+                }
+            } else if (varchar.mode == VarcharMode::CORPUS) {
+                if (node["corpus_file"]) {
+                    varchar.corpus_file = node["corpus_file"].as<std::string>();
+                }
+            } else if (varchar.mode == VarcharMode::SINGLE_UUID) {
+                if (node["uuid_version"]) {
+                    auto uv = ToUpper(node["uuid_version"].as<std::string>());
+                    if (uv == "V1") {
+                        varchar.uuid_version = UuidVersion::V1;
+                    } else if (uv == "V4") {
+                        varchar.uuid_version = UuidVersion::V4;
+                    } else {
+                        throw std::runtime_error("Unsupported uuid_version: " + uv);
+                    }
+                }
+                if (node["uuid_length"]) {
+                    varchar.uuid_length = node["uuid_length"].as<int>();
+                }
+            } else if (varchar.mode == VarcharMode::SINGLE_TIMESTAMP) {
+                if (node["ts_format"]) {
+                    auto tf = ToUpper(node["ts_format"].as<std::string>());
+                    if (tf == "UNIX") {
+                        varchar.ts_format = TimestampStringFormat::UNIX;
+                    } else if (tf == "ISO8601") {
+                        varchar.ts_format = TimestampStringFormat::ISO8601;
+                    } else {
+                        throw std::runtime_error("Unsupported ts_format: " + tf);
+                    }
+                }
+                // parse embedded ts generator config under `timestamp`
+                auto ts_node = node["timestamp"];
+                if (ts_node) {
+                    if (ts_node["range"]) {
+                        auto range_node = ts_node["range"];
+                        if (range_node["start"]) {
+                            varchar.ts_embedding.range.start = range_node["start"].as<int64_t>();
+                        }
+                        if (range_node["end"]) {
+                            varchar.ts_embedding.range.end = range_node["end"].as<int64_t>();
+                        }
+                    }
+                    if (ts_node["jitter"]) {
+                        varchar.ts_embedding.jitter = ts_node["jitter"].as<int64_t>();
+                    }
+                    if (ts_node["hotspots"]) {
+                        for (const auto& hotspot_node : ts_node["hotspots"]) {
+                            TimestampHotspot hotspot;
+                            if (hotspot_node["window"]) {
+                                auto window_node = hotspot_node["window"];
+                                if (window_node["start"]) hotspot.window.start = window_node["start"].as<int64_t>();
+                                if (window_node["end"]) hotspot.window.end = window_node["end"].as<int64_t>();
+                            } else {
+                                if (hotspot_node["start"]) hotspot.window.start = hotspot_node["start"].as<int64_t>();
+                                if (hotspot_node["end"]) hotspot.window.end = hotspot_node["end"].as<int64_t>();
+                            }
+                            if (hotspot_node["weight"]) hotspot.weight = hotspot_node["weight"].as<double>();
+                            varchar.ts_embedding.hotspots.push_back(hotspot);
+                        }
+                    }
+                }
             }
             break;
         }
@@ -550,8 +559,7 @@ ParseFieldConfig(const YAML::Node& node, const std::string& default_field_name =
 }
 
 // Parse data configuration from file
-DataConfig
-ParseDataConfig(const YAML::Node& root, const std::string& source) {
+DataConfig ParseDataConfig(const YAML::Node& root, const std::string& source) {
     DataConfig config;
 
     // Basic fields
@@ -602,8 +610,7 @@ ParseDataConfig(const YAML::Node& root, const std::string& source) {
 }
 
 // Parse per-field index configuration
-FieldIndexConfig
-ParseFieldIndexConfig(const YAML::Node& node) {
+FieldIndexConfig ParseFieldIndexConfig(const YAML::Node& node) {
     FieldIndexConfig config;
 
     if (!node["type"]) {
@@ -620,8 +627,7 @@ ParseFieldIndexConfig(const YAML::Node& node) {
     return config;
 }
 
-BenchmarkConfig
-ParseBenchmarkConfig(const YAML::Node& root, const std::string& source) {
+BenchmarkConfig ParseBenchmarkConfig(const YAML::Node& root, const std::string& source) {
     BenchmarkConfig config;
 
     // Parse data config paths and load them
@@ -715,8 +721,7 @@ ParseBenchmarkConfig(const YAML::Node& root, const std::string& source) {
 
 } // namespace
 
-BenchmarkConfig
-BenchmarkConfigLoader::FromYamlFile(const std::string& path) {
+BenchmarkConfig BenchmarkConfigLoader::FromYamlFile(const std::string& path) {
     YAML::Node root;
     try {
         root = YAML::LoadFile(path);
@@ -728,8 +733,7 @@ BenchmarkConfigLoader::FromYamlFile(const std::string& path) {
     return ParseBenchmarkConfig(root, path);
 }
 
-DataConfig
-BenchmarkConfigLoader::LoadDataConfigFile(const std::string& path) {
+DataConfig BenchmarkConfigLoader::LoadDataConfigFile(const std::string& path) {
     YAML::Node root;
     try {
         root = YAML::LoadFile(path);
@@ -740,22 +744,19 @@ BenchmarkConfigLoader::LoadDataConfigFile(const std::string& path) {
     return ParseDataConfig(root, path);
 }
 
-std::string
-BenchmarkConfigLoader::ResolvePath(const std::string& relative_path) {
+std::string BenchmarkConfigLoader::ResolvePath(const std::string& relative_path) {
     auto base_dir = GetBenchCasesDir();
     auto resolved = base_dir / relative_path;
     return resolved.string();
 }
 
-std::string
-BenchmarkConfigLoader::ResolveDictionaryPath(const std::string& path) {
+std::string BenchmarkConfigLoader::ResolveDictionaryPath(const std::string& path) {
     auto base_dir = GetBenchCasesDir() / "datasets";
     auto resolved = base_dir / path;
     return resolved.string();
 }
 
-std::filesystem::path
-BenchmarkConfigLoader::GetBenchCasesDir() {
+std::filesystem::path BenchmarkConfigLoader::GetBenchCasesDir() {
     // Get the bench_cases directory relative to the binary location
     // This assumes the binary is run from the build directory
     // You may need to adjust this based on your actual setup

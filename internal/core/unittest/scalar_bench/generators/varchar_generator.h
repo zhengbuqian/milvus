@@ -27,6 +27,8 @@ private:
     std::string GenerateRandomText(RandomContext& ctx);
     std::string GenerateTemplateText(RandomContext& ctx);
     std::string GenerateCorpusText(RandomContext& ctx);
+    std::string GenerateSingleUuid(RandomContext& ctx);
+    std::string GenerateSingleTimestamp(RandomContext& ctx);
 
     // Helper methods
     void LoadTokenPool();
