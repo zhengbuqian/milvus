@@ -26,11 +26,19 @@ TimestampGenerator::TimestampGenerator(const FieldConfig& config)
     }
 }
 
-FieldColumn TimestampGenerator::Generate(size_t num_rows, RandomContext& ctx) {
+proto::schema::FieldData
+TimestampGenerator::Generate(size_t num_rows, RandomContext& ctx) {
     auto timestamps = GenerateEpochValues(num_rows, ctx);
     ApplyHotspots(timestamps, ctx);
     ApplyJitter(timestamps, ctx);
-    return timestamps;
+    proto::schema::FieldData field_data;
+    field_data.set_field_name(config_.field_name);
+    field_data.set_type(proto::schema::DataType::Int64);
+    auto long_data = field_data.mutable_scalars()->mutable_long_data();
+    for (const auto ts : timestamps) {
+        long_data->add_data(ts);
+    }
+    return field_data;
 }
 
 std::vector<int64_t> TimestampGenerator::GenerateEpochValues(size_t num_rows, RandomContext& ctx) {

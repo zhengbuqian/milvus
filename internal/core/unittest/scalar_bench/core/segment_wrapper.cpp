@@ -15,9 +15,7 @@
 #include "../utils/bench_paths.h"
 #include "segcore/ChunkedSegmentSealedImpl.h"
 #include "common/Consts.h"
-// #include "storage/RemoteChunkManagerSingleton.h" // not used directly here
-// #include "storage/LocalChunkManagerSingleton.h" // not used directly here
-// #include "test_utils/DataGen.h" // not used directly here
+#include "test_utils/DataGen.h"
 #include <iostream>
 #include <numeric>
 
@@ -185,56 +183,9 @@ SegmentWrapper::LoadFromSegmentData(const SegmentData& segment_data) {
         }
 
         FieldId field_id = it->second;
-        const auto& field_schema = schema_->operator[](field_id);
-        DataType data_type = field_schema.get_data_type();
-
-        // 根据数据类型获取字段数据
         try {
-            if (data_type == DataType::INT8) {
-                const auto& data = segment_data.GetFieldData<int8_t>(field_name);
-                WriteBinlogThenLoad(field_name, field_id, data);
-            } else if (data_type == DataType::INT16) {
-                const auto& data = segment_data.GetFieldData<int16_t>(field_name);
-                WriteBinlogThenLoad(field_name, field_id, data);
-            } else if (data_type == DataType::INT32) {
-                const auto& data = segment_data.GetFieldData<int32_t>(field_name);
-                WriteBinlogThenLoad(field_name, field_id, data);
-            } else if (data_type == DataType::INT64) {
-                const auto& data = segment_data.GetFieldData<int64_t>(field_name);
-                WriteBinlogThenLoad(field_name, field_id, data);
-            } else if (data_type == DataType::FLOAT) {
-                // Try to get float data first, then double
-                try {
-                    const auto& data = segment_data.GetFieldData<float>(field_name);
-                    WriteBinlogThenLoad(field_name, field_id, data);
-                } catch (...) {
-                    const auto& data = segment_data.GetFieldData<double>(field_name);
-                    // 转换为float
-                    std::vector<float> float_data(data.begin(), data.end());
-                    WriteBinlogThenLoad(field_name, field_id, float_data);
-                }
-            } else if (data_type == DataType::DOUBLE) {
-                const auto& data = segment_data.GetFieldData<double>(field_name);
-                WriteBinlogThenLoad(field_name, field_id, data);
-            } else if (data_type == DataType::VARCHAR) {
-                const auto& data = segment_data.GetFieldData<std::string>(field_name);
-                WriteBinlogThenLoad(field_name, field_id, data);
-            } else if (data_type == DataType::BOOL) {
-                const auto& data = segment_data.GetFieldData<bool>(field_name);
-                WriteBinlogThenLoad(field_name, field_id, data);
-            } else if (data_type == DataType::ARRAY) {
-                const auto* field_config = segment_data.GetFieldConfig(field_name);
-                if (field_config == nullptr || !field_config->array_config.element) {
-                    std::cerr << "Warning: Array field " << field_name
-                              << " missing element configuration; skipping" << std::endl;
-                    continue;
-                }
-
-                DataType element_type = field_config->array_config.element->field_type;
-
-                std::cerr << "Warning: Array field loading not yet implemented for "
-                          << field_name << std::endl;
-            }
+            const auto& field_proto = segment_data.GetFieldData(field_name);
+            WriteBinlogThenLoad(field_name, field_id, field_proto);
         } catch (const std::exception& e) {
             std::cerr << "Error loading field " << field_name << ": " << e.what() << std::endl;
         }
@@ -246,12 +197,17 @@ SegmentWrapper::LoadFromSegmentData(const SegmentData& segment_data) {
 void
 SegmentWrapper::WriteBinlogThenLoad(const std::string& field_name,
                                    FieldId field_id,
-                                   const FieldColumn& field_data) {
+                                   const proto::schema::FieldData& field_data) {
     const auto& field_schema = schema_->operator[](field_id);
-    DataType data_type = field_schema.get_data_type();
+    auto field_proto = field_data;
+    field_proto.set_field_id(field_id.get());
+    if (field_proto.field_name().empty()) {
+        field_proto.set_field_name(field_name);
+    }
 
-    // 创建FieldData
-    auto storage_field_data = CreateFieldDataFromVector(data_type, field_data);
+    auto row_count = GetFieldDataRowCount(field_proto);
+    auto storage_field_data = milvus::segcore::CreateFieldDataFromDataArray(
+        row_count, &field_proto, field_schema);
 
     // 准备binlog
     auto field_data_info = PrepareSingleFieldInsertBinlog(
@@ -264,50 +220,6 @@ SegmentWrapper::WriteBinlogThenLoad(const std::string& field_name,
 
     // 加载数据到segment
     sealed_segment_->LoadFieldData(field_data_info);
-}
-
-std::shared_ptr<milvus::FieldDataBase>
-SegmentWrapper::CreateFieldDataFromVector(DataType data_type,
-                                           const FieldColumn& field_data) {
-    auto storage_field_data = milvus::storage::CreateFieldData(
-        data_type, DataType::NONE, false, 1, 0);
-
-    // 根据类型填充数据
-    std::visit([&storage_field_data, data_type](const auto& vec) {
-        using T = typename std::decay_t<decltype(vec)>::value_type;
-
-        if constexpr (std::is_same_v<T, int8_t>) {
-            storage_field_data->FillFieldData(vec.data(), vec.size());
-        } else if constexpr (std::is_same_v<T, int16_t>) {
-            storage_field_data->FillFieldData(vec.data(), vec.size());
-        } else if constexpr (std::is_same_v<T, int32_t>) {
-            storage_field_data->FillFieldData(vec.data(), vec.size());
-        } else if constexpr (std::is_same_v<T, int64_t>) {
-            storage_field_data->FillFieldData(vec.data(), vec.size());
-        } else if constexpr (std::is_same_v<T, float>) {
-            storage_field_data->FillFieldData(vec.data(), vec.size());
-        } else if constexpr (std::is_same_v<T, double>) {
-            if (data_type == DataType::DOUBLE) {
-                storage_field_data->FillFieldData(vec.data(), vec.size());
-            } else {
-                // 转换为float for FLOAT type
-                std::vector<float> float_vec(vec.begin(), vec.end());
-                storage_field_data->FillFieldData(float_vec.data(), float_vec.size());
-            }
-        } else if constexpr (std::is_same_v<T, bool>) {
-            // vector<bool> is specialized and doesn't have a data() method,
-            // so we need to convert to a regular vector of uint8_t
-            std::vector<uint8_t> bool_vec(vec.size());
-            for (size_t i = 0; i < vec.size(); ++i) {
-                bool_vec[i] = vec[i] ? 1 : 0;
-            }
-            storage_field_data->FillFieldData(bool_vec.data(), bool_vec.size());
-        } else if constexpr (std::is_same_v<T, std::string>) {
-            storage_field_data->FillFieldData(vec.data(), vec.size());
-        }
-    }, field_data);
-
-    return storage_field_data;
 }
 
 FieldId

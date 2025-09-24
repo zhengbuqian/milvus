@@ -118,7 +118,8 @@ void VarcharGenerator::LoadCorpus() {
     }
 }
 
-FieldColumn VarcharGenerator::Generate(size_t num_rows, RandomContext& ctx) {
+proto::schema::FieldData
+VarcharGenerator::Generate(size_t num_rows, RandomContext& ctx) {
     const auto& varchar_config = config_.varchar_config;
     std::vector<std::string> result;
     result.reserve(num_rows);
@@ -142,7 +143,15 @@ FieldColumn VarcharGenerator::Generate(size_t num_rows, RandomContext& ctx) {
         result.push_back(text);
     }
 
-    return result;
+    proto::schema::FieldData field_data;
+    field_data.set_field_name(config_.field_name);
+    field_data.set_type(proto::schema::DataType::VarChar);
+    auto string_data = field_data.mutable_scalars()->mutable_string_data();
+    for (const auto& value : result) {
+        string_data->add_data(value);
+    }
+
+    return field_data;
 }
 
 std::string VarcharGenerator::GenerateRandomText(RandomContext& ctx) {

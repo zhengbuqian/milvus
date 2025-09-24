@@ -13,7 +13,7 @@ NumericGenerator::NumericGenerator(const FieldConfig& config)
     }
 }
 
-FieldColumn
+proto::schema::FieldData
 NumericGenerator::Generate(size_t num_rows, RandomContext& ctx) {
     const auto& num_config = config_.numeric_config;
 
@@ -42,7 +42,15 @@ NumericGenerator::Generate(size_t num_rows, RandomContext& ctx) {
         }
 
         ApplyOutliers(result, ctx);
-        return result;
+
+        proto::schema::FieldData field_data;
+        field_data.set_field_name(config_.field_name);
+        field_data.set_type(proto::schema::DataType::Int64);
+        auto long_data = field_data.mutable_scalars()->mutable_long_data();
+        for (const auto value : result) {
+            long_data->add_data(value);
+        }
+        return field_data;
 
     } else if (num_config.type == DataType::FLOAT) {
         std::vector<float> result;
@@ -69,7 +77,13 @@ NumericGenerator::Generate(size_t num_rows, RandomContext& ctx) {
 
         ApplyPrecision(result);
         ApplyOutliers(result, ctx);
-        return result;
+
+        proto::schema::FieldData field_data;
+        field_data.set_field_name(config_.field_name);
+        field_data.set_type(proto::schema::DataType::Float);
+        auto float_data = field_data.mutable_scalars()->mutable_float_data()->mutable_data();
+        float_data->Add(result.data(), result.data() + result.size());
+        return field_data;
 
     } else if (num_config.type == DataType::DOUBLE) {
         std::vector<double> result;
@@ -96,7 +110,13 @@ NumericGenerator::Generate(size_t num_rows, RandomContext& ctx) {
 
         ApplyPrecision(result);
         ApplyOutliers(result, ctx);
-        return result;
+
+        proto::schema::FieldData field_data;
+        field_data.set_field_name(config_.field_name);
+        field_data.set_type(proto::schema::DataType::Double);
+        auto double_data = field_data.mutable_scalars()->mutable_double_data()->mutable_data();
+        double_data->Add(result.data(), result.data() + result.size());
+        return field_data;
 
     } else {
         throw std::runtime_error("Unsupported numeric type.");

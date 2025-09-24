@@ -11,7 +11,7 @@ class VarcharGenerator : public IFieldGenerator {
 public:
     explicit VarcharGenerator(const FieldConfig& config);
 
-    FieldColumn Generate(size_t num_rows, RandomContext& ctx) override;
+    proto::schema::FieldData Generate(size_t num_rows, RandomContext& ctx) override;
     const FieldConfig& GetConfig() const override { return config_; }
 
 private:
