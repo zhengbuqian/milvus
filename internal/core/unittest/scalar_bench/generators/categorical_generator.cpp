@@ -128,7 +128,9 @@ DataArray CategoricalGenerator::Generate(size_t num_rows, RandomContext& ctx) {
         // VARCHAR is default
         std::vector<std::string> result;
         result.reserve(num_rows);
+        std::vector<bool> null_mask;
 
+        null_mask.reserve(num_rows);
         for (size_t i = 0; i < num_rows; i++) {
             size_t idx = SelectValueIndex(ctx);
             if (idx >= values_.size()) {
@@ -143,25 +145,55 @@ DataArray CategoricalGenerator::Generate(size_t num_rows, RandomContext& ctx) {
                 value = value.substr(0, cat_config.max_length);
             }
 
+            bool is_valid = true;
+            if (config_.nullable && config_.null_ratio > 0.0 && ctx.Bernoulli(config_.null_ratio)) {
+                is_valid = false;
+                value.clear();
+            }
             result.push_back(value);
+            if (config_.nullable && config_.null_ratio > 0.0) null_mask.push_back(is_valid);
         }
 
         DataArray data_array;
         data_array.set_type(milvus::proto::schema::DataType::VarChar);
+        data_array.set_field_name(config_.field_name);
+        data_array.set_is_dynamic(false);
         auto* string_array = data_array.mutable_scalars()->mutable_string_data();
         string_array->mutable_data()->Reserve(result.size());
         for (auto& s : result) {
             string_array->add_data(std::move(s));
         }
+        if (!null_mask.empty()) {
+            auto* vd = data_array.mutable_valid_data();
+            vd->mutable_data()->Reserve(null_mask.size());
+            for (auto b : null_mask) vd->add_data(b);
+        }
         return data_array;
     } else if (cat_config.type == DataType::INT64) {
         auto values = GenerateTyped<int64_t>(num_rows, ctx);
+        std::vector<bool> null_mask;
+        if (config_.nullable && config_.null_ratio > 0.0) {
+            null_mask.resize(values.size(), true);
+            for (size_t i = 0; i < values.size(); ++i) {
+                if (ctx.Bernoulli(config_.null_ratio)) {
+                    null_mask[i] = false;
+                    values[i] = 0;
+                }
+            }
+        }
         DataArray data_array;
         data_array.set_type(milvus::proto::schema::DataType::Int64);
+        data_array.set_field_name(config_.field_name);
+        data_array.set_is_dynamic(false);
         auto* long_array = data_array.mutable_scalars()->mutable_long_data();
         long_array->mutable_data()->Reserve(values.size());
         for (auto v : values) {
             long_array->add_data(v);
+        }
+        if (!null_mask.empty()) {
+            auto* vd = data_array.mutable_valid_data();
+            vd->mutable_data()->Reserve(null_mask.size());
+            for (auto b : null_mask) vd->add_data(b);
         }
         return data_array;
     } else {

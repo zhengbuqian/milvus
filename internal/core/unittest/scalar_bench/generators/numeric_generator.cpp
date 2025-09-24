@@ -44,6 +44,8 @@ NumericGenerator::Generate(size_t num_rows, RandomContext& ctx) {
         ApplyOutliers(result, ctx);
         DataArray data_array;
         data_array.set_type(milvus::proto::schema::DataType::Int64);
+        data_array.set_field_name(config_.field_name);
+        data_array.set_is_dynamic(false);
         auto* long_array = data_array.mutable_scalars()->mutable_long_data();
         long_array->mutable_data()->Reserve(result.size());
         for (auto v : result) {
@@ -78,6 +80,8 @@ NumericGenerator::Generate(size_t num_rows, RandomContext& ctx) {
         ApplyOutliers(result, ctx);
         DataArray data_array;
         data_array.set_type(milvus::proto::schema::DataType::Float);
+        data_array.set_field_name(config_.field_name);
+        data_array.set_is_dynamic(false);
         auto* float_array = data_array.mutable_scalars()->mutable_float_data();
         float_array->mutable_data()->Reserve(result.size());
         for (auto v : result) {
@@ -112,6 +116,8 @@ NumericGenerator::Generate(size_t num_rows, RandomContext& ctx) {
         ApplyOutliers(result, ctx);
         DataArray data_array;
         data_array.set_type(milvus::proto::schema::DataType::Double);
+        data_array.set_field_name(config_.field_name);
+        data_array.set_is_dynamic(false);
         auto* double_array = data_array.mutable_scalars()->mutable_double_data();
         double_array->mutable_data()->Reserve(result.size());
         for (auto v : result) {

@@ -62,12 +62,18 @@ void
 SchemaBuilder::AddVarCharField(const std::string& name, size_t max_length) {
     // Note: DataType::VARCHAR doesn't have explicit max_length in AddDebugField
     // The max_length is handled internally by Milvus
+    (void)max_length;
     schema_->AddDebugField(name, DataType::VARCHAR);
 }
 
 void
 SchemaBuilder::AddBoolField(const std::string& name) {
     schema_->AddDebugField(name, DataType::BOOL);
+}
+
+void
+SchemaBuilder::AddArrayField(const std::string& name, DataType element_type, bool nullable) {
+    schema_->AddDebugField(name, DataType::ARRAY, element_type, nullable);
 }
 
 std::shared_ptr<milvus::Schema>
@@ -138,7 +144,15 @@ SegmentWrapper::Initialize(const DataConfig& config) {
                 builder.AddBoolField(field_config.field_name);
                 break;
             case DataType::ARRAY: {
-                builder.AddInt64Field(field_config.field_name);
+                DataType element = DataType::NONE;
+                // try best-effort from element config if present
+                if (field_config.array_config.element) {
+                    element = field_config.array_config.element->field_type;
+                }
+                if (element == DataType::NONE) {
+                    element = DataType::INT64;
+                }
+                builder.AddArrayField(field_config.field_name, element, field_config.nullable);
                 break;
             }
             default:
@@ -207,7 +221,10 @@ SegmentWrapper::WriteBinlogThenLoad(const std::string& field_name,
     const auto& field_schema = schema_->operator[](field_id);
     DataType data_type = field_schema.get_data_type();
 
-    auto storage_field_data = milvus::segcore::CreateFieldDataFromDataArray(row_count_, &field_data, field_schema);
+    // Ensure field_id is set on DataArray before conversion
+    DataArray data_with_id = field_data;
+    data_with_id.set_field_id(field_id.get());
+    auto storage_field_data = milvus::segcore::CreateFieldDataFromDataArray(row_count_, &data_with_id, field_schema);
 
     // 准备binlog
     auto field_data_info = PrepareSingleFieldInsertBinlog(

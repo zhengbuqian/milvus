@@ -152,6 +152,8 @@ DataArray ArrayGenerator::GenerateStringArrays(size_t num_rows, RandomContext& c
     }
     DataArray data_array;
     data_array.set_type(milvus::proto::schema::DataType::Array);
+    data_array.set_field_name(config_.field_name);
+    data_array.set_is_dynamic(false);
     auto* array_data = data_array.mutable_scalars()->mutable_array_data();
     array_data->set_element_type(static_cast<milvus::proto::schema::DataType>(milvus::DataType::VARCHAR));
     for (auto& row : arrays) {
@@ -220,6 +222,8 @@ DataArray ArrayGenerator::GenerateNumericArrays(size_t num_rows,
     }
     DataArray data_array;
     data_array.set_type(milvus::proto::schema::DataType::Array);
+    data_array.set_field_name(config_.field_name);
+    data_array.set_is_dynamic(false);
     auto* array_data = data_array.mutable_scalars()->mutable_array_data();
     array_data->set_element_type(static_cast<milvus::proto::schema::DataType>(numeric_type));
     for (auto& r : rows) {
@@ -255,6 +259,8 @@ DataArray ArrayGenerator::GenerateFloatArrays(size_t num_rows,
     }
     DataArray data_array;
     data_array.set_type(milvus::proto::schema::DataType::Array);
+    data_array.set_field_name(config_.field_name);
+    data_array.set_is_dynamic(false);
     auto* array_data = data_array.mutable_scalars()->mutable_array_data();
     array_data->set_element_type(static_cast<milvus::proto::schema::DataType>(numeric_type));
     for (auto& r : rows) {
@@ -267,6 +273,8 @@ DataArray ArrayGenerator::GenerateBooleanArrays(size_t num_rows, RandomContext& 
     auto arrays = GenerateTyped<bool>(num_rows, ctx);
     DataArray data_array;
     data_array.set_type(milvus::proto::schema::DataType::Array);
+    data_array.set_field_name(config_.field_name);
+    data_array.set_is_dynamic(false);
     auto* array_data = data_array.mutable_scalars()->mutable_array_data();
     array_data->set_element_type(static_cast<milvus::proto::schema::DataType>(milvus::DataType::BOOL));
     for (auto& row : arrays) {

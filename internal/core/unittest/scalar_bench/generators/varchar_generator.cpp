@@ -122,7 +122,9 @@ DataArray VarcharGenerator::Generate(size_t num_rows, RandomContext& ctx) {
     const auto& varchar_config = config_.varchar_config;
     std::vector<std::string> result;
     result.reserve(num_rows);
+    std::vector<bool> null_mask;
 
+    null_mask.reserve(num_rows);
     for (size_t i = 0; i < num_rows; i++) {
         std::string text;
 
@@ -139,15 +141,28 @@ DataArray VarcharGenerator::Generate(size_t num_rows, RandomContext& ctx) {
         }
 
         text = TruncateToMaxLength(text);
-        result.push_back(text);
+        bool is_valid = true;
+        if (config_.nullable && config_.null_ratio > 0.0 && ctx.Bernoulli(config_.null_ratio)) {
+            is_valid = false;
+            text.clear();
+        }
+        result.push_back(std::move(text));
+        if (config_.nullable && config_.null_ratio > 0.0) null_mask.push_back(is_valid);
     }
 
     DataArray data_array;
     data_array.set_type(milvus::proto::schema::DataType::VarChar);
+    data_array.set_field_name(config_.field_name);
+    data_array.set_is_dynamic(false);
     auto* string_array = data_array.mutable_scalars()->mutable_string_data();
     string_array->mutable_data()->Reserve(result.size());
     for (auto& s : result) {
         string_array->add_data(std::move(s));
+    }
+    if (!null_mask.empty()) {
+        auto* vd = data_array.mutable_valid_data();
+        vd->mutable_data()->Reserve(null_mask.size());
+        for (auto b : null_mask) vd->add_data(b);
     }
     return data_array;
 }

@@ -318,6 +318,8 @@ SegmentDataGenerator::GenerateMultiFieldData(const DataConfig& config) {
     {
         milvus::DataArray pk_array;
         pk_array.set_type(milvus::proto::schema::DataType::Int64);
+        pk_array.set_field_name("pk");
+        pk_array.set_is_dynamic(false);
         auto* long_array = pk_array.mutable_scalars()->mutable_long_data();
         long_array->mutable_data()->Reserve(config.segment_size);
         for (int64_t i = 0; i < config.segment_size; ++i) {

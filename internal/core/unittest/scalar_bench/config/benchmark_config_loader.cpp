@@ -232,9 +232,15 @@ ParseFieldConfig(const YAML::Node& node, const std::string& default_field_name =
         config.field_type = ParseDataType(node["type"].as<std::string>());
     }
 
-    // Null ratio
+    // Nullable & Null ratio
+    if (node["nullable"]) {
+        config.nullable = node["nullable"].as<bool>();
+    }
     if (node["null_ratio"]) {
         config.null_ratio = node["null_ratio"].as<double>();
+        if (!config.nullable && config.null_ratio > 0.0) {
+            throw std::runtime_error("null_ratio is only allowed when nullable is true for field: " + config.field_name);
+        }
     }
 
     switch (config.generator) {
