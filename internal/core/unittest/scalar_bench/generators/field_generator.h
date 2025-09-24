@@ -20,8 +20,17 @@ using FieldColumn = std::variant<
     std::vector<float>,
     std::vector<double>,
     std::vector<std::string>,
-    std::vector<bool>
-    // Note: ArrayVal support temporarily removed due to header dependency issues
+    std::vector<bool>,
+
+    // for Array type
+    std::vector<std::vector<int8_t>>,
+    std::vector<std::vector<int16_t>>,
+    std::vector<std::vector<int32_t>>,
+    std::vector<std::vector<int64_t>>,
+    std::vector<std::vector<float>>,
+    std::vector<std::vector<double>>,
+    std::vector<std::vector<std::string>>,
+    std::vector<std::vector<bool>>
 >;
 
 // Random context for consistent generation

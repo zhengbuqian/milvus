@@ -137,10 +137,10 @@ SegmentWrapper::Initialize(const DataConfig& config) {
             case DataType::BOOL:
                 builder.AddBoolField(field_config.field_name);
                 break;
-            case DataType::ARRAY:
-                // TODO: Add array field support in schema builder
-                builder.AddInt64Field(field_config.field_name); // Temporary fallback
+            case DataType::ARRAY: {
+                builder.AddInt64Field(field_config.field_name);
                 break;
+            }
             default:
                 builder.AddInt64Field(field_config.field_name); // Default fallback
                 break;
@@ -192,39 +192,48 @@ SegmentWrapper::LoadFromSegmentData(const SegmentData& segment_data) {
         try {
             if (data_type == DataType::INT8) {
                 const auto& data = segment_data.GetFieldData<int8_t>(field_name);
-                PrepareInsertData(field_name, field_id, data);
+                WriteBinlogThenLoad(field_name, field_id, data);
             } else if (data_type == DataType::INT16) {
                 const auto& data = segment_data.GetFieldData<int16_t>(field_name);
-                PrepareInsertData(field_name, field_id, data);
+                WriteBinlogThenLoad(field_name, field_id, data);
             } else if (data_type == DataType::INT32) {
                 const auto& data = segment_data.GetFieldData<int32_t>(field_name);
-                PrepareInsertData(field_name, field_id, data);
+                WriteBinlogThenLoad(field_name, field_id, data);
             } else if (data_type == DataType::INT64) {
                 const auto& data = segment_data.GetFieldData<int64_t>(field_name);
-                PrepareInsertData(field_name, field_id, data);
+                WriteBinlogThenLoad(field_name, field_id, data);
             } else if (data_type == DataType::FLOAT) {
                 // Try to get float data first, then double
                 try {
                     const auto& data = segment_data.GetFieldData<float>(field_name);
-                    PrepareInsertData(field_name, field_id, data);
+                    WriteBinlogThenLoad(field_name, field_id, data);
                 } catch (...) {
                     const auto& data = segment_data.GetFieldData<double>(field_name);
                     // 转换为float
                     std::vector<float> float_data(data.begin(), data.end());
-                    PrepareInsertData(field_name, field_id, float_data);
+                    WriteBinlogThenLoad(field_name, field_id, float_data);
                 }
             } else if (data_type == DataType::DOUBLE) {
                 const auto& data = segment_data.GetFieldData<double>(field_name);
-                PrepareInsertData(field_name, field_id, data);
+                WriteBinlogThenLoad(field_name, field_id, data);
             } else if (data_type == DataType::VARCHAR) {
                 const auto& data = segment_data.GetFieldData<std::string>(field_name);
-                PrepareInsertData(field_name, field_id, data);
+                WriteBinlogThenLoad(field_name, field_id, data);
             } else if (data_type == DataType::BOOL) {
                 const auto& data = segment_data.GetFieldData<bool>(field_name);
-                PrepareInsertData(field_name, field_id, data);
+                WriteBinlogThenLoad(field_name, field_id, data);
             } else if (data_type == DataType::ARRAY) {
-                // TODO: Handle array type
-                std::cerr << "Warning: Array field loading not yet implemented for " << field_name << std::endl;
+                const auto* field_config = segment_data.GetFieldConfig(field_name);
+                if (field_config == nullptr || !field_config->array_config.element) {
+                    std::cerr << "Warning: Array field " << field_name
+                              << " missing element configuration; skipping" << std::endl;
+                    continue;
+                }
+
+                DataType element_type = field_config->array_config.element->field_type;
+
+                std::cerr << "Warning: Array field loading not yet implemented for "
+                          << field_name << std::endl;
             }
         } catch (const std::exception& e) {
             std::cerr << "Error loading field " << field_name << ": " << e.what() << std::endl;
@@ -235,7 +244,7 @@ SegmentWrapper::LoadFromSegmentData(const SegmentData& segment_data) {
 }
 
 void
-SegmentWrapper::PrepareInsertData(const std::string& field_name,
+SegmentWrapper::WriteBinlogThenLoad(const std::string& field_name,
                                    FieldId field_id,
                                    const FieldColumn& field_data) {
     const auto& field_schema = schema_->operator[](field_id);

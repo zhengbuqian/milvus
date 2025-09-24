@@ -24,20 +24,6 @@
 namespace milvus {
 namespace scalar_bench {
 
-// Use FieldColumn type from field_generator.h instead of FieldData
-// FieldColumn supports all field types including arrays
-using FieldColumn = std::variant<
-    std::vector<int8_t>,
-    std::vector<int16_t>,
-    std::vector<int32_t>,
-    std::vector<int64_t>,
-    std::vector<float>,
-    std::vector<double>,
-    std::vector<std::string>,
-    std::vector<bool>
-    // Note: ArrayVal support temporarily removed due to header dependency issues
->;
-
 // Segment数据包装类
 class SegmentData {
 public:

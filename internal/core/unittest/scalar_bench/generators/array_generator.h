@@ -2,6 +2,10 @@
 
 #include "field_generator.h"
 #include <memory>
+#include <stdexcept>
+#include <variant>
+#include <vector>
+#include <unordered_set>
 
 namespace milvus {
 namespace scalar_bench {
@@ -16,11 +20,40 @@ public:
 private:
     FieldConfig config_;
     std::unique_ptr<IFieldGenerator> element_generator_;
+    DataType element_type_ = DataType::NONE;
 
     void InitializeElementGenerator();
     size_t DetermineArrayLength(RandomContext& ctx);
-    void ApplyContainsRules(void* array, RandomContext& ctx);
-    void EnsureUniqueness(void* array);
+    template <typename T>
+    std::vector<std::vector<T>> GenerateTyped(size_t num_rows, RandomContext& ctx);
+    FieldColumn GenerateStringArrays(size_t num_rows, RandomContext& ctx);
+    FieldColumn GenerateNumericArrays(size_t num_rows, RandomContext& ctx,
+                                      DataType numeric_type);
+    FieldColumn GenerateFloatArrays(size_t num_rows, RandomContext& ctx,
+                                    DataType numeric_type);
+    FieldColumn GenerateBooleanArrays(size_t num_rows, RandomContext& ctx);
+
+    template <typename T>
+    static std::vector<T> ExtractValues(FieldColumn&& column);
+    static std::vector<std::string> ExtractStringValues(FieldColumn&& column);
+
+    template <typename T>
+    void AppendGeneratedElements(std::vector<T>& values, size_t min_count, RandomContext& ctx);
+    void AppendGeneratedStringElements(std::vector<std::string>& values,
+                                       size_t min_count,
+                                       RandomContext& ctx);
+
+    template <typename T>
+    void ApplyContainsRules(std::vector<T>& values, RandomContext& ctx);
+    void ApplyStringContainsRules(std::vector<std::string>& values,
+                                  RandomContext& ctx,
+                                  size_t target_length);
+
+    template <typename T>
+    void EnsureUniqueness(std::vector<T>& values);
+    void EnsureStringUniqueness(std::vector<std::string>& values);
+
+    void ValidateElementGenerator(const FieldConfig& element_config);
 };
 
 } // namespace scalar_bench

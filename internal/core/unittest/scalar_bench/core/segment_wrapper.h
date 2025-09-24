@@ -28,25 +28,13 @@
 
 // Forward declarations from benchmark config
 #include "../config/benchmark_config.h"
+#include "../generators/field_generator.h"
 
 namespace milvus {
 namespace scalar_bench {
 
 // Forward declarations
 class SegmentData;
-
-// FieldColumn type definition (from segment_data.h)
-using FieldColumn = std::variant<
-    std::vector<int8_t>,
-    std::vector<int16_t>,
-    std::vector<int32_t>,
-    std::vector<int64_t>,
-    std::vector<float>,
-    std::vector<double>,
-    std::vector<std::string>,
-    std::vector<bool>
-    // Note: ArrayVal support temporarily removed due to header dependency issues
->;
 
 // Schema构建器
 class SchemaBuilder {
@@ -110,7 +98,7 @@ private:
         const FieldColumn& field_data);
 
     // 准备插入数据
-    void PrepareInsertData(
+    void WriteBinlogThenLoad(
         const std::string& field_name,
         FieldId field_id,
         const FieldColumn& field_data);
