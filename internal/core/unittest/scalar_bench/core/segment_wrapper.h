@@ -43,12 +43,13 @@ public:
 
     // 添加字段
     void AddPrimaryKeyField(const std::string& name = "pk");
-    void AddInt32Field(const std::string& name);
-    void AddInt64Field(const std::string& name);
-    void AddFloatField(const std::string& name);
-    void AddDoubleField(const std::string& name);
-    void AddVarCharField(const std::string& name, size_t max_length = 256);
-    void AddBoolField(const std::string& name);
+    void AddInt32Field(const std::string& name, bool nullable);
+    void AddInt64Field(const std::string& name, bool nullable);
+    void AddFloatField(const std::string& name, bool nullable);
+    void AddDoubleField(const std::string& name, bool nullable);
+    void AddVarCharField(const std::string& name, size_t max_length, bool nullable);
+    void AddBoolField(const std::string& name, bool nullable);
+    void AddArrayField(const std::string& name, DataType element_type, bool nullable);
 
     // 构建Schema
     std::shared_ptr<milvus::Schema> Build();

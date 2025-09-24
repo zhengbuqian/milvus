@@ -42,12 +42,30 @@ NumericGenerator::Generate(size_t num_rows, RandomContext& ctx) {
         }
 
         ApplyOutliers(result, ctx);
+        std::vector<bool> valid_mask;
+        if (config_.nullable && config_.null_ratio > 0.0) {
+            valid_mask.reserve(result.size());
+            for (size_t i = 0; i < result.size(); ++i) {
+                bool is_valid = !ctx.Bernoulli(config_.null_ratio);
+                if (!is_valid) {
+                    result[i] = 0;
+                }
+                valid_mask.push_back(is_valid);
+            }
+        }
         DataArray data_array;
         data_array.set_type(milvus::proto::schema::DataType::Int64);
+        data_array.set_field_name(config_.field_name);
+        data_array.set_is_dynamic(false);
         auto* long_array = data_array.mutable_scalars()->mutable_long_data();
         long_array->mutable_data()->Reserve(result.size());
         for (auto v : result) {
             long_array->add_data(v);
+        }
+        if (!valid_mask.empty()) {
+            auto* vd = data_array.mutable_valid_data();
+            vd->mutable_data()->Reserve(valid_mask.size());
+            for (auto b : valid_mask) vd->add_data(b);
         }
         return data_array;
 
@@ -76,12 +94,30 @@ NumericGenerator::Generate(size_t num_rows, RandomContext& ctx) {
 
         ApplyPrecision(result);
         ApplyOutliers(result, ctx);
+        std::vector<bool> valid_mask;
+        if (config_.nullable && config_.null_ratio > 0.0) {
+            valid_mask.reserve(result.size());
+            for (size_t i = 0; i < result.size(); ++i) {
+                bool is_valid = !ctx.Bernoulli(config_.null_ratio);
+                if (!is_valid) {
+                    result[i] = 0.0f;
+                }
+                valid_mask.push_back(is_valid);
+            }
+        }
         DataArray data_array;
         data_array.set_type(milvus::proto::schema::DataType::Float);
+        data_array.set_field_name(config_.field_name);
+        data_array.set_is_dynamic(false);
         auto* float_array = data_array.mutable_scalars()->mutable_float_data();
         float_array->mutable_data()->Reserve(result.size());
         for (auto v : result) {
             float_array->add_data(v);
+        }
+        if (!valid_mask.empty()) {
+            auto* vd = data_array.mutable_valid_data();
+            vd->mutable_data()->Reserve(valid_mask.size());
+            for (auto b : valid_mask) vd->add_data(b);
         }
         return data_array;
 
@@ -110,12 +146,30 @@ NumericGenerator::Generate(size_t num_rows, RandomContext& ctx) {
 
         ApplyPrecision(result);
         ApplyOutliers(result, ctx);
+        std::vector<bool> valid_mask;
+        if (config_.nullable && config_.null_ratio > 0.0) {
+            valid_mask.reserve(result.size());
+            for (size_t i = 0; i < result.size(); ++i) {
+                bool is_valid = !ctx.Bernoulli(config_.null_ratio);
+                if (!is_valid) {
+                    result[i] = 0.0;
+                }
+                valid_mask.push_back(is_valid);
+            }
+        }
         DataArray data_array;
         data_array.set_type(milvus::proto::schema::DataType::Double);
+        data_array.set_field_name(config_.field_name);
+        data_array.set_is_dynamic(false);
         auto* double_array = data_array.mutable_scalars()->mutable_double_data();
         double_array->mutable_data()->Reserve(result.size());
         for (auto v : result) {
             double_array->add_data(v);
+        }
+        if (!valid_mask.empty()) {
+            auto* vd = data_array.mutable_valid_data();
+            vd->mutable_data()->Reserve(valid_mask.size());
+            for (auto b : valid_mask) vd->add_data(b);
         }
         return data_array;
 

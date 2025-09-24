@@ -39,35 +39,41 @@ SchemaBuilder::AddPrimaryKeyField(const std::string& name) {
 }
 
 void
-SchemaBuilder::AddInt32Field(const std::string& name) {
-    schema_->AddDebugField(name, DataType::INT32);
+SchemaBuilder::AddInt32Field(const std::string& name, bool nullable) {
+    schema_->AddDebugField(name, DataType::INT32, nullable);
 }
 
 void
-SchemaBuilder::AddInt64Field(const std::string& name) {
-    schema_->AddDebugField(name, DataType::INT64);
+SchemaBuilder::AddInt64Field(const std::string& name, bool nullable) {
+    schema_->AddDebugField(name, DataType::INT64, nullable);
 }
 
 void
-SchemaBuilder::AddFloatField(const std::string& name) {
-    schema_->AddDebugField(name, DataType::FLOAT);
+SchemaBuilder::AddFloatField(const std::string& name, bool nullable) {
+    schema_->AddDebugField(name, DataType::FLOAT, nullable);
 }
 
 void
-SchemaBuilder::AddDoubleField(const std::string& name) {
-    schema_->AddDebugField(name, DataType::DOUBLE);
+SchemaBuilder::AddDoubleField(const std::string& name, bool nullable) {
+    schema_->AddDebugField(name, DataType::DOUBLE, nullable);
 }
 
 void
-SchemaBuilder::AddVarCharField(const std::string& name, size_t max_length) {
+SchemaBuilder::AddVarCharField(const std::string& name, size_t max_length, bool nullable) {
     // Note: DataType::VARCHAR doesn't have explicit max_length in AddDebugField
     // The max_length is handled internally by Milvus
-    schema_->AddDebugField(name, DataType::VARCHAR);
+    (void)max_length;
+    schema_->AddDebugField(name, DataType::VARCHAR, nullable);
 }
 
 void
-SchemaBuilder::AddBoolField(const std::string& name) {
-    schema_->AddDebugField(name, DataType::BOOL);
+SchemaBuilder::AddBoolField(const std::string& name, bool nullable) {
+    schema_->AddDebugField(name, DataType::BOOL, nullable);
+}
+
+void
+SchemaBuilder::AddArrayField(const std::string& name, DataType element_type, bool nullable) {
+    schema_->AddDebugField(name, DataType::ARRAY, element_type, nullable);
 }
 
 std::shared_ptr<milvus::Schema>
@@ -118,10 +124,10 @@ SegmentWrapper::Initialize(const DataConfig& config) {
         // Map field_type to schema field type
         switch (field_config.field_type) {
             case DataType::INT64:
-                builder.AddInt64Field(field_config.field_name);
+                builder.AddInt64Field(field_config.field_name, field_config.nullable);
                 break;
             case DataType::DOUBLE:
-                builder.AddDoubleField(field_config.field_name);
+                builder.AddDoubleField(field_config.field_name, field_config.nullable);
                 break;
             case DataType::VARCHAR: {
                 // Get max length from string config if using string generator
@@ -131,18 +137,26 @@ SegmentWrapper::Initialize(const DataConfig& config) {
                 } else if (field_config.generator == FieldGeneratorType::VARCHAR) {
                     max_len = field_config.varchar_config.max_length > 0 ? field_config.varchar_config.max_length : 512;
                 }
-                builder.AddVarCharField(field_config.field_name, max_len);
+                builder.AddVarCharField(field_config.field_name, max_len, field_config.nullable);
                 break;
             }
             case DataType::BOOL:
-                builder.AddBoolField(field_config.field_name);
+                builder.AddBoolField(field_config.field_name, field_config.nullable);
                 break;
             case DataType::ARRAY: {
-                builder.AddInt64Field(field_config.field_name);
+                DataType element = DataType::NONE;
+                // try best-effort from element config if present
+                if (field_config.array_config.element) {
+                    element = field_config.array_config.element->field_type;
+                }
+                if (element == DataType::NONE) {
+                    element = DataType::INT64;
+                }
+                builder.AddArrayField(field_config.field_name, element, field_config.nullable);
                 break;
             }
             default:
-                builder.AddInt64Field(field_config.field_name); // Default fallback
+                builder.AddInt64Field(field_config.field_name, field_config.nullable); // Default fallback
                 break;
         }
     }
@@ -207,7 +221,10 @@ SegmentWrapper::WriteBinlogThenLoad(const std::string& field_name,
     const auto& field_schema = schema_->operator[](field_id);
     DataType data_type = field_schema.get_data_type();
 
-    auto storage_field_data = milvus::segcore::CreateFieldDataFromDataArray(row_count_, &field_data, field_schema);
+    // Ensure field_id is set on DataArray before conversion
+    DataArray data_with_id = field_data;
+    data_with_id.set_field_id(field_id.get());
+    auto storage_field_data = milvus::segcore::CreateFieldDataFromDataArray(row_count_, &data_with_id, field_schema);
 
     // 准备binlog
     auto field_data_info = PrepareSingleFieldInsertBinlog(

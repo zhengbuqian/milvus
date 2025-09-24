@@ -29,6 +29,10 @@ void VarcharGenerator::Initialize() {
         case VarcharMode::CORPUS:
             LoadCorpus();
             break;
+        case VarcharMode::SINGLE_UUID:
+        case VarcharMode::SINGLE_TIMESTAMP:
+            // no preload required
+            break;
         default:
             throw std::runtime_error("Unknown varchar generation mode");
     }
@@ -122,7 +126,9 @@ DataArray VarcharGenerator::Generate(size_t num_rows, RandomContext& ctx) {
     const auto& varchar_config = config_.varchar_config;
     std::vector<std::string> result;
     result.reserve(num_rows);
+    std::vector<bool> null_mask;
 
+    null_mask.reserve(num_rows);
     for (size_t i = 0; i < num_rows; i++) {
         std::string text;
 
@@ -136,18 +142,37 @@ DataArray VarcharGenerator::Generate(size_t num_rows, RandomContext& ctx) {
             case VarcharMode::CORPUS:
                 text = GenerateCorpusText(ctx);
                 break;
+            case VarcharMode::SINGLE_UUID:
+                text = GenerateSingleUuid(ctx);
+                break;
+            case VarcharMode::SINGLE_TIMESTAMP:
+                text = GenerateSingleTimestamp(ctx);
+                break;
         }
 
         text = TruncateToMaxLength(text);
-        result.push_back(text);
+        bool is_valid = true;
+        if (config_.nullable && config_.null_ratio > 0.0 && ctx.Bernoulli(config_.null_ratio)) {
+            is_valid = false;
+            text.clear();
+        }
+        result.push_back(std::move(text));
+        if (config_.nullable && config_.null_ratio > 0.0) null_mask.push_back(is_valid);
     }
 
     DataArray data_array;
     data_array.set_type(milvus::proto::schema::DataType::VarChar);
+    data_array.set_field_name(config_.field_name);
+    data_array.set_is_dynamic(false);
     auto* string_array = data_array.mutable_scalars()->mutable_string_data();
     string_array->mutable_data()->Reserve(result.size());
     for (auto& s : result) {
         string_array->add_data(std::move(s));
+    }
+    if (!null_mask.empty()) {
+        auto* vd = data_array.mutable_valid_data();
+        vd->mutable_data()->Reserve(null_mask.size());
+        for (auto b : null_mask) vd->add_data(b);
     }
     return data_array;
 }
@@ -213,6 +238,62 @@ std::string VarcharGenerator::GenerateCorpusText(RandomContext& ctx) {
 
     size_t idx = ctx.UniformInt(0, corpus_lines_.size() - 1);
     return corpus_lines_[idx];
+}
+
+std::string VarcharGenerator::GenerateSingleUuid(RandomContext& ctx) {
+    // simple UUID generation using RNG; for V4 use random hex; for V1 fallback to random as well (no MAC/time deps here)
+    auto to_hex = [](uint32_t v, int width) {
+        static const char* hex = "0123456789abcdef";
+        std::string s(width, '0');
+        for (int i = width - 1; i >= 0; --i) {
+            s[i] = hex[v & 0xF];
+            v >>= 4;
+        }
+        return s;
+    };
+    uint32_t a = static_cast<uint32_t>(ctx.GetRNG()());
+    uint32_t b = static_cast<uint32_t>(ctx.GetRNG()());
+    uint32_t c = static_cast<uint32_t>(ctx.GetRNG()());
+    uint32_t d = static_cast<uint32_t>(ctx.GetRNG()());
+    // Format 8-4-4-4-12 (lowercase hex)
+    std::string uuid = to_hex(a, 8) + "-" + to_hex((b >> 16) & 0xFFFF, 4) + "-" +
+                       to_hex((b & 0xFFFF) | 0x4000, 4) + "-" +
+                       to_hex(((c >> 16) & 0x3FFF) | 0x8000, 4) + "-" +
+                       to_hex(c & 0xFFFF, 4) + to_hex(d, 8);
+    int max_len = config_.varchar_config.uuid_length > 0 ? config_.varchar_config.uuid_length : 36;
+    if ((int)uuid.size() > max_len) uuid.resize(max_len);
+    return uuid;
+}
+
+std::string VarcharGenerator::GenerateSingleTimestamp(RandomContext& ctx) {
+    // generate timestamp using embedded timestamp config
+    int64_t start = config_.varchar_config.ts_embedding.range.start;
+    int64_t end = config_.varchar_config.ts_embedding.range.end;
+    if (end <= start) {
+        end = start + 1;
+    }
+    int64_t ts = ctx.UniformInt(start, end);
+    if (config_.varchar_config.ts_embedding.jitter > 0) {
+        int64_t jitter = ctx.UniformInt(-config_.varchar_config.ts_embedding.jitter,
+                                        config_.varchar_config.ts_embedding.jitter);
+        ts += jitter;
+    }
+    if (config_.varchar_config.ts_format == TimestampStringFormat::UNIX) {
+        return std::to_string(ts);
+    }
+    // ISO8601 basic, UTC 'Z'
+    std::time_t t = static_cast<std::time_t>(ts / 1000);
+    std::tm gmt{};
+#ifdef _WIN32
+    gmtime_s(&gmt, &t);
+#else
+    gmt = *std::gmtime(&t);
+#endif
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02dZ",
+                  gmt.tm_year + 1900, gmt.tm_mon + 1, gmt.tm_mday,
+                  gmt.tm_hour, gmt.tm_min, gmt.tm_sec);
+    return std::string(buf);
 }
 
 std::string VarcharGenerator::ApplyKeywords(const std::string& text, RandomContext& ctx) {

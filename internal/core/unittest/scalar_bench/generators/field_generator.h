@@ -106,7 +106,7 @@ public:
 protected:
     FieldConfig config_;
 
-    // Apply null ratio to generated data
+    // Apply null ratio to generated data. Only effective when nullable=true in config
     void ApplyNullMask(std::vector<T>& data, std::vector<bool>& null_mask,
                        double null_ratio, RandomContext& ctx) {
         if (null_ratio <= 0) return;
