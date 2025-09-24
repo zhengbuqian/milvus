@@ -2,36 +2,14 @@
 
 #include <memory>
 #include <vector>
-#include <variant>
 #include <string>
 #include <random>
+#include "pb/schema.pb.h"
 #include "../config/benchmark_config.h"
 #include "knowhere/dataset.h"
 
 namespace milvus {
 namespace scalar_bench {
-
-// Type for generated field data
-using FieldColumn = std::variant<
-    std::vector<int8_t>,
-    std::vector<int16_t>,
-    std::vector<int32_t>,
-    std::vector<int64_t>,
-    std::vector<float>,
-    std::vector<double>,
-    std::vector<std::string>,
-    std::vector<bool>,
-
-    // for Array type
-    std::vector<std::vector<int8_t>>,
-    std::vector<std::vector<int16_t>>,
-    std::vector<std::vector<int32_t>>,
-    std::vector<std::vector<int64_t>>,
-    std::vector<std::vector<float>>,
-    std::vector<std::vector<double>>,
-    std::vector<std::vector<std::string>>,
-    std::vector<std::vector<bool>>
->;
 
 // Random context for consistent generation
 class RandomContext {
@@ -98,7 +76,7 @@ public:
     virtual ~IFieldGenerator() = default;
 
     // Generate data for the specified number of rows
-    virtual FieldColumn Generate(size_t num_rows, RandomContext& ctx) = 0;
+    virtual proto::schema::FieldData Generate(size_t num_rows, RandomContext& ctx) = 0;
 
     // Get the field configuration
     virtual const FieldConfig& GetConfig() const = 0;

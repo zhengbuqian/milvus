@@ -2,9 +2,68 @@
 #include <algorithm>
 #include <stdexcept>
 #include <unordered_set>
+#include <type_traits>
 
 namespace milvus {
 namespace scalar_bench {
+
+namespace {
+
+template <typename T>
+void FillScalarFieldWithValues(proto::schema::ScalarField* scalar_field,
+                               const std::vector<T>& values) {
+    if constexpr (std::is_same_v<T, bool>) {
+        auto bool_data = scalar_field->mutable_bool_data();
+        for (const auto value : values) {
+            bool_data->add_data(value);
+        }
+    } else if constexpr (std::is_same_v<T, int8_t> || std::is_same_v<T, int16_t> ||
+                         std::is_same_v<T, int32_t>) {
+        auto int_data = scalar_field->mutable_int_data();
+        for (const auto value : values) {
+            int_data->add_data(static_cast<int32_t>(value));
+        }
+    } else if constexpr (std::is_same_v<T, int64_t>) {
+        auto long_data = scalar_field->mutable_long_data();
+        for (const auto value : values) {
+            long_data->add_data(value);
+        }
+    } else if constexpr (std::is_same_v<T, float>) {
+        auto float_data = scalar_field->mutable_float_data();
+        float_data->mutable_data()->Add(values.data(), values.data() + values.size());
+    } else if constexpr (std::is_same_v<T, double>) {
+        auto double_data = scalar_field->mutable_double_data();
+        double_data->mutable_data()->Add(values.data(), values.data() + values.size());
+    } else {
+        static_assert(sizeof(T) == 0, "Unsupported element type for array field");
+    }
+}
+
+inline void FillScalarFieldWithValues(proto::schema::ScalarField* scalar_field,
+                                      const std::vector<std::string>& values) {
+    auto string_data = scalar_field->mutable_string_data();
+    for (const auto& value : values) {
+        string_data->add_data(value);
+    }
+}
+
+template <typename T>
+proto::schema::FieldData BuildArrayFieldData(const std::vector<std::vector<T>>& arrays,
+                                             DataType element_type,
+                                             const std::string& field_name) {
+    proto::schema::FieldData field_data;
+    field_data.set_field_name(field_name);
+    field_data.set_type(proto::schema::DataType::Array);
+    auto array_data = field_data.mutable_scalars()->mutable_array_data();
+    array_data->set_element_type(static_cast<proto::schema::DataType>(element_type));
+    for (const auto& elements : arrays) {
+        auto scalar = array_data->add_data();
+        FillScalarFieldWithValues(scalar, elements);
+    }
+    return field_data;
+}
+
+} // namespace
 
 ArrayGenerator::ArrayGenerator(const FieldConfig& config)
     : config_(config) {
@@ -27,7 +86,8 @@ void ArrayGenerator::InitializeElementGenerator() {
     element_type_ = array_config.element->field_type;
 }
 
-FieldColumn ArrayGenerator::Generate(size_t num_rows, RandomContext& ctx) {
+proto::schema::FieldData
+ArrayGenerator::Generate(size_t num_rows, RandomContext& ctx) {
     switch (element_type_) {
         case DataType::BOOL:
             return GenerateBooleanArrays(num_rows, ctx);
@@ -118,7 +178,8 @@ ArrayGenerator::GenerateTyped(size_t num_rows, RandomContext& ctx) {
     return arrays;
 }
 
-FieldColumn ArrayGenerator::GenerateStringArrays(size_t num_rows, RandomContext& ctx) {
+proto::schema::FieldData
+ArrayGenerator::GenerateStringArrays(size_t num_rows, RandomContext& ctx) {
     std::vector<std::vector<std::string>> arrays;
     arrays.reserve(num_rows);
 
@@ -150,7 +211,7 @@ FieldColumn ArrayGenerator::GenerateStringArrays(size_t num_rows, RandomContext&
         }
         arrays.push_back(std::move(elements));
     }
-    return arrays;
+    return BuildArrayFieldData(arrays, element_type_, config_.field_name);
 }
 
 template <typename T>
@@ -158,8 +219,9 @@ void ArrayGenerator::AppendGeneratedElements(std::vector<T>& values,
                                              size_t min_count,
                                              RandomContext& ctx) {
     while (values.size() < min_count) {
-        FieldColumn element_column = element_generator_->Generate(min_count - values.size(), ctx);
-        auto batch = ExtractValues<T>(std::move(element_column));
+        auto element_column =
+            element_generator_->Generate(min_count - values.size(), ctx);
+        auto batch = ExtractValues<T>(element_column);
         values.insert(values.end(), batch.begin(), batch.end());
         if (batch.empty()) {
             break;
@@ -171,8 +233,9 @@ void ArrayGenerator::AppendGeneratedStringElements(std::vector<std::string>& val
                                                    size_t min_count,
                                                    RandomContext& ctx) {
     while (values.size() < min_count) {
-        FieldColumn element_column = element_generator_->Generate(min_count - values.size(), ctx);
-        auto batch = ExtractStringValues(std::move(element_column));
+        auto element_column =
+            element_generator_->Generate(min_count - values.size(), ctx);
+        auto batch = ExtractStringValues(element_column);
         values.insert(values.end(), batch.begin(), batch.end());
         if (batch.empty()) {
             break;
@@ -180,55 +243,133 @@ void ArrayGenerator::AppendGeneratedStringElements(std::vector<std::string>& val
     }
 }
 
-FieldColumn ArrayGenerator::GenerateNumericArrays(size_t num_rows,
-                                                  RandomContext& ctx,
-                                                  DataType numeric_type) {
+proto::schema::FieldData
+ArrayGenerator::GenerateNumericArrays(size_t num_rows,
+                                      RandomContext& ctx,
+                                      DataType numeric_type) {
     switch (numeric_type) {
         case DataType::INT8:
-            return GenerateTyped<int8_t>(num_rows, ctx);
+            return BuildArrayFieldData(
+                GenerateTyped<int8_t>(num_rows, ctx), numeric_type, config_.field_name);
         case DataType::INT16:
-            return GenerateTyped<int16_t>(num_rows, ctx);
+            return BuildArrayFieldData(
+                GenerateTyped<int16_t>(num_rows, ctx), numeric_type, config_.field_name);
         case DataType::INT32:
-            return GenerateTyped<int32_t>(num_rows, ctx);
+            return BuildArrayFieldData(
+                GenerateTyped<int32_t>(num_rows, ctx), numeric_type, config_.field_name);
         case DataType::INT64:
-            return GenerateTyped<int64_t>(num_rows, ctx);
+            return BuildArrayFieldData(
+                GenerateTyped<int64_t>(num_rows, ctx), numeric_type, config_.field_name);
         default:
             throw std::runtime_error("Unsupported integer array element type");
     }
 }
 
-FieldColumn ArrayGenerator::GenerateFloatArrays(size_t num_rows,
-                                                RandomContext& ctx,
-                                                DataType numeric_type) {
+proto::schema::FieldData
+ArrayGenerator::GenerateFloatArrays(size_t num_rows,
+                                    RandomContext& ctx,
+                                    DataType numeric_type) {
     switch (numeric_type) {
         case DataType::FLOAT:
-            return GenerateTyped<float>(num_rows, ctx);
+            return BuildArrayFieldData(
+                GenerateTyped<float>(num_rows, ctx), numeric_type, config_.field_name);
         case DataType::DOUBLE:
-            return GenerateTyped<double>(num_rows, ctx);
+            return BuildArrayFieldData(
+                GenerateTyped<double>(num_rows, ctx), numeric_type, config_.field_name);
         default:
             throw std::runtime_error("Unsupported float array element type");
     }
 }
 
-FieldColumn ArrayGenerator::GenerateBooleanArrays(size_t num_rows, RandomContext& ctx) {
-    return GenerateTyped<bool>(num_rows, ctx);
+proto::schema::FieldData
+ArrayGenerator::GenerateBooleanArrays(size_t num_rows, RandomContext& ctx) {
+    return BuildArrayFieldData(
+        GenerateTyped<bool>(num_rows, ctx), element_type_, config_.field_name);
 }
 
 template <typename T>
 std::vector<T>
-ArrayGenerator::ExtractValues(FieldColumn&& column) {
-    if (auto values = std::get_if<std::vector<T>>(&column)) {
-        return std::move(*values);
+ArrayGenerator::ExtractValues(const proto::schema::FieldData& column) {
+    if (!column.has_scalars()) {
+        throw std::runtime_error("Array element generator returned non-scalar data");
     }
-    throw std::runtime_error("Array element generator returned unexpected type");
+
+    const auto& scalars = column.scalars();
+    std::vector<T> values;
+
+    if constexpr (std::is_same_v<T, bool>) {
+        if (scalars.data_case() != proto::schema::ScalarField::kBoolData) {
+            throw std::runtime_error("Expected bool data for array elements");
+        }
+        const auto& data = scalars.bool_data();
+        values.reserve(data.data_size());
+        for (int i = 0; i < data.data_size(); ++i) {
+            values.push_back(data.data(i));
+        }
+    } else if constexpr (std::is_same_v<T, int8_t> || std::is_same_v<T, int16_t> ||
+                         std::is_same_v<T, int32_t>) {
+        if (scalars.data_case() != proto::schema::ScalarField::kIntData) {
+            throw std::runtime_error("Expected int data for array elements");
+        }
+        const auto& data = scalars.int_data();
+        values.reserve(data.data_size());
+        for (int i = 0; i < data.data_size(); ++i) {
+            values.push_back(static_cast<T>(data.data(i)));
+        }
+    } else if constexpr (std::is_same_v<T, int64_t>) {
+        switch (scalars.data_case()) {
+            case proto::schema::ScalarField::kLongData: {
+                const auto& data = scalars.long_data();
+                values.reserve(data.data_size());
+                for (int i = 0; i < data.data_size(); ++i) {
+                    values.push_back(data.data(i));
+                }
+                break;
+            }
+            case proto::schema::ScalarField::kIntData: {
+                const auto& data = scalars.int_data();
+                values.reserve(data.data_size());
+                for (int i = 0; i < data.data_size(); ++i) {
+                    values.push_back(static_cast<int64_t>(data.data(i)));
+                }
+                break;
+            }
+            default:
+                throw std::runtime_error("Expected integer data for array elements");
+        }
+    } else if constexpr (std::is_same_v<T, float>) {
+        if (scalars.data_case() != proto::schema::ScalarField::kFloatData) {
+            throw std::runtime_error("Expected float data for array elements");
+        }
+        const auto& data = scalars.float_data();
+        values.assign(data.data().begin(), data.data().end());
+    } else if constexpr (std::is_same_v<T, double>) {
+        if (scalars.data_case() != proto::schema::ScalarField::kDoubleData) {
+            throw std::runtime_error("Expected double data for array elements");
+        }
+        const auto& data = scalars.double_data();
+        values.assign(data.data().begin(), data.data().end());
+    } else {
+        static_assert(sizeof(T) == 0, "Unsupported element type for extraction");
+    }
+
+    return values;
 }
 
 std::vector<std::string>
-ArrayGenerator::ExtractStringValues(FieldColumn&& column) {
-    if (auto values = std::get_if<std::vector<std::string>>(&column)) {
-        return std::move(*values);
+ArrayGenerator::ExtractStringValues(const proto::schema::FieldData& column) {
+    if (!column.has_scalars() ||
+        column.scalars().data_case() != proto::schema::ScalarField::kStringData) {
+        throw std::runtime_error("Array element generator returned unexpected type");
     }
-    throw std::runtime_error("Array element generator returned unexpected type");
+
+    std::vector<std::string> values;
+    const auto& data = column.scalars().string_data();
+    values.reserve(data.data_size());
+    for (int i = 0; i < data.data_size(); ++i) {
+        values.push_back(data.data(i));
+    }
+    return values;
 }
 
 template <typename T>

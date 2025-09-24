@@ -11,7 +11,8 @@ BooleanGenerator::BooleanGenerator(const FieldConfig& config)
     }
 }
 
-FieldColumn BooleanGenerator::Generate(size_t num_rows, RandomContext& ctx) {
+proto::schema::FieldData
+BooleanGenerator::Generate(size_t num_rows, RandomContext& ctx) {
     const auto& bool_config = config_.boolean_config;
     std::vector<bool> result;
     result.reserve(num_rows);
@@ -26,7 +27,15 @@ FieldColumn BooleanGenerator::Generate(size_t num_rows, RandomContext& ctx) {
         result.push_back(ctx.Bernoulli(true_prob));
     }
 
-    return result;
+    proto::schema::FieldData field_data;
+    field_data.set_field_name(config_.field_name);
+    field_data.set_type(proto::schema::DataType::Bool);
+    auto bool_data = field_data.mutable_scalars()->mutable_bool_data();
+    for (const auto value : result) {
+        bool_data->add_data(value);
+    }
+
+    return field_data;
 }
 
 } // namespace scalar_bench

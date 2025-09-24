@@ -15,7 +15,6 @@
 #include <vector>
 #include <string>
 #include <map>
-#include <variant>
 
 #include "common/Schema.h"
 #include "segcore/SegmentGrowing.h"
@@ -28,6 +27,7 @@
 
 // Forward declarations from benchmark config
 #include "../config/benchmark_config.h"
+#include "pb/schema.pb.h"
 #include "../generators/field_generator.h"
 
 namespace milvus {
@@ -92,16 +92,11 @@ public:
     void DropIndex(FieldId field_id);
 
 private:
-    // 创建字段数据
-    std::shared_ptr<milvus::FieldDataBase> CreateFieldDataFromVector(
-        DataType data_type,
-        const FieldColumn& field_data);
-
     // 准备插入数据
     void WriteBinlogThenLoad(
         const std::string& field_name,
         FieldId field_id,
-        const FieldColumn& field_data);
+        const proto::schema::FieldData& field_data);
 
     // 加载系统字段
     void LoadSystemFields(const SegmentData& segment_data);
