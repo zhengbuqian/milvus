@@ -28,16 +28,6 @@ TimestampGenerator::TimestampGenerator(const FieldConfig& config)
 
 DataArray TimestampGenerator::Generate(size_t num_rows, RandomContext& ctx) {
     auto timestamps = GenerateEpochValues(num_rows, ctx);
-    std::vector<bool> null_mask;
-    if (config_.nullable && config_.null_ratio > 0.0) {
-        null_mask.resize(timestamps.size(), true);
-        for (size_t i = 0; i < timestamps.size(); ++i) {
-            if (ctx.Bernoulli(config_.null_ratio)) {
-                null_mask[i] = false;
-                timestamps[i] = 0;
-            }
-        }
-    }
     ApplyHotspots(timestamps, ctx);
     ApplyJitter(timestamps, ctx);
     DataArray data_array;
@@ -46,13 +36,23 @@ DataArray TimestampGenerator::Generate(size_t num_rows, RandomContext& ctx) {
     data_array.set_is_dynamic(false);
     auto* long_array = data_array.mutable_scalars()->mutable_long_data();
     long_array->mutable_data()->Reserve(timestamps.size());
-    for (auto v : timestamps) {
-        long_array->add_data(v);
-    }
-    if (!null_mask.empty()) {
+
+    bool* null_mask = nullptr;
+    if (config_.nullable && config_.null_ratio > 0.0) {
         auto* vd = data_array.mutable_valid_data();
-        vd->mutable_data()->Reserve(null_mask.size());
-        for (auto b : null_mask) vd->add_data(b);
+        vd->Reserve(timestamps.size());
+        null_mask = vd->mutable_data();
+    }
+
+    for (size_t i = 0; i < timestamps.size(); ++i) {
+        int64_t value = timestamps[i];
+        bool is_valid = true;
+        if (config_.nullable && config_.null_ratio > 0.0 && ctx.Bernoulli(config_.null_ratio)) {
+            is_valid = false;
+            value = 0;
+        }
+        long_array->add_data(value);
+        if (null_mask) null_mask[i] = is_valid;
     }
     return data_array;
 }

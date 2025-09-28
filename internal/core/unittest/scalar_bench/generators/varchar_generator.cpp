@@ -124,11 +124,20 @@ void VarcharGenerator::LoadCorpus() {
 
 DataArray VarcharGenerator::Generate(size_t num_rows, RandomContext& ctx) {
     const auto& varchar_config = config_.varchar_config;
-    std::vector<std::string> result;
-    result.reserve(num_rows);
-    std::vector<bool> null_mask;
+    DataArray data_array;
+    data_array.set_type(milvus::proto::schema::DataType::VarChar);
+    data_array.set_field_name(config_.field_name);
+    data_array.set_is_dynamic(false);
+    auto* string_array = data_array.mutable_scalars()->mutable_string_data();
+    string_array->mutable_data()->Reserve(num_rows);
 
-    null_mask.reserve(num_rows);
+    bool* null_mask = nullptr;
+    if (config_.nullable && config_.null_ratio > 0.0) {
+        auto* vd = data_array.mutable_valid_data();
+        vd->Reserve(num_rows);
+        null_mask = vd->mutable_data();
+    }
+
     for (size_t i = 0; i < num_rows; i++) {
         std::string text;
 
@@ -156,23 +165,8 @@ DataArray VarcharGenerator::Generate(size_t num_rows, RandomContext& ctx) {
             is_valid = false;
             text.clear();
         }
-        result.push_back(std::move(text));
-        if (config_.nullable && config_.null_ratio > 0.0) null_mask.push_back(is_valid);
-    }
-
-    DataArray data_array;
-    data_array.set_type(milvus::proto::schema::DataType::VarChar);
-    data_array.set_field_name(config_.field_name);
-    data_array.set_is_dynamic(false);
-    auto* string_array = data_array.mutable_scalars()->mutable_string_data();
-    string_array->mutable_data()->Reserve(result.size());
-    for (auto& s : result) {
-        string_array->add_data(std::move(s));
-    }
-    if (!null_mask.empty()) {
-        auto* vd = data_array.mutable_valid_data();
-        vd->mutable_data()->Reserve(null_mask.size());
-        for (auto b : null_mask) vd->add_data(b);
+        string_array->add_data(std::move(text));
+        if (null_mask) null_mask[i] = is_valid;
     }
     return data_array;
 }
@@ -289,7 +283,7 @@ std::string VarcharGenerator::GenerateSingleTimestamp(RandomContext& ctx) {
 #else
     gmt = *std::gmtime(&t);
 #endif
-    char buf[32];
+    char buf[64];
     std::snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02dZ",
                   gmt.tm_year + 1900, gmt.tm_mon + 1, gmt.tm_mday,
                   gmt.tm_hour, gmt.tm_min, gmt.tm_sec);

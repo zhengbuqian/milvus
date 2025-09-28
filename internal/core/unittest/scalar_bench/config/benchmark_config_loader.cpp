@@ -163,7 +163,7 @@ void ParseAndRegisterDictionary(const std::string& name, const YAML::Node& node)
 }
 
 // Parse field configuration
-FieldConfig ParseFieldConfig(const YAML::Node& node, const std::string& default_field_name) {
+FieldConfig ParseFieldConfig(const YAML::Node& node, const std::string& default_field_name = "") {
     FieldConfig config;
 
     // Required fields
@@ -600,7 +600,7 @@ DataConfig ParseDataConfig(const YAML::Node& root, const std::string& source) {
     // Parse fields
     if (root["fields"] && root["fields"].IsSequence()) {
         for (const auto& field_node : root["fields"]) {
-            config.fields.push_back(ParseFieldConfig(field_node));
+            config.fields.push_back(ParseFieldConfig(field_node, ""));
         }
     } else {
         throw std::runtime_error("Data configuration must have 'fields' defined");
@@ -616,7 +616,7 @@ FieldIndexConfig ParseFieldIndexConfig(const YAML::Node& node) {
     if (!node["type"]) {
         throw std::runtime_error("Field index config missing 'type'");
     }
-    config.type = ParseIndexType(node["type"]);
+    config.type = ParseIndexType(node["type"].as<std::string>());
 
     if (node["params"] && node["params"].IsMap()) {
         for (auto it = node["params"].begin(); it != node["params"].end(); ++it) {
