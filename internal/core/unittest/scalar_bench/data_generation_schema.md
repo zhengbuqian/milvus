@@ -22,7 +22,6 @@ Benchmark case files (in `benchmark_cases/benchmark_cases/`) reference data conf
 
 ```yaml
 version: 1
-preset_name: quick
 data_configs:
   - path: data_configs/uniform_int64_high_card.yaml
   - path: data_configs/zipf_int64_low_card.yaml
@@ -77,7 +76,10 @@ If the `fields` array does not explicitly include a `pk` field, the generator st
 - **Members**:
   - `type`: `INT64`, `FLOAT`, `DOUBLE`.
   - `range`: `min` / `max` or `min` / `max` per bucket.
-  - `distribution`: `UNIFORM`, `NORMAL`, `ZIPF`, `CUSTOM_HIST`.
+  - `distribution`: `UNIFORM`, `NORMAL`, `ZIPF`, `CUSTOM_HIST`, `SEQUENTIAL`.
+  - `step` (SEQUENTIAL only): increment between consecutive values. Defaults to `1`.
+    - Starts from `range.min` and produces `size` values: `min, min+step, ...`
+    - If `range.min + (size-1)*step` exceeds `range.max` (for positive step) or is less than `range.max` (for negative step), configuration is invalid and generation fails.
   - `buckets`: weighted subranges for composite distributions.
   - `outliers`: injection of extreme values with configurable ratio and explicit list.
   - `precision`: for floating types, number of decimal places.
@@ -195,7 +197,6 @@ When a field specifies `values.dictionary: cities_small`, the loader first check
 
 ```yaml
 version: 1
-preset_name: ecommerce_benchmark
 data_configs:
   - path: data_configs/ecommerce_clicks.yaml
   - path: data_configs/ecommerce_products.yaml

@@ -56,6 +56,8 @@ export default function ComparePage(): JSX.Element {
 
   const cards = useMemo(() => buildCards(runs, casesParam), [runs, casesParam]);
   const tableRows: CaseRow[] = useMemo(() => buildRows(runs, casesParam), [runs, casesParam]);
+  const hasFlameByMeta = useMemo(() => runs.some((r) => Boolean(r?.meta?.summary?.has_flamegraphs)), [runs]);
+  const hasAnyFlamegraph = useMemo(() => tableRows.some((r) => Boolean((r.metrics as any)?.flamegraph)), [tableRows]);
 
   if (loading) return (
     <div className="section-card">
@@ -99,12 +101,12 @@ export default function ComparePage(): JSX.Element {
           metricKeys={METRIC_KEYS}
           showRunId
           allowSelection={false}
-          showFlamegraphLink
+          showFlamegraphLink={hasFlameByMeta && hasAnyFlamegraph}
           buildFlamegraphUrl={(row) => (row.metrics as any).flamegraph ? buildAssetUrl(`${row.runId}/${(row.metrics as any).flamegraph}`) : null}
         />
       </div>
 
-      {cards.length > 0 && (
+      {hasFlameByMeta && cards.length > 0 && (
         <FlamegraphSection cards={cards as any} cols={cols} setCols={setCols} />
       )}
     </div>

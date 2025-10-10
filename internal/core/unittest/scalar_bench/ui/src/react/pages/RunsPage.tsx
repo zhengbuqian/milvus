@@ -273,12 +273,3 @@ function renderTagList(items?: string[]): JSX.Element {
     </div>
   );
 }
-
-
-      {items.map((item) => (
-        <span className="tag" key={item} dangerouslySetInnerHTML={{ __html: escapeHtml(String(item)) }} />
-      ))}
-    </div>
-  );
-}
-

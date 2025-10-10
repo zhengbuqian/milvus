@@ -69,6 +69,10 @@ export default function RunDetailPage(): JSX.Element {
       .map(([caseId, data]: any) => ({ runId, caseId: String(caseId), values: data }));
   }, [metrics, runId]);
 
+  const hasAnyFlamegraph = useMemo(() => {
+    return rows.some((r) => Boolean((r.metrics as any)?.flamegraph));
+  }, [rows]);
+
   if (loading) return (
     <div className="section-card">
       <div className="page-actions">
@@ -143,12 +147,12 @@ export default function RunDetailPage(): JSX.Element {
           metricKeys={METRIC_KEYS}
           showRunId={false}
           allowSelection={false}
-          showFlamegraphLink
+          showFlamegraphLink={Boolean(meta?.summary?.has_flamegraphs) && hasAnyFlamegraph}
           buildFlamegraphUrl={(row) => (row.metrics as any).flamegraph ? buildAssetUrl(`${runId}/${(row.metrics as any).flamegraph}`) : null}
         />
       </div>
 
-      {flameCards.length > 0 && (
+      {Boolean(meta?.summary?.has_flamegraphs) && flameCards.length > 0 && (
         <FlamegraphSection cards={flameCards as any} cols={cols} setCols={setCols} />
       )}
     </div>

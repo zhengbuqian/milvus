@@ -14,7 +14,6 @@
 #include <memory>
 #include <vector>
 #include <string>
-#include <chrono>
 
 #include "config/benchmark_config.h"
 
@@ -32,6 +31,7 @@ struct BenchmarkResult {
     int64_t case_run_id;      // 每个测试用例的时间戳（毫秒）
 
     // 测试标识
+    std::string suite_name;
     std::string data_config_name;
     std::string index_config_name;
     std::string expr_template_name;
@@ -68,6 +68,10 @@ struct BenchmarkResult {
     // 正确性验证
     bool correctness_verified;
     std::string error_message;
+
+    // 火焰图信息
+    bool has_flamegraph = false;
+    std::string flamegraph_path; // relative path under run folder, e.g. flamegraphs/<case_id>.svg
 };
 
 // 数据和segment的组合

@@ -1,0 +1,12 @@
+name: uniform_i64_high_card
+segment_size: 1000000
+segment_seed: 42
+fields:
+  - field_name: user_id
+    generator: numeric
+    type: Int64
+    range:
+      min: 0
+      max: 300000
+    distribution: UNIFORM
+    null_ratio: 0.0

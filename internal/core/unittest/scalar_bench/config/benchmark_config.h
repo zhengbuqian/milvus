@@ -15,9 +15,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
-#include <optional>
 #include <string>
-#include <utility>
 #include <vector>
 
 #include "common/Types.h"
@@ -155,6 +153,8 @@ struct NumericGeneratorConfig {
     DataType type;
     RangeDouble range;  // required global domain and clamp
     Distribution distribution = Distribution::UNIFORM;
+    // For SEQUENTIAL distribution: increment per step. Defaults to 1.0
+    double step = 1.0;
     std::vector<NumericBucketConfig> buckets;  // used only when distribution == CUSTOM_HIST
     OutlierConfig outliers;
     int precision = -1;  // for FLOAT/DOUBLE; rounding applied before outliers
@@ -327,10 +327,19 @@ struct TestParams {
 
 // 基准测试配置
 struct BenchmarkConfig {
-    std::vector<DataConfig> data_configs;
-    std::vector<IndexConfig> index_configs;
-    std::vector<ExpressionTemplate> expr_templates;
+    // std::vector<DataConfig> data_configs;
+    // std::vector<IndexConfig> index_configs;
+    // std::vector<ExpressionTemplate> expr_templates;
     TestParams test_params;
+
+    // Optional: multiple suites per YAML. If non-empty, runner should iterate suites.
+    struct BenchmarkSuite {
+        std::string name;
+        std::vector<DataConfig> data_configs;
+        std::vector<IndexConfig> index_configs;
+        std::vector<ExpressionTemplate> expr_templates;
+    };
+    std::vector<BenchmarkSuite> suites;
 };
 
 } // namespace scalar_bench

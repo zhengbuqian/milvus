@@ -220,6 +220,28 @@ func TestExpr_UnaryRange(t *testing.T) {
 	}
 }
 
+func TestExpr_In(t *testing.T) {
+	schema := newTestSchema(true)
+	helper, err := typeutil.CreateSchemaHelper(schema)
+	assert.NoError(t, err)
+
+	exprStrs := []string{
+		`Int64Field NOT IN [1, 2]`,
+	}
+	for _, exprStr := range exprStrs {
+		plan, err := CreateSearchPlan(helper, exprStr, "FloatVectorField", &planpb.QueryInfo{
+			Topk:         0,
+			MetricType:   "",
+			SearchParams: "",
+			RoundDecimal: 0,
+		}, nil, nil)
+		assert.NoError(t, err)
+		assert.NotNil(t, plan)
+
+		fmt.Println(plan.String())
+	}
+}
+
 func TestExpr_Like(t *testing.T) {
 	schema := newTestSchema(true)
 	helper, err := typeutil.CreateSchemaHelper(schema)
@@ -247,7 +269,8 @@ func TestExpr_Like(t *testing.T) {
 	}, nil, nil)
 	assert.NoError(t, err, expr)
 	assert.NotNil(t, plan)
-	fmt.Println(plan)
+	prettyPlan := plan.String()
+	fmt.Println(prettyPlan)
 	assert.Equal(t, planpb.OpType_Match, plan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetOp())
 	assert.Equal(t, `8_\_0%`, plan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetValue().GetStringVal())
 

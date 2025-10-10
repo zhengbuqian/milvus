@@ -17,7 +17,6 @@
 #include <filesystem>
 #include <vector>
 #include <algorithm>
-#include <stdexcept>
 
 #include "scalar_filter_benchmark.h"
 #include "utils/bench_paths.h"
@@ -260,9 +259,13 @@ main(int argc, char* argv[]) {
 
         // Display configuration summary
         std::cout << "\nConfiguration Summary:" << std::endl;
-        std::cout << "  Data configs: " << config.data_configs.size() << std::endl;
-        std::cout << "  Index configs: " << config.index_configs.size() << std::endl;
-        std::cout << "  Expression templates: " << config.expr_templates.size() << std::endl;
+        std::cout << "  Suites: " << config.suites.size() << std::endl;
+        for (const auto& s : config.suites) {
+            std::cout << "    - " << (s.name.empty() ? std::string("default") : s.name)
+                        << " (data=" << s.data_configs.size()
+                        << ", index=" << s.index_configs.size()
+                        << ", expr=" << s.expr_templates.size() << ")" << std::endl;
+        }
         std::cout << "  Test iterations: " << config.test_params.test_iterations << std::endl;
         std::cout << "  Warmup iterations: " << config.test_params.warmup_iterations << std::endl;
     } catch (const std::exception& e) {

@@ -18,6 +18,22 @@ export function buildAssetUrl(path: string): string {
   return `${base}/${rel}`;
 }
 
+export async function assetExists(path: string): Promise<boolean> {
+  const url = buildAssetUrl(path);
+  try {
+    const res = await fetch(url, { method: 'HEAD', cache: 'no-cache' });
+    if (res.ok) return true;
+    // Some servers may not support HEAD; fall back to GET for small SVGs
+    if (res.status === 405) {
+      const getRes = await fetch(url, { method: 'GET', cache: 'no-cache' });
+      return getRes.ok;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 export async function getIndex(): Promise<any> {
   return fetchJson(buildAssetUrl('index.json'));
 }

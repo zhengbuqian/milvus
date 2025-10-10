@@ -85,8 +85,8 @@ NumericGenerator::Generate(size_t num_rows, RandomContext& ctx) {
                 result = GenerateCustomHist<float>(num_rows, ctx);
                 break;
             case Distribution::SEQUENTIAL:
-                throw std::runtime_error(
-                    "SEQUENTIAL distribution only supports integer types");
+                result = GenerateSequential<float>(num_rows, ctx);
+                break;
             default:
                 throw std::runtime_error("Unsupported distribution");
         }
@@ -136,8 +136,8 @@ NumericGenerator::Generate(size_t num_rows, RandomContext& ctx) {
                 result = GenerateCustomHist<double>(num_rows, ctx);
                 break;
             case Distribution::SEQUENTIAL:
-                throw std::runtime_error(
-                    "SEQUENTIAL distribution only supports integer types");
+                result = GenerateSequential<double>(num_rows, ctx);
+                break;
             default:
                 throw std::runtime_error("Unsupported distribution");
         }
@@ -296,10 +296,10 @@ NumericGenerator::GenerateSequential(size_t num_rows, RandomContext& ctx) {
 
     double min = num_config.range.min;
     double max = num_config.range.max;
+    double step = num_config.step;
 
-    if constexpr (!std::is_integral_v<T>) {
-        throw std::runtime_error(
-            "SEQUENTIAL distribution only supports integer types");
+    if (step == 0.0) {
+        throw std::runtime_error("Sequential distribution requires non-zero step");
     }
 
     if (min > max) {
@@ -307,26 +307,18 @@ NumericGenerator::GenerateSequential(size_t num_rows, RandomContext& ctx) {
             "Invalid range for sequential distribution: min greater than max");
     }
 
-    const int64_t start = static_cast<int64_t>(std::floor(min));
-    const int64_t end = static_cast<int64_t>(std::floor(max));
-    if (start > end) {
-        throw std::runtime_error(
-            "Sequential distribution requires integer range");
+    // Validate that the sequence fits within [min, max] without wrapping:
+    // min + (num_rows - 1) * step must be <= max for positive step
+    // and >= max for negative step
+    const double last_value = min + static_cast<double>(num_rows - 1) * step;
+    if ((step > 0 && last_value > max + 1e-12) || (step < 0 && last_value < max - 1e-12)) {
+        throw std::runtime_error("Sequential generation exceeds range.max with given size and step");
     }
 
-    const int64_t span = end - start + 1;
-    if (span <= 0) {
-        throw std::runtime_error(
-            "Sequential distribution span must be positive");
-    }
-
-    int64_t current = start;
+    double current = min;
     for (size_t i = 0; i < num_rows; ++i) {
         result.push_back(static_cast<T>(current));
-        current += 1;
-        if (current > end) {
-            current = start;
-        }
+        current += step;
     }
 
     return result;

@@ -1,5 +1,4 @@
 version: 1
-preset_name: multi_field_queries
 # Demonstrates various multi-field query patterns with field name placeholders
 
 data_configs:

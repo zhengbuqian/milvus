@@ -24,6 +24,7 @@
 #include <set>
 #include <string>
 #include <regex>
+#include <cctype>
 #include "utils/bench_paths.h"
 
 #include "config/benchmark_config_loader.h"
@@ -45,13 +46,19 @@ ScalarFilterBenchmark::RunBenchmark(const BenchmarkConfig& config) {
 
     std::cout << "Starting Scalar Filter Benchmark..." << std::endl;
     std::cout << "Run ID: " << run_id << std::endl;
-    std::cout << "Total configurations: "
-              << config.data_configs.size() << " data configs x "
-              << config.index_configs.size() << " index configs x "
-              << config.expr_templates.size() << " expression templates x " << std::endl;
 
-    // 第一级循环：数据配置
-    for (const auto& data_config : config.data_configs) {
+    auto run_one_suite = [&](const std::string& suite_name,
+                             const std::vector<DataConfig>& data_configs,
+                             const std::vector<IndexConfig>& index_configs,
+                             const std::vector<ExpressionTemplate>& expr_templates) {
+        std::cout << "\n=== Suite: " << (suite_name.empty() ? std::string("default") : suite_name) << " ===" << std::endl;
+        std::cout << "Total configurations: "
+                  << data_configs.size() << " data configs x "
+                  << index_configs.size() << " index configs x "
+                  << expr_templates.size() << " expression templates" << std::endl;
+
+        // 第一级循环：数据配置
+        for (const auto& data_config : data_configs) {
         std::cout << "\n========================================" << std::endl;
         std::cout << "Level 1: Data Config - " << data_config.name << std::endl;
         std::cout << "  Segment Size: " << data_config.segment_size
@@ -67,8 +74,8 @@ ScalarFilterBenchmark::RunBenchmark(const BenchmarkConfig& config) {
         std::cout << "✓ Data generation completed in " << data_gen_time << " ms" << std::endl;
 
         // 第二级循环：索引配置
-        for (size_t idx = 0; idx < config.index_configs.size(); ++idx) {
-            const auto& index_config = config.index_configs[idx];
+        for (size_t idx = 0; idx < index_configs.size(); ++idx) {
+            const auto& index_config = index_configs[idx];
 
             // 检查索引兼容性
             if (!IsIndexApplicable(index_config, data_config)) {
@@ -87,8 +94,8 @@ ScalarFilterBenchmark::RunBenchmark(const BenchmarkConfig& config) {
                 auto& segment_wrapper = bundle->wrapper;
 
                 // Get the previous index config to know which fields had indexes
-                if (idx > 0 && idx - 1 < config.index_configs.size()) {
-                    const auto& prev_index_config = config.index_configs[idx - 1];
+                if (idx > 0 && idx - 1 < index_configs.size()) {
+                    const auto& prev_index_config = index_configs[idx - 1];
                     for (const auto& [field_name, field_index_config] : prev_index_config.field_configs) {
                         if (field_index_config.type != ScalarIndexType::NONE) {
                             try {
@@ -113,7 +120,7 @@ ScalarFilterBenchmark::RunBenchmark(const BenchmarkConfig& config) {
             std::cout << "  ✓ Index built in " << index_build_time << " ms" << std::endl;
 
             // 第三级循环：表达式模板（每个都是完整的 text proto）
-            for (const auto& expr_template : config.expr_templates) {
+            for (const auto& expr_template : expr_templates) {
                 // 检查表达式适用性
                 if (!IsExpressionApplicable(expr_template, data_config)) {
                     continue;
@@ -149,6 +156,7 @@ ScalarFilterBenchmark::RunBenchmark(const BenchmarkConfig& config) {
                 // 填充元信息
                 result.run_id = run_id;
                 result.case_run_id = case_run_id;
+                result.suite_name = suite_name;
                 result.data_config_name = data_config.name;
                 result.index_config_name = index_config.name;
                 result.expr_template_name = expr_template.name;
@@ -168,6 +176,11 @@ ScalarFilterBenchmark::RunBenchmark(const BenchmarkConfig& config) {
         }
 
         std::cout << "\n✓ Completed all tests for data config: " << data_config.name << std::endl;
+        }
+    };
+
+    for (const auto& suite : config.suites) {
+        run_one_suite(suite.name, suite.data_configs, suite.index_configs, suite.expr_templates);
     }
 
     return all_results;
@@ -214,6 +227,7 @@ ScalarFilterBenchmark::GenerateReport(const std::vector<BenchmarkResult>& result
     // 详细结果表（每一行是一个case）
     std::cout << "\nDetailed Results (Run ID: " << (sorted_results.empty() ? 0 : sorted_results[0].run_id) << "):" << std::endl;
     std::cout << std::setw(15) << std::left << "Case ID"
+              << std::setw(20) << "Suite"
               << std::setw(30) << "Data Config"
               << std::setw(30) << "Expression"
               << std::setw(20) << "Index"
@@ -226,6 +240,7 @@ ScalarFilterBenchmark::GenerateReport(const std::vector<BenchmarkResult>& result
 
     for (const auto& result : sorted_results) {
         std::cout << std::setw(15) << std::left << result.case_run_id
+                  << std::setw(20) << (result.suite_name.empty() ? std::string("default") : result.suite_name)
                   << std::setw(30) << result.data_config_name
                   << std::setw(30) << result.expr_template_name
                   << std::setw(20) << result.index_config_name
@@ -251,14 +266,16 @@ ScalarFilterBenchmark::GenerateReport(const std::vector<BenchmarkResult>& result
     // 保存到CSV文件
     std::string csv_filename = "benchmark_results.csv";
     std::ofstream csv(run_dir + csv_filename);
-    csv << "run_id,case_run_id,data_config,expression,index_config,avg_ms,p50_ms,p90_ms,p99_ms,"
+    csv << "run_id,case_run_id,suite,data_config,expression,index_config,avg_ms,p50_ms,p90_ms,p99_ms,"
         << "matched_rows,total_rows,selectivity,index_build_ms,memory_mb\n";
 
     for (const auto& result : results) {
+        const std::string expr_name = result.expr_template_name;
         csv << result.run_id << ","
             << result.case_run_id << ","
+            << (result.suite_name.empty() ? std::string("default") : result.suite_name) << ","
             << result.data_config_name << ","
-            << "\"" << result.actual_expression << "\","
+            << expr_name << ","
             << result.index_config_name << ","
             << result.latency_avg_ms << ","
             << result.latency_p50_ms << ","
@@ -338,12 +355,13 @@ ScalarFilterBenchmark::GenerateReport(const std::vector<BenchmarkResult>& result
     config_file << "  \"expressions\": [";
     std::set<std::string> unique_expressions;
     for (const auto& result : results) {
-        unique_expressions.insert(result.actual_expression);
+        unique_expressions.insert(result.expr_template_name);
     }
     bool first_expr = true;
     for (const auto& expr : unique_expressions) {
+        const std::string e = expr;
         if (!first_expr) config_file << ", ";
-        config_file << "\"" << expr << "\"";
+        config_file << "\"" << e << "\"";
         first_expr = false;
     }
     config_file << "]" << std::endl;
@@ -355,13 +373,15 @@ ScalarFilterBenchmark::GenerateReport(const std::vector<BenchmarkResult>& result
 
     // 生成 meta.json：run 元信息与去重后的配置清单
     {
+        std::set<std::string> unique_suites2;
         std::set<std::string> unique_data_configs2;
         std::set<std::string> unique_index_configs2;
         std::set<std::string> unique_expressions2;
         for (const auto& r : results) {
+            unique_suites2.insert(r.suite_name.empty() ? std::string("default") : r.suite_name);
             unique_data_configs2.insert(r.data_config_name);
             unique_index_configs2.insert(r.index_config_name);
-            unique_expressions2.insert(r.actual_expression);
+            unique_expressions2.insert(r.expr_template_name);
         }
 
         std::ofstream meta(run_dir + "meta.json");
@@ -369,7 +389,15 @@ ScalarFilterBenchmark::GenerateReport(const std::vector<BenchmarkResult>& result
         meta << "  \"id\": \"" << run_id << "\",\n";
         meta << "  \"timestamp_ms\": " << run_id << ",\n";
         meta << "  \"label\": \"\",\n";
-        meta << "  \"summary\": { \"total_cases\": " << results.size() << " },\n";
+        // 统计是否有火焰图
+        bool any_flame = false;
+        for (const auto& r : results) { if (r.has_flamegraph) { any_flame = true; break; } }
+        meta << "  \"summary\": { \"total_cases\": " << results.size() << 
+                ", \"has_flamegraphs\": " << (any_flame ? "true" : "false") << " },\n";
+        meta << "  \"suites\": [";
+        bool first_suite = true;
+        for (const auto& s : unique_suites2) { if (!first_suite) meta << ", "; meta << "\"" << s << "\""; first_suite = false; }
+        meta << "],\n";
         meta << "  \"data_configs\": [";
         bool first = true;
         for (const auto& s : unique_data_configs2) { if (!first) meta << ", "; meta << "\"" << s << "\""; first = false; }
@@ -380,7 +408,11 @@ ScalarFilterBenchmark::GenerateReport(const std::vector<BenchmarkResult>& result
         meta << "],\n";
         meta << "  \"expressions\": [";
         first = true;
-        for (const auto& s : unique_expressions2) { if (!first) meta << ", "; meta << "\"" << s << "\""; first = false; }
+        for (const auto& s : unique_expressions2) {
+            if (!first) meta << ", ";
+            meta << "\"" << s << "\"";
+            first = false;
+        }
         meta << "]\n";
         meta << "}\n";
     }
@@ -396,7 +428,7 @@ ScalarFilterBenchmark::GenerateReport(const std::vector<BenchmarkResult>& result
             metrics << "    \"" << r.case_run_id << "\": {\n";
             metrics << "      \"data_config\": \"" << r.data_config_name << "\",\n";
             metrics << "      \"index_config\": \"" << r.index_config_name << "\",\n";
-            metrics << "      \"expression\": \"" << r.actual_expression << "\",\n";
+            metrics << "      \"expression\": \"" << r.expr_template_name << "\",\n";
             metrics << "      \"latency_ms\": { \"avg\": " << r.latency_avg_ms
                     << ", \"p50\": " << r.latency_p50_ms
                     << ", \"p90\": " << r.latency_p90_ms
@@ -412,7 +444,11 @@ ScalarFilterBenchmark::GenerateReport(const std::vector<BenchmarkResult>& result
             metrics << "      \"memory\": { \"index_mb\": " << (r.index_memory_bytes / (1024.0 * 1024.0))
                     << ", \"exec_peak_mb\": " << (r.exec_memory_peak_bytes / (1024.0 * 1024.0)) << " },\n";
             metrics << "      \"cpu_pct\": " << r.cpu_usage_percent << ",\n";
-            metrics << "      \"flamegraph\": \"flamegraphs/" << r.case_run_id << ".svg\"\n";
+            if (r.has_flamegraph && !r.flamegraph_path.empty()) {
+                metrics << "      \"flamegraph\": \"" << r.flamegraph_path << "\"\n";
+            } else {
+                metrics << "      \"flamegraph\": null\n";
+            }
             metrics << "    }";
         }
         metrics << "\n  }\n}\n";
@@ -429,7 +465,10 @@ ScalarFilterBenchmark::GenerateReport(const std::vector<BenchmarkResult>& result
         new_entry += "      \"id\": \"" + std::to_string(run_id) + "\",\n";
         new_entry += "      \"timestamp_ms\": " + std::to_string(run_id) + ",\n";
         new_entry += "      \"label\": \"\",\n";
-        new_entry += "      \"summary\": { \"total_cases\": " + std::to_string(results.size()) + " }\n";
+        bool any_flame2 = false;
+        for (const auto& r : results) { if (r.has_flamegraph) { any_flame2 = true; break; } }
+        new_entry += "      \"summary\": { \"total_cases\": " + std::to_string(results.size()) +
+                    ", \"has_flamegraphs\": " + std::string(any_flame2 ? "true" : "false") + " }\n";
         new_entry += "    }";
 
         // 读取现有 index.json
@@ -673,11 +712,15 @@ ScalarFilterBenchmark::ExecuteSingleBenchmark(const std::shared_ptr<SegmentBundl
 
             if (profiling_success) {
                 std::cout << "      ✓ Flame graph generated: " << svg_filename << std::endl;
+                result.has_flamegraph = true;
+                result.flamegraph_path = "flamegraphs/" + std::to_string(case_run_id) + ".svg";
             } else {
                 std::cout << "      ⚠ Flame graph generation failed: " << profiler.GetLastError() << std::endl;
+                result.has_flamegraph = false;
             }
         } else {
             std::cout << "      ⚠ Flame graph profiling skipped: " << profiler.GetLastError() << std::endl;
+            result.has_flamegraph = false;
         }
     }
 

@@ -1,10 +1,7 @@
 #include "benchmark_config_loader.h"
 #include "../dictionaries/dictionary_registry.h"
-#include "../utils/bench_paths.h"
 #include <yaml-cpp/yaml.h>
 #include <filesystem>
-#include <fstream>
-#include <sstream>
 #include <algorithm>
 
 namespace milvus {
@@ -244,6 +241,11 @@ FieldConfig ParseFieldConfig(const YAML::Node& node, const std::string& default_
 
             if (node["distribution"]) {
                 num.distribution = ParseDistribution(node["distribution"]);
+            }
+
+            // Optional step for SEQUENTIAL distribution; defaults to 1.0
+            if (node["step"]) {
+                num.step = node["step"].as<double>();
             }
 
             if (node["buckets"] && node["buckets"].IsSequence()) {
@@ -629,64 +631,8 @@ FieldIndexConfig ParseFieldIndexConfig(const YAML::Node& node) {
 
 BenchmarkConfig ParseBenchmarkConfig(const YAML::Node& root, const std::string& source) {
     BenchmarkConfig config;
-
-    // Parse data config paths and load them
-    if (auto data_nodes = root["data_configs"]; data_nodes && data_nodes.IsSequence()) {
-        for (const auto& node : data_nodes) {
-            if (node["path"]) {
-                auto path_config = node["path"].as<std::string>();
-
-                // Load the actual data config
-                auto resolved_path = BenchmarkConfigLoader::ResolvePath(path_config);
-                auto data_config = BenchmarkConfigLoader::LoadDataConfigFile(resolved_path);
-                config.data_configs.push_back(data_config);
-            } else {
-                throw std::runtime_error("data_configs entry must have 'path' field");
-            }
-        }
-    }
-
-    // Parse index configs with per-field support
-    if (auto idx_nodes = root["index_configs"]; idx_nodes && idx_nodes.IsSequence()) {
-        for (const auto& node : idx_nodes) {
-            IndexConfig ic;
-            if (!node["name"]) {
-                throw std::runtime_error("index_configs entry missing 'name'");
-            }
-            ic.name = node["name"].as<std::string>();
-
-            // Check for new per-field format
-            if (node["field_configs"] && node["field_configs"].IsMap()) {
-                for (auto it = node["field_configs"].begin();
-                     it != node["field_configs"].end(); ++it) {
-                    auto field_name = it->first.as<std::string>();
-                    ic.field_configs[field_name] = ParseFieldIndexConfig(it->second);
-                }
-            } else {
-                throw std::runtime_error("index_configs entry must have 'field_configs': " + ic.name);
-            }
-
-            config.index_configs.push_back(ic);
-        }
-    }
-
-    // Parse expression templates (unchanged)
-    if (auto expr_nodes = root["expr_templates"]; expr_nodes && expr_nodes.IsSequence()) {
-        for (const auto& node : expr_nodes) {
-            ExpressionTemplate et;
-            if (!node["name"]) {
-                throw std::runtime_error("expr_templates entry missing 'name'");
-            }
-            et.name = node["name"].as<std::string>();
-            if (!node["expr_template"]) {
-                throw std::runtime_error("expr_templates entry missing 'expr_template': " + et.name);
-            }
-            et.expr_template = node["expr_template"].as<std::string>();
-            config.expr_templates.push_back(et);
-        }
-    }
-
-    // Parse test params (unchanged)
+    
+    // Parse test params (shared across suites)
     if (auto params = root["test_params"]; params && params.IsMap()) {
         if (params["warmup_iterations"]) {
             config.test_params.warmup_iterations = params["warmup_iterations"].as<int>();
@@ -705,15 +651,83 @@ BenchmarkConfig ParseBenchmarkConfig(const YAML::Node& root, const std::string& 
         }
     }
 
-    // Basic validation
-    if (config.data_configs.empty()) {
-        throw std::runtime_error("No data_configs defined or loaded in benchmark YAML: " + source);
-    }
-    if (config.index_configs.empty()) {
-        throw std::runtime_error("No index_configs defined in benchmark YAML: " + source);
-    }
-    if (config.expr_templates.empty()) {
-        throw std::runtime_error("No expr_templates defined in benchmark YAML: " + source);
+    // Suites support (required)
+    if (auto suites_node = root["suites"]; suites_node && suites_node.IsSequence()) {
+        for (const auto& suite_node : suites_node) {
+            BenchmarkConfig::BenchmarkSuite suite;
+            if (suite_node["name"]) {
+                suite.name = suite_node["name"].as<std::string>();
+            } else {
+                // Optional: default anonymous suite name
+                suite.name = "suite";
+            }
+
+            // suite.data_configs
+            if (auto data_nodes = suite_node["data_configs"]; data_nodes && data_nodes.IsSequence()) {
+                for (const auto& node : data_nodes) {
+                    if (node["path"]) {
+                        auto path_config = node["path"].as<std::string>();
+                        auto resolved_path = BenchmarkConfigLoader::ResolvePath(path_config);
+                        auto data_config = BenchmarkConfigLoader::LoadDataConfigFile(resolved_path);
+                        suite.data_configs.push_back(data_config);
+                    } else {
+                        throw std::runtime_error("data_configs entry must have 'path' field in suite: " + suite.name);
+                    }
+                }
+            }
+
+            // suite.index_configs
+            if (auto idx_nodes = suite_node["index_configs"]; idx_nodes && idx_nodes.IsSequence()) {
+                for (const auto& node : idx_nodes) {
+                    IndexConfig ic;
+                    if (!node["name"]) {
+                        throw std::runtime_error("index_configs entry missing 'name' in suite: " + suite.name);
+                    }
+                    ic.name = node["name"].as<std::string>();
+
+                    if (node["field_configs"] && node["field_configs"].IsMap()) {
+                        for (auto it = node["field_configs"].begin(); it != node["field_configs"].end(); ++it) {
+                            auto field_name = it->first.as<std::string>();
+                            ic.field_configs[field_name] = ParseFieldIndexConfig(it->second);
+                        }
+                    } else {
+                        throw std::runtime_error("index_configs entry must have 'field_configs': " + ic.name);
+                    }
+                    suite.index_configs.push_back(ic);
+                }
+            }
+
+            // suite.expr_templates
+            if (auto expr_nodes = suite_node["expr_templates"]; expr_nodes && expr_nodes.IsSequence()) {
+                for (const auto& node : expr_nodes) {
+                    ExpressionTemplate et;
+                    if (!node["name"]) {
+                        throw std::runtime_error("expr_templates entry missing 'name' in suite: " + suite.name);
+                    }
+                    et.name = node["name"].as<std::string>();
+                    if (!node["expr_template"]) {
+                        throw std::runtime_error("expr_templates entry missing 'expr_template': " + et.name);
+                    }
+                    et.expr_template = node["expr_template"].as<std::string>();
+                    suite.expr_templates.push_back(et);
+                }
+            }
+
+            // suite validation
+            if (suite.data_configs.empty()) {
+                throw std::runtime_error("Suite '" + suite.name + "' has no data_configs in YAML: " + source);
+            }
+            if (suite.index_configs.empty()) {
+                throw std::runtime_error("Suite '" + suite.name + "' has no index_configs in YAML: " + source);
+            }
+            if (suite.expr_templates.empty()) {
+                throw std::runtime_error("Suite '" + suite.name + "' has no expr_templates in YAML: " + source);
+            }
+
+            config.suites.push_back(std::move(suite));
+        }
+    } else {
+        throw std::runtime_error("No suites defined in benchmark YAML: " + source);
     }
 
     return config;
