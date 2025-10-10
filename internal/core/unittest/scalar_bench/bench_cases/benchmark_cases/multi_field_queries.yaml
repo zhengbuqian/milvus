@@ -13,7 +13,6 @@ index_configs:
     field_configs:
       user_id:
         type: BITMAP
-        params: {chunk_size: "4096"}
       price:
         type: STL_SORT
         params: {}
@@ -244,8 +243,6 @@ expr_templates:
           }
         }
       }
-
-query_values: []
 
 test_params:
   warmup_iterations: 5

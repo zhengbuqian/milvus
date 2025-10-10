@@ -48,8 +48,7 @@ ScalarFilterBenchmark::RunBenchmark(const BenchmarkConfig& config) {
     std::cout << "Total configurations: "
               << config.data_configs.size() << " data configs x "
               << config.index_configs.size() << " index configs x "
-              << config.expr_templates.size() << " expression templates x "
-              << config.query_values.size() << " query values" << std::endl;
+              << config.expr_templates.size() << " expression templates x " << std::endl;
 
     // 第一级循环：数据配置
     for (const auto& data_config : config.data_configs) {
@@ -181,20 +180,20 @@ ScalarFilterBenchmark::GenerateReport(const std::vector<BenchmarkResult>& result
     std::cout << "============================================" << std::endl;
     std::cout << "Total test cases: " << results.size() << std::endl;
 
-    // 汇总统计
-    if (!results.empty()) {
-        // 找出最慢和最快的查询
-        auto slowest = std::max_element(results.begin(), results.end(),
-            [](const auto& a, const auto& b) { return a.latency_p99_ms < b.latency_p99_ms; });
-        auto fastest = std::min_element(results.begin(), results.end(),
-            [](const auto& a, const auto& b) { return a.latency_p99_ms < b.latency_p99_ms; });
+    // // 汇总统计
+    // if (!results.empty()) {
+    //     // 找出最慢和最快的查询
+    //     auto slowest = std::max_element(results.begin(), results.end(),
+    //         [](const auto& a, const auto& b) { return a.latency_p99_ms < b.latency_p99_ms; });
+    //     auto fastest = std::min_element(results.begin(), results.end(),
+    //         [](const auto& a, const auto& b) { return a.latency_p99_ms < b.latency_p99_ms; });
 
-        std::cout << "\nPerformance Summary:" << std::endl;
-        std::cout << "  Fastest query (P99): " << fastest->latency_p99_ms << "ms"
-                  << " (" << fastest->index_config_name << ", " << fastest->actual_expression << ")" << std::endl;
-        std::cout << "  Slowest query (P99): " << slowest->latency_p99_ms << "ms"
-                  << " (" << slowest->index_config_name << ", " << slowest->actual_expression << ")" << std::endl;
-    }
+    //     std::cout << "\nPerformance Summary:" << std::endl;
+    //     std::cout << "  Fastest query (P99): " << fastest->latency_p99_ms << "ms"
+    //               << " (" << fastest->index_config_name << ", " << fastest->actual_expression << ")" << std::endl;
+    //     std::cout << "  Slowest query (P99): " << slowest->latency_p99_ms << "ms"
+    //               << " (" << slowest->index_config_name << ", " << slowest->actual_expression << ")" << std::endl;
+    // }
 
     // 复制结果并排序：先按data config，再按expression，最后按index
     std::vector<BenchmarkResult> sorted_results = results;
@@ -228,7 +227,7 @@ ScalarFilterBenchmark::GenerateReport(const std::vector<BenchmarkResult>& result
     for (const auto& result : sorted_results) {
         std::cout << std::setw(15) << std::left << result.case_run_id
                   << std::setw(30) << result.data_config_name
-                  << std::setw(30) << result.actual_expression
+                  << std::setw(30) << result.expr_template_name
                   << std::setw(20) << result.index_config_name
                   << std::setw(10) << std::right << std::fixed << std::setprecision(2) << result.latency_avg_ms
                   << std::setw(10) << result.latency_p50_ms

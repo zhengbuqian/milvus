@@ -330,7 +330,6 @@ struct BenchmarkConfig {
     std::vector<DataConfig> data_configs;
     std::vector<IndexConfig> index_configs;
     std::vector<ExpressionTemplate> expr_templates;
-    std::vector<QueryValue> query_values;
     TestParams test_params;
 };
 

@@ -31,7 +31,6 @@ index_configs:
     field_configs:
       user_id:
         type: BITMAP
-        params: {chunk_size: "8192"}
       price:
         type: INVERTED
         params: {}
@@ -205,7 +204,6 @@ index_configs:
     field_configs:
       user_id:
         type: BITMAP
-        params: {chunk_size: "8192"}
       location_h3:
         type: INVERTED
         params: {}
@@ -226,13 +224,11 @@ index_configs:
         params: {}
       price:
         type: BITMAP
-        params: {chunk_size: "4096"}
 expr_templates:
   - name: price_range
     type: RANGE
     expr_template: |
       # Template uses {field:price} for field name substitution
-query_values: []
 test_params:
   warmup_iterations: 5
   test_iterations: 100

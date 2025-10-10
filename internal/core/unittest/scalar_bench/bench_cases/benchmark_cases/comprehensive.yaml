@@ -11,12 +11,8 @@ index_configs:
     field_configs:
       user_id:
         type: BITMAP
-        params:
-          chunk_size: "8192"
       category_id:
         type: BITMAP
-        params:
-          chunk_size: "4096"
       score:
         type: STL_SORT
         params: {}
@@ -42,12 +38,8 @@ index_configs:
         params: {}
       price:
         type: BITMAP
-        params:
-          chunk_size: "8192"
       is_active:
         type: BITMAP
-        params:
-          chunk_size: "1024"
 expr_templates:
   - name: user_id_equal
     expr_template: |
@@ -114,7 +106,6 @@ expr_templates:
           }
         }
       }
-query_values: []
 test_params:
   warmup_iterations: 10
   test_iterations: 100

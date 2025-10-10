@@ -9,8 +9,6 @@ index_configs:
     field_configs:
       user_id:
         type: BITMAP
-        params:
-          chunk_size: "4096"
       score:
         type: STL_SORT
         params: {}
@@ -47,10 +45,9 @@ expr_templates:
           }
         }
       }
-query_values: []
 test_params:
-  warmup_iterations: 2
-  test_iterations: 10
+  warmup_iterations: 20
+  test_iterations: 1000
   collect_memory_stats: false
   enable_flame_graph: false
   flamegraph_repo_path: ~/FlameGraph
