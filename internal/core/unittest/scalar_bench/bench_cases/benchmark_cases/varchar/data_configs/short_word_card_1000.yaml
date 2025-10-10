@@ -1,0 +1,14 @@
+name: short_word_card_1000
+segment_size: 1000000
+segment_seed: 42
+global_dictionaries:
+  cities:
+    items_file: cities.txt
+fields:
+  - field_name: city
+    generator: categorical
+    type: Varchar
+    values:
+      dictionary: cities
+      pick: 1000
+    duplication_ratios: [0.4, 0.2, 0.05]

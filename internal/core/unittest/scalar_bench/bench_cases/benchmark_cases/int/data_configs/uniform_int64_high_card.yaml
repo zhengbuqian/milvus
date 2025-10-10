@@ -9,4 +9,7 @@ fields:
       min: 0
       max: 300000
     distribution: UNIFORM
+    outliers:
+      ratio: 0.000001
+      values: [100]
     null_ratio: 0.0

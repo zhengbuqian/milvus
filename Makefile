@@ -217,6 +217,12 @@ binlog:
 		mkdir -p $(INSTALL_PATH) && go env -w CGO_ENABLED="1" && \
 		GO111MODULE=on $(GO) build -pgo=$(PGO_PATH)/default.pgo -ldflags="-r $${RPATH}" -o $(INSTALL_PATH)/binlog $(PWD)/cmd/tools/binlog/main.go 1>/dev/null
 
+exprparser-tool:
+	@echo "Building exprparser helper ..."
+	@source $(PWD)/scripts/setenv.sh && \
+		mkdir -p $(INSTALL_PATH) && go env -w CGO_ENABLED="1" && \
+		GO111MODULE=on $(GO) build -pgo=$(PGO_PATH)/default.pgo -ldflags="-r $${RPATH}" -o $(INSTALL_PATH)/exprparser $(PWD)/cmd/tools/exprparser/main.go 1>/dev/null
+
 MIGRATION_PATH = $(PWD)/cmd/tools/migration
 meta-migration:
 	@echo "Building migration tool ..."
@@ -278,7 +284,7 @@ build-cpp-gpu: generated-proto
 	@echo "Building Milvus cpp gpu library ... "
 	@(env bash $(PWD)/scripts/core_build.sh -t ${mode} -g -n ${use_disk_index} -y ${use_dynamic_simd} ${AZURE_OPTION} -x ${index_engine} -o ${use_opendal} -f $(tantivy_features))
 
-build-cpp-with-unittest: generated-proto
+build-cpp-with-unittest: generated-proto exprparser-tool
 	@echo "Building Milvus cpp library with unittest ... "
 	@(env bash $(PWD)/scripts/core_build.sh -t ${mode} -a ${use_asan} -u -n ${use_disk_index} -y ${use_dynamic_simd} ${AZURE_OPTION} -x ${index_engine} -o ${use_opendal} -f $(tantivy_features))
 

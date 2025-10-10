@@ -13,14 +13,11 @@
 
 #include <memory>
 #include <vector>
-#include <chrono>
 #include <string>
 
 #include "common/Schema.h"
 #include "segcore/SegmentInterface.h"
 #include "query/Plan.h"
-#include "query/PlanProto.h"
-#include "pb/plan.pb.h"
 
 namespace milvus::scalar_bench {
 
@@ -38,9 +35,6 @@ struct QueryResult {
     // Memory usage
     int64_t memory_used_bytes;
 
-    // Result data (for verification)
-    std::vector<int64_t> matched_offsets;
-
     // Error info
     bool success;
     std::string error_message;
@@ -51,17 +45,20 @@ public:
     QueryExecutor(SchemaPtr schema);
     ~QueryExecutor() = default;
 
-    // Execute query using text proto string (main method)
-    QueryResult ExecuteQuery(
+    // Execute query using expr string via Go helper
+    QueryResult ExecuteQueryExpr(
         SegmentInterface* segment,
-        const std::string& text_proto_plan,
+        const std::string& expr,
+        bool is_count = true,
         int64_t limit = -1);
 
 private:
     SchemaPtr schema_;
 
-    // Build query plan from text proto
-    std::unique_ptr<RetrievePlan> BuildPlan(const std::string& text_proto_plan);
+    // Build query plan by expr with Go helper
+    std::unique_ptr<RetrievePlan> BuildPlanFromExpr(const std::string& expr,
+                                                    bool is_count,
+                                                    int64_t limit);
 
     // Measure memory usage during query execution
     int64_t MeasureMemoryUsage();

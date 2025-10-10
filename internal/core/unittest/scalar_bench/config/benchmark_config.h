@@ -111,6 +111,10 @@ struct DictionaryConfig {
 struct ValuePoolConfig {
     std::string dictionary;
     std::vector<std::string> inline_items;
+    // Optional candidate sub-selection when using dictionary
+    // Only one of pick or random_pick may be set (>0). Ignored for inline items.
+    int pick = 0;          // take first N tokens from dictionary order
+    int random_pick = 0;   // take N random tokens (seeded)
 };
 
 // ============== Categorical ==============

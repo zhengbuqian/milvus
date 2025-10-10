@@ -13,20 +13,10 @@
 
 #include <memory>
 #include <string>
-#include <map>
 #include <unordered_map>
 #include <vector>
-#include <chrono>
 
-#include "index/IndexFactory.h"
-#include "index/IndexInfo.h"
-#include "index/Meta.h"
-#include "index/ScalarIndex.h"
-#include "index/BitmapIndex.h"
-#include "index/InvertedIndexTantivy.h"
-#include "index/StringIndex.h"
-#include "index/NgramInvertedIndex.h"
-#include "storage/FileManager.h"
+#include "index/Index.h"
 #include "segment_wrapper.h"
 #include "scalar_filter_benchmark.h"
 
@@ -35,7 +25,6 @@ namespace scalar_bench {
 
 // 索引构建结果
 struct IndexBuildResult {
-    bool success;
     double build_time_ms;
     size_t memory_bytes;
     size_t serialized_size;
@@ -54,9 +43,8 @@ public:
                                     const IndexConfig& config) = 0;
 
     // 加载索引到Segment (提供默认实现)
-    virtual bool LoadToSegment(SegmentWrapper& segment,
-                                const std::string& field_name,
-                                const IndexBuildResult& build_result);
+    virtual void LoadToSegment(SegmentWrapper& segment,
+                                const std::string& field_name);
 
     // 获取索引类型名称
     virtual std::string GetTypeName() const = 0;
@@ -104,11 +92,6 @@ public:
 class IndexManager {
 public:
     IndexManager(std::shared_ptr<milvus::storage::ChunkManager> chunk_manager);
-
-    // 构建并加载索引 (legacy - for backward compatibility)
-    IndexBuildResult BuildAndLoadIndex(SegmentWrapper& segment,
-                                        const std::string& field_name,
-                                        const IndexConfig& config);
 
     // 构建并加载索引 (field-specific configuration)
     IndexBuildResult BuildAndLoadIndexForField(SegmentWrapper& segment,

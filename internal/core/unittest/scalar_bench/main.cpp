@@ -24,6 +24,7 @@
 #include "storage/LocalChunkManagerSingleton.h"
 #include "storage/RemoteChunkManagerSingleton.h"
 #include "test_utils/storage_test_utils.h"
+#include "core/expr_parser_client.h"
 
 using namespace milvus::scalar_bench;
 
@@ -179,6 +180,14 @@ main(int argc, char* argv[]) {
 
     // 初始化全局单例和管理器
     InitializeGlobals(argc, argv);
+
+    // 启动 Go exprparser 子进程（单例）
+    try {
+        milvus::scalar_bench::ExprParserClient::Instance().Start();
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to start exprparser helper: " << e.what() << std::endl;
+        return 1;
+    }
 
     // 解析命令行参数
     std::string config_file;

@@ -38,9 +38,21 @@ FieldGeneratorType ParseGeneratorType(const std::string& type_str) {
 }
 
 DataType ParseDataType(const std::string& type_str) {
-    proto::schema::DataType type;
-    if (proto::schema::DataType_Parse(type_str, &type)) {
-        auto res = static_cast<DataType>(type);
+    // Accept both proto enum names (e.g., VarChar) and case-insensitive aliases (e.g., VARCHAR)
+    auto upper = ToUpper(type_str);
+
+    if (upper == "BOOL" || upper == "BOOLEAN") return DataType::BOOL;
+    if (upper == "INT64") return DataType::INT64;
+    if (upper == "FLOAT") return DataType::FLOAT;
+    if (upper == "DOUBLE") return DataType::DOUBLE;
+    if (upper == "VARCHAR" || upper == "VARCHARS" || upper == "STRING") return DataType::VARCHAR;
+    if (upper == "JSON") return DataType::JSON;
+    if (upper == "ARRAY") return DataType::ARRAY;
+
+    // Fallback to proto parser for canonical names
+    proto::schema::DataType parsed;
+    if (proto::schema::DataType_Parse(type_str, &parsed)) {
+        auto res = static_cast<DataType>(parsed);
         switch (res) {
             case DataType::BOOL:
             case DataType::INT64:
@@ -51,11 +63,10 @@ DataType ParseDataType(const std::string& type_str) {
             case DataType::ARRAY:
                 return res;
             default:
-                throw std::runtime_error("Unsupported data type: " + type_str);
+                break;
         }
     }
     throw std::runtime_error("Unknown data type: " + type_str);
-    throw std::runtime_error("Unknown field data type: " + type_str);
 }
 
 VarcharMode ParseVarcharMode(const YAML::Node& node) {
@@ -101,6 +112,22 @@ void ParseValuePool(const YAML::Node& node, ValuePoolConfig& config) {
         } else if (inline_node.IsScalar()) {
             config.inline_items.push_back(inline_node.as<std::string>());
         }
+    }
+
+    // Candidate sub-selection
+    if (node["pick"]) {
+        config.pick = node["pick"].as<int>();
+    }
+    if (node["random_pick"]) {
+        config.random_pick = node["random_pick"].as<int>();
+    }
+
+    // Validate constraints
+    if (config.pick > 0 && config.random_pick > 0) {
+        throw std::runtime_error("values.pick and values.random_pick are mutually exclusive");
+    }
+    if (!config.inline_items.empty() && (config.pick > 0 || config.random_pick > 0)) {
+        throw std::runtime_error("values.pick/random_pick are not allowed when values.inline is used");
     }
 }
 
@@ -705,10 +732,15 @@ BenchmarkConfig ParseBenchmarkConfig(const YAML::Node& root, const std::string& 
                         throw std::runtime_error("expr_templates entry missing 'name' in suite: " + suite.name);
                     }
                     et.name = node["name"].as<std::string>();
-                    if (!node["expr_template"]) {
-                        throw std::runtime_error("expr_templates entry missing 'expr_template': " + et.name);
+                    // Only support expr string; drop textproto format
+                    if (node["expr"]) {
+                        et.expr_template = node["expr"].as<std::string>();
+                    } else if (node["expr_template"]) {
+                        // Backward config name, but we now treat it as expr string, not textproto
+                        et.expr_template = node["expr_template"].as<std::string>();
+                    } else {
+                        throw std::runtime_error("expr_templates entry missing 'expr': " + et.name);
                     }
-                    et.expr_template = node["expr_template"].as<std::string>();
                     suite.expr_templates.push_back(et);
                 }
             }

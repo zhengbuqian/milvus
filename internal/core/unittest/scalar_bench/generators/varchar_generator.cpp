@@ -48,6 +48,12 @@ void VarcharGenerator::LoadTokenPool() {
         if (token_pool_.empty()) {
             throw std::runtime_error("Token pool for VarcharGenerator is empty: " + varchar_config.values.dictionary);
         }
+        // Apply candidate sub-selection when requested
+        if (varchar_config.values.pick > 0) {
+            if (static_cast<size_t>(varchar_config.values.pick) < token_pool_.size()) {
+                token_pool_.resize(static_cast<size_t>(varchar_config.values.pick));
+            }
+        }
     } else if (!varchar_config.values.inline_items.empty()) {
         token_pool_ = varchar_config.values.inline_items;
         if (token_pool_.empty()) {
@@ -173,6 +179,21 @@ DataArray VarcharGenerator::Generate(size_t num_rows, RandomContext& ctx) {
 
 std::string VarcharGenerator::GenerateRandomText(RandomContext& ctx) {
     const auto& varchar_config = config_.varchar_config;
+    // If random_pick requested, create a deterministic random subset using ctx
+    if (!varchar_config.values.dictionary.empty() && varchar_config.values.random_pick > 0 &&
+        token_pool_.size() > static_cast<size_t>(varchar_config.values.random_pick)) {
+        std::vector<size_t> indices(token_pool_.size());
+        std::iota(indices.begin(), indices.end(), 0);
+        std::mt19937& rng = ctx.GetRNG();
+        std::shuffle(indices.begin(), indices.end(), rng);
+        size_t take = static_cast<size_t>(varchar_config.values.random_pick);
+        std::vector<std::string> picked;
+        picked.reserve(take);
+        for (size_t i = 0; i < take; ++i) {
+            picked.push_back(token_pool_[indices[i]]);
+        }
+        token_pool_.swap(picked);
+    }
 
     // Determine number of tokens
     int token_count;

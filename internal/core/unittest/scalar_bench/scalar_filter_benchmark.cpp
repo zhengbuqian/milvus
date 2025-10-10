@@ -149,7 +149,7 @@ ScalarFilterBenchmark::RunBenchmark(const BenchmarkConfig& config) {
                 std::string resolved_expression = ResolveFieldPlaceholders(
                     expr_template.expr_template, *segment->wrapper);
 
-                // 执行基准测试（使用解析后的表达式）
+                // 执行基准测试（使用解析后的表达式，通过 Go 辅助解析）
                 auto result = ExecuteSingleBenchmark(segment, index, resolved_expression,
                                                     config.test_params, case_run_id, run_dir);
 
@@ -193,22 +193,7 @@ ScalarFilterBenchmark::GenerateReport(const std::vector<BenchmarkResult>& result
     std::cout << "============================================" << std::endl;
     std::cout << "Total test cases: " << results.size() << std::endl;
 
-    // // 汇总统计
-    // if (!results.empty()) {
-    //     // 找出最慢和最快的查询
-    //     auto slowest = std::max_element(results.begin(), results.end(),
-    //         [](const auto& a, const auto& b) { return a.latency_p99_ms < b.latency_p99_ms; });
-    //     auto fastest = std::min_element(results.begin(), results.end(),
-    //         [](const auto& a, const auto& b) { return a.latency_p99_ms < b.latency_p99_ms; });
-
-    //     std::cout << "\nPerformance Summary:" << std::endl;
-    //     std::cout << "  Fastest query (P99): " << fastest->latency_p99_ms << "ms"
-    //               << " (" << fastest->index_config_name << ", " << fastest->actual_expression << ")" << std::endl;
-    //     std::cout << "  Slowest query (P99): " << slowest->latency_p99_ms << "ms"
-    //               << " (" << slowest->index_config_name << ", " << slowest->actual_expression << ")" << std::endl;
-    // }
-
-    // 复制结果并排序：先按data config，再按expression，最后按index
+    // 排序：先按data config，再按expression，最后按index
     std::vector<BenchmarkResult> sorted_results = results;
     std::sort(sorted_results.begin(), sorted_results.end(),
         [](const BenchmarkResult& a, const BenchmarkResult& b) {
@@ -235,7 +220,8 @@ ScalarFilterBenchmark::GenerateReport(const std::vector<BenchmarkResult>& result
               << std::setw(10) << "P50(ms)"
               << std::setw(10) << "P99(ms)"
               << std::setw(12) << "Selectivity"
-              << std::setw(12) << "Memory(MB)" << std::endl;
+            //   << std::setw(12) << "Memory(MB)" 
+              << std::endl;
     std::cout << std::string(159, '-') << std::endl;
 
     for (const auto& result : sorted_results) {
@@ -247,8 +233,9 @@ ScalarFilterBenchmark::GenerateReport(const std::vector<BenchmarkResult>& result
                   << std::setw(10) << std::right << std::fixed << std::setprecision(2) << result.latency_avg_ms
                   << std::setw(10) << result.latency_p50_ms
                   << std::setw(10) << result.latency_p99_ms
-                  << std::setw(11) << std::setprecision(1) << result.actual_selectivity * 100 << "%"
-                  << std::setw(12) << std::setprecision(1) << result.index_memory_bytes / (1024.0 * 1024.0) << std::endl;
+                  << std::setw(11) << std::setprecision(4) << result.actual_selectivity * 100 << "%"
+                //   << std::setw(12) << std::setprecision(1) << result.index_memory_bytes / (1024.0 * 1024.0) 
+                  << std::endl;
     }
 
     // 为这次运行创建专门的文件夹
@@ -594,10 +581,6 @@ ScalarFilterBenchmark::BuildIndex(const std::shared_ptr<SegmentBundle>& segment_
                 std::cout << "      Building index for field: " << field_name
                           << " with type: " << static_cast<int>(field_index_config.type) << std::endl;
                 auto result = index_manager.BuildAndLoadIndexForField(*segment_wrapper, field_name, field_index_config);
-                if (!result.success) {
-                    std::cerr << "Failed to build index for field " << field_name
-                              << ": " << result.error_message << std::endl;
-                }
             }
         }
     } else {
@@ -636,8 +619,8 @@ ScalarFilterBenchmark::ExecuteSingleBenchmark(const std::shared_ptr<SegmentBundl
 
     // 预热
     for (int i = 0; i < params.warmup_iterations; ++i) {
-        // 执行真实查询（text proto 格式）
-        auto query_result = executor.ExecuteQuery(sealed_segment.get(), expression);
+        // 执行真实查询（expr 通过 Go parser 转 PlanNode）
+        auto query_result = executor.ExecuteQueryExpr(sealed_segment.get(), expression, true, -1);
         if (!query_result.success && i == 0) {
             // 第一次失败时报告错误
             result.error_message = query_result.error_message;
@@ -648,8 +631,8 @@ ScalarFilterBenchmark::ExecuteSingleBenchmark(const std::shared_ptr<SegmentBundl
 
     // 测试执行
     for (int i = 0; i < params.test_iterations; ++i) {
-        // 执行真实查询
-        auto query_result = executor.ExecuteQuery(sealed_segment.get(), expression);
+        // 执行真实查询（expr）
+        auto query_result = executor.ExecuteQueryExpr(sealed_segment.get(), expression, true, -1);
 
         if (query_result.success) {
             latencies.push_back(query_result.execution_time_ms);
@@ -698,7 +681,7 @@ ScalarFilterBenchmark::ExecuteSingleBenchmark(const std::shared_ptr<SegmentBundl
 
             // 创建工作负载函数
             auto workload = [&]() {
-                auto query_result = executor.ExecuteQuery(sealed_segment.get(), expression);
+                auto query_result = executor.ExecuteQueryExpr(sealed_segment.get(), expression, true, -1);
             };
 
             // 生成case名称用于火焰图标题

@@ -1,6 +1,8 @@
 #include "categorical_generator.h"
 #include <stdexcept>
 #include <algorithm>
+#include <numeric>
+#include "../dictionaries/dictionary_registry.h"
 
 namespace milvus {
 namespace scalar_bench {
@@ -11,7 +13,6 @@ CategoricalGenerator::CategoricalGenerator(const FieldConfig& config)
         throw std::runtime_error("Invalid generator type for CategoricalGenerator");
     }
     LoadValues();
-    PrepareDuplicationRatios();
 }
 
 void CategoricalGenerator::LoadValues() {
@@ -41,6 +42,36 @@ void CategoricalGenerator::LoadValues() {
             }
         }
     }
+}
+
+void CategoricalGenerator::EnsurePrepared(RandomContext& ctx) {
+    if (prepared_) return;
+
+    const auto& cat_config = config_.categorical_config;
+    // Apply candidate sub-selection when requested and using dictionary
+    if (!cat_config.values.dictionary.empty()) {
+        if (cat_config.values.pick > 0) {
+            if (static_cast<size_t>(cat_config.values.pick) < values_.size()) {
+                values_.resize(static_cast<size_t>(cat_config.values.pick));
+            }
+        } else if (cat_config.values.random_pick > 0) {
+            // Deterministic selection using the generation seed
+            std::vector<size_t> indices(values_.size());
+            std::iota(indices.begin(), indices.end(), 0);
+            std::mt19937& rng = ctx.GetRNG();
+            std::shuffle(indices.begin(), indices.end(), rng);
+            size_t take = std::min(static_cast<size_t>(cat_config.values.random_pick), indices.size());
+            std::vector<std::string> picked;
+            picked.reserve(take);
+            for (size_t i = 0; i < take; ++i) {
+                picked.push_back(values_[indices[i]]);
+            }
+            values_.swap(picked);
+        }
+    }
+
+    PrepareDuplicationRatios();
+    prepared_ = true;
 }
 
 void CategoricalGenerator::PrepareDuplicationRatios() {
@@ -122,6 +153,7 @@ size_t CategoricalGenerator::SelectValueIndex(RandomContext& ctx) {
 
 DataArray CategoricalGenerator::Generate(size_t num_rows, RandomContext& ctx) {
     const auto& cat_config = config_.categorical_config;
+    EnsurePrepared(ctx);
 
     // Generate based on type
     if (cat_config.type == DataType::VARCHAR) {

@@ -14,6 +14,8 @@
 #include <sys/resource.h>
 #include "common/EasyAssert.h"
 #include "log/Log.h"
+#include "expr_parser_client.h"
+#include "query/PlanProto.h"
 
 namespace milvus::scalar_bench {
 
@@ -22,25 +24,20 @@ QueryExecutor::QueryExecutor(SchemaPtr schema) : schema_(schema) {
 }
 
 QueryResult
-QueryExecutor::ExecuteQuery(
+QueryExecutor::ExecuteQueryExpr(
     SegmentInterface* segment,
-    const std::string& text_proto_plan,
+    const std::string& expr,
+    bool is_count,
     int64_t limit) {
-
     QueryResult result;
     result.total_rows = segment->get_row_count();
 
     try {
-        // Build query plan from text proto
-        auto plan = BuildPlan(text_proto_plan);
+        auto plan = BuildPlanFromExpr(expr, is_count, limit);
 
-        // Measure execution time
         auto start = std::chrono::high_resolution_clock::now();
-
-        // Get initial memory usage
         auto initial_memory = MeasureMemoryUsage();
 
-        // Execute the query
         auto retrieve_result = segment->Retrieve(
             nullptr,  // RetrieveContext
             plan.get(),
@@ -50,41 +47,46 @@ QueryExecutor::ExecuteQuery(
         );
 
         auto end = std::chrono::high_resolution_clock::now();
-
-        // Calculate execution time
         result.execution_time_ms = std::chrono::duration<double, std::milli>(end - start).count();
-
-        // Get final memory usage
         auto final_memory = MeasureMemoryUsage();
         result.memory_used_bytes = final_memory - initial_memory;
 
-        // Extract results
         if (retrieve_result) {
-            result.matched_offsets = ExtractMatchedOffsets(retrieve_result);
-            result.matched_rows = result.matched_offsets.size();
+            if (is_count) {
+                result.matched_rows = retrieve_result->fields_data(0).scalars().long_data().data(0);
+            } else {
+                auto matched_offsets = ExtractMatchedOffsets(retrieve_result);
+                result.matched_rows = matched_offsets.size();
+            }
             result.selectivity = static_cast<double>(result.matched_rows) / result.total_rows;
             result.success = true;
         } else {
             result.success = false;
             result.error_message = "Query returned null result";
         }
-
     } catch (const std::exception& e) {
         result.success = false;
         result.error_message = e.what();
     }
-
     return result;
 }
 
 std::unique_ptr<RetrievePlan>
-QueryExecutor::BuildPlan(const std::string& text_proto_plan) {
-    proto::plan::PlanNode plan_proto;
-    bool success = google::protobuf::TextFormat::ParseFromString(text_proto_plan, &plan_proto);
-    AssertInfo(success, "Failed to parse text proto: {}", text_proto_plan);
-
+QueryExecutor::BuildPlanFromExpr(const std::string& expr,
+                                 bool is_count,
+                                 int64_t limit) {
+    // Build schema proto bytes
+    auto schema_bytes = BuildCollectionSchemaProtoBytes(schema_);
+    // Call helper
+    auto& client = ExprParserClient::Instance();
+    client.Start();
+    std::string plan_bytes = client.ParseExprToPlanBytes(expr, schema_bytes, is_count, limit > 0 ? limit : DEFAULT_MAX_OUTPUT_SIZE);
+    // Parse plan bytes
+    proto::plan::PlanNode plan_pb;
+    bool ok = plan_pb.ParseFromString(plan_bytes);
+    AssertInfo(ok, "failed to parse plan bytes returned by helper");
     ProtoParser parser(schema_);
-    return parser.CreateRetrievePlan(plan_proto);
+    return parser.CreateRetrievePlan(plan_pb);
 }
 
 int64_t

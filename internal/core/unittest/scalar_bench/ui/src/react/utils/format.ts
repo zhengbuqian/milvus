@@ -21,7 +21,11 @@ export function formatNumber(value: unknown): string {
 export function formatPercentage(value: unknown): string {
   const num = Number(value);
   if (!Number.isFinite(num)) return '—';
-  return `${(num * 100).toFixed(2)}%`;
+  const percent = num * 100;
+  const rounded = percent.toFixed(5);
+  // Trim trailing zeros and possible trailing decimal point after fixing to 5 decimals
+  const trimmed = rounded.replace(/(?:\.0+|(\.\d*?[1-9])0+)$/, '$1');
+  return `${trimmed}%`;
 }
 
 export function formatTimestamp(value: unknown): string {

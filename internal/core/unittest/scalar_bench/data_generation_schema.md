@@ -67,9 +67,12 @@ If the `fields` array does not explicitly include a `pk` field, the generator st
   - `type`: Milvus scalar type (`VARCHAR`, `INT64`, `INT32`). Defaults to `VARCHAR` when omitted. For `VARCHAR`, provide `max_length` so values adhere to the collection schema (default clamp is 64 if unspecified).
   - `values.dictionary`: Name of a dictionary declared under `global_dictionaries` or registered as a built-in (e.g., `uuid_v4_lower`, `h3_level8`). This defines the candidate token pool.
   - `values.inline`: Inline list of candidate tokens for enumerations. The generator uses only these predefined values to fill the segment.
+  - `values.pick`: Integer. When used with `values.dictionary`, restricts the candidate pool to the first N tokens from the resolved dictionary order.
+  - `values.random_pick`: Integer. When used with `values.dictionary`, restricts the candidate pool to N randomly selected tokens from the resolved dictionary (without replacement; respects `segment_seed` when available).
+    - Constraints: `values.pick` and `values.random_pick` are mutually exclusive. When `values.inline` is used, neither may be set.
   - `duplication_ratios`: List of ratios for each value, representing the percentage distribution. The sum should equal 1.0, and the list length should not exceed the number of available values (from dictionary or inline). Example: `duplication_ratios: [0.5, 0.3, 0.2]` means first value gets 50%, second gets 30%, third gets 20% of rows.
   - `max_length`: Absolute character cap for `VARCHAR` outputs; any longer dictionary values are truncated.
-- **Generation order**: dictionary/inline sourcing → duplication ratio application → length truncation. The generator uses predefined values with specified distributions, ensuring the final column is schema-compliant.
+- **Generation order**: dictionary/inline sourcing → candidate sub-selection (`values.pick`/`values.random_pick`) → duplication ratio application → length truncation. The generator uses predefined values with specified distributions, ensuring the final column is schema-compliant.
 
 ### `numeric`
 - **Purpose**: general scalar metrics (price, counts, scores).
@@ -82,6 +85,8 @@ If the `fields` array does not explicitly include a `pk` field, the generator st
     - If `range.min + (size-1)*step` exceeds `range.max` (for positive step) or is less than `range.max` (for negative step), configuration is invalid and generation fails.
   - `buckets`: weighted subranges for composite distributions.
   - `outliers`: injection of extreme values with configurable ratio and explicit list.
+    - `ratio`: ratio of outliers to the total number of values.
+    - `values`: list of outlier values.
   - `precision`: for floating types, number of decimal places.
   - `null_ratio`.
 
@@ -101,6 +106,9 @@ If the `fields` array does not explicitly include a `pk` field, the generator st
     - `random`: Random combinations of tokens
       - `values.inline`
       - `values.dictionary`
+      - `values.pick` (with `values.dictionary` only): Integer. Use only the first N tokens from the dictionary as the token pool.
+      - `values.random_pick` (with `values.dictionary` only): Integer. Use N randomly selected tokens from the dictionary as the token pool (without replacement; respects seed when available).
+        - Constraints: Do not set both `values.pick` and `values.random_pick`. When `values.inline` is used, neither may be set.
       - `token_count`: Number of tokens (for `random` mode):
         - `min`, `max`, `distribution`
       - `keywords`: Required tokens with frequency guarantees.
@@ -190,6 +198,17 @@ The `values.dictionary` reference resolves to one of three sources:
    Each line in `items_file` becomes one token. Comments and blank lines are ignored.
 
 When a field specifies `values.dictionary: cities_small`, the loader first checks the preset’s `global_dictionaries` block, then the built-in registry. If neither exists, configuration loading fails.
+
+### Candidate sub-selection for dictionaries
+
+For any generator that supports `values.dictionary` (e.g., `categorical`, `varchar` in `random` mode, nested `element` generators), you may optionally restrict the candidate pool using one of:
+
+- `values.pick`: Integer. Use only the first N tokens from the resolved dictionary order (inline list order, file order for `items_file`, or built-in order).
+- `values.random_pick`: Integer. Use N randomly selected tokens from the resolved dictionary, without replacement. Randomness respects `segment_seed` when available for reproducibility.
+
+Rules:
+- `values.pick` and `values.random_pick` are mutually exclusive.
+- When `values.inline` is provided, neither `values.pick` nor `values.random_pick` may be set.
 
 ## Complete Example: Ecommerce Benchmark
 
