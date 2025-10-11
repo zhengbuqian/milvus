@@ -8,8 +8,12 @@ test_params:
 suites:
   - name: default
     data_configs:
-      - path: benchmark_cases/array/data_configs/uniform_array_of_short_words_card_100.yaml
-      - path: benchmark_cases/array/data_configs/uniform_array_of_short_words_card_300k.yaml
+      - path: benchmark_cases/array/data_configs/1_short_words_card_100.yaml
+      - path: benchmark_cases/array/data_configs/short_words_card_10k.yaml
+      - path: benchmark_cases/array/data_configs/short_words_card_100k.yaml
+      - path: benchmark_cases/array/data_configs/short_words_card_300k.yaml
+      - path: benchmark_cases/array/data_configs/short_words_card_500.yaml
+      - path: benchmark_cases/array/data_configs/short_words_card_2k.yaml
     index_configs:
       # - name: no_index
       #   field_configs: {}
@@ -25,7 +29,7 @@ suites:
       - name: array_contains_large
         expr_template: array_contains(city_array, "Dennisburgh")
       - name: array_contains_med
-        expr_template: array_contains(city_array, "South Holly")
+        expr_template: array_contains(city_array, "Cavriago")
       - name: array_contains_small
         expr_template: array_contains(city_array, "Lemonnier")
       - name: array_contains_not_found

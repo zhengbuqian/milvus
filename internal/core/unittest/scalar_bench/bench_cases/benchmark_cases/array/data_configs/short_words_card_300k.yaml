@@ -1,0 +1,19 @@
+# 每行 4-50 个词，从 300k 个词中随机选择
+name: short_words_card_300k
+segment_size: 1000000
+segment_seed: 42
+global_dictionaries:
+  cities:
+    items_file: cities.txt
+fields:
+  - field_name: city_array
+    generator: array
+    length: { min: 4, max: 50, distribution: ZIPF }
+    element:
+      generator: categorical
+      type: Varchar
+      values:
+        dictionary: cities
+        pick: 300000
+      duplication_ratios: [0.2, 0.1, 0.05]
+    unique: true

@@ -1,5 +1,5 @@
-# 每行 4-50 个词，从 300k 个词中随机选择
-name: uniform_array_of_short_words_card_300k
+# 每行 4-50 个词，从 100k 个词中随机选择
+name: short_words_card_100k
 segment_size: 1000000
 segment_seed: 42
 global_dictionaries:
@@ -14,6 +14,6 @@ fields:
       type: Varchar
       values:
         dictionary: cities
-        pick: 300000
+        pick: 100000
       duplication_ratios: [0.2, 0.1, 0.05]
     unique: true

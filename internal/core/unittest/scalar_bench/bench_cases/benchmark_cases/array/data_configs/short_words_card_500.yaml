@@ -1,5 +1,5 @@
-# 每行 4-50 个词，从 100 个词中随机选择，有一些高频词
-name: uniform_array_of_short_words_card_100
+# 每行 4-50 个词，从 500 个词中随机选择
+name: short_words_card_500
 segment_size: 1000000
 segment_seed: 42
 global_dictionaries:
@@ -14,6 +14,6 @@ fields:
       type: Varchar
       values:
         dictionary: cities
-        pick: 100
+        pick: 500
       duplication_ratios: [0.2, 0.1, 0.05]
     unique: true

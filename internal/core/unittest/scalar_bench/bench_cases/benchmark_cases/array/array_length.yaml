@@ -8,8 +8,9 @@ test_params:
 suites:
   - name: default
     data_configs:
-      - path: benchmark_cases/array/data_configs/uniform_array_of_short_words_card_100.yaml
-      - path: benchmark_cases/array/data_configs/uniform_array_of_short_words_card_300k.yaml
+      # for array_length, run with 2 data setting is sufficient
+      - path: benchmark_cases/array/data_configs/1_short_words_card_100.yaml
+      - path: benchmark_cases/array/data_configs/short_words_card_300k.yaml
     index_configs:
       - name: no_index
         field_configs: {}
