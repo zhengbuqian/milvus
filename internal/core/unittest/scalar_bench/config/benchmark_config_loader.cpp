@@ -15,47 +15,44 @@ static std::string ToUpper(const std::string& s) {
     return r;
 }
 
-// Apply YAML override with strict validation
-// - Only allows overriding existing paths (no new keys/indices)
-// - Validates sequence indices are in bounds
-// - Only allows overriding scalar nodes (int/bool/float/string) and sequences
+// Apply YAML override - allows creating new keys in maps
+// - For Map nodes: allows creating new keys or overriding existing ones
+// - For Sequence nodes: strictly validates indices are in bounds (no new elements)
+// - For Scalar nodes: replaces the value
+// - Type mismatch check: if base path exists, types must match
 void ApplyYamlOverride(YAML::Node base, const YAML::Node& override_node, const std::string& path = "") {
     if (!override_node.IsDefined() || override_node.IsNull()) {
         return;
     }
 
-    // Base must exist and be defined
-    if (!base.IsDefined()) {
-        throw std::runtime_error("Override path does not exist in base config: " + path);
-    }
-
-    // Type mismatch check
-    if (base.IsMap() && !override_node.IsMap()) {
-        throw std::runtime_error("Override type mismatch at '" + path + "': base is Map but override is not");
-    }
-    if (base.IsSequence() && !override_node.IsSequence()) {
-        throw std::runtime_error("Override type mismatch at '" + path + "': base is Sequence but override is not");
-    }
-    if (base.IsScalar() && !override_node.IsScalar()) {
-        throw std::runtime_error("Override type mismatch at '" + path + "': base is Scalar but override is not");
+    // If base is defined and has a type, check for type compatibility
+    if (base.IsDefined() && !base.IsNull()) {
+        // Type mismatch check - only if base already has a type
+        if (base.IsMap() && !override_node.IsMap()) {
+            throw std::runtime_error("Override type mismatch at '" + path + "': base is Map but override is not");
+        }
+        if (base.IsSequence() && !override_node.IsSequence()) {
+            throw std::runtime_error("Override type mismatch at '" + path + "': base is Sequence but override is not");
+        }
+        if (base.IsScalar() && !override_node.IsScalar()) {
+            throw std::runtime_error("Override type mismatch at '" + path + "': base is Scalar but override is not");
+        }
     }
 
     if (override_node.IsMap()) {
         // Recursively process map keys
+        // Allow creating new keys or overriding existing ones
         for (auto it = override_node.begin(); it != override_node.end(); ++it) {
             std::string key = it->first.as<std::string>();
             std::string sub_path = path.empty() ? key : path + "." + key;
 
-            // Check if key exists in base
-            if (!base[key]) {
-                throw std::runtime_error("Override key does not exist in base config: " + sub_path);
-            }
-
+            // Recursively apply override - will create key if it doesn't exist
             ApplyYamlOverride(base[key], it->second, sub_path);
         }
     } else if (override_node.IsSequence()) {
-        // Validate sequence index bounds
-        if (override_node.size() > base.size()) {
+        // For sequences, strictly validate index bounds
+        // We don't allow adding new elements, only modifying existing ones
+        if (base.IsDefined() && base.IsSequence() && override_node.size() > base.size()) {
             throw std::runtime_error("Override sequence at '" + path + "' has more elements (" +
                                    std::to_string(override_node.size()) + ") than base (" +
                                    std::to_string(base.size()) + "). Cannot add new elements.");
