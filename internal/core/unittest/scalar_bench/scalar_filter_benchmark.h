@@ -27,8 +27,8 @@ class SegmentData;
 // 基准测试结果
 struct BenchmarkResult {
     // 运行标识
-    int64_t run_id;           // 整个运行的时间戳（毫秒）
-    int64_t case_run_id;      // 每个测试用例的时间戳（毫秒）
+    int64_t run_id;       // 整个运行的时间戳（毫秒）
+    int64_t case_run_id;  // 每个测试用例的时间戳（毫秒）
 
     // 测试标识
     std::string suite_name;
@@ -71,7 +71,8 @@ struct BenchmarkResult {
 
     // 火焰图信息
     bool has_flamegraph = false;
-    std::string flamegraph_path; // relative path under run folder, e.g. flamegraphs/<case_id>.svg
+    std::string
+        flamegraph_path;  // relative path under run folder, e.g. flamegraphs/<case_id>.svg
 };
 
 // 数据和segment的组合
@@ -88,57 +89,66 @@ struct IndexBundle {
 
 // 主测试框架类
 class ScalarFilterBenchmark {
-public:
+ public:
     ScalarFilterBenchmark() = default;
     ~ScalarFilterBenchmark() = default;
 
     // 运行基准测试
-    std::vector<BenchmarkResult> RunBenchmark(const BenchmarkConfig& config);
+    std::vector<BenchmarkResult>
+    RunBenchmark(const BenchmarkConfig& config);
 
     // 生成报告
-    void GenerateReport(const std::vector<BenchmarkResult>& results);
+    void
+    GenerateReport(const std::vector<BenchmarkResult>& results);
 
     // 从YAML加载配置
-    static BenchmarkConfig LoadConfig(const std::string& yaml_file);
+    static BenchmarkConfig
+    LoadConfig(const std::string& yaml_file);
 
-protected:
+ protected:
     // 生成测试数据
-    virtual std::shared_ptr<SegmentBundle> GenerateSegment(const DataConfig& config);
+    virtual std::shared_ptr<SegmentBundle>
+    GenerateSegment(const DataConfig& config);
 
     // 构建索引
-    virtual std::shared_ptr<IndexBundle> BuildIndex(
-        const std::shared_ptr<SegmentBundle>& segment,
-        const IndexConfig& config);
+    virtual std::shared_ptr<IndexBundle>
+    BuildIndex(const std::shared_ptr<SegmentBundle>& segment,
+               const IndexConfig& config);
 
     // 执行单个测试
-    virtual BenchmarkResult ExecuteSingleBenchmark(
-        const std::shared_ptr<SegmentBundle>& segment,
-        const std::shared_ptr<IndexBundle>& index,
-        const std::string& expression,
-        const TestParams& params,
-        int64_t case_run_id = 0,
-        const std::string& results_dir = "");
+    virtual BenchmarkResult
+    ExecuteSingleBenchmark(const std::shared_ptr<SegmentBundle>& segment,
+                           const std::shared_ptr<IndexBundle>& index,
+                           const std::string& expression,
+                           const TestParams& params,
+                           int64_t case_run_id = 0,
+                           const std::string& results_dir = "");
 
     // 辅助方法
-    bool IsIndexApplicable(const IndexConfig& index, const DataConfig& data);
-    bool IsExpressionApplicable(const ExpressionTemplate& expr, const DataConfig& data);
+    bool
+    IsIndexApplicable(const IndexConfig& index, const DataConfig& data);
+    bool
+    IsExpressionApplicable(const ExpressionTemplate& expr,
+                           const DataConfig& data);
 
     // Resolve field name placeholders in expression template
-    std::string ResolveFieldPlaceholders(const std::string& expr_template,
-                                         const SegmentWrapper& segment);
+    std::string
+    ResolveFieldPlaceholders(const std::string& expr_template,
+                             const SegmentWrapper& segment);
 
     // Validate field references in expression template
-    bool ValidateFieldReferences(const std::string& expr_template,
-                                 const SegmentWrapper& segment,
-                                 std::string& error_msg);
+    bool
+    ValidateFieldReferences(const std::string& expr_template,
+                            const SegmentWrapper& segment,
+                            std::string& error_msg);
 
-private:
+ private:
     // 性能统计
-    BenchmarkResult CalculateStatistics(
-        const std::vector<double>& latencies,
-        const std::vector<int64_t>& matches,
-        int64_t total_rows);
+    BenchmarkResult
+    CalculateStatistics(const std::vector<double>& latencies,
+                        const std::vector<int64_t>& matches,
+                        int64_t total_rows);
 };
 
-} // namespace scalar_bench
-} // namespace milvus
+}  // namespace scalar_bench
+}  // namespace milvus

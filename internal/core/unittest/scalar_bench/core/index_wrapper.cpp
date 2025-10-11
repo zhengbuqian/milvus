@@ -102,43 +102,6 @@ IndexWrapper::LoadToSegment(SegmentWrapper& segment,
     index_cache_.erase(it);
 }
 
-// Helper function to get raw data from segment
-template <typename T>
-std::vector<T>
-GetSegmentFieldData(const SegmentWrapper& segment,
-                    FieldId field_id,
-                    int64_t row_count) {
-    auto sealed_seg = segment.GetSealedSegment();
-
-    // Get number of chunks for this field
-    auto num_chunks = sealed_seg->num_chunk_data(field_id);
-    if (num_chunks == 0) {
-        throw std::runtime_error("No chunk data found for field");
-    }
-
-    std::vector<T> result;
-    result.reserve(row_count);
-
-    // Iterate through all chunks and collect data
-    for (int64_t chunk_id = 0; chunk_id < num_chunks; ++chunk_id) {
-        auto chunk_span = sealed_seg->chunk_data<T>(field_id, chunk_id);
-        auto span_data = chunk_span.get();
-
-        // Append chunk data to result
-        result.insert(result.end(),
-                      span_data.data(),
-                      span_data.data() + span_data.row_count());
-    }
-
-    // Trim to exact row count if necessary
-    if (result.size() > row_count) {
-        result.resize(row_count);
-    }
-
-    return result;
-}
-
-// IndexWrapper 统一 Build 实现
 IndexBuildResult
 IndexWrapper::Build(const SegmentWrapper& segment,
                     const std::string& field_name,
@@ -238,45 +201,9 @@ IndexWrapper::Build(const SegmentWrapper& segment,
     return result;
 }
 
-// IndexWrapperFactory 实现
-std::unique_ptr<IndexWrapper>
-IndexWrapperFactory::CreateIndexWrapper(ScalarIndexType type) {
-    switch (type) {
-        case ScalarIndexType::BITMAP:
-            return std::make_unique<IndexWrapper>(IndexWrapper::IndexBuildSpec{
-                .name = "BITMAP",
-                .index_type = milvus::index::BITMAP_INDEX_TYPE,
-                .build_id_seed = 4000,
-                .version_seed = 4000,
-                .numeric_only = false,
-            });
-        case ScalarIndexType::INVERTED:
-            return std::make_unique<IndexWrapper>(IndexWrapper::IndexBuildSpec{
-                .name = "INVERTED",
-                .index_type = milvus::index::INVERTED_INDEX_TYPE,
-                .build_id_seed = 4001,
-                .version_seed = 4001,
-                .numeric_only = false,
-            });
-        case ScalarIndexType::STL_SORT:
-            return std::make_unique<IndexWrapper>(IndexWrapper::IndexBuildSpec{
-                .name = "STL_SORT",
-                .index_type = milvus::index::ASCENDING_SORT,
-                .build_id_seed = 4002,
-                .version_seed = 4002,
-                .numeric_only = true,
-            });
-        default:
-            return nullptr;
-    }
-}
-
-// IndexManager 实现
 IndexManager::IndexManager(
     std::shared_ptr<milvus::storage::ChunkManager> chunk_manager)
-    : chunk_manager_(chunk_manager),
-      next_index_build_id_(5000),
-      next_index_id_(6000) {
+    : chunk_manager_(chunk_manager) {
 }
 
 IndexBuildResult
@@ -284,16 +211,51 @@ IndexManager::BuildAndLoadIndexForField(SegmentWrapper& segment,
                                         const std::string& field_name,
                                         const FieldIndexConfig& field_config) {
     IndexBuildResult result;
-    AssertInfo(field_config.type != ScalarIndexType::NONE,
-               "Field config type is NONE");
 
-    auto wrapper = IndexWrapperFactory::CreateIndexWrapper(field_config.type);
-    if (!wrapper) {
-        throw std::runtime_error("Unsupported index type");
+    if (field_config.type == ScalarIndexType::NONE) {
+        result.build_time_ms = 0;
+        result.memory_bytes = 0;
+        result.serialized_size = 0;
+        std::cout << "      No index (brute force scan)" << std::endl;
+        return result;
     }
 
-    // Create a temporary IndexConfig with the field-specific settings
-    // This is needed because Build() expects IndexConfig
+    std::unique_ptr<IndexWrapper> wrapper;
+    switch (field_config.type) {
+        case ScalarIndexType::BITMAP:
+            wrapper =
+                std::make_unique<IndexWrapper>(IndexWrapper::IndexBuildSpec{
+                    .name = "BITMAP",
+                    .index_type = milvus::index::BITMAP_INDEX_TYPE,
+                    .build_id_seed = 4000,
+                    .version_seed = 4000,
+                    .numeric_only = false,
+                });
+            break;
+        case ScalarIndexType::INVERTED:
+            wrapper =
+                std::make_unique<IndexWrapper>(IndexWrapper::IndexBuildSpec{
+                    .name = "INVERTED",
+                    .index_type = milvus::index::INVERTED_INDEX_TYPE,
+                    .build_id_seed = 4001,
+                    .version_seed = 4001,
+                    .numeric_only = false,
+                });
+            break;
+        case ScalarIndexType::STL_SORT:
+            wrapper =
+                std::make_unique<IndexWrapper>(IndexWrapper::IndexBuildSpec{
+                    .name = "STL_SORT",
+                    .index_type = milvus::index::ASCENDING_SORT,
+                    .build_id_seed = 4002,
+                    .version_seed = 4002,
+                    .numeric_only = true,
+                });
+            break;
+        default:
+            throw std::runtime_error("Unsupported index type");
+    }
+
     IndexConfig config;
     config.name = field_name + "_index";
     config.field_configs[field_name] = field_config;

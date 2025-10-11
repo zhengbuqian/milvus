@@ -24,67 +24,15 @@
 namespace milvus {
 namespace scalar_bench {
 
-int64_t SegmentWrapper::next_collection_id_ = 
+int64_t SegmentWrapper::next_collection_id_ =
     std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
-int64_t SegmentWrapper::next_partition_id_ = 
+        std::chrono::system_clock::now().time_since_epoch())
+        .count();
+int64_t SegmentWrapper::next_partition_id_ =
     std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
+        std::chrono::system_clock::now().time_since_epoch())
+        .count();
 int64_t SegmentWrapper::next_segment_id_ = 3000;
-
-// SchemaBuilder 实现
-SchemaBuilder::SchemaBuilder() {
-    schema_ = std::make_shared<milvus::Schema>();
-}
-
-void
-SchemaBuilder::AddPrimaryKeyField(const std::string& name) {
-    auto field_id = schema_->AddDebugField(name, DataType::INT64);
-    schema_->set_primary_field_id(field_id);
-}
-
-void
-SchemaBuilder::AddInt32Field(const std::string& name, bool nullable) {
-    schema_->AddDebugField(name, DataType::INT32, nullable);
-}
-
-void
-SchemaBuilder::AddInt64Field(const std::string& name, bool nullable) {
-    schema_->AddDebugField(name, DataType::INT64, nullable);
-}
-
-void
-SchemaBuilder::AddFloatField(const std::string& name, bool nullable) {
-    schema_->AddDebugField(name, DataType::FLOAT, nullable);
-}
-
-void
-SchemaBuilder::AddDoubleField(const std::string& name, bool nullable) {
-    schema_->AddDebugField(name, DataType::DOUBLE, nullable);
-}
-
-void
-SchemaBuilder::AddVarCharField(const std::string& name, size_t max_length, bool nullable) {
-    // Note: DataType::VARCHAR doesn't have explicit max_length in AddDebugField
-    // The max_length is handled internally by Milvus
-    (void)max_length;
-    schema_->AddDebugField(name, DataType::VARCHAR, nullable);
-}
-
-void
-SchemaBuilder::AddBoolField(const std::string& name, bool nullable) {
-    schema_->AddDebugField(name, DataType::BOOL, nullable);
-}
-
-void
-SchemaBuilder::AddArrayField(const std::string& name, DataType element_type, bool nullable) {
-    schema_->AddDebugField(name, DataType::ARRAY, element_type, nullable);
-}
-
-std::shared_ptr<milvus::Schema>
-SchemaBuilder::Build() {
-    return schema_;
-}
 
 // SegmentWrapper 实现
 SegmentWrapper::SegmentWrapper()
@@ -100,9 +48,9 @@ SegmentWrapper::Initialize(const DataConfig& config) {
         // No fields defined - this is an error
         throw std::runtime_error("No fields defined in data config");
     }
-    
+
     // 构建Schema
-    SchemaBuilder builder;
+    schema_ = std::make_shared<milvus::Schema>();
 
     // Check if pk field is already defined in the field configs
     bool has_pk = false;
@@ -111,14 +59,16 @@ SegmentWrapper::Initialize(const DataConfig& config) {
             has_pk = true;
             // TODO: 支持生成 字符串类型的 pk
             // Add pk as primary key field
-            builder.AddPrimaryKeyField("pk");
+            auto pk_id = schema_->AddDebugField("pk", DataType::INT64);
+            schema_->set_primary_field_id(pk_id);
             break;
         }
     }
 
     // If no pk field defined, add a default one
     if (!has_pk) {
-        builder.AddPrimaryKeyField("pk");
+        auto pk_id = schema_->AddDebugField("pk", DataType::INT64);
+        schema_->set_primary_field_id(pk_id);
     }
 
     // Build schema from field configurations (skip pk if already added)
@@ -129,24 +79,38 @@ SegmentWrapper::Initialize(const DataConfig& config) {
         // Map field_type to schema field type
         switch (field_config.field_type) {
             case DataType::INT64:
-                builder.AddInt64Field(field_config.field_name, field_config.nullable);
+                schema_->AddDebugField(field_config.field_name,
+                                       DataType::INT64,
+                                       field_config.nullable);
                 break;
             case DataType::DOUBLE:
-                builder.AddDoubleField(field_config.field_name, field_config.nullable);
+                schema_->AddDebugField(field_config.field_name,
+                                       DataType::DOUBLE,
+                                       field_config.nullable);
                 break;
             case DataType::VARCHAR: {
                 // Get max length from string config if using string generator
                 size_t max_len = 256;
                 if (field_config.generator == FieldGeneratorType::CATEGORICAL) {
-                    max_len = field_config.categorical_config.max_length > 0 ? field_config.categorical_config.max_length : 256;
-                } else if (field_config.generator == FieldGeneratorType::VARCHAR) {
-                    max_len = field_config.varchar_config.max_length > 0 ? field_config.varchar_config.max_length : 512;
+                    max_len = field_config.categorical_config.max_length > 0
+                                  ? field_config.categorical_config.max_length
+                                  : 256;
+                } else if (field_config.generator ==
+                           FieldGeneratorType::VARCHAR) {
+                    max_len = field_config.varchar_config.max_length > 0
+                                  ? field_config.varchar_config.max_length
+                                  : 512;
                 }
-                builder.AddVarCharField(field_config.field_name, max_len, field_config.nullable);
+                // TODO: max_len is not used
+                schema_->AddDebugField(field_config.field_name,
+                                       DataType::VARCHAR,
+                                       field_config.nullable);
                 break;
             }
             case DataType::BOOL:
-                builder.AddBoolField(field_config.field_name, field_config.nullable);
+                schema_->AddDebugField(field_config.field_name,
+                                       DataType::BOOL,
+                                       field_config.nullable);
                 break;
             case DataType::ARRAY: {
                 DataType element = DataType::NONE;
@@ -157,16 +121,20 @@ SegmentWrapper::Initialize(const DataConfig& config) {
                 if (element == DataType::NONE) {
                     element = DataType::INT64;
                 }
-                builder.AddArrayField(field_config.field_name, element, field_config.nullable);
+                schema_->AddDebugField(field_config.field_name,
+                                       DataType::ARRAY,
+                                       element,
+                                       field_config.nullable);
                 break;
             }
             default:
-                builder.AddInt64Field(field_config.field_name, field_config.nullable); // Default fallback
+                schema_->AddDebugField(
+                    field_config.field_name,
+                    DataType::INT64,
+                    field_config.nullable);  // Default fallback
                 break;
         }
     }
-
-    schema_ = builder.Build();
 
     // 建立字段名到ID的映射
     for (const auto& [field_id, field_meta] : schema_->get_fields()) {
@@ -199,7 +167,9 @@ SegmentWrapper::LoadFromSegmentData(const SegmentData& segment_data) {
     for (const auto& field_name : segment_data.GetFieldNames()) {
         auto it = field_name_to_id_.find(field_name);
         if (it == field_name_to_id_.end()) {
-            std::cerr << "Warning: Field " << field_name << " not found in schema" << std::endl;
+            std::cerr << "Warning: Field " << field_name
+                      << " has data provided but not found in schema"
+                      << std::endl;
             continue;
         }
 
@@ -208,37 +178,34 @@ SegmentWrapper::LoadFromSegmentData(const SegmentData& segment_data) {
         DataType data_type = field_schema.get_data_type();
 
         // 获取字段数据（DataArray）并写入
-        try {
-            const auto& data_array = segment_data.GetFieldDataArray(field_name);
-            WriteBinlogThenLoad(field_name, field_id, data_array);
-        } catch (const std::exception& e) {
-            std::cerr << "Error loading field " << field_name << ": " << e.what() << std::endl;
-        }
+        const auto& data_array = segment_data.GetFieldDataArray(field_name);
+        WriteBinlogThenLoad(field_name, field_id, data_array);
     }
 
-    std::cout << "    Loaded " << row_count_ << " rows into sealed segment" << std::endl;
+    std::cout << "    Loaded " << row_count_ << " rows into sealed segment"
+              << std::endl;
 }
 
 void
 SegmentWrapper::WriteBinlogThenLoad(const std::string& field_name,
-                                   FieldId field_id,
-                                   const milvus::DataArray& field_data) {
+                                    FieldId field_id,
+                                    const milvus::DataArray& field_data) {
     const auto& field_schema = schema_->operator[](field_id);
     DataType data_type = field_schema.get_data_type();
 
     // Ensure field_id is set on DataArray before conversion
     DataArray data_with_id = field_data;
     data_with_id.set_field_id(field_id.get());
-    auto storage_field_data = milvus::segcore::CreateFieldDataFromDataArray(row_count_, &data_with_id, field_schema);
+    auto storage_field_data = milvus::segcore::CreateFieldDataFromDataArray(
+        row_count_, &data_with_id, field_schema);
 
     // 准备binlog
-    auto field_data_info = PrepareSingleFieldInsertBinlog(
-        collection_id_,
-        partition_id_,
-        segment_id_,
-        field_id.get(),
-        {storage_field_data},
-        chunk_manager_);
+    auto field_data_info = PrepareSingleFieldInsertBinlog(collection_id_,
+                                                          partition_id_,
+                                                          segment_id_,
+                                                          field_id.get(),
+                                                          {storage_field_data},
+                                                          chunk_manager_);
 
     // 加载数据到segment
     sealed_segment_->LoadFieldData(field_data_info);
@@ -272,7 +239,8 @@ void
 SegmentWrapper::DropIndex(FieldId field_id) {
     if (sealed_segment_ != nullptr) {
         // Cast to ChunkedSegmentSealedImpl to access DropIndex method
-        auto chunked_segment = std::dynamic_pointer_cast<milvus::segcore::ChunkedSegmentSealedImpl>(sealed_segment_);
+        auto chunked_segment = std::dynamic_pointer_cast<
+            milvus::segcore::ChunkedSegmentSealedImpl>(sealed_segment_);
         if (chunked_segment) {
             chunked_segment->DropIndex(field_id);
         }
@@ -283,7 +251,7 @@ void
 SegmentWrapper::LoadSystemFields(const SegmentData& segment_data) {
     int64_t row_count = segment_data.GetRowCount();
 
-    // TODO: 允许生成 row id 和 timestamp 
+    // TODO: 允许生成 row id 和 timestamp
     // 生成 row id 数据 (从 0 开始递增)
     std::vector<int64_t> row_ids(row_count);
     std::iota(row_ids.begin(), row_ids.end(), 0);
@@ -291,40 +259,39 @@ SegmentWrapper::LoadSystemFields(const SegmentData& segment_data) {
     // 生成 timestamp 数据 (使用相同的值，表示批量插入)
     std::vector<int64_t> timestamps(row_count, 1000000);  // 使用固定时间戳
 
-    // 加载 row id
+    // load row id
     {
         auto field_data = milvus::storage::CreateFieldData(
             DataType::INT64, DataType::NONE, false, 1, 0);
         field_data->FillFieldData(row_ids.data(), row_count);
 
-        auto field_data_info = PrepareSingleFieldInsertBinlog(
-            collection_id_,
-            partition_id_,
-            segment_id_,
-            RowFieldID.get(),
-            {field_data},
-            chunk_manager_);
+        auto field_data_info = PrepareSingleFieldInsertBinlog(collection_id_,
+                                                              partition_id_,
+                                                              segment_id_,
+                                                              RowFieldID.get(),
+                                                              {field_data},
+                                                              chunk_manager_);
 
         sealed_segment_->LoadFieldData(field_data_info);
     }
 
-    // 加载 timestamp
+    // load timestamp
     {
         auto field_data = milvus::storage::CreateFieldData(
             DataType::INT64, DataType::NONE, false, 1, 0);
         field_data->FillFieldData(timestamps.data(), row_count);
 
-        auto field_data_info = PrepareSingleFieldInsertBinlog(
-            collection_id_,
-            partition_id_,
-            segment_id_,
-            TimestampFieldID.get(),
-            {field_data},
-            chunk_manager_);
+        auto field_data_info =
+            PrepareSingleFieldInsertBinlog(collection_id_,
+                                           partition_id_,
+                                           segment_id_,
+                                           TimestampFieldID.get(),
+                                           {field_data},
+                                           chunk_manager_);
 
         sealed_segment_->LoadFieldData(field_data_info);
     }
 }
 
-} // namespace scalar_bench
-} // namespace milvus
+}  // namespace scalar_bench
+}  // namespace milvus

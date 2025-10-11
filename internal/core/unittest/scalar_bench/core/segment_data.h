@@ -21,7 +21,6 @@
 namespace milvus {
 namespace scalar_bench {
 
-// Segment数据包装类
 class SegmentData {
 public:
     SegmentData(const DataConfig& config);

@@ -75,12 +75,6 @@ private:
     IndexBuildSpec spec_;
 };
 
-// 索引工厂
-class IndexWrapperFactory {
-public:
-    static std::unique_ptr<IndexWrapper> CreateIndexWrapper(ScalarIndexType type);
-};
-
 // 索引管理器
 class IndexManager {
 public:
@@ -93,8 +87,6 @@ public:
 
 private:
     std::shared_ptr<milvus::storage::ChunkManager> chunk_manager_;
-    int64_t next_index_build_id_;
-    int64_t next_index_id_;
 };
 
 } // namespace scalar_bench

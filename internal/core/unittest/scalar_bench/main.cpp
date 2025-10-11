@@ -34,25 +34,33 @@ namespace milvus {
 namespace scalar_bench {
 std::string g_current_run_dir;
 }
-}
+}  // namespace milvus
 
-void SignalHandler(int signum) {
+void
+SignalHandler(int signum) {
     if (signum == SIGINT) {
         std::cout << "\n\n[INTERRUPTED] Caught Ctrl+C signal..." << std::endl;
         g_interrupted = true;
 
         if (!milvus::scalar_bench::g_current_run_dir.empty()) {
-            std::cout << "[CLEANUP] Removing incomplete results directory: " << milvus::scalar_bench::g_current_run_dir << std::endl;
-            std::string rm_cmd = "rm -rf " + milvus::scalar_bench::g_current_run_dir;
+            std::cout << "[CLEANUP] Removing incomplete results directory: "
+                      << milvus::scalar_bench::g_current_run_dir << std::endl;
+            std::string rm_cmd =
+                "rm -rf " + milvus::scalar_bench::g_current_run_dir;
             int result = std::system(rm_cmd.c_str());
             if (result == 0) {
-                std::cout << "[CLEANUP] Successfully removed " << milvus::scalar_bench::g_current_run_dir << std::endl;
+                std::cout << "[CLEANUP] Successfully removed "
+                          << milvus::scalar_bench::g_current_run_dir
+                          << std::endl;
             } else {
-                std::cerr << "[ERROR] Failed to remove " << milvus::scalar_bench::g_current_run_dir << std::endl;
+                std::cerr << "[ERROR] Failed to remove "
+                          << milvus::scalar_bench::g_current_run_dir
+                          << std::endl;
             }
         }
 
-        std::cout << "[EXIT] Benchmark interrupted and cleaned up." << std::endl;
+        std::cout << "[EXIT] Benchmark interrupted and cleaned up."
+                  << std::endl;
         std::exit(1);
     }
 }
@@ -148,15 +156,21 @@ PrintUsage(const char* program_name) {
     std::cout << "       " << program_name << " [options]" << std::endl;
     std::cout << "\nOptions:" << std::endl;
     std::cout << "  --help              Show this help message" << std::endl;
-    std::cout << "  --list-cases        List all available benchmark cases" << std::endl;
-    std::cout << "  --config <file>     Load configuration from YAML file" << std::endl;
+    std::cout << "  --list-cases        List all available benchmark cases"
+              << std::endl;
+    std::cout << "  --config <file>     Load configuration from YAML file"
+              << std::endl;
     std::cout << "\nExamples:" << std::endl;
 
     auto bench_dir = GetBenchCasesDirectory();
-    std::cout << "  " << program_name << " " << (bench_dir / "benchmark_cases" / "quick.yaml").string() << std::endl;
-    std::cout << "  " << program_name << " --config my_custom_benchmark.yaml" << std::endl;
+    std::cout << "  " << program_name << " "
+              << (bench_dir / "benchmark_cases" / "quick.yaml").string()
+              << std::endl;
+    std::cout << "  " << program_name << " --config my_custom_benchmark.yaml"
+              << std::endl;
 
-    std::cout << "\nAvailable benchmark cases in " << (bench_dir / "benchmark_cases").string() << ":" << std::endl;
+    std::cout << "\nAvailable benchmark cases in "
+              << (bench_dir / "benchmark_cases").string() << ":" << std::endl;
     auto cases = CollectBenchmarkCases();
     if (cases.empty()) {
         std::cout << "  (no cases found)" << std::endl;
@@ -167,7 +181,7 @@ PrintUsage(const char* program_name) {
     }
 }
 
-} // namespace
+}  // namespace
 
 int
 main(int argc, char* argv[]) {
@@ -185,7 +199,8 @@ main(int argc, char* argv[]) {
     try {
         milvus::scalar_bench::ExprParserClient::Instance().Start();
     } catch (const std::exception& e) {
-        std::cerr << "Failed to start exprparser helper: " << e.what() << std::endl;
+        std::cerr << "Failed to start exprparser helper: " << e.what()
+                  << std::endl;
         return 1;
     }
 
@@ -208,14 +223,16 @@ main(int argc, char* argv[]) {
             auto cases = CollectBenchmarkCases();
             auto bench_dir = GetBenchCasesDirectory() / "benchmark_cases";
             if (cases.empty()) {
-                std::cout << "  (no cases found in " << bench_dir << ")" << std::endl;
+                std::cout << "  (no cases found in " << bench_dir << ")"
+                          << std::endl;
             } else {
                 for (const auto& name : cases) {
                     std::cout << "  - " << name << std::endl;
                 }
                 std::cout << "\nTo run a case, use:" << std::endl;
                 if (!cases.empty()) {
-                    std::cout << "  " << argv[0] << " " << (bench_dir / cases[0]).string() << std::endl;
+                    std::cout << "  " << argv[0] << " "
+                              << (bench_dir / cases[0]).string() << std::endl;
                 }
             }
             return 0;
@@ -223,7 +240,8 @@ main(int argc, char* argv[]) {
             if (i + 1 < argc) {
                 config_file = argv[++i];
             } else {
-                std::cerr << "Error: --config requires a file path" << std::endl;
+                std::cerr << "Error: --config requires a file path"
+                          << std::endl;
                 return 1;
             }
         } else if (arg.size() < 2 || arg.substr(0, 2) != "--") {
@@ -244,13 +262,15 @@ main(int argc, char* argv[]) {
 
     // Check if file exists
     if (!fs::exists(config_file)) {
-        std::cerr << "Error: Configuration file not found: " << config_file << std::endl;
+        std::cerr << "Error: Configuration file not found: " << config_file
+                  << std::endl;
 
         // Try to find it in benchmark_cases directory
         auto bench_cases_dir = GetBenchCasesDirectory() / "benchmark_cases";
         auto alt_path = bench_cases_dir / config_file;
         if (fs::exists(alt_path)) {
-            std::cout << "Found configuration in benchmark_cases directory: " << alt_path << std::endl;
+            std::cout << "Found configuration in benchmark_cases directory: "
+                      << alt_path << std::endl;
             config_file = alt_path.string();
         } else {
             return 1;
@@ -264,19 +284,24 @@ main(int argc, char* argv[]) {
     BenchmarkConfig config;
     try {
         config = benchmark->LoadConfig(config_file);
-        std::cout << "\nLoaded configuration from: " << config_file << std::endl;
+        std::cout << "\nLoaded configuration from: " << config_file
+                  << std::endl;
 
         // Display configuration summary
         std::cout << "\nConfiguration Summary:" << std::endl;
         std::cout << "  Suites: " << config.suites.size() << std::endl;
         for (const auto& s : config.suites) {
-            std::cout << "    - " << (s.name.empty() ? std::string("default") : s.name)
-                        << " (data=" << s.data_configs.size()
-                        << ", index=" << s.index_configs.size()
-                        << ", expr=" << s.expr_templates.size() << ")" << std::endl;
+            std::cout << "    - "
+                      << (s.name.empty() ? std::string("default") : s.name)
+                      << " (data=" << s.data_configs.size()
+                      << ", index=" << s.index_configs.size()
+                      << ", expr=" << s.expr_templates.size() << ")"
+                      << std::endl;
         }
-        std::cout << "  Test iterations: " << config.test_params.test_iterations << std::endl;
-        std::cout << "  Warmup iterations: " << config.test_params.warmup_iterations << std::endl;
+        std::cout << "  Test iterations: " << config.test_params.test_iterations
+                  << std::endl;
+        std::cout << "  Warmup iterations: "
+                  << config.test_params.warmup_iterations << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "\nError loading configuration: " << e.what() << std::endl;
         return 1;
@@ -297,7 +322,8 @@ main(int argc, char* argv[]) {
 
         std::cout << "\nBenchmark completed successfully!" << std::endl;
     } catch (const std::exception& e) {
-        std::cerr << "\nError during benchmark execution: " << e.what() << std::endl;
+        std::cerr << "\nError during benchmark execution: " << e.what()
+                  << std::endl;
         return 1;
     }
 
