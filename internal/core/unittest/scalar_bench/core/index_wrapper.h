@@ -14,6 +14,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "index/Index.h"
@@ -53,14 +54,15 @@ public:
     struct IndexBuildSpec {
         std::string name;                 // 展示名
         std::string index_type;           // milvus::index::<TYPE>
-        int64_t build_id_seed = 0;        // 用于 index_meta 区分
-        int64_t version_seed = 0;         // 用于 index_meta 区分
-        bool numeric_only = false;        // 是否仅支持数值类型
     };
 
     explicit IndexWrapper(IndexBuildSpec spec) : spec_(std::move(spec)) {}
 
 private:
+    // 获取某索引类型支持的数据类型集合
+    static const std::unordered_map<std::string, std::unordered_set<DataType>>&
+    SupportedIndexDataTypes();
+
     // 构建产物：用于后续加载
     struct BuiltIndexArtifacts {
         std::vector<std::string> index_files;

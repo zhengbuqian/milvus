@@ -36,6 +36,36 @@ GenerateUniqueIdMsSeq() {
 }
 }  // namespace
 
+static const std::unordered_map<std::string, std::unordered_set<DataType>>
+    kSupportedIndexDataTypes = {
+        {milvus::index::BITMAP_INDEX_TYPE,
+         {DataType::BOOL,
+          DataType::INT8,
+          DataType::INT16,
+          DataType::INT32,
+          DataType::INT64,
+          DataType::FLOAT,
+          DataType::DOUBLE,
+          DataType::VARCHAR}},
+        {milvus::index::INVERTED_INDEX_TYPE,
+         {DataType::BOOL,
+          DataType::INT8,
+          DataType::INT16,
+          DataType::INT32,
+          DataType::INT64,
+          DataType::FLOAT,
+          DataType::DOUBLE,
+          DataType::VARCHAR}},
+        {milvus::index::NGRAM_INDEX_TYPE, {DataType::VARCHAR}},
+        {milvus::index::ASCENDING_SORT,
+         {DataType::INT8,
+          DataType::INT16,
+          DataType::INT32,
+          DataType::INT64,
+          DataType::FLOAT,
+          DataType::DOUBLE}},
+};
+
 void
 IndexWrapper::LoadToSegment(SegmentWrapper& segment,
                             const std::string& field_name) {
@@ -86,10 +116,28 @@ IndexWrapper::LoadToSegment(SegmentWrapper& segment,
     milvus::index::CreateIndexInfo index_info{};
     index_info.index_type = spec_.index_type;
     index_info.field_type = field_type;
+    // Ensure NGRAM chooses the correct index implementation: must set ngram_params
+    if (spec_.index_type == milvus::index::NGRAM_INDEX_TYPE) {
+        milvus::index::NgramParams params;
+        params.loading_index = true;
+        // read from artifacts.index_params (populated during Build from YAML params)
+        auto it_min = artifacts.index_params.find(milvus::index::MIN_GRAM);
+        auto it_max = artifacts.index_params.find(milvus::index::MAX_GRAM);
+        if (it_min != artifacts.index_params.end()) {
+            params.min_gram = std::stoul(it_min->second);
+        }
+        if (it_max != artifacts.index_params.end()) {
+            params.max_gram = std::stoul(it_max->second);
+        }
+        index_info.ngram_params = params;
+    }
 
     milvus::Config cfg;
     cfg["index_files"] = artifacts.index_files;
     cfg[milvus::LOAD_PRIORITY] = milvus::proto::common::LoadPriority::HIGH;
+    for (const auto& kv : artifacts.index_params) {
+        cfg[kv.first] = kv.second;
+    }
 
     auto index =
         milvus::index::IndexFactory::GetInstance().CreateIndex(index_info, ctx);
@@ -113,15 +161,13 @@ IndexWrapper::Build(const SegmentWrapper& segment,
     auto schema = segment.GetSchema();
     const auto& field_meta_ref = schema->operator[](field_id);
     auto data_type = field_meta_ref.get_data_type();
-    // 如 spec 要求仅支持数值，进行校验
-    if (spec_.numeric_only) {
-        bool is_numeric =
-            (data_type == DataType::INT8 || data_type == DataType::INT16 ||
-             data_type == DataType::INT32 || data_type == DataType::INT64 ||
-             data_type == DataType::FLOAT || data_type == DataType::DOUBLE);
-        if (!is_numeric) {
+    // 校验该索引类型是否支持此字段类型
+    auto it_supported = kSupportedIndexDataTypes.find(spec_.index_type);
+    if (it_supported != kSupportedIndexDataTypes.end()) {
+        if (it_supported->second.find(data_type) ==
+            it_supported->second.end()) {
             throw std::runtime_error(spec_.name +
-                                     " index only supports numeric types");
+                                     " index does not support field type");
         }
     }
 
@@ -167,6 +213,13 @@ IndexWrapper::Build(const SegmentWrapper& segment,
     cfg[INSERT_FILES_KEY] = insert_files;
     cfg[INDEX_NUM_ROWS_KEY] = segment.GetRowCount();
 
+    if (auto it_fc = config.field_configs.find(field_name);
+        it_fc != config.field_configs.end()) {
+        for (const auto& kv : it_fc->second.params) {
+            cfg[kv.first] = kv.second;
+        }
+    }
+
     auto builder =
         milvus::indexbuilder::IndexFactory::GetInstance().CreateIndex(
             data_type, cfg, ctx);
@@ -185,8 +238,14 @@ IndexWrapper::Build(const SegmentWrapper& segment,
     artifacts.index_version = index_meta.index_version;
     artifacts.index_params = {
         {"index_type", spec_.index_type},
-        {milvus::LOAD_PRIORITY, "HIGH"},
     };
+
+    if (auto it_fc = config.field_configs.find(field_name);
+        it_fc != config.field_configs.end()) {
+        for (const auto& kv : it_fc->second.params) {
+            artifacts.index_params[kv.first] = kv.second;
+        }
+    }
     index_cache_[field_id.get()] = std::move(artifacts);
 
     std::cout << "      Built " << spec_.name
@@ -227,9 +286,6 @@ IndexManager::BuildAndLoadIndexForField(SegmentWrapper& segment,
                 std::make_unique<IndexWrapper>(IndexWrapper::IndexBuildSpec{
                     .name = "BITMAP",
                     .index_type = milvus::index::BITMAP_INDEX_TYPE,
-                    .build_id_seed = 4000,
-                    .version_seed = 4000,
-                    .numeric_only = false,
                 });
             break;
         case ScalarIndexType::INVERTED:
@@ -237,9 +293,13 @@ IndexManager::BuildAndLoadIndexForField(SegmentWrapper& segment,
                 std::make_unique<IndexWrapper>(IndexWrapper::IndexBuildSpec{
                     .name = "INVERTED",
                     .index_type = milvus::index::INVERTED_INDEX_TYPE,
-                    .build_id_seed = 4001,
-                    .version_seed = 4001,
-                    .numeric_only = false,
+                });
+            break;
+        case ScalarIndexType::NGRAM:
+            wrapper =
+                std::make_unique<IndexWrapper>(IndexWrapper::IndexBuildSpec{
+                    .name = "NGRAM",
+                    .index_type = milvus::index::NGRAM_INDEX_TYPE,
                 });
             break;
         case ScalarIndexType::STL_SORT:
@@ -247,9 +307,6 @@ IndexManager::BuildAndLoadIndexForField(SegmentWrapper& segment,
                 std::make_unique<IndexWrapper>(IndexWrapper::IndexBuildSpec{
                     .name = "STL_SORT",
                     .index_type = milvus::index::ASCENDING_SORT,
-                    .build_id_seed = 4002,
-                    .version_seed = 4002,
-                    .numeric_only = true,
                 });
             break;
         default:

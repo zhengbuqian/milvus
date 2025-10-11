@@ -5,6 +5,7 @@ import { formatTimestamp, getSelectedRuns, toggleRunSelection } from '../utils/s
 import { CasesTable, CaseRow, MetricDef } from '../components/CasesTable';
 import { formatNumber, formatPercentage, escapeHtml } from '../utils/format';
 import { FlamegraphSection } from '../components/Flamegraphs';
+import DatasetCharts from '../components/DatasetCharts';
 
 const METRIC_KEYS: MetricDef[] = [
   { key: 'qps', label: 'QPS', formatter: formatNumber, better: 'higher' },
@@ -138,6 +139,10 @@ export default function RunDetailPage(): JSX.Element {
       <div style={{ marginTop: '1.5rem' }}>
         <h3>Run summary</h3>
         <div className="code-block"><pre>{summaryText}</pre></div>
+      </div>
+
+      <div style={{ marginTop: '1.5rem' }}>
+        <DatasetCharts rows={rows} />
       </div>
 
       <div style={{ marginTop: '1.5rem' }}>

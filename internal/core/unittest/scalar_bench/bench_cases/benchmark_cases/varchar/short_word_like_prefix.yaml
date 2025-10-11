@@ -1,0 +1,45 @@
+version: 1
+test_params:
+  warmup_iterations: 30
+  test_iterations: 30
+  collect_memory_stats: false
+  enable_flame_graph: false
+  flamegraph_repo_path: ~/FlameGraph
+suites:
+  - name: default
+    data_configs:
+      - path: benchmark_cases/varchar/data_configs/short_word_card_10.yaml
+      - path: benchmark_cases/varchar/data_configs/short_word_card_100.yaml
+      - path: benchmark_cases/varchar/data_configs/short_word_card_1000.yaml
+      # - path: benchmark_cases/varchar/data_configs/short_word_card_1m.yaml
+    index_configs:
+      - name: no_index
+        field_configs: {}
+      - name: bitmap_index
+        field_configs:
+          city:
+            type: BITMAP
+      # - name: stl_sort_index
+      #   field_configs:
+      #     city:
+      #       type: STL_SORT
+      - name: inverted_index
+        field_configs:
+          city:
+            type: INVERTED
+      - name: ngram_index[3:4]
+        field_configs:
+          city:
+            type: NGRAM
+            params:
+              min_gram: 3
+              max_gram: 4
+    expr_templates:
+      - name: prefix_large_single
+        expr_template: city like "Dennisbu%"
+      - name: prefix_med_single
+        expr_template: city like "Pozzolo%"
+      - name: prefix_small_single
+        expr_template: city like "Cavria%"
+      - name: prefix_very_small_single
+        expr_template: city like "South Hol%"
