@@ -1,0 +1,19 @@
+# 每行 4-50 个词，从 100 个词中随机选择，有一些高频词
+name: uniform_array_of_short_words_card_100
+segment_size: 1000000
+segment_seed: 42
+global_dictionaries:
+  cities:
+    items_file: cities.txt
+fields:
+  - field_name: city_array
+    generator: array
+    length: { min: 4, max: 50, distribution: ZIPF }
+    element:
+      generator: categorical
+      type: Varchar
+      values:
+        dictionary: cities
+        pick: 100
+      duplication_ratios: [0.2, 0.1, 0.05]
+    unique: true

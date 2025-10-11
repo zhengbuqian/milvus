@@ -59,7 +59,12 @@ export function DatasetCharts({ rows }: { rows: CaseRow[] }): JSX.Element {
   return (
     <div>
       <div className="page-actions" style={{ marginBottom: '0.5rem' }}>
-        <div className="left"><h3 style={{ margin: 0 }}>Charts</h3></div>
+        <div className="left">
+          <h3 style={{ margin: 0 }}>Charts</h3>
+          <div className="small text-muted" style={{ marginTop: '0.25rem' }}>
+            Selectivity is not a good X axis, because a 20% selectivity could result from 1 value or the combination of multiple values. But this is the best we can have.
+          </div>
+        </div>
         <div className="right" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
           <div>
             <span className="small text-muted" style={{ marginRight: '0.5rem' }}>Metric</span>
@@ -139,12 +144,12 @@ function PerDatasetChart({ dataset, seriesMap, metricLabel }: { dataset: string;
         min: minX - pad,
         max: maxX + padRight,
         strictMinMax: true,
-        numberFormat: '0.00',
+        numberFormat: '#%',
         tooltip: am5.Tooltip.new(root, {}),
       })
     );
     const xRenderer = xAxis.get('renderer') as am5xy.AxisRendererX;
-    xRenderer.labels.template.setAll({ text: '{value.formatNumber(0.00)}', fill: textColor, fontSize: 11 });
+    xRenderer.labels.template.setAll({ text: '{value.formatNumber("#.00%")}', fill: textColor, fontSize: 11 });
     xRenderer.grid.template.setAll({ stroke: gridColor, strokeOpacity: 0.3 });
     xAxis.children.push(am5.Label.new(root, { text: 'Selectivity', fill: textColor, fontSize: 12, x: am5.p50, centerX: am5.p50, paddingTop: 6 }));
 
@@ -198,7 +203,7 @@ function PerDatasetChart({ dataset, seriesMap, metricLabel }: { dataset: string;
           yAxis,
           valueXField: 'x',
           valueYField: 'y',
-          tooltip: am5.Tooltip.new(root, { labelText: `{name}\nselectivity: {valueX.formatNumber(0.00)}\n${metricLabel}: {valueY.formatNumber(0.##)}`, pointerOrientation: 'horizontal' }),
+          tooltip: am5.Tooltip.new(root, { labelText: `{name}\nselectivity: {valueX.formatNumber("#.#####%")}` + `\n${metricLabel}: {valueY.formatNumber(0.##)}` , pointerOrientation: 'horizontal' }),
         })
       );
       const tooltip = series.get('tooltip');

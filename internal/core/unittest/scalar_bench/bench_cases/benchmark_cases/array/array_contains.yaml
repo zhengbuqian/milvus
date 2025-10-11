@@ -1,0 +1,32 @@
+version: 1
+test_params:
+  warmup_iterations: 30
+  test_iterations: 30
+  collect_memory_stats: false
+  enable_flame_graph: false
+  flamegraph_repo_path: ~/FlameGraph
+suites:
+  - name: default
+    data_configs:
+      - path: benchmark_cases/array/data_configs/uniform_array_of_short_words_card_100.yaml
+      - path: benchmark_cases/array/data_configs/uniform_array_of_short_words_card_300k.yaml
+    index_configs:
+      # - name: no_index
+      #   field_configs: {}
+      - name: bitmap_index
+        field_configs:
+          city_array:
+            type: BITMAP
+      - name: inverted_index
+        field_configs:
+          city_array:
+            type: INVERTED
+    expr_templates:
+      - name: array_contains_large
+        expr_template: array_contains(city_array, "Dennisburgh")
+      - name: array_contains_med
+        expr_template: array_contains(city_array, "South Holly")
+      - name: array_contains_small
+        expr_template: array_contains(city_array, "Lemonnier")
+      - name: array_contains_not_found
+        expr_template: array_contains(city_array, "Not Found 1")

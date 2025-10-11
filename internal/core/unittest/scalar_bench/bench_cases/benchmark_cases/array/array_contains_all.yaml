@@ -1,0 +1,34 @@
+version: 1
+test_params:
+  warmup_iterations: 30
+  test_iterations: 30
+  collect_memory_stats: false
+  enable_flame_graph: false
+  flamegraph_repo_path: ~/FlameGraph
+suites:
+  - name: default
+    data_configs:
+      - path: benchmark_cases/array/data_configs/uniform_array_of_short_words_card_100.yaml
+      - path: benchmark_cases/array/data_configs/uniform_array_of_short_words_card_300k.yaml
+    index_configs:
+      # - name: no_index
+      #   field_configs: {}
+      - name: bitmap_index
+        field_configs:
+          city_array:
+            type: BITMAP
+      - name: inverted_index
+        field_configs:
+          city_array:
+            type: INVERTED
+    expr_templates:
+      - name: array_contains_all_large
+        expr_template: array_contains_all(city_array, ["Dennisburgh", "South Holly"])
+      - name: array_contains_all_med
+        expr_template: array_contains_all(city_array, ["South Holly"])
+      - name: array_contains_all_small
+        expr_template: array_contains_all(city_array, ["Lemonnier", "霞县"])
+      - name: array_contains_all_many_small
+        expr_template: array_contains_all(city_array, ["Lemonnier", "霞县", "Watsonstad", "West Vanessa", "Fernandes do Campo", "Millerhaven", "Großenhain", "Fraziermouth", "横浜市戸塚区", "丽华市", "Sullivanfort", "Barros da Praia"])
+      - name: array_contains_all_not_found
+        expr_template: array_contains_all(city_array, ["Not Found 1", "Not Found 2"])

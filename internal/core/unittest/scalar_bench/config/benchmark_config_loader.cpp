@@ -494,6 +494,10 @@ FieldConfig ParseFieldConfig(const YAML::Node& node, const std::string& default_
         case FieldGeneratorType::ARRAY: {
             auto& array_config = config.array_config;
 
+            // Ensure field type is set to ARRAY for array generator
+            // so downstream schema building uses the correct type.
+            config.field_type = DataType::ARRAY;
+
             if (!node["element"]) {
                 throw std::runtime_error(
                     "Array generator requires 'element' config for field: " + config.field_name);

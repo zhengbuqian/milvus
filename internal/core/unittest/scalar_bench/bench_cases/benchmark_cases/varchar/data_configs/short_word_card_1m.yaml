@@ -10,5 +10,4 @@ fields:
     type: Varchar
     values:
       dictionary: cities
-      pick: 1000000
     duplication_ratios: [0.4, 0.2, 0.05]

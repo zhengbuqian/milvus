@@ -46,7 +46,8 @@ static const std::unordered_map<std::string, std::unordered_set<DataType>>
           DataType::INT64,
           DataType::FLOAT,
           DataType::DOUBLE,
-          DataType::VARCHAR}},
+          DataType::VARCHAR,
+          DataType::ARRAY}},
         {milvus::index::INVERTED_INDEX_TYPE,
          {DataType::BOOL,
           DataType::INT8,
@@ -55,7 +56,8 @@ static const std::unordered_map<std::string, std::unordered_set<DataType>>
           DataType::INT64,
           DataType::FLOAT,
           DataType::DOUBLE,
-          DataType::VARCHAR}},
+          DataType::VARCHAR,
+          DataType::ARRAY}},
         {milvus::index::NGRAM_INDEX_TYPE, {DataType::VARCHAR}},
         {milvus::index::ASCENDING_SORT,
          {DataType::INT8,
@@ -161,6 +163,7 @@ IndexWrapper::Build(const SegmentWrapper& segment,
     auto schema = segment.GetSchema();
     const auto& field_meta_ref = schema->operator[](field_id);
     auto data_type = field_meta_ref.get_data_type();
+    
     // 校验该索引类型是否支持此字段类型
     auto it_supported = kSupportedIndexDataTypes.find(spec_.index_type);
     if (it_supported != kSupportedIndexDataTypes.end()) {
@@ -176,6 +179,9 @@ IndexWrapper::Build(const SegmentWrapper& segment,
     proto_field_schema.set_fieldid(field_id.get());
     proto_field_schema.set_name(field_name);
     proto_field_schema.set_data_type(ToProtoDataType(data_type));
+    if (data_type == DataType::ARRAY) {
+        proto_field_schema.set_element_type(ToProtoDataType(field_meta_ref.get_element_type()));
+    }
 
     auto field_meta = milvus::storage::FieldDataMeta{segment.GetCollectionId(),
                                                      segment.GetPartitionId(),
@@ -259,10 +265,10 @@ IndexManager::IndexManager(
 IndexBuildResult
 IndexManager::BuildAndLoadIndexForField(SegmentWrapper& segment,
                                         const std::string& field_name,
-                                        const FieldIndexConfig& field_config) {
+                                        const FieldIndexConfig& field_index_config) {
     IndexBuildResult result;
 
-    if (field_config.type == ScalarIndexType::NONE) {
+    if (field_index_config.type == ScalarIndexType::NONE) {
         result.build_time_ms = 0;
         result.memory_bytes = 0;
         result.serialized_size = 0;
@@ -271,7 +277,7 @@ IndexManager::BuildAndLoadIndexForField(SegmentWrapper& segment,
     }
 
     std::unique_ptr<IndexWrapper> wrapper;
-    switch (field_config.type) {
+    switch (field_index_config.type) {
         case ScalarIndexType::BITMAP:
             wrapper =
                 std::make_unique<IndexWrapper>(IndexWrapper::IndexBuildSpec{
@@ -306,7 +312,7 @@ IndexManager::BuildAndLoadIndexForField(SegmentWrapper& segment,
 
     IndexConfig config;
     config.name = field_name + "_index";
-    config.field_configs[field_name] = field_config;
+    config.field_configs[field_name] = field_index_config;
 
     result = wrapper->Build(segment, field_name, config);
     wrapper->LoadToSegment(segment, field_name);
