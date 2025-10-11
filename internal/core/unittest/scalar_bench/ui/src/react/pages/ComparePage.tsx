@@ -4,6 +4,7 @@ import { getIndex, getRunMeta, getRunMetrics, buildAssetUrl } from '../utils/api
 import { CasesTable, CaseRow, MetricDef } from '../components/CasesTable';
 import { formatNumber, formatPercentage } from '../utils/format';
 import { FlamegraphSection } from '../components/Flamegraphs';
+import DatasetCharts from '../components/DatasetCharts';
 
 const METRIC_KEYS: MetricDef[] = [
   { key: 'qps', label: 'QPS', formatter: formatNumber, better: 'higher' },
@@ -95,6 +96,10 @@ export default function ComparePage(): JSX.Element {
         <div className="right"><button className="ghost" onClick={() => navigate('/runs')}>← Back to runs</button></div>
       </div>
       {runSelector}
+      <div style={{ marginTop: '1.5rem' }}>
+        <h3>Charts</h3>
+        <DatasetCharts rows={tableRows} />
+      </div>
       <div>
         <CasesTable
           rows={tableRows}

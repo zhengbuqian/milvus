@@ -56,15 +56,15 @@
     gap: 0.75rem;
   }
   
-  header nav a {
+header nav a {
     text-decoration: none;
     color: var(--text);
-    padding: 0.5rem 1rem;
-    border-radius: 999px;
+    padding: 0.35rem 0.8rem;
+    border-radius: 12px;
     border: 1px solid transparent;
     background: rgba(51, 65, 85, 0.35);
     transition: all 0.2s ease;
-    font-size: 0.95rem;
+    font-size: 0.9rem;
   }
   
   header nav a.active,

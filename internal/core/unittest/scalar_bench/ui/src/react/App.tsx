@@ -16,14 +16,20 @@ export default function App(): JSX.Element {
     <div className="app-root">
       <header className="app-header">
         <div className="title">Milvus Scalar Bench</div>
-        <div className="subtitle">
-          Visualise scalar filter benchmark results from _artifacts/results
+        <div className="subtitle" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <span>Visualise scalar filter benchmark results from _artifacts/results</span>
           <SettingsBadge />
+          <NavLink
+            to="/runs"
+            className={({ isActive }) => (isActive ? 'active' : '')}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: '0.35rem',
+              background: 'rgba(56, 189, 248, 0.16)', color: 'rgba(125, 211, 252, 0.95)',
+              padding: '0.35rem 0.6rem', borderRadius: 999, fontSize: '0.75rem',
+              border: '1px solid rgba(148, 163, 184, 0.2)'
+            }}
+          >Runs</NavLink>
         </div>
-        <nav>
-          <NavLink to="/runs" className={({ isActive }) => (isActive ? 'active' : '')}>Runs</NavLink>
-          <NavLink to="/compare" className={({ isActive }) => (isActive ? 'active' : '')}>Compare</NavLink>
-        </nav>
       </header>
       <main>
         <Routes>

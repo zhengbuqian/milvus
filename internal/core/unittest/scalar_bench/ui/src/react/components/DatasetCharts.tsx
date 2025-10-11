@@ -20,7 +20,7 @@ function get(obj: any, path: string): any {
 }
 
 export function DatasetCharts({ rows }: { rows: CaseRow[] }): JSX.Element {
-  const [metricKey, setMetricKey] = useState<MetricKey>('qps');
+  const [metricKey, setMetricKey] = useState<MetricKey>('latency_ms.avg');
   const [cols, setCols] = useState<number>(4);
 
   const datasets = useMemo(() => {
@@ -60,12 +60,15 @@ export function DatasetCharts({ rows }: { rows: CaseRow[] }): JSX.Element {
     <div>
       <div className="page-actions" style={{ marginBottom: '0.5rem' }}>
         <div className="left"><h3 style={{ margin: 0 }}>Charts</h3></div>
-        <div className="right" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          <label>Metric
-            <select value={metricKey} onChange={(e) => setMetricKey(e.target.value as MetricKey)} style={{ marginLeft: '0.5rem' }}>
-              {METRICS.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
-            </select>
-          </label>
+        <div className="right" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+          <div>
+            <span className="small text-muted" style={{ marginRight: '0.5rem' }}>Metric</span>
+            <div className="segmented" style={{ display: 'inline-flex', flexWrap: 'wrap' }}>
+              {METRICS.map((m) => (
+                <button key={m.key} className={`segmented-btn${m.key === metricKey ? ' active' : ''}`} onClick={() => setMetricKey(m.key)}>{m.label}</button>
+              ))}
+            </div>
+          </div>
           <div>
             <span className="small text-muted" style={{ marginRight: '0.5rem' }}>Charts per row</span>
             <div className="segmented" style={{ display: 'inline-flex' }}>
