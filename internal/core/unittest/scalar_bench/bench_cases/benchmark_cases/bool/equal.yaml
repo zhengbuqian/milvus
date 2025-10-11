@@ -1,0 +1,29 @@
+version: 1
+test_params:
+  warmup_iterations: 30
+  test_iterations: 30
+  collect_memory_stats: false
+  enable_flame_graph: false
+  flamegraph_repo_path: ~/FlameGraph
+suites:
+  - name: default
+    data_configs:
+      - path: benchmark_cases/bool/data_configs/uniform_bool_5050.yaml
+      - path: benchmark_cases/bool/data_configs/uniform_bool_9010.yaml
+      - path: benchmark_cases/bool/data_configs/uniform_bool_most_true.yaml
+    index_configs:
+      - name: no_index
+        field_configs: {}
+      - name: bitmap_index
+        field_configs:
+          good:
+            type: BITMAP
+      - name: inverted_index
+        field_configs:
+          good:
+            type: INVERTED
+    expr_templates:
+      - name: good_equal_true
+        expr_template: good == true
+      - name: good_not_equal_true
+        expr_template: good != true

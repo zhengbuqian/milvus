@@ -1,0 +1,8 @@
+name: uniform_bool_5050
+segment_size: 1000000
+segment_seed: 42
+fields:
+  - field_name: good
+    generator: boolean
+    type: Bool
+    true_ratio: 0.999

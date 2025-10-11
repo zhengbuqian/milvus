@@ -175,17 +175,8 @@ IndexWrapper::Build(const SegmentWrapper& segment,
     proto::schema::FieldSchema proto_field_schema;
     proto_field_schema.set_fieldid(field_id.get());
     proto_field_schema.set_name(field_name);
-    if (data_type == DataType::INT64) {
-        proto_field_schema.set_data_type(proto::schema::DataType::Int64);
-    } else if (data_type == DataType::INT32) {
-        proto_field_schema.set_data_type(proto::schema::DataType::Int32);
-    } else if (data_type == DataType::VARCHAR) {
-        proto_field_schema.set_data_type(proto::schema::DataType::VarChar);
-    } else if (data_type == DataType::FLOAT) {
-        proto_field_schema.set_data_type(proto::schema::DataType::Float);
-    } else if (data_type == DataType::DOUBLE) {
-        proto_field_schema.set_data_type(proto::schema::DataType::Double);
-    }
+    proto_field_schema.set_data_type(ToProtoDataType(data_type));
+
     auto field_meta = milvus::storage::FieldDataMeta{segment.GetCollectionId(),
                                                      segment.GetPartitionId(),
                                                      segment.GetSegmentId(),
