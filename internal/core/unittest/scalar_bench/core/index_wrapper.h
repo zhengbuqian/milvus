@@ -33,59 +33,52 @@ struct IndexBuildResult {
 };
 
 // 索引包装器基类
-class IndexWrapperBase {
+class IndexWrapper {
 public:
-    virtual ~IndexWrapperBase() = default;
+    virtual ~IndexWrapper() = default;
 
     // 构建索引
     virtual IndexBuildResult Build(const SegmentWrapper& segment,
-                                    const std::string& field_name,
-                                    const IndexConfig& config) = 0;
+                                   const std::string& field_name,
+                                   const IndexConfig& config);
 
     // 加载索引到Segment (提供默认实现)
     virtual void LoadToSegment(SegmentWrapper& segment,
-                                const std::string& field_name);
+                               const std::string& field_name);
 
     // 获取索引类型名称
-    virtual std::string GetTypeName() const = 0;
+    std::string GetTypeName() const { return spec_.name; }
 
-protected:
-    // 缓存构建的索引对象
-    std::unordered_map<int64_t, milvus::index::IndexBasePtr> index_cache_;
-};
+    // 规格，描述差异
+    struct IndexBuildSpec {
+        std::string name;                 // 展示名
+        std::string index_type;           // milvus::index::<TYPE>
+        int64_t build_id_seed = 0;        // 用于 index_meta 区分
+        int64_t version_seed = 0;         // 用于 index_meta 区分
+        bool numeric_only = false;        // 是否仅支持数值类型
+    };
 
-// 具体索引包装器
-class BitmapIndexWrapper : public IndexWrapperBase {
-public:
-    IndexBuildResult Build(const SegmentWrapper& segment,
-                           const std::string& field_name,
-                           const IndexConfig& config) override;
+    explicit IndexWrapper(IndexBuildSpec spec) : spec_(std::move(spec)) {}
 
-    std::string GetTypeName() const override { return "BITMAP"; }
-};
+private:
+    // 构建产物：用于后续加载
+    struct BuiltIndexArtifacts {
+        std::vector<std::string> index_files;
+        std::map<std::string, std::string> index_params;
+        proto::schema::FieldSchema field_schema;  // for loading
+        int64_t index_build_id{0};
+        int64_t index_version{0};
+    };
 
-class InvertedIndexWrapper : public IndexWrapperBase {
-public:
-    IndexBuildResult Build(const SegmentWrapper& segment,
-                           const std::string& field_name,
-                           const IndexConfig& config) override;
-
-    std::string GetTypeName() const override { return "INVERTED"; }
-};
-
-class STLSortIndexWrapper : public IndexWrapperBase {
-public:
-    IndexBuildResult Build(const SegmentWrapper& segment,
-                           const std::string& field_name,
-                           const IndexConfig& config) override;
-
-    std::string GetTypeName() const override { return "STL_SORT"; }
+    // 按 field_id 缓存构建产物（index files + params）
+    std::unordered_map<int64_t, BuiltIndexArtifacts> index_cache_;
+    IndexBuildSpec spec_;
 };
 
 // 索引工厂
 class IndexWrapperFactory {
 public:
-    static std::unique_ptr<IndexWrapperBase> CreateIndexWrapper(ScalarIndexType type);
+    static std::unique_ptr<IndexWrapper> CreateIndexWrapper(ScalarIndexType type);
 };
 
 // 索引管理器
@@ -95,8 +88,8 @@ public:
 
     // 构建并加载索引 (field-specific configuration)
     IndexBuildResult BuildAndLoadIndexForField(SegmentWrapper& segment,
-                                                const std::string& field_name,
-                                                const FieldIndexConfig& field_config);
+                                               const std::string& field_name,
+                                               const FieldIndexConfig& field_config);
 
 private:
     std::shared_ptr<milvus::storage::ChunkManager> chunk_manager_;

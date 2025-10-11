@@ -81,6 +81,9 @@ public:
     // 获取字段ID映射
     FieldId GetFieldId(const std::string& field_name) const;
 
+    // 获取该字段对应的插入 binlog 文件路径（由 WriteBinlogThenLoad 记录）
+    std::vector<std::string> GetFieldInsertFiles(FieldId field_id) const;
+
     // 获取行数
     int64_t GetRowCount() const { return row_count_; }
 
@@ -116,8 +119,12 @@ private:
     int64_t segment_id_;
     int64_t row_count_;
 
+    // 记录每个字段写入的 binlog 路径，供索引构建使用
+    std::unordered_map<int64_t, std::vector<std::string>> field_insert_files_;
+
     // 用于测试的ID分配
     static int64_t next_collection_id_;
+    static int64_t next_partition_id_;
     static int64_t next_segment_id_;
 };
 

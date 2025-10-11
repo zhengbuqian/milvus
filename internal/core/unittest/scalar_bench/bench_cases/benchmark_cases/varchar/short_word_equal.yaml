@@ -13,8 +13,8 @@ suites:
       - path: benchmark_cases/varchar/data_configs/short_word_card_1000.yaml
       # - path: benchmark_cases/varchar/data_configs/short_word_card_1m.yaml
     index_configs:
-      # - name: no_index
-      #   field_configs: {}
+      - name: no_index
+        field_configs: {}
       - name: bitmap_index
         field_configs:
           city:

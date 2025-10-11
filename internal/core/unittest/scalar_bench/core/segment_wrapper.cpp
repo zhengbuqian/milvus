@@ -24,8 +24,13 @@
 namespace milvus {
 namespace scalar_bench {
 
-int64_t SegmentWrapper::next_collection_id_ = 1000;
-int64_t SegmentWrapper::next_segment_id_ = 2000;
+int64_t SegmentWrapper::next_collection_id_ = 
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+int64_t SegmentWrapper::next_partition_id_ = 
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+int64_t SegmentWrapper::next_segment_id_ = 3000;
 
 // SchemaBuilder 实现
 SchemaBuilder::SchemaBuilder() {
@@ -83,8 +88,8 @@ SchemaBuilder::Build() {
 
 // SegmentWrapper 实现
 SegmentWrapper::SegmentWrapper()
-    : collection_id_(next_collection_id_++),
-      partition_id_(1),
+    : collection_id_(next_collection_id_),
+      partition_id_(next_partition_id_),
       segment_id_(next_segment_id_++),
       row_count_(0) {
 }
@@ -237,6 +242,12 @@ SegmentWrapper::WriteBinlogThenLoad(const std::string& field_name,
 
     // 加载数据到segment
     sealed_segment_->LoadFieldData(field_data_info);
+
+    // 记录该字段的 insert 文件路径
+    auto it_binlog = field_data_info.field_infos.find(field_id.get());
+    if (it_binlog != field_data_info.field_infos.end()) {
+        field_insert_files_[field_id.get()] = it_binlog->second.insert_files;
+    }
 }
 
 FieldId
@@ -246,6 +257,15 @@ SegmentWrapper::GetFieldId(const std::string& field_name) const {
         throw std::runtime_error("Field not found: " + field_name);
     }
     return it->second;
+}
+
+std::vector<std::string>
+SegmentWrapper::GetFieldInsertFiles(FieldId field_id) const {
+    auto it = field_insert_files_.find(field_id.get());
+    if (it != field_insert_files_.end()) {
+        return it->second;
+    }
+    return {};
 }
 
 void

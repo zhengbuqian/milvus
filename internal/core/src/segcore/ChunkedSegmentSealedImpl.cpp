@@ -196,6 +196,10 @@ ChunkedSegmentSealedImpl::LoadScalarIndex(const LoadIndexInfo& info) {
         }
     }
 
+    LOG_INFO("Loading scalar index - field_id: {}, cache_index ptr: {}", 
+             field_id.get(), 
+             static_cast<const void*>(const_cast<LoadIndexInfo&>(info).cache_index.get()));
+
     if (auto it = info.index_params.find(index::INDEX_TYPE);
         it != info.index_params.end() &&
         it->second == index::NGRAM_INDEX_TYPE) {
