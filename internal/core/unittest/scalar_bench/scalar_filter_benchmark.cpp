@@ -983,12 +983,13 @@ ScalarFilterBenchmark::CalculateStatistics(const std::vector<double>& latencies,
     // 计算QPS
     result.qps = 1000.0 / result.latency_avg_ms;
 
-    // 匹配统计
-    if (!matches.empty()) {
-        result.matched_rows = matches.front();  // 假设所有执行返回相同结果
+    // 匹配统计: 计算平均的 selectivity
+    if (!matches.empty() && total_rows > 0) {
+        int64_t total_matched = std::accumulate(matches.begin(), matches.end(), int64_t(0));
+        result.matched_rows = total_matched / matches.size();  // 平均匹配行数
         result.total_rows = total_rows;
         result.actual_selectivity =
-            static_cast<double>(result.matched_rows) / total_rows;
+            static_cast<double>(total_matched) / (total_rows * matches.size());
     }
 
     // 资源指标（占位值）

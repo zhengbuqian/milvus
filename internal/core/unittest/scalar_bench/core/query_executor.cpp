@@ -35,8 +35,9 @@ QueryExecutor::ExecuteQueryExpr(
     try {
         auto plan = BuildPlanFromExpr(expr, is_count, limit);
 
-        auto start = std::chrono::high_resolution_clock::now();
         auto initial_memory = MeasureMemoryUsage();
+        
+        auto start = std::chrono::high_resolution_clock::now();
 
         auto retrieve_result = segment->Retrieve(
             nullptr,  // RetrieveContext
