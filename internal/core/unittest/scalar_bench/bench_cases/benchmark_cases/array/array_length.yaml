@@ -10,7 +10,13 @@ suites:
     data_configs:
       # for array_length, run with 2 data setting is sufficient
       - path: benchmark_cases/array/data_configs/1_short_words_card_100.yaml
-      - path: benchmark_cases/array/data_configs/short_words_card_300k.yaml
+      - path: benchmark_cases/array/data_configs/1_short_words_card_100.yaml
+        override:
+          name: 8_short_words_card_300k
+          fields:
+            - element:
+                values:
+                  pick: 300000
     index_configs:
       - name: no_index
         field_configs: {}

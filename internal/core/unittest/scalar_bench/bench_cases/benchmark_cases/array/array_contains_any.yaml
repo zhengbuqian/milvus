@@ -9,11 +9,55 @@ suites:
   - name: default
     data_configs:
       - path: benchmark_cases/array/data_configs/1_short_words_card_100.yaml
-      - path: benchmark_cases/array/data_configs/short_words_card_10k.yaml
-      - path: benchmark_cases/array/data_configs/short_words_card_100k.yaml
-      - path: benchmark_cases/array/data_configs/short_words_card_300k.yaml
-      - path: benchmark_cases/array/data_configs/short_words_card_500.yaml
-      - path: benchmark_cases/array/data_configs/short_words_card_2k.yaml
+      - path: benchmark_cases/array/data_configs/1_short_words_card_100.yaml
+        override:
+          name: 2_short_words_card_500
+          fields:
+            - element:
+                values:
+                  pick: 500
+      - path: benchmark_cases/array/data_configs/1_short_words_card_100.yaml
+        override:
+          name: 3_short_words_card_1000
+          fields:
+            - element:
+                values:
+                  pick: 1000
+      - path: benchmark_cases/array/data_configs/1_short_words_card_100.yaml
+        override:
+          name: 4_short_words_card_1500
+          fields:
+            - element:
+                values:
+                  pick: 1500
+      - path: benchmark_cases/array/data_configs/1_short_words_card_100.yaml
+        override:
+          name: 5_short_words_card_2k
+          fields:
+            - element:
+                values:
+                  pick: 2000
+      - path: benchmark_cases/array/data_configs/1_short_words_card_100.yaml
+        override:
+          name: 6_short_words_card_10k
+          fields:
+            - element:
+                values:
+                  pick: 10000
+      - path: benchmark_cases/array/data_configs/1_short_words_card_100.yaml
+        override:
+          name: 7_short_words_card_100k
+          fields:
+            - element:
+                values:
+                  pick: 100000
+      - path: benchmark_cases/array/data_configs/1_short_words_card_100.yaml
+        override:
+          name: 8_short_words_card_300k
+          fields:
+            - element:
+                values:
+                  pick: 300000
     index_configs:
       # - name: no_index
       #   field_configs: {}

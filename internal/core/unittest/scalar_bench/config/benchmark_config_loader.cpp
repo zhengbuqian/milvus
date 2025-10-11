@@ -3,6 +3,7 @@
 #include <yaml-cpp/yaml.h>
 #include <filesystem>
 #include <algorithm>
+#include <set>
 
 namespace milvus {
 namespace scalar_bench {
@@ -12,6 +13,64 @@ static std::string ToUpper(const std::string& s) {
     std::string r = s;
     std::transform(r.begin(), r.end(), r.begin(), ::toupper);
     return r;
+}
+
+// Apply YAML override with strict validation
+// - Only allows overriding existing paths (no new keys/indices)
+// - Validates sequence indices are in bounds
+// - Only allows overriding scalar nodes (int/bool/float/string) and sequences
+void ApplyYamlOverride(YAML::Node base, const YAML::Node& override_node, const std::string& path = "") {
+    if (!override_node.IsDefined() || override_node.IsNull()) {
+        return;
+    }
+
+    // Base must exist and be defined
+    if (!base.IsDefined()) {
+        throw std::runtime_error("Override path does not exist in base config: " + path);
+    }
+
+    // Type mismatch check
+    if (base.IsMap() && !override_node.IsMap()) {
+        throw std::runtime_error("Override type mismatch at '" + path + "': base is Map but override is not");
+    }
+    if (base.IsSequence() && !override_node.IsSequence()) {
+        throw std::runtime_error("Override type mismatch at '" + path + "': base is Sequence but override is not");
+    }
+    if (base.IsScalar() && !override_node.IsScalar()) {
+        throw std::runtime_error("Override type mismatch at '" + path + "': base is Scalar but override is not");
+    }
+
+    if (override_node.IsMap()) {
+        // Recursively process map keys
+        for (auto it = override_node.begin(); it != override_node.end(); ++it) {
+            std::string key = it->first.as<std::string>();
+            std::string sub_path = path.empty() ? key : path + "." + key;
+
+            // Check if key exists in base
+            if (!base[key]) {
+                throw std::runtime_error("Override key does not exist in base config: " + sub_path);
+            }
+
+            ApplyYamlOverride(base[key], it->second, sub_path);
+        }
+    } else if (override_node.IsSequence()) {
+        // Validate sequence index bounds
+        if (override_node.size() > base.size()) {
+            throw std::runtime_error("Override sequence at '" + path + "' has more elements (" +
+                                   std::to_string(override_node.size()) + ") than base (" +
+                                   std::to_string(base.size()) + "). Cannot add new elements.");
+        }
+
+        // Apply overrides element by element
+        for (size_t i = 0; i < override_node.size(); ++i) {
+            std::string sub_path = path + "[" + std::to_string(i) + "]";
+            ApplyYamlOverride(base[i], override_node[i], sub_path);
+        }
+    } else {
+        // Scalar node - perform replacement
+        // This is the actual override operation
+        base = override_node;
+    }
 }
 
 ScalarIndexType ParseIndexType(const std::string& value) {
@@ -682,7 +741,6 @@ BenchmarkConfig ParseBenchmarkConfig(const YAML::Node& root, const std::string& 
         }
     }
 
-    // Suites support (required)
     if (auto suites_node = root["suites"]; suites_node && suites_node.IsSequence()) {
         for (const auto& suite_node : suites_node) {
             BenchmarkConfig::BenchmarkSuite suite;
@@ -695,11 +753,36 @@ BenchmarkConfig ParseBenchmarkConfig(const YAML::Node& root, const std::string& 
 
             // suite.data_configs
             if (auto data_nodes = suite_node["data_configs"]; data_nodes && data_nodes.IsSequence()) {
+                std::set<std::string> data_config_names;
                 for (const auto& node : data_nodes) {
                     if (node["path"]) {
                         auto path_config = node["path"].as<std::string>();
                         auto resolved_path = BenchmarkConfigLoader::ResolvePath(path_config);
-                        auto data_config = BenchmarkConfigLoader::LoadDataConfigFile(resolved_path);
+
+                        // Load the base data config file as YAML first
+                        YAML::Node base_yaml;
+                        try {
+                            base_yaml = YAML::LoadFile(resolved_path);
+                        } catch (const std::exception& ex) {
+                            throw std::runtime_error("Failed to load data config '" + resolved_path + "': " + ex.what());
+                        }
+
+                        // Apply override if present
+                        if (node["override"]) {
+                            ApplyYamlOverride(base_yaml, node["override"], "");
+                        }
+
+                        // Parse the (possibly overridden) YAML into DataConfig
+                        auto data_config = ParseDataConfig(base_yaml, resolved_path + " (with override)");
+
+                        // Check for duplicate DataConfig.name within this suite
+                        if (data_config_names.find(data_config.name) != data_config_names.end()) {
+                            throw std::runtime_error("Duplicate DataConfig.name '" + data_config.name +
+                                                   "' found in suite '" + suite.name +
+                                                   "'. After applying overrides, each data config must have a unique name.");
+                        }
+                        data_config_names.insert(data_config.name);
+
                         suite.data_configs.push_back(data_config);
                     } else {
                         throw std::runtime_error("data_configs entry must have 'path' field in suite: " + suite.name);
