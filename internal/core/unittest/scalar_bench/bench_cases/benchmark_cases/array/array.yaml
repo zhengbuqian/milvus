@@ -1,0 +1,135 @@
+version: 1
+test_params:
+  warmup_iterations: 30
+  test_iterations: 30
+  collect_memory_stats: false
+  enable_flame_graph: false
+  flamegraph_repo_path: ~/FlameGraph
+preset_data_configs:
+  - name: card_100
+    path: benchmark_cases/array/data_configs/1_short_words_card_100.yaml
+  - name: card_500
+    path: benchmark_cases/array/data_configs/1_short_words_card_100.yaml
+    override:
+      name: 2_short_words_card_500
+      fields:
+        - element:
+            values:
+              pick: 500
+  - name: card_1000
+    path: benchmark_cases/array/data_configs/1_short_words_card_100.yaml
+    override:
+      name: 3_short_words_card_1000
+      fields:
+        - element:
+            values:
+              pick: 1000
+  - name: card_1500
+    path: benchmark_cases/array/data_configs/1_short_words_card_100.yaml
+    override:
+      name: 4_short_words_card_1500
+      fields:
+        - element:
+            values:
+              pick: 1500
+  - name: card_2k
+    path: benchmark_cases/array/data_configs/1_short_words_card_100.yaml
+    override:
+      name: 5_short_words_card_2k
+      fields:
+        - element:
+            values:
+              pick: 2000
+  - name: card_10k
+    path: benchmark_cases/array/data_configs/1_short_words_card_100.yaml
+    override:
+      name: 6_short_words_card_10k
+      fields:
+        - element:
+            values:
+              pick: 10000
+  - name: card_100k
+    path: benchmark_cases/array/data_configs/1_short_words_card_100.yaml
+    override:
+      name: 7_short_words_card_100k
+      fields:
+        - element:
+            values:
+              pick: 100000
+  - name: card_300k
+    path: benchmark_cases/array/data_configs/1_short_words_card_100.yaml
+    override:
+      name: 8_short_words_card_300k
+      fields:
+        - element:
+            values:
+              pick: 300000
+preset_index_configs:
+  - name: no_index
+    field_configs: {}
+  - name: bitmap_index
+    field_configs:
+      city_array:
+        type: BITMAP
+  - name: inverted_index
+    field_configs:
+      city_array:
+        type: INVERTED
+cases:
+  - name: array_contains
+    suites:
+      - name: default
+        data_configs: [card_100, card_500, card_1000, card_1500, card_2k, card_10k, card_100k, card_300k]
+        index_configs: [bitmap_index, inverted_index]
+        expr_templates:
+          - name: array_contains_large
+            expr_template: array_contains(city_array, "Dennisburgh")
+          - name: array_contains_med
+            expr_template: array_contains(city_array, "Cavriago")
+          - name: array_contains_small
+            expr_template: array_contains(city_array, "Lemonnier")
+          - name: array_contains_not_found
+            expr_template: array_contains(city_array, "Not Found 1")
+  - name: array_contains_all
+    suites:
+      - name: default
+        data_configs: [card_100, card_500, card_1000, card_1500, card_2k, card_10k, card_100k, card_300k]
+        index_configs: [bitmap_index, inverted_index]
+        expr_templates:
+          - name: array_contains_all_large
+            expr_template: array_contains_all(city_array, ["Dennisburgh", "South Holly"])
+          - name: array_contains_all_med
+            expr_template: array_contains_all(city_array, ["Cavriago"])
+          - name: array_contains_all_small
+            expr_template: array_contains_all(city_array, ["Lemonnier", "霞县"])
+          - name: array_contains_all_many_small
+            expr_template: array_contains_all(city_array, ["Lemonnier", "霞县", "Watsonstad", "West Vanessa", "Fernandes do Campo", "Millerhaven", "Großenhain", "Fraziermouth", "横浜市戸塚区", "丽华市", "Sullivanfort", "Barros da Praia"])
+          - name: array_contains_all_not_found
+            expr_template: array_contains_all(city_array, ["Not Found 1", "Not Found 2"])
+  - name: array_contains_any
+    suites:
+      - name: default
+        data_configs: [card_100, card_500, card_1000, card_1500, card_2k, card_10k, card_100k, card_300k]
+        index_configs: [bitmap_index, inverted_index]
+        expr_templates:
+          - name: array_contains_any_large
+            expr_template: array_contains_any(city_array, ["Dennisburgh", "South Holly"])
+          - name: array_contains_any_med
+            expr_template: array_contains_any(city_array, ["Cavriago"])
+          - name: array_contains_any_small
+            expr_template: array_contains_any(city_array, ["Lemonnier", "霞县"])
+          - name: array_contains_any_many_small
+            expr_template: array_contains_any(city_array, ["Lemonnier", "霞县", "Watsonstad", "West Vanessa", "Fernandes do Campo", "Millerhaven", "Großenhain", "Fraziermouth", "横浜市戸塚区", "丽华市", "Sullivanfort", "Barros da Praia"])
+          - name: array_contains_any_not_found
+            expr_template: array_contains_any(city_array, ["Not Found 1", "Not Found 2"])
+  - name: array_length
+    suites:
+      - name: default
+        # for array_length, run with 2 data settings is sufficient
+        data_configs: [card_100, card_300k]
+        index_configs: [no_index, bitmap_index, inverted_index]
+        expr_templates:
+          - name: city_array_length_equal_10
+            expr_template: array_length(city_array) == 10
+          - name: city_array_length_not_equal_10
+            expr_template: array_length(city_array) != 10

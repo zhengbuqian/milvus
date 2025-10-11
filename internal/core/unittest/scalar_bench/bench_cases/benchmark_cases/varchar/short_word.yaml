@@ -1,0 +1,99 @@
+version: 1
+test_params:
+  warmup_iterations: 30
+  test_iterations: 30
+  collect_memory_stats: false
+  enable_flame_graph: false
+  flamegraph_repo_path: ~/FlameGraph
+preset_data_configs:
+  - name: card_10
+    path: benchmark_cases/varchar/data_configs/short_word_card_10.yaml
+  - name: card_100
+    path: benchmark_cases/varchar/data_configs/short_word_card_100.yaml
+  - name: card_1000
+    path: benchmark_cases/varchar/data_configs/short_word_card_1000.yaml
+  - name: card_1m
+    path: benchmark_cases/varchar/data_configs/short_word_card_1m.yaml
+preset_index_configs:
+  - name: no_index
+    field_configs: {}
+  - name: bitmap_index
+    field_configs:
+      city:
+        type: BITMAP
+  - name: inverted_index
+    field_configs:
+      city:
+        type: INVERTED
+  - name: ngram_index
+    field_configs:
+      city:
+        type: NGRAM
+        params:
+          min_gram: 3
+          max_gram: 4
+cases:
+  - name: short_word_equal
+    suites:
+      - name: default
+        data_configs: [card_10, card_100, card_1000, card_1m]
+        index_configs: [no_index, bitmap_index, inverted_index]
+        expr_templates:
+          - name: equal_large_single
+            expr_template: city == "Dennisburgh"
+          - name: equal_med_single
+            expr_template: city == "Pozzolo Formigaro"
+          - name: equal_small_single
+            expr_template: city == "Cavriago"
+          - name: equal_very_small_single
+            expr_template: city == "South Holly"
+  - name: short_word_in
+    suites:
+      - name: default
+        data_configs: [card_10, card_100, card_1000, card_1m]
+        index_configs: [no_index, bitmap_index, inverted_index, ngram_index]
+        expr_templates:
+          - name: in_small_many
+            expr_template: city in ["Sanchezmouth", "Moorehaven", "兴城县", "荒川区", "Melilla", "Bourgeois-sur-Fischer", "West Sherryland", "Sharontown", "云县", "North Julia", "Whitakerville", "Barros de da Cunha", "Tracymouth", "Michaelhaven", "Port Stephanieville", "Valladolid", "Lemonnier", "川崎市多摩区", "佛山市"]
+  - name: short_word_like_prefix
+    suites:
+      - name: default
+        data_configs: [card_10, card_100, card_1000, card_1m]
+        index_configs: [no_index, bitmap_index, inverted_index, ngram_index]
+        expr_templates:
+          - name: prefix_large_single
+            expr_template: city like "Dennisbu%"
+          - name: prefix_med_single
+            expr_template: city like "Pozzolo%"
+          - name: prefix_small_single
+            expr_template: city like "Cavria%"
+          - name: prefix_very_small_single
+            expr_template: city like "South Hol%"
+  - name: short_word_like_suffix
+    suites:
+      - name: default
+        data_configs: [card_10, card_100, card_1000, card_1m]
+        index_configs: [no_index, bitmap_index, inverted_index, ngram_index]
+        expr_templates:
+          - name: suffix_large_single
+            expr_template: city like "%nnisburgh"
+          - name: suffix_med_single
+            expr_template: city like "%Formigaro"
+          - name: suffix_small_single
+            expr_template: city like "%vriago"
+          - name: suffix_very_small_single
+            expr_template: city like "%uth Holly"
+  - name: short_word_like_infix
+    suites:
+      - name: default
+        data_configs: [card_10, card_100, card_1000, card_1m]
+        index_configs: [no_index, bitmap_index, ngram_index]
+        expr_templates:
+          - name: infix_large_single
+            expr_template: city like "%ennisbur%"
+          - name: infix_med_single
+            expr_template: city like "%ozzolo%"
+          - name: infix_small_single
+            expr_template: city like "%avria%"
+          - name: infix_very_small_single
+            expr_template: city like "%uth Hol%"

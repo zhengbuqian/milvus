@@ -18,25 +18,68 @@ benchmark_cases/
 ```
 
 ### Benchmark Case File Structure
-Benchmark case files (in `benchmark_cases/benchmark_cases/`) reference data configurations by file path:
+Benchmark case files (in `benchmark_cases/benchmark_cases/`) use a preset-based structure with reusable configurations:
 
 ```yaml
 version: 1
-data_configs:
-  - path: data_configs/uniform_int64_high_card.yaml
-  - path: data_configs/zipf_int64_low_card.yaml
-index_configs:
-  - name: bitmap_index_config
+test_params:
+  warmup_iterations: 30
+  test_iterations: 100
+  collect_memory_stats: false
+  enable_flame_graph: false
+  flamegraph_repo_path: ~/FlameGraph
+
+preset_data_configs:
+  - name: low_card
+    data_configs:
+      - path: data_configs/uniform_int64_low_card.yaml
+  - name: high_card
+    data_configs:
+      - path: data_configs/uniform_int64_high_card.yaml
+
+preset_index_configs:
+  - name: no_index
+    field_configs: {}
+  - name: bitmap_index
     field_configs:
       user_id:
         type: BITMAP
-      price:
+  - name: inverted_index
+    field_configs:
+      user_id:
         type: INVERTED
         params: {}
-      # Fields not listed use NONE (no index)
-expr_templates: [...]
-test_params: [...]
+
+# Multiple cases allow different expression types to reuse same data/index configs
+# Multiple suites allow same expression types with different data/expressions for different selectivity
+# Outputs from different suites of the same case go into the same test result
+# Outputs from different cases go into separate test results
+cases:
+  - name: int_range
+    suites:
+      - name: low_card
+        data_configs: [low_card]  # Reference preset by name
+        index_configs: [no_index, bitmap_index, inverted_index]  # Reference presets
+        expr_templates:
+          - name: user_id_range_1%
+            expr_template: 99 < user_id <= 100
+  - name: int_equal
+    suites:
+      - name: default
+        data_configs: [low_card, high_card]
+        index_configs: [no_index, bitmap_index]
+        expr_templates:
+          - name: user_id_equal_100
+            expr_template: user_id == 100
 ```
+
+**Key Design Principles:**
+- `preset_data_configs` and `preset_index_configs` define reusable configuration templates at the top level
+- `cases` group tests by expression type (e.g., range, equal, in, like)
+- `suites` within each case specify different data/index combinations and expressions
+- Suites reference presets by name in arrays, allowing flexible combinations
+- All suites within a case share the same output file/report
+- Different cases produce separate output files/reports
 
 ### Data Configuration File Structure
 Each data configuration file (in `benchmark_cases/data_configs/`) contains a single segment definition:
@@ -216,10 +259,24 @@ Rules:
 
 ```yaml
 version: 1
-data_configs:
-  - path: data_configs/ecommerce_clicks.yaml
-  - path: data_configs/ecommerce_products.yaml
-index_configs:
+test_params:
+  warmup_iterations: 5
+  test_iterations: 100
+  collect_memory_stats: false
+  enable_flame_graph: false
+  flamegraph_repo_path: ~/FlameGraph
+
+preset_data_configs:
+  - name: clicks
+    data_configs:
+      - path: data_configs/ecommerce_clicks.yaml
+  - name: products
+    data_configs:
+      - path: data_configs/ecommerce_products.yaml
+
+preset_index_configs:
+  - name: no_index
+    field_configs: {}
   - name: standard_indexes
     field_configs:
       user_id:
@@ -236,7 +293,6 @@ index_configs:
       product_title:
         type: INVERTED
         params: {analyzer: "standard"}
-      # Other fields use NONE (no index)
   - name: optimized_indexes
     field_configs:
       user_id:
@@ -244,14 +300,30 @@ index_configs:
         params: {}
       price:
         type: BITMAP
-expr_templates:
+
+cases:
   - name: price_range
-    type: RANGE
-    expr_template: |
-      # Template uses {field:price} for field name substitution
-test_params:
-  warmup_iterations: 5
-  test_iterations: 100
+    suites:
+      - name: default
+        data_configs: [clicks, products]
+        index_configs: [no_index, standard_indexes, optimized_indexes]
+        expr_templates:
+          - name: price_low
+            expr_template: price < 100.0
+          - name: price_mid
+            expr_template: price >= 100.0 && price < 1000.0
+          - name: price_high
+            expr_template: price >= 1000.0
+  - name: tag_search
+    suites:
+      - name: default
+        data_configs: [clicks]
+        index_configs: [standard_indexes]
+        expr_templates:
+          - name: single_tag
+            expr_template: array_contains(tags, "sale")
+          - name: multi_tag
+            expr_template: array_contains_any(tags, ["sale", "discount"])
 ```
 
 ### Data Config File: `benchmark_cases/data_configs/ecommerce_clicks.yaml`
