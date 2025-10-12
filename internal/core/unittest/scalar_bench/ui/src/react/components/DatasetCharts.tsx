@@ -2,7 +2,8 @@ import React, { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as am5 from '@amcharts/amcharts5';
 import * as am5xy from '@amcharts/amcharts5/xy';
 import am5themes_Animated from '@amcharts/amcharts5/themes/Animated';
-import type { CaseRow } from './CasesTable';
+import type { ExecutionRow } from './ExecutionsTable';
+import { getNestedValue } from '../utils/helpers';
 
 type MetricKey = 'qps' | 'latency_ms.avg' | 'latency_ms.p50' | 'latency_ms.p90' | 'latency_ms.p99' | 'index_build_ms';
 
@@ -15,26 +16,22 @@ const METRICS: { key: MetricKey; label: string }[] = [
   { key: 'index_build_ms', label: 'Index build ms' },
 ];
 
-function get(obj: any, path: string): any {
-  return path ? path.split('.').reduce((acc, k) => (acc ? acc[k] : undefined), obj) : undefined;
-}
-
-export function DatasetCharts({ rows }: { rows: CaseRow[] }): JSX.Element {
+export function DatasetCharts({ rows }: { rows: ExecutionRow[] }): JSX.Element {
   const [metricKey, setMetricKey] = useState<MetricKey>('latency_ms.avg');
   const [cols, setCols] = useState<number>(4);
 
   const datasets = useMemo(() => {
-    const map = new Map<string, Map<string, { x: number; y: number; expr: string; caseId: string }[]>>();
+    const map = new Map<string, Map<string, { x: number; y: number; expr: string; testId: string }[]>>();
     rows.forEach((r) => {
       const dataset = r.dataConfig || '';
       const index = r.indexConfig || '';
-      const x = Number(get(r.metrics, 'selectivity'));
-      const y = Number(get(r.metrics, metricKey));
+      const x = Number(getNestedValue(r.metrics, 'selectivity'));
+      const y = Number(getNestedValue(r.metrics, metricKey));
       if (!Number.isFinite(x) || !Number.isFinite(y)) return;
       if (!map.has(dataset)) map.set(dataset, new Map());
       const im = map.get(dataset)!;
       if (!im.has(index)) im.set(index, []);
-      im.get(index)!.push({ x, y, expr: String(r.expression || ''), caseId: r.caseId });
+      im.get(index)!.push({ x, y, expr: String(r.expression || ''), testId: r.testId });
     });
     // sort points by x
     for (const [, im] of map) {
@@ -61,16 +58,19 @@ export function DatasetCharts({ rows }: { rows: CaseRow[] }): JSX.Element {
       <div className="page-actions" style={{ marginBottom: '0.5rem' }}>
         <div className="left">
           <h3 style={{ margin: 0 }}>Charts</h3>
-          <div className="small text-muted" style={{ marginTop: '0.25rem' }}>
-            Selectivity is not a good X axis, because a 20% selectivity could result from 1 value or the combination of multiple values. But this is the best we can have.
-          </div>
         </div>
         <div className="right" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
           <div>
             <span className="small text-muted" style={{ marginRight: '0.5rem' }}>Metric</span>
             <div className="segmented" style={{ display: 'inline-flex', flexWrap: 'wrap' }}>
               {METRICS.map((m) => (
-                <button key={m.key} className={`segmented-btn${m.key === metricKey ? ' active' : ''}`} onClick={() => setMetricKey(m.key)}>{m.label}</button>
+                <button
+                  key={m.key}
+                  className={`segmented-btn${m.key === metricKey ? ' active' : ''}`}
+                  onClick={() => setMetricKey(m.key)}
+                >
+                  {m.label}
+                </button>
               ))}
             </div>
           </div>
@@ -78,7 +78,13 @@ export function DatasetCharts({ rows }: { rows: CaseRow[] }): JSX.Element {
             <span className="small text-muted" style={{ marginRight: '0.5rem' }}>Charts per row</span>
             <div className="segmented" style={{ display: 'inline-flex' }}>
               {Array.from({ length: 5 }, (_, i) => i + 1).map((n) => (
-                <button key={n} className={`segmented-btn${n === colNum ? ' active' : ''}`} onClick={() => setCols(n)}>{n}</button>
+                <button
+                  key={n}
+                  className={`segmented-btn${n === colNum ? ' active' : ''}`}
+                  onClick={() => setCols(n)}
+                >
+                  {n}
+                </button>
               ))}
             </div>
           </div>
@@ -99,7 +105,7 @@ export function DatasetCharts({ rows }: { rows: CaseRow[] }): JSX.Element {
   );
 }
 
-function PerDatasetChart({ dataset, seriesMap, metricLabel }: { dataset: string; seriesMap: Map<string, { x: number; y: number; expr: string; caseId: string }[]>; metricLabel: string }): JSX.Element {
+function PerDatasetChart({ dataset, seriesMap, metricLabel }: { dataset: string; seriesMap: Map<string, { x: number; y: number; expr: string; testId: string }[]>; metricLabel: string }): JSX.Element {
   const divRef = useRef<HTMLDivElement | null>(null);
 
   useLayoutEffect(() => {

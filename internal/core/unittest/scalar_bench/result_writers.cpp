@@ -22,6 +22,33 @@
 namespace milvus {
 namespace scalar_bench {
 
+// Helper function to escape JSON strings
+static std::string escapeJson(const std::string& input) {
+    std::string output;
+    output.reserve(input.size());
+    for (char c : input) {
+        switch (c) {
+            case '"':  output += "\\\""; break;
+            case '\\': output += "\\\\"; break;
+            case '\b': output += "\\b"; break;
+            case '\f': output += "\\f"; break;
+            case '\n': output += "\\n"; break;
+            case '\r': output += "\\r"; break;
+            case '\t': output += "\\t"; break;
+            default:
+                if (c < 32 || c > 126) {
+                    // Escape non-printable characters
+                    char buf[8];
+                    snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(c));
+                    output += buf;
+                } else {
+                    output += c;
+                }
+        }
+    }
+    return output;
+}
+
 void
 WriteBundleMeta(const std::string& bundle_dir,
                 const BundleMetadata& meta) {
@@ -33,22 +60,8 @@ WriteBundleMeta(const std::string& bundle_dir,
 
     file << "{\n";
     file << "  \"bundle_id\": \"" << meta.bundle_id << "\",\n";
-    file << "  \"config_file\": \"" << meta.config_file << "\",\n";
-
-    // Escape newlines and quotes in config content
-    std::string escaped_content = meta.config_content;
-    size_t pos = 0;
-    while ((pos = escaped_content.find("\"", pos)) != std::string::npos) {
-        escaped_content.replace(pos, 1, "\\\"");
-        pos += 2;
-    }
-    pos = 0;
-    while ((pos = escaped_content.find("\n", pos)) != std::string::npos) {
-        escaped_content.replace(pos, 1, "\\n");
-        pos += 2;
-    }
-
-    file << "  \"config_content\": \"" << escaped_content << "\",\n";
+    file << "  \"config_file\": \"" << escapeJson(meta.config_file) << "\",\n";
+    file << "  \"config_content\": \"" << escapeJson(meta.config_content) << "\",\n";
     file << "  \"timestamp_ms\": " << meta.timestamp_ms << ",\n";
 
     // Test params
@@ -57,7 +70,7 @@ WriteBundleMeta(const std::string& bundle_dir,
     file << "    \"test_iterations\": " << meta.test_params.test_iterations << ",\n";
     file << "    \"collect_memory_stats\": " << (meta.test_params.collect_memory_stats ? "true" : "false") << ",\n";
     file << "    \"enable_flame_graph\": " << (meta.test_params.enable_flame_graph ? "true" : "false") << ",\n";
-    file << "    \"flamegraph_repo_path\": \"" << meta.test_params.flamegraph_repo_path << "\"\n";
+    file << "    \"flamegraph_repo_path\": \"" << escapeJson(meta.test_params.flamegraph_repo_path) << "\"\n";
     file << "  },\n";
 
     // Cases
@@ -65,11 +78,11 @@ WriteBundleMeta(const std::string& bundle_dir,
     for (size_t i = 0; i < meta.cases.size(); ++i) {
         const auto& c = meta.cases[i];
         file << "    {\n";
-        file << "      \"case_name\": \"" << c.case_name << "\",\n";
-        file << "      \"case_id\": \"" << c.case_id << "\",\n";
+        file << "      \"case_name\": \"" << escapeJson(c.case_name) << "\",\n";
+        file << "      \"case_id\": \"" << escapeJson(c.case_id) << "\",\n";
         file << "      \"suites\": [";
         for (size_t j = 0; j < c.suites.size(); ++j) {
-            file << "\"" << c.suites[j] << "\"";
+            file << "\"" << escapeJson(c.suites[j]) << "\"";
             if (j + 1 < c.suites.size()) file << ", ";
         }
         file << "],\n";
@@ -95,8 +108,8 @@ WriteCaseMeta(const std::string& case_dir,
     }
 
     file << "{\n";
-    file << "  \"case_id\": \"" << meta.case_id << "\",\n";
-    file << "  \"case_name\": \"" << meta.case_name << "\",\n";
+    file << "  \"case_id\": \"" << escapeJson(meta.case_id) << "\",\n";
+    file << "  \"case_name\": \"" << escapeJson(meta.case_name) << "\",\n";
     file << "  \"bundle_id\": \"" << meta.bundle_id << "\",\n";
 
     // Suites
@@ -104,25 +117,25 @@ WriteCaseMeta(const std::string& case_dir,
     for (size_t i = 0; i < meta.suites.size(); ++i) {
         const auto& s = meta.suites[i];
         file << "    {\n";
-        file << "      \"suite_name\": \"" << s.suite_name << "\",\n";
+        file << "      \"suite_name\": \"" << escapeJson(s.suite_name) << "\",\n";
 
         file << "      \"data_configs\": [";
         for (size_t j = 0; j < s.data_configs.size(); ++j) {
-            file << "\"" << s.data_configs[j] << "\"";
+            file << "\"" << escapeJson(s.data_configs[j]) << "\"";
             if (j + 1 < s.data_configs.size()) file << ", ";
         }
         file << "],\n";
 
         file << "      \"index_configs\": [";
         for (size_t j = 0; j < s.index_configs.size(); ++j) {
-            file << "\"" << s.index_configs[j] << "\"";
+            file << "\"" << escapeJson(s.index_configs[j]) << "\"";
             if (j + 1 < s.index_configs.size()) file << ", ";
         }
         file << "],\n";
 
         file << "      \"expr_templates\": [";
         for (size_t j = 0; j < s.expr_templates.size(); ++j) {
-            file << "\"" << s.expr_templates[j] << "\"";
+            file << "\"" << escapeJson(s.expr_templates[j]) << "\"";
             if (j + 1 < s.expr_templates.size()) file << ", ";
         }
         file << "]\n";
@@ -156,11 +169,11 @@ WriteCaseMetrics(const std::string& case_dir,
         const auto& r = results[i];
         file << "    {\n";
         file << "      \"test_id\": \"" << std::setw(4) << std::setfill('0') << (i + 1) << "\",\n";
-        file << "      \"suite_name\": \"" << (r.suite_name.empty() ? "default" : r.suite_name) << "\",\n";
-        file << "      \"data_config\": \"" << r.data_config_name << "\",\n";
-        file << "      \"index_config\": \"" << r.index_config_name << "\",\n";
-        file << "      \"expression\": \"" << r.expr_template_name << "\",\n";
-        file << "      \"actual_expression\": \"" << r.actual_expression << "\",\n";
+        file << "      \"suite_name\": \"" << escapeJson(r.suite_name.empty() ? "default" : r.suite_name) << "\",\n";
+        file << "      \"data_config\": \"" << escapeJson(r.data_config_name) << "\",\n";
+        file << "      \"index_config\": \"" << escapeJson(r.index_config_name) << "\",\n";
+        file << "      \"expression\": \"" << escapeJson(r.expr_template_name) << "\",\n";
+        file << "      \"actual_expression\": \"" << escapeJson(r.actual_expression) << "\",\n";
         file << "      \"qps\": " << r.qps << ",\n";
 
         file << "      \"latency_ms\": {\n";
@@ -186,7 +199,7 @@ WriteCaseMetrics(const std::string& case_dir,
         file << "      \"cpu_pct\": " << r.cpu_usage_percent << ",\n";
 
         if (r.has_flamegraph && !r.flamegraph_path.empty()) {
-            file << "      \"flamegraph\": \"" << r.flamegraph_path << "\"\n";
+            file << "      \"flamegraph\": \"" << escapeJson(r.flamegraph_path) << "\"\n";
         } else {
             file << "      \"flamegraph\": null\n";
         }
@@ -253,12 +266,12 @@ WriteIndexJson(const std::string& results_base_dir,
         const auto& b = merged_bundles[i];
         file << "    {\n";
         file << "      \"bundle_id\": \"" << b.bundle_id << "\",\n";
-        file << "      \"config_file\": \"" << b.config_file << "\",\n";
+        file << "      \"config_file\": \"" << escapeJson(b.config_file) << "\",\n";
         file << "      \"timestamp_ms\": " << b.timestamp_ms << ",\n";
-        file << "      \"label\": \"" << b.label << "\",\n";
+        file << "      \"label\": \"" << escapeJson(b.label) << "\",\n";
         file << "      \"cases\": [";
         for (size_t j = 0; j < b.cases.size(); ++j) {
-            file << "\"" << b.cases[j] << "\"";
+            file << "\"" << escapeJson(b.cases[j]) << "\"";
             if (j + 1 < b.cases.size()) file << ", ";
         }
         file << "],\n";

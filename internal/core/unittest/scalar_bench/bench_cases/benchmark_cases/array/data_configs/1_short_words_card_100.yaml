@@ -1,6 +1,6 @@
 # 每行 4-50 个词，从 100 个词中随机选择，有一些高频词
 name: 1_short_words_card_100
-segment_size: 1000000
+segment_size: 10000
 segment_seed: 42
 global_dictionaries:
   cities:

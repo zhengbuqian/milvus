@@ -1,7 +1,8 @@
 import React, { useEffect } from 'react';
-import { Link, NavLink, Route, Routes, useLocation } from 'react-router-dom';
+import { NavLink, Route, Routes, useLocation } from 'react-router-dom';
 import RunsPage from './pages/RunsPage';
 import RunDetailPage from './pages/RunDetailPage';
+import CaseDetailPage from './pages/CaseDetailPage';
 import ComparePage from './pages/ComparePage';
 import { SettingsBadge } from './components/SettingsBadge';
 
@@ -34,7 +35,8 @@ export default function App(): JSX.Element {
       <main>
         <Routes>
           <Route path="/runs" element={<RunsPage />} />
-          <Route path="/run/:runId" element={<RunDetailPage />} />
+          <Route path="/bundle/:bundleId" element={<RunDetailPage />} />
+          <Route path="/bundle/:bundleId/case/:caseId" element={<CaseDetailPage />} />
           <Route path="/compare" element={<ComparePage />} />
           <Route path="*" element={<RunsPage />} />
         </Routes>

@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { escapeHtml } from '../utils/format';
+import { getNestedValue } from '../utils/helpers';
 
 export type MetricDef = {
   key: string;
@@ -8,9 +9,9 @@ export type MetricDef = {
   better?: 'higher' | 'lower';
 };
 
-export type CaseRow = {
+export type ExecutionRow = {
   runId?: string;
-  caseId: string;
+  testId: string;
   dataConfig?: string;
   indexConfig?: string;
   expression?: string;
@@ -18,31 +19,31 @@ export type CaseRow = {
   timestamp?: string | number;
 };
 
-export function CasesTable({
+export function ExecutionsTable({
   rows,
   metricKeys,
   showRunId = false,
   allowSelection = false,
   isSelected = () => false,
-  getSelectionKey = (row: CaseRow) => String(row.caseId),
+  getSelectionKey = (row: ExecutionRow) => String(row.testId),
   onToggleSelect = () => {},
   showFlamegraphLink = true,
   buildFlamegraphUrl = () => null,
 }: {
-  rows: CaseRow[];
+  rows: ExecutionRow[];
   metricKeys: MetricDef[];
   showRunId?: boolean;
   allowSelection?: boolean;
   isSelected?: (key: string) => boolean;
-  getSelectionKey?: (row: CaseRow) => string;
-  onToggleSelect?: (key: string, checked: boolean, row: CaseRow) => void;
+  getSelectionKey?: (row: ExecutionRow) => string;
+  onToggleSelect?: (key: string, checked: boolean, row: ExecutionRow) => void;
   showFlamegraphLink?: boolean;
-  buildFlamegraphUrl?: (row: CaseRow) => string | null;
+  buildFlamegraphUrl?: (row: ExecutionRow) => string | null;
 }): JSX.Element {
   const [currentMetric, setCurrentMetric] = useState<string>('');
   const [currentOrder, setCurrentOrder] = useState<'asc' | 'desc'>('desc');
 
-  const sorted = useMemo(() => sortRowsGrouped(rows, currentMetric, currentOrder), [rows, currentMetric, currentOrder]);
+  const sorted = useMemo(() => sortExecutionsGrouped(rows, currentMetric, currentOrder), [rows, currentMetric, currentOrder]);
 
   const colorScales = useMemo(() => buildColorScales(rows, metricKeys), [rows, metricKeys]);
 
@@ -53,7 +54,7 @@ export function CasesTable({
           <tr>
             {allowSelection && <th></th>}
             {showRunId && <th>Run</th>}
-            <th>Case</th>
+            <th>Test</th>
             <th>Dataset</th>
             <th>Expression</th>
             <th>Index</th>
@@ -102,14 +103,14 @@ export function CasesTable({
                   </td>
                 )}
                 {showRunId && <td>{row.runId}</td>}
-                <td>{row.caseId}</td>
+                <td>{row.testId}</td>
                 <td>{row.dataConfig ?? '—'}</td>
                 <td>
                   <code dangerouslySetInnerHTML={{ __html: escapeHtml(row.expression ?? '—') }} />
                 </td>
                 <td>{row.indexConfig ?? '—'}</td>
                 {metricKeys.map((m) => {
-                  const value = getMetricValue(row.metrics, m.key);
+                  const value = getNestedValue(row.metrics, m.key);
                   const formatted = m.formatter ? m.formatter(value) : String(value);
                   return (
                     <td
@@ -141,12 +142,8 @@ export function CasesTable({
   );
 }
 
-function getMetricValue(obj: any, path: string): any {
-  return path ? path.split('.').reduce((acc, key) => (acc ? acc[key] : undefined), obj) : undefined;
-}
-
-function sortRowsGrouped(rows: CaseRow[], metricKey: string, order: 'asc' | 'desc'): CaseRow[] {
-  const groups = new Map<string, { dataset: string; expression: string; items: CaseRow[] }>();
+function sortExecutionsGrouped(rows: ExecutionRow[], metricKey: string, order: 'asc' | 'desc'): ExecutionRow[] {
+  const groups = new Map<string, { dataset: string; expression: string; items: ExecutionRow[] }>();
   rows.forEach((r) => {
     const dataset = r.dataConfig || '';
     const expr = r.expression || '';
@@ -163,33 +160,33 @@ function sortRowsGrouped(rows: CaseRow[], metricKey: string, order: 'asc' | 'des
   });
 
   const dir = order === 'asc' ? 1 : -1;
-  const result: CaseRow[] = [];
+  const result: ExecutionRow[] = [];
   groupList.forEach((g) => {
     if (metricKey) {
       g.items.sort((a, b) => {
-        const av = Number(getMetricValue(a.metrics, metricKey));
-        const bv = Number(getMetricValue(b.metrics, metricKey));
+        const av = Number(getNestedValue(a.metrics, metricKey));
+        const bv = Number(getNestedValue(b.metrics, metricKey));
         if (Number.isNaN(av) && Number.isNaN(bv)) return 0;
         if (Number.isNaN(av)) return 1;
         if (Number.isNaN(bv)) return -1;
         return dir * (av - bv);
       });
     } else {
-      g.items.sort((a, b) => Number(b.caseId) - Number(a.caseId));
+      g.items.sort((a, b) => Number(b.testId) - Number(a.testId));
     }
     result.push(...g.items);
   });
   return result;
 }
 
-function buildColorScales(rows: CaseRow[], metricDefs: MetricDef[]): Record<string, { min: number; max: number; better: 'higher' | 'lower' } | null> {
+function buildColorScales(rows: ExecutionRow[], metricDefs: MetricDef[]): Record<string, { min: number; max: number; better: 'higher' | 'lower' } | null> {
   const map: Record<string, { min: number; max: number; better: 'higher' | 'lower' } | null> = {};
   metricDefs.forEach((m) => {
     if (!m.better) { map[m.key] = null; return; }
     let min = Number.POSITIVE_INFINITY;
     let max = Number.NEGATIVE_INFINITY;
     rows.forEach((r) => {
-      const v = Number(getMetricValue(r.metrics, m.key));
+      const v = Number(getNestedValue(r.metrics, m.key));
       if (Number.isFinite(v)) {
         if (v < min) min = v;
         if (v > max) max = v;
@@ -210,11 +207,8 @@ function computeCellStyle(value: unknown, m: MetricDef, scales: Record<string, {
   if (!scale || !Number.isFinite(num)) return undefined;
   const { min, max, better } = scale;
   const t = (num - min) / (max - min);
-  const score = better === 'higher' ? 1 - t : t; // 0 = best, 1 = worst
-  // Use a blue tint consistent with theme; lighter = better
-  const alpha = clamp(0.08 + score * 0.32, 0.08, 0.40);
+  const score = better === 'higher' ? 1 - t : t;
+  const alpha = Math.max(0.08, Math.min(0.40, 0.08 + score * 0.32));
   return { background: `rgba(56, 189, 248, ${alpha})` };
 }
-
-function clamp(v: number, lo: number, hi: number): number { return Math.max(lo, Math.min(hi, v)); }
 
