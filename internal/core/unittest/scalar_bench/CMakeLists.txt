@@ -17,6 +17,7 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 set(MAIN_SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/scalar_filter_benchmark.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/result_writers.cpp
 )
 file(GLOB CONFIG_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/config/*.cpp")
 file(GLOB CORE_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/core/*.cpp")

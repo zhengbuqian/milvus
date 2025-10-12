@@ -10,6 +10,7 @@
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
 #include "scalar_filter_benchmark.h"
+#include "result_writers.h"
 #include "core/segment_data.h"
 #include "core/segment_wrapper.h"
 #include "core/index_wrapper.h"
@@ -36,31 +37,58 @@ namespace scalar_bench {
 extern std::string g_current_run_dir;
 
 std::vector<BenchmarkResult>
-ScalarFilterBenchmark::RunBenchmark(const BenchmarkConfig& config) {
+ScalarFilterBenchmark::RunBenchmark(const BenchmarkConfig& config, const std::string& config_file) {
     std::cout << "Starting Scalar Filter Benchmark..." << std::endl;
 
-    // 为每个 case 运行测试并生成输出
-    for (const auto& benchmark_case : config.cases) {
+    // 生成 bundle ID（一次性的时间戳）
+    auto now = std::chrono::system_clock::now();
+    int64_t bundle_id = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            now.time_since_epoch())
+                            .count();
+
+    std::cout << "\nBundle ID: " << bundle_id << std::endl;
+    std::cout << "Config file: " << config_file << std::endl;
+
+    // 创建 bundle 目录
+    std::string bundle_dir = CreateBundleDirectory(bundle_id, config_file);
+    g_current_run_dir = bundle_dir;
+
+    std::cout << "Output directory: " << bundle_dir << std::endl;
+
+    // 准备 bundle metadata
+    BundleMetadata bundle_meta;
+    bundle_meta.bundle_id = bundle_id;
+    bundle_meta.config_file = config_file;
+    bundle_meta.timestamp_ms = bundle_id;
+    bundle_meta.test_params = config.test_params;
+
+    // 读取 config 文件内容
+    std::ifstream config_stream(config_file);
+    if (config_stream.good()) {
+        std::stringstream buffer;
+        buffer << config_stream.rdbuf();
+        bundle_meta.config_content = buffer.str();
+    }
+
+    // 存储所有 bundle 的结果
+    std::vector<BenchmarkResult> all_results;
+
+    // 遍历每个 case
+    for (size_t case_index = 0; case_index < config.cases.size(); ++case_index) {
+        const auto& benchmark_case = config.cases[case_index];
+
         std::cout << "\n╔═══════════════════════════════════════════════════════════╗" << std::endl;
         std::cout << "║ Case: " << std::left << std::setw(50) << benchmark_case.name << "║" << std::endl;
         std::cout << "╚═══════════════════════════════════════════════════════════╝" << std::endl;
 
-        // 生成 case run ID（当前时间的毫秒时间戳）
-        auto case_now = std::chrono::system_clock::now();
-        auto case_run_id = std::chrono::duration_cast<std::chrono::milliseconds>(
-                              case_now.time_since_epoch())
-                              .count();
+        // 生成 case ID
+        std::string case_id = std::to_string(bundle_id) + "_" + std::to_string(case_index);
 
-        // 为这个 case 创建专门的输出文件夹
-        auto base_results_dir = GetResultsDir();
-        std::string case_results_dir = base_results_dir + benchmark_case.name + "_" + std::to_string(case_run_id) + "/";
-        std::string mkdir_cmd = "mkdir -p " + case_results_dir;
-        std::system(mkdir_cmd.c_str());
+        // 创建 case 目录
+        std::string case_dir = CreateCaseDirectory(bundle_dir, case_id, benchmark_case.name);
 
-        // 设置当前运行目录（用于中断时清理）
-        g_current_run_dir = case_results_dir;
-
-        std::cout << "Output directory: " << case_results_dir << std::endl;
+        std::cout << "Case ID: " << case_id << std::endl;
+        std::cout << "Case directory: " << case_dir << std::endl;
 
         // 收集这个 case 的所有结果
         std::vector<BenchmarkResult> case_results;
@@ -191,11 +219,17 @@ ScalarFilterBenchmark::RunBenchmark(const BenchmarkConfig& config) {
                                                              resolved_expression,
                                                              config.test_params,
                                                              test_run_id,
-                                                             case_results_dir);
+                                                             case_dir);
 
-                        // 填充元信息
-                        result.run_id = case_run_id;  // case-level run ID
-                        result.case_run_id = test_run_id;  // individual test run ID
+                        // 填充 bundle 和 case 信息
+                        result.bundle_id = bundle_id;
+                        result.config_file = config_file;
+                        result.case_name = benchmark_case.name;
+                        result.case_id = case_id;
+
+                        // 填充其他元信息（保留兼容性）
+                        result.run_id = bundle_id;
+                        result.case_run_id = test_run_id;
                         result.suite_name = suite.name;
                         result.data_config_name = data_config.name;
                         result.index_config_name = index_config.name;
@@ -221,17 +255,88 @@ ScalarFilterBenchmark::RunBenchmark(const BenchmarkConfig& config) {
             }
         }
 
-        // 为这个 case 生成报告
-        if (!case_results.empty()) {
-            GenerateReport(case_results);
+        // 准备 case metadata
+        CaseMetadata case_meta;
+        case_meta.case_id = case_id;
+        case_meta.case_name = benchmark_case.name;
+        case_meta.bundle_id = bundle_id;
+        case_meta.total_tests = case_results.size();
+
+        // 检查是否有火焰图
+        bool has_flamegraphs = false;
+        for (const auto& r : case_results) {
+            if (r.has_flamegraph) {
+                has_flamegraphs = true;
+                break;
+            }
+        }
+        case_meta.has_flamegraphs = has_flamegraphs;
+
+        // 收集 suite 信息
+        std::map<std::string, CaseMetadata::SuiteInfo> suite_map;
+        for (const auto& r : case_results) {
+            std::string suite_name = r.suite_name.empty() ? "default" : r.suite_name;
+            auto& suite_info = suite_map[suite_name];
+            suite_info.suite_name = suite_name;
+
+            // 去重添加配置
+            if (std::find(suite_info.data_configs.begin(), suite_info.data_configs.end(), r.data_config_name) == suite_info.data_configs.end()) {
+                suite_info.data_configs.push_back(r.data_config_name);
+            }
+            if (std::find(suite_info.index_configs.begin(), suite_info.index_configs.end(), r.index_config_name) == suite_info.index_configs.end()) {
+                suite_info.index_configs.push_back(r.index_config_name);
+            }
+            if (std::find(suite_info.expr_templates.begin(), suite_info.expr_templates.end(), r.expr_template_name) == suite_info.expr_templates.end()) {
+                suite_info.expr_templates.push_back(r.expr_template_name);
+            }
         }
 
+        for (const auto& [name, info] : suite_map) {
+            case_meta.suites.push_back(info);
+        }
+
+        // 写入 case 文件
+        if (!case_results.empty()) {
+            WriteCaseMeta(case_dir, case_meta);
+            WriteCaseMetrics(case_dir, case_results);
+            WriteCaseSummary(case_dir, case_meta, case_results);
+            std::cout << "  ✓ Case metadata, metrics, and summary written" << std::endl;
+        }
+
+        // 添加到 bundle metadata
+        BundleMetadata::CaseInfo bundle_case_info;
+        bundle_case_info.case_name = benchmark_case.name;
+        bundle_case_info.case_id = case_id;
+        for (const auto& s : case_meta.suites) {
+            bundle_case_info.suites.push_back(s.suite_name);
+        }
+        bundle_case_info.total_tests = case_results.size();
+        bundle_case_info.has_flamegraphs = has_flamegraphs;
+        bundle_meta.cases.push_back(bundle_case_info);
+
+        // 添加到总结果
+        all_results.insert(all_results.end(), case_results.begin(), case_results.end());
+
         std::cout << "\n✓ Completed case: " << benchmark_case.name << std::endl;
-        std::cout << "  Results saved to: " << case_results_dir << std::endl;
+        std::cout << "  Results saved to: " << case_dir << std::endl;
     }
 
-    // Return empty vector since we now generate reports per case
-    return std::vector<BenchmarkResult>();
+    // 写入 bundle 级别文件
+    WriteBundleMeta(bundle_dir, bundle_meta);
+    WriteBundleSummary(bundle_dir, bundle_meta, all_results);
+
+    // 生成 Bundle Info 并写入 index.json
+    BundleInfo bundle_info = CreateBundleInfo(bundle_meta);
+    std::vector<BundleInfo> bundles = {bundle_info};
+    WriteIndexJson(GetResultsDir(), bundles);
+
+    std::cout << "\n✅ Bundle completed!" << std::endl;
+    std::cout << "  Bundle ID: " << bundle_id << std::endl;
+    std::cout << "  Total cases: " << config.cases.size() << std::endl;
+    std::cout << "  Total tests: " << all_results.size() << std::endl;
+    std::cout << "  Output directory: " << bundle_dir << std::endl;
+
+    return all_results;
 }
 
 void
@@ -1038,6 +1143,40 @@ ScalarFilterBenchmark::ResolveIndexConfig(const std::string& preset_name,
     }
 
     throw std::runtime_error("Index config preset not found: " + preset_name);
+}
+
+std::string
+ScalarFilterBenchmark::CreateBundleDirectory(int64_t bundle_id,
+                                             const std::string& config_file) {
+    auto base_results_dir = GetResultsDir();
+    std::string bundle_dir = base_results_dir + std::to_string(bundle_id) + "/";
+
+    // 创建 bundle 目录
+    std::string mkdir_cmd = "mkdir -p " + bundle_dir;
+    std::system(mkdir_cmd.c_str());
+
+    // 创建 cases 子目录
+    mkdir_cmd = "mkdir -p " + bundle_dir + "cases/";
+    std::system(mkdir_cmd.c_str());
+
+    return bundle_dir;
+}
+
+std::string
+ScalarFilterBenchmark::CreateCaseDirectory(const std::string& bundle_dir,
+                                           const std::string& case_id,
+                                           const std::string& case_name) {
+    std::string case_dir = bundle_dir + "cases/" + case_id + "/";
+
+    // 创建 case 目录
+    std::string mkdir_cmd = "mkdir -p " + case_dir;
+    std::system(mkdir_cmd.c_str());
+
+    // 创建 flamegraphs 子目录
+    mkdir_cmd = "mkdir -p " + case_dir + "flamegraphs/";
+    std::system(mkdir_cmd.c_str());
+
+    return case_dir;
 }
 
 }  // namespace scalar_bench

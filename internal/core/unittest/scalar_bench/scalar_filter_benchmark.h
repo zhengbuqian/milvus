@@ -26,11 +26,19 @@ class SegmentData;
 
 // 基准测试结果
 struct BenchmarkResult {
-    // 运行标识
-    int64_t run_id;       // 整个运行的时间戳（毫秒）
+    // Bundle 标识
+    int64_t bundle_id;           // Bundle 时间戳（毫秒）
+    std::string config_file;     // YAML 配置文件路径
+
+    // Case 标识
+    std::string case_name;       // 来自 YAML cases[].name
+    std::string case_id;         // Bundle 内的唯一 case ID (格式: bundle_id_index)
+
+    // 运行标识（保留用于兼容性）
+    int64_t run_id;       // 整个运行的时间戳（毫秒）- 等同于 bundle_id
     int64_t case_run_id;  // 每个测试用例的时间戳（毫秒）
 
-    // 测试标识
+    // Suite 标识
     std::string suite_name;
     std::string data_config_name;
     std::string index_config_name;
@@ -95,7 +103,7 @@ class ScalarFilterBenchmark {
 
     // 运行基准测试
     std::vector<BenchmarkResult>
-    RunBenchmark(const BenchmarkConfig& config);
+    RunBenchmark(const BenchmarkConfig& config, const std::string& config_file = "");
 
     // 生成报告
     void
@@ -157,6 +165,15 @@ class ScalarFilterBenchmark {
     IndexConfig
     ResolveIndexConfig(const std::string& preset_name,
                        const BenchmarkConfig& config);
+
+    // Directory management helpers
+    std::string
+    CreateBundleDirectory(int64_t bundle_id, const std::string& config_file);
+
+    std::string
+    CreateCaseDirectory(const std::string& bundle_dir,
+                        const std::string& case_id,
+                        const std::string& case_name);
 };
 
 }  // namespace scalar_bench

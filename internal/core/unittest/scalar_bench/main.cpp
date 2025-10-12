@@ -304,7 +304,7 @@ main(int argc, char* argv[]) {
 
     // 运行基准测试
     try {
-        benchmark->RunBenchmark(config);
+        benchmark->RunBenchmark(config, config_file);
 
         // 检查是否被中断
         if (g_interrupted) {
