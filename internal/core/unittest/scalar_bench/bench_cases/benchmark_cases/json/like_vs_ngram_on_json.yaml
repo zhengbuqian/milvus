@@ -1,0 +1,36 @@
+version: 1
+test_params:
+  warmup_iterations: 10
+  test_iterations: 50
+  collect_memory_stats: false
+  enable_flame_graph: false
+  flamegraph_repo_path: ~/FlameGraph
+
+preset_data_configs:
+  - name: base
+    path: benchmark_cases/json/data_configs/base_objects.yaml
+
+preset_index_configs:
+  - name: no_index
+    field_configs: {}
+  - name: ngram_on_root
+    field_configs:
+      json:
+        type: INVERTED
+        params:
+          json_path: ""
+          json_cast_type: "VARCHAR"
+          min_gram: "2"
+          max_gram: "3"
+
+cases:
+  - name: json_like
+    suites:
+      - name: default
+        data_configs: [base]
+        index_configs: [no_index, ngram_on_root]
+        expr_templates:
+          - name: like_title_prefix
+            expr_template: json["title"] like "hello%"
+          - name: like_user_name_prefix
+            expr_template: json["user"]["name"] like "Al%"

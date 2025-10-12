@@ -91,6 +91,7 @@ FieldGeneratorType ParseGeneratorType(const std::string& type_str) {
     if (upper == "VARCHAR") return FieldGeneratorType::VARCHAR;
     if (upper == "ARRAY") return FieldGeneratorType::ARRAY;
     if (upper == "BOOLEAN" || upper == "BOOL") return FieldGeneratorType::BOOLEAN;
+    if (upper == "JSON") return FieldGeneratorType::JSON;
     throw std::runtime_error("Unknown generator type: " + type_str);
 }
 
@@ -637,6 +638,21 @@ FieldConfig ParseFieldConfig(const YAML::Node& node, const std::string& default_
             if (node["true_ratio"]) {
                 bool_gen.true_ratio = node["true_ratio"].as<double>();
                 bool_gen.has_true_ratio = true;
+            }
+            break;
+        }
+
+        case FieldGeneratorType::JSON: {
+            // JSON values are generated as JSON strings into DataType::JSON fields
+            config.field_type = DataType::JSON;
+            auto& json = config.json_config;
+            if (node["values"]) {
+                ParseValuePool(node["values"], json.values);
+            }
+            if (node["duplication_ratios"] && node["duplication_ratios"].IsSequence()) {
+                for (const auto& ratio : node["duplication_ratios"]) {
+                    json.duplication_ratios.push_back(ratio.as<double>());
+                }
             }
             break;
         }

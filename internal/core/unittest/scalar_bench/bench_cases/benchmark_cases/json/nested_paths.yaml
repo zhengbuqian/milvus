@@ -1,0 +1,41 @@
+version: 1
+test_params:
+  warmup_iterations: 10
+  test_iterations: 50
+  collect_memory_stats: false
+  enable_flame_graph: false
+  flamegraph_repo_path: ~/FlameGraph
+
+preset_data_configs:
+  - name: base
+    path: benchmark_cases/json/data_configs/base_objects.yaml
+
+preset_index_configs:
+  - name: no_index
+    field_configs: {}
+  - name: json_user_id_int
+    field_configs:
+      json:
+        type: INVERTED
+        params:
+          json_path: "/user/id"
+          json_cast_type: "DOUBLE"
+  - name: json_user_name_str
+    field_configs:
+      json:
+        type: INVERTED
+        params:
+          json_path: "/user/name"
+          json_cast_type: "VARCHAR"
+
+cases:
+  - name: json_nested_filters
+    suites:
+      - name: default
+        data_configs: [base]
+        index_configs: [no_index, json_user_id_int, json_user_name_str]
+        expr_templates:
+          - name: user_id_ge_2
+            expr_template: json["user"]["id"] >= 2
+          - name: user_name_eq_bob
+            expr_template: json["user"]["name"] == "Bob"

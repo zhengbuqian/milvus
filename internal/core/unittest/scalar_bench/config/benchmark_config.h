@@ -53,7 +53,8 @@ enum class FieldGeneratorType {
     TIMESTAMP,
     VARCHAR,
     ARRAY,
-    BOOLEAN
+    BOOLEAN,
+    JSON
 };
 
 // TODO: 增加一个 stats config，处理 json stats/shredding 等
@@ -263,6 +264,16 @@ struct BooleanGeneratorConfig {
     bool has_true_ratio = false;
 };
 
+// ============== JSON ==============
+// Simple JSON generator that emits JSON-encoded strings into a JSON field.
+// The generator draws from a value pool (inline or dictionary file) of JSON
+// documents and applies optional duplication ratios similar to the
+// categorical generator.
+struct JsonGeneratorConfig {
+    ValuePoolConfig values;
+    std::vector<double> duplication_ratios;
+};
+
 // ============== Complete Config ==============
 
 struct FieldConfig {
@@ -279,6 +290,7 @@ struct FieldConfig {
     VarcharGeneratorConfig varchar_config;
     ArrayGeneratorConfig array_config;
     BooleanGeneratorConfig boolean_config;
+    JsonGeneratorConfig json_config;
 };
 
 // 数据配置
