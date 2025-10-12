@@ -9,9 +9,17 @@ preset_data_configs:
   - name: balanced
     path: benchmark_cases/bool/data_configs/uniform_bool_5050.yaml
   - name: skewed_9010
-    path: benchmark_cases/bool/data_configs/uniform_bool_9010.yaml
+    path: benchmark_cases/bool/data_configs/uniform_bool_5050.yaml
+    override:
+      name: skewed_9010
+      fields:
+        - true_ratio: 0.9
   - name: most_true
-    path: benchmark_cases/bool/data_configs/uniform_bool_most_true.yaml
+    path: benchmark_cases/bool/data_configs/uniform_bool_5050.yaml
+    override:
+      name: most_true
+      fields:
+        - true_ratio: 0.999
 preset_index_configs:
   - name: no_index
     field_configs: {}

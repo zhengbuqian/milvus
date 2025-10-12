@@ -2,6 +2,7 @@
 
 #include <string>
 #include <filesystem>
+#include <yaml-cpp/yaml.h>
 
 #include "benchmark_config.h"
 
@@ -15,6 +16,9 @@ public:
 
     // Load a single data config file
     static DataConfig LoadDataConfigFile(const std::string& path);
+
+    // Load a data config file with optional override
+    static DataConfig LoadDataConfigWithOverride(const std::string& path, const YAML::Node& override_node);
 
     // Resolve path relative to bench_cases directory
     static std::string ResolvePath(const std::string& relative_path);

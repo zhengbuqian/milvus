@@ -148,6 +148,15 @@ class ScalarFilterBenchmark {
     CalculateStatistics(const std::vector<double>& latencies,
                         const std::vector<int64_t>& matches,
                         int64_t total_rows);
+
+    // Preset resolution helpers
+    DataConfig
+    ResolveDataConfig(const std::string& preset_name,
+                      const BenchmarkConfig& config);
+
+    IndexConfig
+    ResolveIndexConfig(const std::string& preset_name,
+                       const BenchmarkConfig& config);
 };
 
 }  // namespace scalar_bench

@@ -17,6 +17,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <yaml-cpp/yaml.h>
 
 #include "common/Types.h"
 
@@ -329,21 +330,41 @@ struct TestParams {
     std::string flamegraph_repo_path = "~/FlameGraph";
 };
 
+// Preset configurations - reusable templates
+struct PresetDataConfig {
+    std::string name;  // preset name for reference
+    std::string path;  // path to data config file
+    YAML::Node override_node;  // optional override
+};
+
+struct PresetIndexConfig {
+    std::string name;  // preset name for reference
+    std::map<std::string, FieldIndexConfig> field_configs;
+};
+
 // 基准测试配置
 struct BenchmarkConfig {
-    // std::vector<DataConfig> data_configs;
-    // std::vector<IndexConfig> index_configs;
-    // std::vector<ExpressionTemplate> expr_templates;
     TestParams test_params;
 
-    // Optional: multiple suites per YAML. If non-empty, runner should iterate suites.
+    // Preset configurations defined at top level
+    std::vector<PresetDataConfig> preset_data_configs;
+    std::vector<PresetIndexConfig> preset_index_configs;
+
+    // Suite structure - references presets by name
     struct BenchmarkSuite {
         std::string name;
-        std::vector<DataConfig> data_configs;
-        std::vector<IndexConfig> index_configs;
+        std::vector<std::string> data_config_names;   // references to preset names
+        std::vector<std::string> index_config_names;  // references to preset names
         std::vector<ExpressionTemplate> expr_templates;
     };
-    std::vector<BenchmarkSuite> suites;
+
+    // Case structure - groups multiple suites
+    struct BenchmarkCase {
+        std::string name;  // case name (used for output directory)
+        std::vector<BenchmarkSuite> suites;
+    };
+
+    std::vector<BenchmarkCase> cases;
 };
 
 } // namespace scalar_bench

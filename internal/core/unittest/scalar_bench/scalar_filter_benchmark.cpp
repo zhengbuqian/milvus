@@ -37,195 +37,201 @@ extern std::string g_current_run_dir;
 
 std::vector<BenchmarkResult>
 ScalarFilterBenchmark::RunBenchmark(const BenchmarkConfig& config) {
-    std::vector<BenchmarkResult> all_results;
-
-    // 生成运行ID（当前时间的毫秒时间戳）
-    auto now = std::chrono::system_clock::now();
-    auto run_id = std::chrono::duration_cast<std::chrono::milliseconds>(
-                      now.time_since_epoch())
-                      .count();
-
     std::cout << "Starting Scalar Filter Benchmark..." << std::endl;
-    std::cout << "Run ID: " << run_id << std::endl;
 
-    auto run_one_suite = [&](const std::string& suite_name,
-                             const std::vector<DataConfig>& data_configs,
-                             const std::vector<IndexConfig>& index_configs,
-                             const std::vector<ExpressionTemplate>&
-                                 expr_templates) {
-        std::cout << "\n=== Suite: "
-                  << (suite_name.empty() ? std::string("default") : suite_name)
-                  << " ===" << std::endl;
-        std::cout << "Total configurations: " << data_configs.size()
-                  << " data configs x " << index_configs.size()
-                  << " index configs x " << expr_templates.size()
-                  << " expression templates" << std::endl;
+    // 为每个 case 运行测试并生成输出
+    for (const auto& benchmark_case : config.cases) {
+        std::cout << "\n╔═══════════════════════════════════════════════════════════╗" << std::endl;
+        std::cout << "║ Case: " << std::left << std::setw(50) << benchmark_case.name << "║" << std::endl;
+        std::cout << "╚═══════════════════════════════════════════════════════════╝" << std::endl;
 
-        // 第一级循环：数据配置
-        for (const auto& data_config : data_configs) {
-            std::cout << "\n========================================"
-                      << std::endl;
-            std::cout << "Level 1: Data Config - " << data_config.name
-                      << std::endl;
-            std::cout << "  Segment Size: " << data_config.segment_size
-                      << ", Fields: " << data_config.fields.size() << std::endl;
-            std::cout << "========================================"
-                      << std::endl;
+        // 生成 case run ID（当前时间的毫秒时间戳）
+        auto case_now = std::chrono::system_clock::now();
+        auto case_run_id = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              case_now.time_since_epoch())
+                              .count();
 
-            // 生成数据（只生成一次）
-            auto start_time = std::chrono::high_resolution_clock::now();
-            auto segment = GenerateSegment(data_config);
-            auto data_gen_time =
-                std::chrono::duration<double, std::milli>(
-                    std::chrono::high_resolution_clock::now() - start_time)
-                    .count();
+        // 为这个 case 创建专门的输出文件夹
+        auto base_results_dir = GetResultsDir();
+        std::string case_results_dir = base_results_dir + benchmark_case.name + "_" + std::to_string(case_run_id) + "/";
+        std::string mkdir_cmd = "mkdir -p " + case_results_dir;
+        std::system(mkdir_cmd.c_str());
 
-            std::cout << "✓ Data generation completed in " << data_gen_time
-                      << " ms" << std::endl;
+        // 设置当前运行目录（用于中断时清理）
+        g_current_run_dir = case_results_dir;
 
-            // 第二级循环：索引配置
-            for (size_t idx = 0; idx < index_configs.size(); ++idx) {
-                const auto& index_config = index_configs[idx];
+        std::cout << "Output directory: " << case_results_dir << std::endl;
 
-                // 检查索引兼容性
-                if (!IsIndexApplicable(index_config, data_config)) {
-                    std::cout << "  ⊗ Skipping incompatible index: "
-                              << index_config.name << std::endl;
+        // 收集这个 case 的所有结果
+        std::vector<BenchmarkResult> case_results;
+
+        // 遍历所有 suites
+        for (const auto& suite : benchmark_case.suites) {
+            std::cout << "\n=== Suite: " << (suite.name.empty() ? "default" : suite.name) << " ===" << std::endl;
+
+            // 遍历所有 data configs
+            for (const auto& data_config_name : suite.data_config_names) {
+                std::cout << "\n----------------------------------------" << std::endl;
+                std::cout << "Data Config: " << data_config_name << std::endl;
+                std::cout << "----------------------------------------" << std::endl;
+
+                // 解析 data config
+                DataConfig data_config;
+                try {
+                    data_config = ResolveDataConfig(data_config_name, config);
+                } catch (const std::exception& e) {
+                    std::cerr << "Error resolving data config '" << data_config_name << "': " << e.what() << std::endl;
                     continue;
                 }
 
-                std::cout << "\n  ----------------------------------------"
-                          << std::endl;
-                std::cout << "  Level 2: Index - " << index_config.name
-                          << std::endl;
-                std::cout << "  ----------------------------------------"
-                          << std::endl;
+                std::cout << "  Segment Size: " << data_config.segment_size
+                          << ", Fields: " << data_config.fields.size() << std::endl;
 
-                // 如果不是第一个索引，需要先删除之前的索引
-                if (idx > 0) {
-                    // Drop indexes for all fields that had indexes built in previous config
-                    auto bundle = segment;
-                    auto& segment_wrapper = bundle->wrapper;
-
-                    // Get the previous index config to know which fields had indexes
-                    if (idx > 0 && idx - 1 < index_configs.size()) {
-                        const auto& prev_index_config = index_configs[idx - 1];
-                        for (const auto& [field_name, field_index_config] :
-                             prev_index_config.field_configs) {
-                            if (field_index_config.type !=
-                                ScalarIndexType::NONE) {
-                                try {
-                                    auto field_id =
-                                        segment_wrapper->GetFieldId(field_name);
-                                    segment_wrapper->DropIndex(field_id);
-                                } catch (const std::exception& e) {
-                                    // Field might not exist or might not have index, continue
-                                    std::cerr << "Warning: Could not drop "
-                                                 "index for field "
-                                              << field_name << ": " << e.what()
-                                              << std::endl;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // 构建索引
-                start_time = std::chrono::high_resolution_clock::now();
-                auto index = BuildIndex(segment, index_config);
-                auto index_build_time =
+                // 生成数据（只生成一次）
+                auto start_time = std::chrono::high_resolution_clock::now();
+                auto segment = GenerateSegment(data_config);
+                auto data_gen_time =
                     std::chrono::duration<double, std::milli>(
                         std::chrono::high_resolution_clock::now() - start_time)
                         .count();
 
-                std::cout << "  ✓ Index built in " << index_build_time << " ms"
-                          << std::endl;
+                std::cout << "  ✓ Data generation completed in " << data_gen_time << " ms" << std::endl;
 
-                // 第三级循环：表达式模板（每个都是完整的 text proto）
-                for (const auto& expr_template : expr_templates) {
-                    // 检查表达式适用性
-                    if (!IsExpressionApplicable(expr_template, data_config)) {
+                // 遍历所有 index configs
+                for (size_t idx = 0; idx < suite.index_config_names.size(); ++idx) {
+                    const auto& index_config_name = suite.index_config_names[idx];
+
+                    // 解析 index config
+                    IndexConfig index_config;
+                    try {
+                        index_config = ResolveIndexConfig(index_config_name, config);
+                    } catch (const std::exception& e) {
+                        std::cerr << "Error resolving index config '" << index_config_name << "': " << e.what() << std::endl;
                         continue;
                     }
 
-                    std::cout << "    Testing: " << expr_template.name
-                              << std::endl;
-
-                    // 生成case run ID（当前时间的毫秒时间戳）
-                    auto case_now = std::chrono::system_clock::now();
-                    auto case_run_id =
-                        std::chrono::duration_cast<std::chrono::milliseconds>(
-                            case_now.time_since_epoch())
-                            .count();
-
-                    // 为这次运行创建专门的文件夹
-                    auto base_results_dir = GetResultsDir();
-                    std::string run_dir =
-                        base_results_dir + std::to_string(run_id) + "/";
-
-                    // Validate field references before resolving
-                    std::string validation_error;
-                    if (!ValidateFieldReferences(expr_template.expr_template,
-                                                 *segment->wrapper,
-                                                 validation_error)) {
-                        std::cerr << "    ⚠ Warning: Invalid field references "
-                                     "in template '"
-                                  << expr_template.name
-                                  << "': " << validation_error << std::endl;
-                        continue;  // Skip this expression template
+                    // 检查索引兼容性
+                    if (!IsIndexApplicable(index_config, data_config)) {
+                        std::cout << "    ⊗ Skipping incompatible index: " << index_config.name << std::endl;
+                        continue;
                     }
 
-                    // Resolve field placeholders in expression template
-                    std::string resolved_expression = ResolveFieldPlaceholders(
-                        expr_template.expr_template, *segment->wrapper);
+                    std::cout << "\n  Index: " << index_config.name << std::endl;
 
-                    // 执行基准测试（使用解析后的表达式，通过 Go 辅助解析）
-                    auto result = ExecuteSingleBenchmark(segment,
-                                                         index,
-                                                         resolved_expression,
-                                                         config.test_params,
-                                                         case_run_id,
-                                                         run_dir);
+                    // 如果不是第一个索引，需要先删除之前的索引
+                    if (idx > 0) {
+                        auto bundle = segment;
+                        auto& segment_wrapper = bundle->wrapper;
 
-                    // 填充元信息
-                    result.run_id = run_id;
-                    result.case_run_id = case_run_id;
-                    result.suite_name = suite_name;
-                    result.data_config_name = data_config.name;
-                    result.index_config_name = index_config.name;
-                    result.expr_template_name = expr_template.name;
-                    result.query_value_name = "";  // 不再需要
-                    result.actual_expression =
-                        resolved_expression;           // 使用解析后的实际表达式
-                    result.expected_selectivity = -1;  // 由查询结果决定
-                    result.index_build_time_ms = index_build_time;
+                        // Get the previous index config to know which fields had indexes
+                        if (idx > 0 && idx - 1 < suite.index_config_names.size()) {
+                            IndexConfig prev_index_config;
+                            try {
+                                prev_index_config = ResolveIndexConfig(suite.index_config_names[idx - 1], config);
+                                for (const auto& [field_name, field_index_config] : prev_index_config.field_configs) {
+                                    if (field_index_config.type != ScalarIndexType::NONE) {
+                                        try {
+                                            auto field_id = segment_wrapper->GetFieldId(field_name);
+                                            segment_wrapper->DropIndex(field_id);
+                                        } catch (const std::exception& e) {
+                                            std::cerr << "    Warning: Could not drop index for field " << field_name
+                                                      << ": " << e.what() << std::endl;
+                                        }
+                                    }
+                                }
+                            } catch (const std::exception& e) {
+                                // Previous index config resolution failed, skip cleanup
+                            }
+                        }
+                    }
 
-                    // 输出即时结果
-                    std::cout
-                        << "      → P50: " << std::fixed << std::setprecision(2)
-                        << result.latency_p50_ms << "ms"
-                        << ", P99: " << result.latency_p99_ms << "ms"
-                        << ", Matched: " << result.matched_rows << "/"
-                        << result.total_rows << " ("
-                        << result.actual_selectivity * 100 << "%)" << std::endl;
+                    // 构建索引
+                    start_time = std::chrono::high_resolution_clock::now();
+                    auto index = BuildIndex(segment, index_config);
+                    auto index_build_time =
+                        std::chrono::duration<double, std::milli>(
+                            std::chrono::high_resolution_clock::now() - start_time)
+                            .count();
 
-                    all_results.push_back(result);
+                    std::cout << "    ✓ Index built in " << index_build_time << " ms" << std::endl;
+
+                    // 遍历所有 expression templates
+                    for (const auto& expr_template : suite.expr_templates) {
+                        // 检查表达式适用性
+                        if (!IsExpressionApplicable(expr_template, data_config)) {
+                            continue;
+                        }
+
+                        std::cout << "      Testing: " << expr_template.name << std::endl;
+
+                        // 生成 test run ID
+                        auto test_now = std::chrono::system_clock::now();
+                        auto test_run_id =
+                            std::chrono::duration_cast<std::chrono::milliseconds>(
+                                test_now.time_since_epoch())
+                                .count();
+
+                        // Validate field references before resolving
+                        std::string validation_error;
+                        if (!ValidateFieldReferences(expr_template.expr_template,
+                                                     *segment->wrapper,
+                                                     validation_error)) {
+                            std::cerr << "        ⚠ Warning: Invalid field references in template '"
+                                      << expr_template.name << "': " << validation_error << std::endl;
+                            continue;
+                        }
+
+                        // Resolve field placeholders in expression template
+                        std::string resolved_expression = ResolveFieldPlaceholders(
+                            expr_template.expr_template, *segment->wrapper);
+
+                        // 执行基准测试
+                        auto result = ExecuteSingleBenchmark(segment,
+                                                             index,
+                                                             resolved_expression,
+                                                             config.test_params,
+                                                             test_run_id,
+                                                             case_results_dir);
+
+                        // 填充元信息
+                        result.run_id = case_run_id;  // case-level run ID
+                        result.case_run_id = test_run_id;  // individual test run ID
+                        result.suite_name = suite.name;
+                        result.data_config_name = data_config.name;
+                        result.index_config_name = index_config.name;
+                        result.expr_template_name = expr_template.name;
+                        result.query_value_name = "";
+                        result.actual_expression = resolved_expression;
+                        result.expected_selectivity = -1;
+                        result.index_build_time_ms = index_build_time;
+
+                        // 输出即时结果
+                        std::cout << "        → P50: " << std::fixed << std::setprecision(2)
+                                  << result.latency_p50_ms << "ms"
+                                  << ", P99: " << result.latency_p99_ms << "ms"
+                                  << ", Matched: " << result.matched_rows << "/"
+                                  << result.total_rows << " ("
+                                  << result.actual_selectivity * 100 << "%)" << std::endl;
+
+                        case_results.push_back(result);
+                    }
                 }
+
+                std::cout << "\n  ✓ Completed all tests for data config: " << data_config.name << std::endl;
             }
-
-            std::cout << "\n✓ Completed all tests for data config: "
-                      << data_config.name << std::endl;
         }
-    };
 
-    for (const auto& suite : config.suites) {
-        run_one_suite(suite.name,
-                      suite.data_configs,
-                      suite.index_configs,
-                      suite.expr_templates);
+        // 为这个 case 生成报告
+        if (!case_results.empty()) {
+            GenerateReport(case_results);
+        }
+
+        std::cout << "\n✓ Completed case: " << benchmark_case.name << std::endl;
+        std::cout << "  Results saved to: " << case_results_dir << std::endl;
     }
 
-    return all_results;
+    // Return empty vector since we now generate reports per case
+    return std::vector<BenchmarkResult>();
 }
 
 void
@@ -998,6 +1004,40 @@ ScalarFilterBenchmark::CalculateStatistics(const std::vector<double>& latencies,
     result.cpu_usage_percent = 75.0;
 
     return result;
+}
+
+DataConfig
+ScalarFilterBenchmark::ResolveDataConfig(const std::string& preset_name,
+                                         const BenchmarkConfig& config) {
+    // Find the preset by name
+    for (const auto& preset : config.preset_data_configs) {
+        if (preset.name == preset_name) {
+            // Load the data config from the file
+            auto resolved_path = BenchmarkConfigLoader::ResolvePath(preset.path);
+
+            // Use the helper function that handles overrides
+            return BenchmarkConfigLoader::LoadDataConfigWithOverride(resolved_path, preset.override_node);
+        }
+    }
+
+    throw std::runtime_error("Data config preset not found: " + preset_name);
+}
+
+IndexConfig
+ScalarFilterBenchmark::ResolveIndexConfig(const std::string& preset_name,
+                                          const BenchmarkConfig& config) {
+    // Find the preset by name
+    for (const auto& preset : config.preset_index_configs) {
+        if (preset.name == preset_name) {
+            // Construct an IndexConfig from the preset
+            IndexConfig index_config;
+            index_config.name = preset.name;
+            index_config.field_configs = preset.field_configs;
+            return index_config;
+        }
+    }
+
+    throw std::runtime_error("Index config preset not found: " + preset_name);
 }
 
 }  // namespace scalar_bench

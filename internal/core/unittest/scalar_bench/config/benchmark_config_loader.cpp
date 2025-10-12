@@ -7,20 +7,13 @@
 
 namespace milvus {
 namespace scalar_bench {
-namespace {
-
-static std::string ToUpper(const std::string& s) {
-    std::string r = s;
-    std::transform(r.begin(), r.end(), r.begin(), ::toupper);
-    return r;
-}
 
 // Apply YAML override - allows creating new keys in maps
 // - For Map nodes: allows creating new keys or overriding existing ones
 // - For Sequence nodes: strictly validates indices are in bounds (no new elements)
 // - For Scalar nodes: replaces the value
 // - Type mismatch check: if base path exists, types must match
-void ApplyYamlOverride(YAML::Node base, const YAML::Node& override_node, const std::string& path = "") {
+static void ApplyYamlOverride(YAML::Node base, const YAML::Node& override_node, const std::string& path = "") {
     if (!override_node.IsDefined() || override_node.IsNull()) {
         return;
     }
@@ -68,6 +61,14 @@ void ApplyYamlOverride(YAML::Node base, const YAML::Node& override_node, const s
         // This is the actual override operation
         base = override_node;
     }
+}
+
+namespace {
+
+static std::string ToUpper(const std::string& s) {
+    std::string r = s;
+    std::transform(r.begin(), r.end(), r.begin(), ::toupper);
+    return r;
 }
 
 ScalarIndexType ParseIndexType(const std::string& value) {
@@ -718,8 +719,8 @@ FieldIndexConfig ParseFieldIndexConfig(const YAML::Node& node) {
 
 BenchmarkConfig ParseBenchmarkConfig(const YAML::Node& root, const std::string& source) {
     BenchmarkConfig config;
-    
-    // Parse test params (shared across suites)
+
+    // Parse test params
     if (auto params = root["test_params"]; params && params.IsMap()) {
         if (params["warmup_iterations"]) {
             config.test_params.warmup_iterations = params["warmup_iterations"].as<int>();
@@ -738,112 +739,131 @@ BenchmarkConfig ParseBenchmarkConfig(const YAML::Node& root, const std::string& 
         }
     }
 
-    if (auto suites_node = root["suites"]; suites_node && suites_node.IsSequence()) {
-        for (const auto& suite_node : suites_node) {
-            BenchmarkConfig::BenchmarkSuite suite;
-            if (suite_node["name"]) {
-                suite.name = suite_node["name"].as<std::string>();
+    // Parse preset_data_configs
+    if (auto preset_data_node = root["preset_data_configs"]; preset_data_node && preset_data_node.IsSequence()) {
+        for (const auto& preset : preset_data_node) {
+            PresetDataConfig pdc;
+
+            if (!preset["name"]) {
+                throw std::runtime_error("preset_data_configs entry missing 'name' in: " + source);
+            }
+            pdc.name = preset["name"].as<std::string>();
+
+            if (!preset["path"]) {
+                throw std::runtime_error("preset_data_configs entry '" + pdc.name + "' missing 'path' in: " + source);
+            }
+            pdc.path = preset["path"].as<std::string>();
+
+            // Store optional override node
+            if (preset["override"]) {
+                pdc.override_node = preset["override"];
+            }
+
+            config.preset_data_configs.push_back(pdc);
+        }
+    }
+
+    // Parse preset_index_configs
+    if (auto preset_index_node = root["preset_index_configs"]; preset_index_node && preset_index_node.IsSequence()) {
+        for (const auto& preset : preset_index_node) {
+            PresetIndexConfig pic;
+
+            if (!preset["name"]) {
+                throw std::runtime_error("preset_index_configs entry missing 'name' in: " + source);
+            }
+            pic.name = preset["name"].as<std::string>();
+
+            // Parse field_configs (may be empty map for "no_index")
+            if (preset["field_configs"]) {
+                const auto& field_configs_node = preset["field_configs"];
+                if (field_configs_node.IsMap()) {
+                    for (auto it = field_configs_node.begin(); it != field_configs_node.end(); ++it) {
+                        auto field_name = it->first.as<std::string>();
+                        pic.field_configs[field_name] = ParseFieldIndexConfig(it->second);
+                    }
+                }
+            }
+
+            config.preset_index_configs.push_back(pic);
+        }
+    }
+
+    // Parse cases
+    if (auto cases_node = root["cases"]; cases_node && cases_node.IsSequence()) {
+        for (const auto& case_node : cases_node) {
+            BenchmarkConfig::BenchmarkCase benchmark_case;
+
+            if (!case_node["name"]) {
+                throw std::runtime_error("Case missing 'name' in: " + source);
+            }
+            benchmark_case.name = case_node["name"].as<std::string>();
+
+            // Parse suites within this case
+            if (auto suites_node = case_node["suites"]; suites_node && suites_node.IsSequence()) {
+                for (const auto& suite_node : suites_node) {
+                    BenchmarkConfig::BenchmarkSuite suite;
+
+                    if (suite_node["name"]) {
+                        suite.name = suite_node["name"].as<std::string>();
+                    } else {
+                        suite.name = "default";
+                    }
+
+                    // Parse data_config_names (references to presets)
+                    if (auto data_names = suite_node["data_configs"]; data_names && data_names.IsSequence()) {
+                        for (const auto& name_node : data_names) {
+                            suite.data_config_names.push_back(name_node.as<std::string>());
+                        }
+                    }
+
+                    // Parse index_config_names (references to presets)
+                    if (auto index_names = suite_node["index_configs"]; index_names && index_names.IsSequence()) {
+                        for (const auto& name_node : index_names) {
+                            suite.index_config_names.push_back(name_node.as<std::string>());
+                        }
+                    }
+
+                    // Parse expr_templates
+                    if (auto expr_nodes = suite_node["expr_templates"]; expr_nodes && expr_nodes.IsSequence()) {
+                        for (const auto& node : expr_nodes) {
+                            ExpressionTemplate et;
+                            if (!node["name"]) {
+                                throw std::runtime_error("expr_templates entry missing 'name' in suite: " + suite.name);
+                            }
+                            et.name = node["name"].as<std::string>();
+
+                            if (node["expr"]) {
+                                et.expr_template = node["expr"].as<std::string>();
+                            } else if (node["expr_template"]) {
+                                et.expr_template = node["expr_template"].as<std::string>();
+                            } else {
+                                throw std::runtime_error("expr_templates entry missing 'expr' or 'expr_template': " + et.name);
+                            }
+                            suite.expr_templates.push_back(et);
+                        }
+                    }
+
+                    // Validation
+                    if (suite.data_config_names.empty()) {
+                        throw std::runtime_error("Suite '" + suite.name + "' in case '" + benchmark_case.name + "' has no data_configs");
+                    }
+                    if (suite.index_config_names.empty()) {
+                        throw std::runtime_error("Suite '" + suite.name + "' in case '" + benchmark_case.name + "' has no index_configs");
+                    }
+                    if (suite.expr_templates.empty()) {
+                        throw std::runtime_error("Suite '" + suite.name + "' in case '" + benchmark_case.name + "' has no expr_templates");
+                    }
+
+                    benchmark_case.suites.push_back(std::move(suite));
+                }
             } else {
-                // Optional: default anonymous suite name
-                suite.name = "suite";
+                throw std::runtime_error("Case '" + benchmark_case.name + "' has no suites in: " + source);
             }
 
-            // suite.data_configs
-            if (auto data_nodes = suite_node["data_configs"]; data_nodes && data_nodes.IsSequence()) {
-                std::set<std::string> data_config_names;
-                for (const auto& node : data_nodes) {
-                    if (node["path"]) {
-                        auto path_config = node["path"].as<std::string>();
-                        auto resolved_path = BenchmarkConfigLoader::ResolvePath(path_config);
-
-                        // Load the base data config file as YAML first
-                        YAML::Node base_yaml;
-                        try {
-                            base_yaml = YAML::LoadFile(resolved_path);
-                        } catch (const std::exception& ex) {
-                            throw std::runtime_error("Failed to load data config '" + resolved_path + "': " + ex.what());
-                        }
-
-                        // Apply override if present
-                        if (node["override"]) {
-                            ApplyYamlOverride(base_yaml, node["override"], "");
-                        }
-
-                        // Parse the (possibly overridden) YAML into DataConfig
-                        auto data_config = ParseDataConfig(base_yaml, resolved_path + " (with override)");
-
-                        // Check for duplicate DataConfig.name within this suite
-                        if (data_config_names.find(data_config.name) != data_config_names.end()) {
-                            throw std::runtime_error("Duplicate DataConfig.name '" + data_config.name +
-                                                   "' found in suite '" + suite.name +
-                                                   "'. After applying overrides, each data config must have a unique name.");
-                        }
-                        data_config_names.insert(data_config.name);
-
-                        suite.data_configs.push_back(data_config);
-                    } else {
-                        throw std::runtime_error("data_configs entry must have 'path' field in suite: " + suite.name);
-                    }
-                }
-            }
-
-            // suite.index_configs
-            if (auto idx_nodes = suite_node["index_configs"]; idx_nodes && idx_nodes.IsSequence()) {
-                for (const auto& node : idx_nodes) {
-                    IndexConfig ic;
-                    if (!node["name"]) {
-                        throw std::runtime_error("index_configs entry missing 'name' in suite: " + suite.name);
-                    }
-                    ic.name = node["name"].as<std::string>();
-
-                    if (node["field_configs"] && node["field_configs"].IsMap()) {
-                        for (auto it = node["field_configs"].begin(); it != node["field_configs"].end(); ++it) {
-                            auto field_name = it->first.as<std::string>();
-                            ic.field_configs[field_name] = ParseFieldIndexConfig(it->second);
-                        }
-                    } else {
-                        throw std::runtime_error("index_configs entry must have 'field_configs': " + ic.name);
-                    }
-                    suite.index_configs.push_back(ic);
-                }
-            }
-
-            // suite.expr_templates
-            if (auto expr_nodes = suite_node["expr_templates"]; expr_nodes && expr_nodes.IsSequence()) {
-                for (const auto& node : expr_nodes) {
-                    ExpressionTemplate et;
-                    if (!node["name"]) {
-                        throw std::runtime_error("expr_templates entry missing 'name' in suite: " + suite.name);
-                    }
-                    et.name = node["name"].as<std::string>();
-                    // Only support expr string; drop textproto format
-                    if (node["expr"]) {
-                        et.expr_template = node["expr"].as<std::string>();
-                    } else if (node["expr_template"]) {
-                        // Backward config name, but we now treat it as expr string, not textproto
-                        et.expr_template = node["expr_template"].as<std::string>();
-                    } else {
-                        throw std::runtime_error("expr_templates entry missing 'expr': " + et.name);
-                    }
-                    suite.expr_templates.push_back(et);
-                }
-            }
-
-            // suite validation
-            if (suite.data_configs.empty()) {
-                throw std::runtime_error("Suite '" + suite.name + "' has no data_configs in YAML: " + source);
-            }
-            if (suite.index_configs.empty()) {
-                throw std::runtime_error("Suite '" + suite.name + "' has no index_configs in YAML: " + source);
-            }
-            if (suite.expr_templates.empty()) {
-                throw std::runtime_error("Suite '" + suite.name + "' has no expr_templates in YAML: " + source);
-            }
-
-            config.suites.push_back(std::move(suite));
+            config.cases.push_back(std::move(benchmark_case));
         }
     } else {
-        throw std::runtime_error("No suites defined in benchmark YAML: " + source);
+        throw std::runtime_error("No cases defined in benchmark YAML: " + source);
     }
 
     return config;
@@ -872,6 +892,22 @@ DataConfig BenchmarkConfigLoader::LoadDataConfigFile(const std::string& path) {
     }
 
     return ParseDataConfig(root, path);
+}
+
+DataConfig BenchmarkConfigLoader::LoadDataConfigWithOverride(const std::string& path, const YAML::Node& override_node) {
+    YAML::Node root;
+    try {
+        root = YAML::LoadFile(path);
+    } catch (const std::exception& ex) {
+        throw std::runtime_error("Failed to load data config '" + path + "': " + ex.what());
+    }
+
+    // Apply override if present
+    if (override_node.IsDefined() && !override_node.IsNull()) {
+        ApplyYamlOverride(root, override_node, "");
+    }
+
+    return ParseDataConfig(root, path + " (with override)");
 }
 
 std::string BenchmarkConfigLoader::ResolvePath(const std::string& relative_path) {

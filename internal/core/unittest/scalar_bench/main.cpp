@@ -289,14 +289,9 @@ main(int argc, char* argv[]) {
 
         // Display configuration summary
         std::cout << "\nConfiguration Summary:" << std::endl;
-        std::cout << "  Suites: " << config.suites.size() << std::endl;
-        for (const auto& s : config.suites) {
-            std::cout << "    - "
-                      << (s.name.empty() ? std::string("default") : s.name)
-                      << " (data=" << s.data_configs.size()
-                      << ", index=" << s.index_configs.size()
-                      << ", expr=" << s.expr_templates.size() << ")"
-                      << std::endl;
+        std::cout << "  Cases: " << config.cases.size() << std::endl;
+        for (const auto& c : config.cases) {
+            std::cout << "    - " << c.name << " (" << c.suites.size() << " suites)" << std::endl;
         }
         std::cout << "  Test iterations: " << config.test_params.test_iterations
                   << std::endl;
@@ -309,16 +304,13 @@ main(int argc, char* argv[]) {
 
     // 运行基准测试
     try {
-        auto results = benchmark->RunBenchmark(config);
+        benchmark->RunBenchmark(config);
 
         // 检查是否被中断
         if (g_interrupted) {
             std::cout << "\nBenchmark was interrupted by user" << std::endl;
             return 1;
         }
-
-        // 生成报告
-        benchmark->GenerateReport(results);
 
         std::cout << "\nBenchmark completed successfully!" << std::endl;
     } catch (const std::exception& e) {

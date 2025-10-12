@@ -31,11 +31,9 @@ test_params:
 
 preset_data_configs:
   - name: low_card
-    data_configs:
-      - path: data_configs/uniform_int64_low_card.yaml
+    path: data_configs/uniform_int64_low_card.yaml
   - name: high_card
-    data_configs:
-      - path: data_configs/uniform_int64_high_card.yaml
+    path: data_configs/uniform_int64_high_card.yaml
 
 preset_index_configs:
   - name: no_index
@@ -253,6 +251,183 @@ Rules:
 - `values.pick` and `values.random_pick` are mutually exclusive.
 - When `values.inline` is provided, neither `values.pick` nor `values.random_pick` may be set.
 
+## Data Config Override Mechanism
+
+The override mechanism allows you to reuse existing data configuration files while modifying specific parameters. This is useful when you want to create variations of a base configuration without duplicating the entire file.
+
+### Basic Usage
+
+In `preset_data_configs`, you can specify an optional `override` block to modify parameters from the referenced data config file:
+
+```yaml
+preset_data_configs:
+  - name: base_config
+    path: data_configs/base.yaml
+  - name: modified_config
+    path: data_configs/base.yaml
+    override:
+      name: modified_version  # Override the name
+      segment_size: 500000    # Override segment size
+      fields:
+        - true_ratio: 0.9     # Override first field's parameter
+```
+
+### Override Behavior by Node Type
+
+The override mechanism uses recursive merging with different behaviors for different YAML node types:
+
+#### 1. Map Nodes (Objects)
+For map/object nodes, the override performs **key-level merging**:
+- Existing keys are recursively updated
+- New keys are added
+- Unlisted keys remain unchanged
+
+Example:
+```yaml
+# Base config
+fields:
+  - field_name: status
+    generator: boolean
+    true_ratio: 0.5
+
+# Override
+override:
+  fields:
+    - true_ratio: 0.9  # Only modify true_ratio
+
+# Result
+fields:
+  - field_name: status     # Preserved
+    generator: boolean     # Preserved
+    true_ratio: 0.9        # Modified
+```
+
+#### 2. Sequence Nodes (Arrays)
+For sequence/array nodes, the override performs **index-based element merging**:
+- Each override element is applied to the corresponding base element by index
+- The override sequence must not be longer than the base sequence
+- Unlisted elements remain unchanged
+
+Example:
+```yaml
+# Base config with 3 fields
+fields:
+  - field_name: field1
+    generator: boolean
+    true_ratio: 0.5
+  - field_name: field2
+    generator: numeric
+    range: {min: 0, max: 100}
+  - field_name: field3
+    generator: boolean
+    true_ratio: 0.6
+
+# Override only the second field
+override:
+  fields:
+    - {}  # Empty object - skip first field (no changes)
+    - range: {min: 0, max: 500}  # Modify second field's range
+    # Third field not mentioned - remains unchanged
+
+# Result
+fields:
+  - field_name: field1
+    generator: boolean
+    true_ratio: 0.5          # Unchanged (empty object placeholder)
+  - field_name: field2
+    generator: numeric
+    range: {min: 0, max: 500}  # Modified
+  - field_name: field3
+    generator: boolean
+    true_ratio: 0.6          # Unchanged (not in override)
+```
+
+**Important**: Using an empty object `{}` as a placeholder is safe. The empty map has no keys to iterate, so no modifications are made to the base element.
+
+#### 3. Scalar Nodes (Primitives)
+For scalar nodes (strings, numbers, booleans), the override performs **direct replacement**:
+
+```yaml
+# Base
+segment_size: 1000000
+
+# Override
+override:
+  segment_size: 500000
+
+# Result: 500000
+```
+
+### Practical Examples
+
+#### Example 1: Varying Boolean Distribution
+
+```yaml
+preset_data_configs:
+  - name: balanced
+    path: data_configs/uniform_bool_5050.yaml
+  - name: skewed_9010
+    path: data_configs/uniform_bool_5050.yaml
+    override:
+      name: skewed_9010
+      fields:
+        - true_ratio: 0.9
+  - name: most_true
+    path: data_configs/uniform_bool_5050.yaml
+    override:
+      name: most_true
+      fields:
+        - true_ratio: 0.999
+```
+
+#### Example 2: Adjusting Array Element Dictionary Size
+
+```yaml
+preset_data_configs:
+  - name: card_100
+    path: data_configs/array_base.yaml
+  - name: card_500
+    path: data_configs/array_base.yaml
+    override:
+      name: card_500
+      fields:
+        - element:
+            values:
+              pick: 500  # Use 500 dictionary tokens instead of default
+```
+
+#### Example 3: Modifying Specific Field in Multi-Field Config
+
+When the base config has multiple fields and you only want to override a specific one:
+
+```yaml
+# Base config has 4 fields
+preset_data_configs:
+  - name: modified_third_field
+    path: data_configs/multi_field_base.yaml
+    override:
+      fields:
+        - {}  # Skip field 1 (no changes)
+        - {}  # Skip field 2 (no changes)
+        - range: {min: 0, max: 1000}  # Modify field 3
+        # Field 4 unchanged (not mentioned)
+```
+
+### Type Safety
+
+The override mechanism enforces type compatibility:
+- Cannot override a Map with a Sequence
+- Cannot override a Sequence with a Scalar
+- Cannot override a Scalar with a Map
+- Type mismatches will cause configuration loading to fail with a clear error message
+
+### Best Practices
+
+1. **Use descriptive names**: When overriding, always provide a new `name` to clearly identify the variant
+2. **Minimal overrides**: Only specify parameters that differ from the base config
+3. **Empty object placeholders**: Use `{}` to skip array elements you don't want to modify
+4. **Validate early**: Run a quick test after defining overrides to ensure they work as expected
+
 ## Complete Example: Ecommerce Benchmark
 
 ### Benchmark Case File: `benchmark_cases/benchmark_cases/ecommerce_benchmark.yaml`
@@ -268,11 +443,9 @@ test_params:
 
 preset_data_configs:
   - name: clicks
-    data_configs:
-      - path: data_configs/ecommerce_clicks.yaml
+    path: data_configs/ecommerce_clicks.yaml
   - name: products
-    data_configs:
-      - path: data_configs/ecommerce_products.yaml
+    path: data_configs/ecommerce_products.yaml
 
 preset_index_configs:
   - name: no_index

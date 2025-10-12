@@ -6,14 +6,29 @@ test_params:
   enable_flame_graph: false
   flamegraph_repo_path: ~/FlameGraph
 preset_data_configs:
-  - name: card_10
-    path: benchmark_cases/varchar/data_configs/short_word_card_10.yaml
-  - name: card_100
-    path: benchmark_cases/varchar/data_configs/short_word_card_100.yaml
-  - name: card_1000
-    path: benchmark_cases/varchar/data_configs/short_word_card_1000.yaml
   - name: card_1m
     path: benchmark_cases/varchar/data_configs/short_word_card_1m.yaml
+  - name: card_10
+    path: benchmark_cases/varchar/data_configs/short_word_card_1m.yaml
+    override:
+      name: short_word_card_10
+      fields:
+        - values:
+            pick: 10
+  - name: card_100
+    path: benchmark_cases/varchar/data_configs/short_word_card_1m.yaml
+    override:
+      name: short_word_card_100
+      fields:
+        - values:
+            pick: 100
+  - name: card_1000
+    path: benchmark_cases/varchar/data_configs/short_word_card_1m.yaml
+    override:
+      name: short_word_card_1000
+      fields:
+        - values:
+            pick: 1000
 preset_index_configs:
   - name: no_index
     field_configs: {}
