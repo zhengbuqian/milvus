@@ -1,0 +1,18 @@
+name: json_objects_base
+segment_size: 200000
+segment_seed: 42
+global_dictionaries:
+  json_small_pool:
+    items:
+      - '{"user":{"id":1,"name":"Alice"},"active":true,"score":12.5,"tags":["a","b"]}'
+      - '{"user":{"id":2,"name":"Bob"},"active":false,"score":7.2,"tags":["b","c"],"meta":{"lvl":2}}'
+      - '{"user":{"id":3,"name":"Cathy"},"active":true,"score":100.1,"tags":["a"],"meta":{"lvl":1}}'
+      - '{"user":{"id":4,"name":"David"},"active":false,"score":0.0,"tags":[],"meta":{"lvl":3}}'
+      - '{"arr":[1,2,3,4],"flag":true,"title":"hello milvus"}'
+fields:
+  - field_name: json
+    generator: json
+    type: JSON
+    values:
+      dictionary: json_small_pool
+    duplication_ratios: [0.35, 0.25, 0.2, 0.1, 0.1]

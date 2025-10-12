@@ -11,6 +11,7 @@
 
 #include "index_wrapper.h"
 #include "segcore/load_index_c.h"
+#include "common/Consts.h"
 #include "test_utils/cachinglayer_test_utils.h"
 #include "test_utils/storage_test_utils.h"
 #include "index/IndexFactory.h"
@@ -57,8 +58,9 @@ static const std::unordered_map<std::string, std::unordered_set<DataType>>
           DataType::FLOAT,
           DataType::DOUBLE,
           DataType::VARCHAR,
-          DataType::ARRAY}},
-        {milvus::index::NGRAM_INDEX_TYPE, {DataType::VARCHAR}},
+          DataType::ARRAY,
+          DataType::JSON}},
+        {milvus::index::NGRAM_INDEX_TYPE, {DataType::VARCHAR, DataType::JSON}},
         {milvus::index::ASCENDING_SORT,
          {DataType::INT8,
           DataType::INT16,
@@ -215,6 +217,14 @@ IndexWrapper::Build(const SegmentWrapper& segment,
         for (const auto& kv : it_fc->second.params) {
             cfg[kv.first] = kv.second;
         }
+    }
+
+    // When building JSON index, the cfg must include json_path/json_cast_type
+    // We default to full JSON flat index when not specified.
+    if (data_type == DataType::JSON && spec_.index_type == milvus::index::INVERTED_INDEX_TYPE) {
+        // Default to cast JSON to VARCHAR at root path for inverted index if not provided
+        if (!cfg.contains(JSON_PATH)) cfg[JSON_PATH] = std::string("");
+        if (!cfg.contains(JSON_CAST_TYPE)) cfg[JSON_CAST_TYPE] = std::string("JSON");
     }
 
     auto builder =

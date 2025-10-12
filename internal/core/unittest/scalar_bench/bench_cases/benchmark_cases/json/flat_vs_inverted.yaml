@@ -1,0 +1,84 @@
+version: 1
+test_params:
+  warmup_iterations: 10
+  test_iterations: 50
+  collect_memory_stats: false
+  enable_flame_graph: false
+  flamegraph_repo_path: ~/FlameGraph
+
+preset_data_configs:
+  - name: base
+    path: benchmark_cases/json/data_configs/base_objects.yaml
+
+preset_index_configs:
+  - name: no_index
+    field_configs: {}
+  - name: json_flat
+    field_configs:
+      json:
+        type: INVERTED
+        params:
+          json_path: ""
+          json_cast_type: "JSON"
+  - name: json_inverted_varchar_root
+    field_configs:
+      json:
+        type: INVERTED
+        params:
+          json_path: ""
+          json_cast_type: "VARCHAR"
+  - name: json_inverted_double_score
+    field_configs:
+      json:
+        type: INVERTED
+        params:
+          json_path: "/score"
+          json_cast_type: "DOUBLE"
+  - name: json_inverted_bool_active
+    field_configs:
+      json:
+        type: INVERTED
+        params:
+          json_path: "/active"
+          json_cast_type: "BOOL"
+  - name: json_inverted_array_tags
+    field_configs:
+      json:
+        type: INVERTED
+        params:
+          json_path: "/tags"
+          json_cast_type: "ARRAY_VARCHAR"
+
+cases:
+  - name: json_root_contains
+    suites:
+      - name: default
+        data_configs: [base]
+        index_configs: [no_index, json_flat, json_inverted_varchar_root]
+        expr_templates:
+          - name: contains_word_milvus
+            expr_template: json_contains(json, "milvus")
+          - name: contains_key_user
+            expr_template: json_contains(json, "user")
+  - name: json_numeric_and_bool
+    suites:
+      - name: default
+        data_configs: [base]
+        index_configs: [no_index, json_inverted_double_score, json_inverted_bool_active]
+        expr_templates:
+          - name: score_ge_10
+            expr_template: json["score"] >= 10.0
+          - name: active_true
+            expr_template: json["active"] == true
+  - name: json_array_ops
+    suites:
+      - name: default
+        data_configs: [base]
+        index_configs: [no_index, json_inverted_array_tags]
+        expr_templates:
+          - name: tags_contains_a
+            expr_template: json_contains(json["tags"], "a")
+          - name: tags_contains_any
+            expr_template: json_contains_any(json["tags"], ["a","z"]) 
+          - name: tags_contains_all
+            expr_template: json_contains_all(json["tags"], ["a","b"]) 
