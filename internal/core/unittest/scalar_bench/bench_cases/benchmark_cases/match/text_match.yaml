@@ -1,0 +1,53 @@
+version: 1
+test_params:
+  warmup_iterations: 10
+  test_iterations: 50
+  collect_memory_stats: false
+preset_data_configs:
+  - name: random_text
+    path: benchmark_cases/match/data_configs/text_random_card_1m.yaml
+  - name: template_text
+    path: benchmark_cases/match/data_configs/text_template_card_1m.yaml
+  - name: corpus_text
+    path: benchmark_cases/match/data_configs/text_corpus_card_1m.yaml
+preset_index_configs:
+  - name: no_index
+    field_configs: {}
+  - name: bitmap_index
+    field_configs:
+      text:
+        type: BITMAP
+  - name: inverted_index
+    field_configs:
+      text:
+        type: INVERTED
+  - name: ngram_index
+    field_configs:
+      text:
+        type: NGRAM
+        params:
+          min_gram: 3
+          max_gram: 4
+cases:
+  - name: text_match_basic
+    suites:
+      - name: default
+        data_configs: [random_text, template_text, corpus_text]
+        index_configs: [no_index, bitmap_index, inverted_index, ngram_index]
+        expr_templates:
+          - name: match_single_common
+            expr_template: text_match(text, "milvus")
+          - name: match_multi_keywords
+            expr_template: text_match(text, "vector, database")
+          - name: match_phrase_tokens
+            expr_template: text_match(text, "open, source")
+  - name: text_match_with_filters
+    suites:
+      - name: default
+        data_configs: [random_text]
+        index_configs: [no_index, inverted_index, ngram_index]
+        expr_templates:
+          - name: match_and_not
+            expr_template: text_match(text, "vector") and not text_match(text, "faiss")
+          - name: match_or
+            expr_template: text_match(text, "milvus") or text_match(text, "faiss")

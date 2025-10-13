@@ -1,0 +1,47 @@
+version: 1
+test_params:
+  warmup_iterations: 10
+  test_iterations: 50
+  collect_memory_stats: false
+preset_data_configs:
+  - name: random_text
+    path: benchmark_cases/match/data_configs/text_random_card_1m.yaml
+  - name: template_text
+    path: benchmark_cases/match/data_configs/text_template_card_1m.yaml
+  - name: corpus_text
+    path: benchmark_cases/match/data_configs/text_corpus_card_1m.yaml
+preset_index_configs:
+  - name: no_index
+    field_configs: {}
+  - name: inverted_index
+    field_configs:
+      text:
+        type: INVERTED
+  - name: ngram_index
+    field_configs:
+      text:
+        type: NGRAM
+        params:
+          min_gram: 2
+          max_gram: 4
+cases:
+  - name: phrase_match_slop
+    suites:
+      - name: default
+        data_configs: [random_text, template_text, corpus_text]
+        index_configs: [no_index, inverted_index, ngram_index]
+        expr_templates:
+          - name: phrase_exact
+            expr_template: phrase_match(text, "vector database", 0)
+          - name: phrase_slop_1
+            expr_template: phrase_match(text, "vector database", 1)
+          - name: phrase_slop_2
+            expr_template: phrase_match(text, "open source", 2)
+  - name: phrase_match_filters
+    suites:
+      - name: default
+        data_configs: [random_text]
+        index_configs: [no_index, inverted_index, ngram_index]
+        expr_templates:
+          - name: phrase_and_not
+            expr_template: phrase_match(text, "vector database", 0) and not text_match(text, "faiss")

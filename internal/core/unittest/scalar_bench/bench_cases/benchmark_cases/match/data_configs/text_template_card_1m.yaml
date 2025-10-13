@@ -1,0 +1,14 @@
+name: text_template_card_1m
+segment_size: 1000000
+segment_seed: 42
+fields:
+  - field_name: text
+    generator: varchar
+    type: Varchar
+    max_length: 512
+    mode: TEMPLATE
+    template: "{product} {action} {feature}"
+    pools:
+      product: ["milvus", "zilliz", "pgvector", "faiss", "elastic"]
+      action: ["supports", "provides", "offers", "enables"]
+      feature: ["vector search", "hybrid search", "text match", "phrase match", "bm25"]
