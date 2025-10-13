@@ -1,0 +1,10 @@
+name: text_corpus_card_1m
+segment_size: 1000000
+segment_seed: 42
+fields:
+  - field_name: text
+    generator: varchar
+    type: Varchar
+    max_length: 512
+    mode: CORPUS
+    corpus_file: product_descriptions.txt

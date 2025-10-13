@@ -20,6 +20,7 @@
 #include "test_utils/DataGen.h"
 #include <iostream>
 #include <numeric>
+#include <map>
 
 namespace milvus {
 namespace scalar_bench {
@@ -89,8 +90,8 @@ SegmentWrapper::Initialize(const DataConfig& config) {
                                        field_config.nullable);
                 break;
             case DataType::VARCHAR: {
-                // Get max length from string config if using string generator
-                size_t max_len = 256;
+                // Determine reasonable max length
+                int64_t max_len = 256;
                 if (field_config.generator == FieldGeneratorType::CATEGORICAL) {
                     max_len = field_config.categorical_config.max_length > 0
                                   ? field_config.categorical_config.max_length
@@ -101,10 +102,27 @@ SegmentWrapper::Initialize(const DataConfig& config) {
                                   ? field_config.varchar_config.max_length
                                   : 512;
                 }
-                // TODO: max_len is not used
-                schema_->AddDebugField(field_config.field_name,
-                                       DataType::VARCHAR,
-                                       field_config.nullable);
+
+                if (field_config.generator == FieldGeneratorType::VARCHAR) {
+                    // Enable match and analyzer by default for textual VARCHAR fields
+                    // Use default analyzer params ("{}") when not provided
+                    static int64_t next_user_field_id = 1000;
+                    std::map<std::string, std::string> type_params;  // default analyzer params empty -> {}
+                    schema_->AddField(FieldName(field_config.field_name),
+                                      FieldId(next_user_field_id++),
+                                      DataType::VARCHAR,
+                                      max_len,
+                                      field_config.nullable,
+                                      /*enable_match*/ true,
+                                      /*enable_analyzer*/ true,
+                                      type_params,
+                                      std::nullopt);
+                } else {
+                    // Keep legacy behavior for non-text generators (e.g., categorical uuids)
+                    schema_->AddDebugField(field_config.field_name,
+                                           DataType::VARCHAR,
+                                           field_config.nullable);
+                }
                 break;
             }
             case DataType::BOOL:
@@ -184,6 +202,18 @@ SegmentWrapper::LoadFromSegmentData(const SegmentData& segment_data) {
 
     std::cout << "    Loaded " << row_count_ << " rows into sealed segment"
               << std::endl;
+
+    // Create text indexes for VARCHAR fields with enable_match=true
+    for (const auto& [fid, meta] : schema_->get_fields()) {
+        if (meta.is_string() && meta.enable_match()) {
+            try {
+                sealed_segment_->CreateTextIndex(fid);
+            } catch (const std::exception& e) {
+                std::cerr << "    Warning: failed to create text index for field "
+                          << meta.get_name().get() << ": " << e.what() << std::endl;
+            }
+        }
+    }
 }
 
 void

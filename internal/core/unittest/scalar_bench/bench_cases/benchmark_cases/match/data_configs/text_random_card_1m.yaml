@@ -1,0 +1,28 @@
+name: text_random_card_1m
+segment_size: 1000000
+segment_seed: 42
+global_dictionaries:
+  tags:
+    items_file: tags.txt
+fields:
+  - field_name: text
+    generator: varchar
+    type: Varchar
+    max_length: 512
+    mode: RANDOM
+    values:
+      dictionary: tags
+    token_count:
+      min: 3
+      max: 12
+      distribution: UNIFORM
+    keywords:
+      - token: milvus
+        frequency: 0.3
+      - token: vector
+        frequency: 0.4
+      - token: database
+        frequency: 0.35
+    phrase_sets:
+      - ["vector", "database"]
+      - ["open", "source"]
