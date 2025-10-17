@@ -12,6 +12,9 @@
 #include "index/NgramInvertedIndex.h"
 #include "exec/expression/Expr.h"
 #include "index/JsonIndexBuilder.h"
+#include "storage/FileWriter.h"
+#include "storage/BundleUtil.h"
+#include <cstring>
 
 namespace milvus::index {
 
@@ -157,21 +160,66 @@ NgramInvertedIndex::Load(milvus::tracer::TraceContext ctx,
                (size_t)index_valid_data->size);
     }
 
-    disk_file_manager_->CacheNgramIndexToDisk(files_value, load_priority);
-    AssertInfo(
-        tantivy_index_exist(path_.c_str()), "index not exist: {}", path_);
-    auto load_in_mmap =
-        GetValueFromConfig<bool>(config, ENABLE_MMAP).value_or(true);
-    wrapper_ = std::make_shared<TantivyIndexWrapper>(
-        path_.c_str(), load_in_mmap, milvus::index::SetBitsetSealed);
+    // Detect bundled index
+    auto bundle_it = std::find_if(
+        files_value.begin(), files_value.end(), [](const std::string& file) {
+            return boost::filesystem::path(file).filename().string() ==
+                   storage::TANTIVY_BUNDLE_FILE_NAME;
+        });
+    if (bundle_it != files_value.end()) {
+        // Download and unpack bundle into local ngram index dir
+        auto prefix = disk_file_manager_->GetLocalNgramIndexPrefix();
+        path_ = prefix;
+        auto local_bundle_path =
+            (boost::filesystem::path(prefix) / storage::TANTIVY_BUNDLE_FILE_NAME)
+                .string();
+        {
+            auto remote_is = disk_file_manager_->OpenInputStream(local_bundle_path);
+            storage::FileWriter fw(local_bundle_path,
+                                   storage::io::Priority::HIGH);
+            const size_t buf_size = 1 << 20;
+            std::vector<uint8_t> buf(buf_size);
+            size_t total = remote_is->Size();
+            size_t copied = 0;
+            while (copied < total) {
+                size_t chunk = std::min(buf_size, total - copied);
+                auto n = remote_is->ReadAt(buf.data(), copied, chunk);
+                AssertInfo(n == chunk, "failed to read remote bundle stream");
+                fw.Write(buf.data(), n);
+                copied += n;
+            }
+            fw.Finish();
+        }
 
-    if (!load_in_mmap) {
-        // the index is loaded in ram, so we can remove files in advance
-        disk_file_manager_->RemoveNgramIndexFiles();
+        storage::UnpackBundleToDir(local_bundle_path, prefix);
+
+        AssertInfo(tantivy_index_exist(path_.c_str()),
+                   "index not exist: {}",
+                   path_);
+        auto load_in_mmap =
+            GetValueFromConfig<bool>(config, ENABLE_MMAP).value_or(true);
+        wrapper_ = std::make_shared<TantivyIndexWrapper>(
+            path_.c_str(), load_in_mmap, milvus::index::SetBitsetSealed);
+        if (!load_in_mmap) {
+            disk_file_manager_->RemoveNgramIndexFiles();
+        }
+    } else {
+        // legacy multi-file path
+        disk_file_manager_->CacheNgramIndexToDisk(files_value, load_priority);
+        AssertInfo(
+            tantivy_index_exist(path_.c_str()), "index not exist: {}", path_);
+        auto load_in_mmap =
+            GetValueFromConfig<bool>(config, ENABLE_MMAP).value_or(true);
+        wrapper_ = std::make_shared<TantivyIndexWrapper>(
+            path_.c_str(), load_in_mmap, milvus::index::SetBitsetSealed);
+        if (!load_in_mmap) {
+            disk_file_manager_->RemoveNgramIndexFiles();
+        }
     }
 
-    LOG_INFO(
-        "load ngram index done for field id:{} with dir:{}", field_id_, path_);
+    LOG_INFO("load ngram index done for field id:{} with dir:{}",
+             field_id_,
+             path_);
 }
 
 std::optional<TargetBitmap>
