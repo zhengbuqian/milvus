@@ -13,6 +13,7 @@
 #include "exec/expression/Expr.h"
 #include "index/JsonIndexBuilder.h"
 #include "storage/FileWriter.h"
+#include "storage/BundleUtil.h"
 #include <cstring>
 
 namespace milvus::index {
@@ -163,14 +164,14 @@ NgramInvertedIndex::Load(milvus::tracer::TraceContext ctx,
     auto bundle_it = std::find_if(
         files_value.begin(), files_value.end(), [](const std::string& file) {
             return boost::filesystem::path(file).filename().string() ==
-                   TANTIVY_BUNDLE_FILE_NAME;
+                   storage::TANTIVY_BUNDLE_FILE_NAME;
         });
     if (bundle_it != files_value.end()) {
         // Download and unpack bundle into local ngram index dir
         auto prefix = disk_file_manager_->GetLocalNgramIndexPrefix();
         path_ = prefix;
         auto local_bundle_path =
-            (boost::filesystem::path(prefix) / TANTIVY_BUNDLE_FILE_NAME)
+            (boost::filesystem::path(prefix) / storage::TANTIVY_BUNDLE_FILE_NAME)
                 .string();
         {
             auto remote_is = disk_file_manager_->OpenInputStream(local_bundle_path);
@@ -190,69 +191,7 @@ NgramInvertedIndex::Load(milvus::tracer::TraceContext ctx,
             fw.Finish();
         }
 
-        auto local_cm =
-            storage::LocalChunkManagerSingleton::GetInstance().GetChunkManager();
-        const size_t buf_size = 1 << 20;
-        auto read_exact = [&](uint64_t off, void* dst, size_t n) {
-            local_cm->Read(local_bundle_path, off, dst, n);
-        };
-        uint64_t off = 0;
-        char magic[8];
-        read_exact(off, magic, sizeof(magic));
-        off += sizeof(magic);
-        AssertInfo(std::memcmp(magic, "TANTIVYB", 8) == 0,
-                   "invalid tantivy bundle magic");
-        uint32_t ver = 0;
-        read_exact(off, &ver, sizeof(ver));
-        off += sizeof(ver);
-        AssertInfo(ver == TANTIVY_BUNDLE_FORMAT_VERSION,
-                   "unsupported tantivy bundle version: {}",
-                   ver);
-        uint32_t file_cnt = 0;
-        read_exact(off, &file_cnt, sizeof(file_cnt));
-        off += sizeof(file_cnt);
-        struct Header {
-            std::string name;
-            uint64_t offset;
-            uint64_t size;
-        };
-        std::vector<Header> headers;
-        headers.reserve(file_cnt);
-        for (uint32_t i = 0; i < file_cnt; ++i) {
-            uint32_t name_len = 0;
-            read_exact(off, &name_len, sizeof(name_len));
-            off += sizeof(name_len);
-            std::string name;
-            name.resize(name_len);
-            if (name_len > 0) {
-                read_exact(off, name.data(), name_len);
-            }
-            off += name_len;
-            uint64_t data_off = 0;
-            read_exact(off, &data_off, sizeof(data_off));
-            off += sizeof(data_off);
-            uint64_t size = 0;
-            read_exact(off, &size, sizeof(size));
-            off += sizeof(size);
-            headers.push_back({std::move(name), data_off, size});
-        }
-        for (auto& h : headers) {
-            auto out_path = (boost::filesystem::path(prefix) / h.name).string();
-            storage::FileWriter fw(out_path, storage::io::Priority::HIGH);
-            uint64_t remaining = h.size;
-            uint64_t cur = 0;
-            std::vector<uint8_t> buf(buf_size);
-            while (remaining > 0) {
-                auto to_read = static_cast<uint64_t>(
-                    std::min<uint64_t>(buf_size, remaining));
-                local_cm->Read(local_bundle_path, h.offset + cur, buf.data(),
-                               to_read);
-                fw.Write(buf.data(), to_read);
-                remaining -= to_read;
-                cur += to_read;
-            }
-            fw.Finish();
-        }
+        storage::UnpackBundleToDir(local_bundle_path, prefix);
 
         AssertInfo(tantivy_index_exist(path_.c_str()),
                    "index not exist: {}",

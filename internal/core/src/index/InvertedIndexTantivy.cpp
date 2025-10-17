@@ -136,7 +136,7 @@ InvertedIndexTantivy<T>::Upload(const Config& config) {
     // [magic:"TANTIVYB"] [format_ver:u32] [file_count:u32]
     // repeated file_count times: [name_len:u32][name_bytes][offset:u64][size:u64]
     // followed by concatenated file contents in the same order
-    const std::string bundle_local_path = (boost::filesystem::path(path_) / TANTIVY_BUNDLE_FILE_NAME).string();
+    const std::string bundle_local_path = (boost::filesystem::path(path_) / storage::TANTIVY_BUNDLE_FILE_NAME).string();
     {
         // Build table of files
         struct Entry { std::string name; uint64_t size; };
@@ -150,7 +150,7 @@ InvertedIndexTantivy<T>::Upload(const Config& config) {
                 continue;
             }
             auto filename = iter->path().filename().string();
-            if (filename == TANTIVY_BUNDLE_FILE_NAME) {
+            if (filename == storage::TANTIVY_BUNDLE_FILE_NAME) {
                 continue; // skip previous bundle if exists
             }
             auto sz = boost::filesystem::file_size(*iter);
@@ -283,7 +283,7 @@ InvertedIndexTantivy<T>::Load(milvus::tracer::TraceContext ctx,
     // Detect if bundle file present; if so, download and unpack bundle locally, then bypass CacheIndexToDisk for tantivy files.
     auto bundle_it = std::find_if(
         inverted_index_files.begin(), inverted_index_files.end(), [&](const std::string& f) {
-            return boost::filesystem::path(f).filename().string() == TANTIVY_BUNDLE_FILE_NAME;
+            return boost::filesystem::path(f).filename().string() == storage::TANTIVY_BUNDLE_FILE_NAME;
         });
     if (bundle_it != inverted_index_files.end()) {
         auto prefix = disk_file_manager_->GetLocalIndexObjectPrefix();
@@ -291,8 +291,8 @@ InvertedIndexTantivy<T>::Load(milvus::tracer::TraceContext ctx,
         path_ = prefix;
 
         // Download bundle from remote using stream API
-        auto remote_is = disk_file_manager_->OpenInputStream((boost::filesystem::path(prefix) / TANTIVY_BUNDLE_FILE_NAME).string());
-        auto local_bundle_path = (boost::filesystem::path(prefix) / TANTIVY_BUNDLE_FILE_NAME).string();
+        auto remote_is = disk_file_manager_->OpenInputStream((boost::filesystem::path(prefix) / storage::TANTIVY_BUNDLE_FILE_NAME).string());
+        auto local_bundle_path = (boost::filesystem::path(prefix) / storage::TANTIVY_BUNDLE_FILE_NAME).string();
         {
             storage::FileWriter fw(local_bundle_path, storage::io::Priority::HIGH);
             const size_t buf_size = 1 << 20;
