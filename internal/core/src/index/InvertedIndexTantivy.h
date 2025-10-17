@@ -26,6 +26,11 @@
 namespace milvus::index {
 
 const std::string INDEX_NULL_OFFSET_FILE_NAME = "index_null_offset";
+// Single-file bundle used to pack Tantivy index files and auxiliary metas
+// into one remote object to reduce the number of keys stored in metadata KV.
+// The bundle format is Milvus-internal and versioned.
+inline constexpr const char* TANTIVY_BUNDLE_FILE_NAME = "tantivy_index.bundle";
+inline constexpr uint32_t TANTIVY_BUNDLE_FORMAT_VERSION = 1;
 
 inline TantivyDataType
 get_tantivy_data_type(proto::schema::DataType data_type) {
