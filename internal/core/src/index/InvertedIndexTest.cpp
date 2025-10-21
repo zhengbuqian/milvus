@@ -465,6 +465,62 @@ test_run() {
     }
 }
 
+TEST(InvertedIndexTantivy, UploadBundleToggle) {
+    int64_t collection_id = 1;
+    int64_t partition_id = 2;
+    int64_t segment_id = 30001;
+    int64_t field_id = 30002;
+    int64_t index_build_id = 4001;
+    int64_t index_version = 1;
+
+    auto field_meta = milvus::segcore::gen_field_meta(collection_id,
+                                                      partition_id,
+                                                      segment_id,
+                                                      field_id,
+                                                      DataType::VARCHAR,
+                                                      DataType::NONE,
+                                                      false);
+    auto index_meta = gen_index_meta(segment_id, field_id, index_build_id, index_version);
+
+    std::string root_path = "/tmp/test-inverted-index-bundle/";
+    auto storage_config = gen_local_storage_config(root_path);
+    auto cm = storage::CreateChunkManager(storage_config);
+    auto fs = storage::InitArrowFileSystem(storage_config);
+    storage::FileManagerContext ctx(field_meta, index_meta, cm, fs);
+
+    std::vector<std::string> values = {"a", "b", "a"};
+
+    // bundle = true
+    {
+        index::InvertedIndexTantivy<std::string> inv(index::TANTIVY_INDEX_LATEST_VERSION, ctx);
+        Config cfg; cfg[index::TANTIVY_BUNDLE_INDEX_FILE] = true;
+        inv.BuildWithRawDataForUT(values.size(), values.data(), cfg);
+        auto stats = inv.Upload(cfg);
+        bool has_bundle = false;
+        for (auto& f : stats->GetSerializedIndexFileInfo()) {
+            if (boost::filesystem::path(f.file_name).filename().string() == storage::TANTIVY_BUNDLE_FILE_NAME) {
+                has_bundle = true; break;
+            }
+        }
+        ASSERT_TRUE(has_bundle);
+    }
+
+    // bundle = false
+    {
+        index::InvertedIndexTantivy<std::string> inv(index::TANTIVY_INDEX_LATEST_VERSION, ctx);
+        Config cfg; cfg[index::TANTIVY_BUNDLE_INDEX_FILE] = false;
+        inv.BuildWithRawDataForUT(values.size(), values.data(), cfg);
+        auto stats = inv.Upload(cfg);
+        bool has_bundle = false;
+        for (auto& f : stats->GetSerializedIndexFileInfo()) {
+            if (boost::filesystem::path(f.file_name).filename().string() == storage::TANTIVY_BUNDLE_FILE_NAME) {
+                has_bundle = true; break;
+            }
+        }
+        ASSERT_FALSE(has_bundle);
+    }
+}
+
 template <bool nullable = false,
           bool has_lack_binlog_row_ = false,
           bool has_default_value_ = false>
