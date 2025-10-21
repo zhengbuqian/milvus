@@ -26,6 +26,7 @@
 #include "storage/LocalChunkManagerSingleton.h"
 #include "storage/FileWriter.h"
 #include "storage/BundleUtil.h"
+#include "index/Meta.h"
 #include <cstring>
 namespace milvus::index {
 
@@ -175,7 +176,16 @@ BsonInvertedIndex::UploadIndex() {
                "bson inverted index wrapper is not initialized");
     wrapper_->finish();
 
-    // Pack and upload single object (bundle)
+    // Choose upload format per config; default to bundle
+    bool use_bundle = true;
+    if (config.contains(milvus::index::TANTIVY_BUNDLE_INDEX_FILE)) {
+        use_bundle = milvus::index::GetValueFromConfig<bool>(
+                             config, milvus::index::TANTIVY_BUNDLE_INDEX_FILE)
+                           .value_or(true);
+    }
+
+    if (use_bundle) {
+        // Pack and upload single object (bundle)
     const std::string bundle_local_path =
         (boost::filesystem::path(path_) / storage::TANTIVY_BUNDLE_FILE_NAME).string();
     struct Entry { std::string name; uint64_t size; };
@@ -248,10 +258,34 @@ BsonInvertedIndex::UploadIndex() {
             remaining -= to_read; o += to_read;
         }
     }
-    disk_file_manager_->AddFileMeta(FileMeta{bundle_local_path, static_cast<int64_t>(bundle_size)});
+        disk_file_manager_->AddFileMeta(
+            FileMeta{bundle_local_path, static_cast<int64_t>(bundle_size)});
 
+        auto remote_paths_to_size =
+            disk_file_manager_->GetRemotePathsToFileSize();
+
+        std::vector<SerializedIndexFileInfo> index_files;
+        index_files.reserve(remote_paths_to_size.size());
+        for (auto& file : remote_paths_to_size) {
+            index_files.emplace_back(file.first, file.second);
+        }
+        return IndexStats::New(disk_file_manager_->GetAddedTotalFileSize(),
+                               std::move(index_files));
+    }
+
+    // Legacy multi-file upload path
+    {
+        boost::filesystem::path p(path_);
+        boost::filesystem::directory_iterator end_iter;
+        for (boost::filesystem::directory_iterator iter(p); iter != end_iter;
+             ++iter) {
+            if (boost::filesystem::is_directory(*iter)) {
+                continue;
+            }
+            disk_file_manager_->AddJsonSharedIndexLog(iter->path().string());
+        }
+    }
     auto remote_paths_to_size = disk_file_manager_->GetRemotePathsToFileSize();
-
     std::vector<SerializedIndexFileInfo> index_files;
     index_files.reserve(remote_paths_to_size.size());
     for (auto& file : remote_paths_to_size) {

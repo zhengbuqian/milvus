@@ -244,7 +244,7 @@ func (it *indexBuildTask) Execute(ctx context.Context) error {
 		it.newIndexParams, _ = paramtable.Get().KnowhereConfig.MergeResourceParams(fieldDataSize, paramtable.BuildStage, it.newIndexParams)
 	}
 
-	storageConfig := &indexcgopb.StorageConfig{
+    storageConfig := &indexcgopb.StorageConfig{
 		Address:           it.req.GetStorageConfig().GetAddress(),
 		AccessKeyID:       it.req.GetStorageConfig().GetAccessKeyID(),
 		SecretAccessKey:   it.req.GetStorageConfig().GetSecretAccessKey(),
@@ -273,7 +273,7 @@ func (it *indexBuildTask) Execute(ctx context.Context) error {
 		})
 	}
 
-	buildIndexParams := &indexcgopb.BuildIndexInfo{
+    buildIndexParams := &indexcgopb.BuildIndexInfo{
 		ClusterID:                 it.req.GetClusterID(),
 		BuildID:                   it.req.GetBuildID(),
 		CollectionID:              it.req.GetCollectionID(),
@@ -288,7 +288,7 @@ func (it *indexBuildTask) Execute(ctx context.Context) error {
 		InsertFiles:               it.req.GetDataPaths(),
 		FieldSchema:               it.req.GetField(),
 		StorageConfig:             storageConfig,
-		IndexParams:               mapToKVPairs(it.newIndexParams),
+        IndexParams:               mapToKVPairs(it.newIndexParams),
 		TypeParams:                mapToKVPairs(it.newTypeParams),
 		StorePath:                 it.req.GetStorePath(),
 		StoreVersion:              it.req.GetStoreVersion(),
@@ -298,6 +298,13 @@ func (it *indexBuildTask) Execute(ctx context.Context) error {
 		LackBinlogRows:            it.req.GetLackBinlogRows(),
 		StorageVersion:            it.req.GetStorageVersion(),
 	}
+
+    // Inject global option to control tantivy bundle format
+    if paramtable.Get().CommonCfg.TantivyBundleIndexFile.GetAsBool() {
+        it.newIndexParams["tantivy_bundle_index_file"] = "true"
+    } else {
+        it.newIndexParams["tantivy_bundle_index_file"] = "false"
+    }
 
 	if it.pluginContext != nil {
 		buildIndexParams.StoragePluginContext = it.pluginContext

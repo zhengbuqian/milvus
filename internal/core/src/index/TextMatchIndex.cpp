@@ -20,6 +20,7 @@
 #include "storage/ThreadPools.h"
 #include "storage/FileWriter.h"
 #include "storage/BundleUtil.h"
+#include "index/Meta.h"
 #include <cstring>
 
 namespace milvus::index {
@@ -97,7 +98,11 @@ TextMatchIndex::TextMatchIndex(const storage::FileManagerContext& ctx)
 IndexStatsPtr
 TextMatchIndex::Upload(const Config& config) {
     finish();
-    // Pack text index dir to a single bundle file for upload
+    const bool use_bundle =
+        GetValueFromConfig<bool>(config, milvus::index::TANTIVY_BUNDLE_INDEX_FILE)
+            .value_or(true);
+    if (use_bundle) {
+        // Pack text index dir to a single bundle file for upload
     const std::string bundle_local_path =
         (boost::filesystem::path(path_) / storage::TANTIVY_BUNDLE_FILE_NAME).string();
     {
@@ -189,10 +194,42 @@ TextMatchIndex::Upload(const Config& config) {
             offset += to_read;
         }
     }
-    // Using AddTextLog here would slice per previous semantics; we instead
-    // record meta for V2 single object path
-    disk_file_manager_->AddFileMeta(FileMeta{bundle_local_path,
-                                             static_cast<int64_t>(bundle_size)});
+        // Using AddTextLog here would slice per previous semantics; we instead
+        // record meta for V2 single object path
+        disk_file_manager_->AddFileMeta(FileMeta{bundle_local_path,
+                                                 static_cast<int64_t>(bundle_size)});
+
+        auto remote_paths_to_size = disk_file_manager_->GetRemotePathsToFileSize();
+
+        auto binary_set = Serialize(config);
+        mem_file_manager_->AddTextLog(binary_set);
+        auto remote_mem_path_to_size =
+            mem_file_manager_->GetRemotePathsToFileSize();
+
+        std::vector<SerializedIndexFileInfo> index_files;
+        index_files.reserve(remote_paths_to_size.size() +
+                            remote_mem_path_to_size.size());
+        for (auto& file : remote_paths_to_size) {
+            index_files.emplace_back(file.first, file.second);
+        }
+        for (auto& file : remote_mem_path_to_size) {
+            index_files.emplace_back(file.first, file.second);
+        }
+        return IndexStats::New(mem_file_manager_->GetAddedTotalMemSize() +
+                                   disk_file_manager_->GetAddedTotalFileSize(),
+                               std::move(index_files));
+    }
+
+    // Legacy multi-file path: register each file via AddTextLog
+    boost::filesystem::path p(path_);
+    boost::filesystem::directory_iterator end_iter;
+    for (boost::filesystem::directory_iterator iter(p); iter != end_iter;
+         ++iter) {
+        if (boost::filesystem::is_directory(*iter)) {
+            continue;
+        }
+        disk_file_manager_->AddTextLog(iter->path().string());
+    }
 
     auto remote_paths_to_size = disk_file_manager_->GetRemotePathsToFileSize();
 

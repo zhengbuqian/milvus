@@ -52,6 +52,8 @@ constexpr const char* SCALAR_INDEX_ENGINE_VERSION =
 constexpr const char* TANTIVY_INDEX_VERSION = "tantivy_index_version";
 constexpr uint32_t TANTIVY_INDEX_LATEST_VERSION = 7;
 constexpr uint32_t TANTIVY_INDEX_MINIMUM_VERSION = 5;
+// Whether to pack Tantivy index into a single bundled file during upload
+constexpr const char* TANTIVY_BUNDLE_INDEX_FILE = "tantivy_bundle_index_file";
 constexpr const char* INDEX_NON_ENCODING = "index.nonEncoding";
 constexpr const char* NGRAM_INDEX_TYPE = "NGRAM";
 constexpr const char* MIN_GRAM = "min_gram";
