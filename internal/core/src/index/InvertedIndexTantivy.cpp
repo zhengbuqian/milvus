@@ -18,7 +18,10 @@
 #include "index/InvertedIndexUtil.h"
 #include "log/Log.h"
 #include "index/Utils.h"
+#include "index/Meta.h"
 #include "storage/Util.h"
+#include "storage/FileWriter.h"
+#include <cstring>
 
 #include <algorithm>
 #include <boost/filesystem.hpp>
@@ -129,23 +132,134 @@ IndexStatsPtr
 InvertedIndexTantivy<T>::Upload(const Config& config) {
     finish();
 
-    boost::filesystem::path p(path_);
-    boost::filesystem::directory_iterator end_iter;
+    const bool use_bundle =
+        GetValueFromConfig<bool>(config, TANTIVY_BUNDLE_INDEX_FILE)
+            .value_or(true);
 
-    for (boost::filesystem::directory_iterator iter(p); iter != end_iter;
-         iter++) {
-        if (boost::filesystem::is_directory(*iter)) {
-            LOG_WARN("{} is a directory", iter->path().string());
-        } else {
-            LOG_INFO("trying to add index file: {}", iter->path().string());
-            AssertInfo(disk_file_manager_->AddFile(iter->path().string()),
-                       "failed to add index file: {}",
-                       iter->path().string());
-            LOG_INFO("index file: {} added", iter->path().string());
+    std::map<std::string, int64_t> remote_paths_to_size;
+    if (use_bundle) {
+        // Bundle upload path
+        const std::string bundle_local_path =
+            (boost::filesystem::path(path_) / storage::TANTIVY_BUNDLE_FILE_NAME)
+                .string();
+        {
+            // Build table of files
+            struct Entry {
+                std::string name;
+                uint64_t size;
+            };
+            std::vector<Entry> entries;
+            boost::filesystem::path p(path_);
+            boost::filesystem::directory_iterator end_iter;
+            for (boost::filesystem::directory_iterator iter(p);
+                 iter != end_iter;
+                 ++iter) {
+                if (boost::filesystem::is_directory(*iter)) {
+                    LOG_WARN("{} is a directory", iter->path().string());
+                    continue;
+                }
+                auto filename = iter->path().filename().string();
+                if (filename == storage::TANTIVY_BUNDLE_FILE_NAME) {
+                    continue;  // skip previous bundle if exists
+                }
+                auto sz = boost::filesystem::file_size(*iter);
+                entries.push_back({filename, static_cast<uint64_t>(sz)});
+            }
+
+            storage::FileWriter writer(bundle_local_path,
+                                       storage::io::Priority::MIDDLE);
+            const char magic[8] = {'T', 'A', 'N', 'T', 'I', 'V', 'Y', 'B'};
+            writer.Write(magic, sizeof(magic));
+            uint32_t ver = TANTIVY_BUNDLE_FORMAT_VERSION;
+            writer.Write(&ver, sizeof(ver));
+            uint32_t file_count = static_cast<uint32_t>(entries.size());
+            writer.Write(&file_count, sizeof(file_count));
+
+            uint64_t header_table_bytes = 0;
+            for (auto& e : entries) {
+                header_table_bytes += sizeof(uint32_t);
+                header_table_bytes += static_cast<uint32_t>(e.name.size());
+                header_table_bytes += sizeof(uint64_t);
+                header_table_bytes += sizeof(uint64_t);
+            }
+
+            uint64_t data_offset = sizeof(magic) + sizeof(ver) +
+                                   sizeof(file_count) + header_table_bytes;
+
+            uint64_t current_offset = 0;
+            for (auto& e : entries) {
+                uint32_t name_len = static_cast<uint32_t>(e.name.size());
+                writer.Write(&name_len, sizeof(name_len));
+                writer.Write(e.name.data(), name_len);
+                uint64_t off = data_offset + current_offset;
+                writer.Write(&off, sizeof(off));
+                writer.Write(&e.size, sizeof(e.size));
+                current_offset += e.size;
+            }
+
+            auto local_cm = storage::LocalChunkManagerSingleton::GetInstance()
+                                .GetChunkManager();
+            const size_t buf_size = 1 << 20;
+            std::vector<uint8_t> buf(buf_size);
+            for (auto& e : entries) {
+                auto file_path =
+                    (boost::filesystem::path(path_) / e.name).string();
+                uint64_t remaining = e.size;
+                uint64_t offset = 0;
+                while (remaining > 0) {
+                    auto to_read = static_cast<uint64_t>(
+                        std::min<uint64_t>(buf_size, remaining));
+                    local_cm->Read(file_path, offset, buf.data(), to_read);
+                    writer.Write(buf.data(), to_read);
+                    remaining -= to_read;
+                    offset += to_read;
+                }
+            }
+            writer.Finish();
         }
-    }
 
-    auto remote_paths_to_size = disk_file_manager_->GetRemotePathsToFileSize();
+        // stream upload bundle
+        uint64_t bundle_size = 0;
+        {
+            auto local_cm =
+                storage::LocalChunkManagerSingleton::GetInstance()
+                    .GetChunkManager();
+            bundle_size = local_cm->Size(bundle_local_path);
+            auto remote_os =
+                disk_file_manager_->OpenOutputStream(bundle_local_path);
+            const size_t buf_size = 1 << 20;
+            std::vector<uint8_t> buf(buf_size);
+            uint64_t remaining = bundle_size;
+            uint64_t offset = 0;
+            while (remaining > 0) {
+                auto to_read = static_cast<uint64_t>(
+                    std::min<uint64_t>(buf_size, remaining));
+                local_cm->Read(bundle_local_path, offset, buf.data(), to_read);
+                remote_os->Write(buf.data(), to_read);
+                remaining -= to_read;
+                offset += to_read;
+            }
+        }
+        disk_file_manager_->AddFileMeta(
+            FileMeta{bundle_local_path, static_cast<int64_t>(bundle_size)});
+        auto map = disk_file_manager_->GetRemotePathsToFileSize();
+        remote_paths_to_size.insert(map.begin(), map.end());
+    } else {
+        // Legacy multi-file upload path
+        boost::filesystem::path dir(path_);
+        boost::filesystem::directory_iterator end_iter;
+        for (boost::filesystem::directory_iterator it(dir); it != end_iter;
+             ++it) {
+            if (boost::filesystem::is_directory(*it)) {
+                continue;
+            }
+            if (!disk_file_manager_->AddFile(it->path().string())) {
+                LOG_WARN("failed to add index file: {}", it->path().string());
+            }
+        }
+        auto map = disk_file_manager_->GetRemotePathsToFileSize();
+        remote_paths_to_size.insert(map.begin(), map.end());
+    }
 
     auto binary_set = Serialize(config);
     mem_file_manager_->AddFile(binary_set);
@@ -184,7 +298,88 @@ InvertedIndexTantivy<T>::Load(milvus::tracer::TraceContext ctx,
                "index file paths is empty when load disk ann index data");
     auto inverted_index_files = index_files.value();
 
+    // Always load index metas (e.g., null offsets) first from memory files
     LoadIndexMetas(inverted_index_files, config);
+
+    // Detect if bundle file present; if so, download and unpack bundle locally, then bypass CacheIndexToDisk for tantivy files.
+    auto bundle_it = std::find_if(
+        inverted_index_files.begin(), inverted_index_files.end(), [&](const std::string& f) {
+            return boost::filesystem::path(f).filename().string() == storage::TANTIVY_BUNDLE_FILE_NAME;
+        });
+    if (bundle_it != inverted_index_files.end()) {
+        auto prefix = disk_file_manager_->GetLocalIndexObjectPrefix();
+        boost::filesystem::create_directories(prefix);
+        path_ = prefix;
+
+        // Download bundle from remote using stream API
+        auto remote_is = disk_file_manager_->OpenInputStream((boost::filesystem::path(prefix) / storage::TANTIVY_BUNDLE_FILE_NAME).string());
+        auto local_bundle_path = (boost::filesystem::path(prefix) / storage::TANTIVY_BUNDLE_FILE_NAME).string();
+        {
+            storage::FileWriter fw(local_bundle_path, storage::io::Priority::HIGH);
+            const size_t buf_size = 1 << 20;
+            std::vector<uint8_t> buf(buf_size);
+            size_t total = remote_is->Size();
+            size_t copied = 0;
+            while (copied < total) {
+                size_t chunk = std::min(buf_size, total - copied);
+                auto n = remote_is->ReadAt(buf.data(), copied, chunk);
+                AssertInfo(n == chunk, "failed to read remote bundle stream");
+                fw.Write(buf.data(), n);
+                copied += n;
+            }
+            fw.Finish();
+        }
+
+        // Unpack bundle contents into prefix directory
+        auto local_cm = storage::LocalChunkManagerSingleton::GetInstance().GetChunkManager();
+        const size_t buf_size = 1 << 20;
+        auto read_exact = [&](uint64_t off, void* dst, size_t n) {
+            local_cm->Read(local_bundle_path, off, dst, n);
+        };
+        uint64_t off = 0;
+        char magic[8];
+        read_exact(off, magic, sizeof(magic)); off += sizeof(magic);
+        AssertInfo(std::memcmp(magic, "TANTIVYB", 8) == 0, "invalid tantivy bundle magic");
+        uint32_t ver = 0; read_exact(off, &ver, sizeof(ver)); off += sizeof(ver);
+        AssertInfo(ver == TANTIVY_BUNDLE_FORMAT_VERSION, "unsupported tantivy bundle version: {}", ver);
+        uint32_t file_cnt = 0; read_exact(off, &file_cnt, sizeof(file_cnt)); off += sizeof(file_cnt);
+        struct Header { std::string name; uint64_t offset; uint64_t size; };
+        std::vector<Header> headers; headers.reserve(file_cnt);
+        for (uint32_t i = 0; i < file_cnt; ++i) {
+            uint32_t name_len = 0; read_exact(off, &name_len, sizeof(name_len)); off += sizeof(name_len);
+            std::string name; name.resize(name_len);
+            if (name_len > 0) { read_exact(off, name.data(), name_len); }
+            off += name_len;
+            uint64_t data_off = 0; read_exact(off, &data_off, sizeof(data_off)); off += sizeof(data_off);
+            uint64_t size = 0; read_exact(off, &size, sizeof(size)); off += sizeof(size);
+            headers.push_back({std::move(name), data_off, size});
+        }
+        for (auto& h : headers) {
+            auto out_path = (boost::filesystem::path(prefix) / h.name).string();
+            storage::FileWriter fw(out_path, storage::io::Priority::HIGH);
+            uint64_t remaining = h.size;
+            uint64_t cur = 0;
+            std::vector<uint8_t> buf(buf_size);
+            while (remaining > 0) {
+                auto to_read = static_cast<uint64_t>(std::min<uint64_t>(buf_size, remaining));
+                local_cm->Read(local_bundle_path, h.offset + cur, buf.data(), to_read);
+                fw.Write(buf.data(), to_read);
+                remaining -= to_read;
+                cur += to_read;
+            }
+            fw.Finish();
+        }
+
+        auto load_in_mmap =
+            GetValueFromConfig<bool>(config, ENABLE_MMAP).value_or(true);
+        wrapper_ = std::make_shared<TantivyIndexWrapper>(
+            prefix.c_str(), load_in_mmap, milvus::index::SetBitsetSealed);
+        if (!load_in_mmap) {
+            disk_file_manager_->RemoveIndexFiles();
+        }
+        return;
+    }
+
     RetainTantivyIndexFiles(inverted_index_files);
     auto load_priority =
         GetValueFromConfig<milvus::proto::common::LoadPriority>(

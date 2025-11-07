@@ -927,6 +927,10 @@ common:
   # Valid values: [auto, avx512, avx2, avx, sse4_2]
   # This configuration is only used by querynode and indexnode, it selects CPU instruction set for Searching and Index-building.
   simdType: auto
+  tantivy:
+    # Whether to upload Tantivy-based scalar/text index as a single bundled file
+    # true: use new bundled format; false: use legacy multi-file format
+    bundleIndexFile: true
   # This parameter controls the write mode of the local disk, which is used to write temporary data downloaded from remote storage.
   # Currently, only QueryNode uses 'common.diskWrite*' parameters. Support for other components will be added in the future.
   # The options include 'direct' and 'buffered'. The default value is 'buffered'.

@@ -244,6 +244,11 @@ type commonConfig struct {
 	StorageType ParamItem `refreshable:"false"`
 	SimdType    ParamItem `refreshable:"false"`
 
+    // Tantivy related options
+    // Whether to pack Tantivy index files into a single bundled object
+    // during upload. When disabled, the legacy multi-file upload path is used.
+    TantivyBundleIndexFile ParamItem `refreshable:"false"`
+
 	DiskWriteMode         ParamItem `refreshable:"true"`
 	DiskWriteBufferSizeKb ParamItem `refreshable:"true"`
 	DiskWriteNumThreads   ParamItem `refreshable:"true"`
@@ -545,6 +550,15 @@ This configuration is only used by querynode and indexnode, it selects CPU instr
 		Export: true,
 	}
 	p.SimdType.Init(base.mgr)
+
+    p.TantivyBundleIndexFile = ParamItem{
+        Key:          "common.tantivy.bundleIndexFile",
+        Version:      "2.7.0",
+        DefaultValue: "true",
+        Doc:          "Whether to upload Tantivy-based indexes as a single bundled file (true) or legacy multi-file format (false)",
+        Export:       true,
+    }
+    p.TantivyBundleIndexFile.Init(base.mgr)
 
 	p.IndexSliceSize = ParamItem{
 		Key:          "common.indexSliceSize",

@@ -62,6 +62,20 @@ type indexBuildTask struct {
 	pluginContext *indexcgopb.StoragePluginContext
 }
 
+// setTantivyBundleIndexParam ensures tantivy bundle format flag is present in index params
+// based on global configuration (common.tantivy.bundleIndexFile).
+func setTantivyBundleIndexParam(indexParams map[string]string) map[string]string {
+    if indexParams == nil {
+        indexParams = make(map[string]string)
+    }
+    if paramtable.Get().CommonCfg.TantivyBundleIndexFile.GetAsBool() {
+        indexParams["tantivy_bundle_index_file"] = "true"
+    } else {
+        indexParams["tantivy_bundle_index_file"] = "false"
+    }
+    return indexParams
+}
+
 func NewIndexBuildTask(ctx context.Context,
 	cancel context.CancelFunc,
 	req *workerpb.CreateJobRequest,
@@ -244,7 +258,7 @@ func (it *indexBuildTask) Execute(ctx context.Context) error {
 		it.newIndexParams, _ = paramtable.Get().KnowhereConfig.MergeResourceParams(fieldDataSize, paramtable.BuildStage, it.newIndexParams)
 	}
 
-	storageConfig := &indexcgopb.StorageConfig{
+    storageConfig := &indexcgopb.StorageConfig{
 		Address:           it.req.GetStorageConfig().GetAddress(),
 		AccessKeyID:       it.req.GetStorageConfig().GetAccessKeyID(),
 		SecretAccessKey:   it.req.GetStorageConfig().GetSecretAccessKey(),
@@ -273,7 +287,10 @@ func (it *indexBuildTask) Execute(ctx context.Context) error {
 		})
 	}
 
-	buildIndexParams := &indexcgopb.BuildIndexInfo{
+    // inject bundling param from global config before building
+    it.newIndexParams = setTantivyBundleIndexParam(it.newIndexParams)
+
+    buildIndexParams := &indexcgopb.BuildIndexInfo{
 		ClusterID:                 it.req.GetClusterID(),
 		BuildID:                   it.req.GetBuildID(),
 		CollectionID:              it.req.GetCollectionID(),
@@ -288,7 +305,7 @@ func (it *indexBuildTask) Execute(ctx context.Context) error {
 		InsertFiles:               it.req.GetDataPaths(),
 		FieldSchema:               it.req.GetField(),
 		StorageConfig:             storageConfig,
-		IndexParams:               mapToKVPairs(it.newIndexParams),
+        IndexParams:               mapToKVPairs(it.newIndexParams),
 		TypeParams:                mapToKVPairs(it.newTypeParams),
 		StorePath:                 it.req.GetStorePath(),
 		StoreVersion:              it.req.GetStoreVersion(),
@@ -298,6 +315,13 @@ func (it *indexBuildTask) Execute(ctx context.Context) error {
 		LackBinlogRows:            it.req.GetLackBinlogRows(),
 		StorageVersion:            it.req.GetStorageVersion(),
 	}
+
+    // Inject global option to control tantivy bundle format
+    if paramtable.Get().CommonCfg.TantivyBundleIndexFile.GetAsBool() {
+        it.newIndexParams["tantivy_bundle_index_file"] = "true"
+    } else {
+        it.newIndexParams["tantivy_bundle_index_file"] = "false"
+    }
 
 	if it.pluginContext != nil {
 		buildIndexParams.StoragePluginContext = it.pluginContext

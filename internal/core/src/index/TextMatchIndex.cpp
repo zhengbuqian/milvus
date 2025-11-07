@@ -18,6 +18,10 @@
 #include "index/InvertedIndexUtil.h"
 #include "index/Utils.h"
 #include "storage/ThreadPools.h"
+#include "storage/FileWriter.h"
+#include "storage/BundleUtil.h"
+#include "index/Meta.h"
+#include <cstring>
 
 namespace milvus::index {
 TextMatchIndex::TextMatchIndex(int64_t commit_interval_in_ms,
@@ -94,21 +98,137 @@ TextMatchIndex::TextMatchIndex(const storage::FileManagerContext& ctx)
 IndexStatsPtr
 TextMatchIndex::Upload(const Config& config) {
     finish();
+    const bool use_bundle =
+        GetValueFromConfig<bool>(config, milvus::index::TANTIVY_BUNDLE_INDEX_FILE)
+            .value_or(true);
+    if (use_bundle) {
+        // Pack text index dir to a single bundle file for upload
+    const std::string bundle_local_path =
+        (boost::filesystem::path(path_) / storage::TANTIVY_BUNDLE_FILE_NAME).string();
+    {
+        struct Entry {
+            std::string name;
+            uint64_t size;
+        };
+        std::vector<Entry> entries;
+        boost::filesystem::path p(path_);
+        boost::filesystem::directory_iterator end_iter;
+        for (boost::filesystem::directory_iterator iter(p); iter != end_iter;
+             ++iter) {
+            if (boost::filesystem::is_directory(*iter)) {
+                continue;
+            }
+            auto filename = iter->path().filename().string();
+            if (filename == storage::TANTIVY_BUNDLE_FILE_NAME) {
+                continue;
+            }
+            auto sz = boost::filesystem::file_size(*iter);
+            entries.push_back({filename, static_cast<uint64_t>(sz)});
+        }
 
+        storage::FileWriter writer(bundle_local_path,
+                                   storage::io::Priority::MIDDLE);
+        const char magic[8] = {'T', 'A', 'N', 'T', 'I', 'V', 'Y', 'B'};
+        writer.Write(magic, sizeof(magic));
+        uint32_t ver = TANTIVY_BUNDLE_FORMAT_VERSION;
+        writer.Write(&ver, sizeof(ver));
+        uint32_t file_count = static_cast<uint32_t>(entries.size());
+        writer.Write(&file_count, sizeof(file_count));
+
+        uint64_t header_table_bytes = 0;
+        for (auto& e : entries) {
+            header_table_bytes += sizeof(uint32_t);
+            header_table_bytes += static_cast<uint32_t>(e.name.size());
+            header_table_bytes += sizeof(uint64_t);
+            header_table_bytes += sizeof(uint64_t);
+        }
+        uint64_t data_offset = sizeof(magic) + sizeof(ver) +
+                               sizeof(file_count) + header_table_bytes;
+        uint64_t current_offset = 0;
+        for (auto& e : entries) {
+            uint32_t name_len = static_cast<uint32_t>(e.name.size());
+            writer.Write(&name_len, sizeof(name_len));
+            writer.Write(e.name.data(), name_len);
+            uint64_t off = data_offset + current_offset;
+            writer.Write(&off, sizeof(off));
+            writer.Write(&e.size, sizeof(e.size));
+            current_offset += e.size;
+        }
+        auto local_cm =
+            storage::LocalChunkManagerSingleton::GetInstance().GetChunkManager();
+        const size_t buf_size = 1 << 20;
+        std::vector<uint8_t> buf(buf_size);
+        for (auto& e : entries) {
+            auto file_path = (boost::filesystem::path(path_) / e.name).string();
+            uint64_t remaining = e.size;
+            uint64_t offset = 0;
+            while (remaining > 0) {
+                auto to_read =
+                    static_cast<uint64_t>(std::min<uint64_t>(buf_size, remaining));
+                local_cm->Read(file_path, offset, buf.data(), to_read);
+                writer.Write(buf.data(), to_read);
+                remaining -= to_read;
+                offset += to_read;
+            }
+        }
+        writer.Finish();
+    }
+
+    // Stream the bundle to remote as text log and record meta
+    uint64_t bundle_size = 0;
+    {
+        auto local_cm =
+            storage::LocalChunkManagerSingleton::GetInstance().GetChunkManager();
+        bundle_size = local_cm->Size(bundle_local_path);
+        auto remote_os = disk_file_manager_->OpenOutputStream(bundle_local_path);
+        const size_t buf_size = 1 << 20;
+        std::vector<uint8_t> buf(buf_size);
+        uint64_t remaining = bundle_size;
+        uint64_t offset = 0;
+        while (remaining > 0) {
+            auto to_read =
+                static_cast<uint64_t>(std::min<uint64_t>(buf_size, remaining));
+            local_cm->Read(bundle_local_path, offset, buf.data(), to_read);
+            remote_os->Write(buf.data(), to_read);
+            remaining -= to_read;
+            offset += to_read;
+        }
+    }
+        // Using AddTextLog here would slice per previous semantics; we instead
+        // record meta for V2 single object path
+        disk_file_manager_->AddFileMeta(FileMeta{bundle_local_path,
+                                                 static_cast<int64_t>(bundle_size)});
+
+        auto remote_paths_to_size = disk_file_manager_->GetRemotePathsToFileSize();
+
+        auto binary_set = Serialize(config);
+        mem_file_manager_->AddTextLog(binary_set);
+        auto remote_mem_path_to_size =
+            mem_file_manager_->GetRemotePathsToFileSize();
+
+        std::vector<SerializedIndexFileInfo> index_files;
+        index_files.reserve(remote_paths_to_size.size() +
+                            remote_mem_path_to_size.size());
+        for (auto& file : remote_paths_to_size) {
+            index_files.emplace_back(file.first, file.second);
+        }
+        for (auto& file : remote_mem_path_to_size) {
+            index_files.emplace_back(file.first, file.second);
+        }
+        return IndexStats::New(mem_file_manager_->GetAddedTotalMemSize() +
+                                   disk_file_manager_->GetAddedTotalFileSize(),
+                               std::move(index_files));
+    }
+
+    // Legacy multi-file path: register each file via AddTextLog
     boost::filesystem::path p(path_);
     boost::filesystem::directory_iterator end_iter;
-
     for (boost::filesystem::directory_iterator iter(p); iter != end_iter;
-         iter++) {
+         ++iter) {
         if (boost::filesystem::is_directory(*iter)) {
-            LOG_WARN("{} is a directory", iter->path().string());
-        } else {
-            LOG_INFO("trying to add text log: {}", iter->path().string());
-            AssertInfo(disk_file_manager_->AddTextLog(iter->path().string()),
-                       "failed to add text log: {}",
-                       iter->path().string());
-            LOG_INFO("text log: {} added", iter->path().string());
+            continue;
         }
+        disk_file_manager_->AddTextLog(iter->path().string());
     }
 
     auto remote_paths_to_size = disk_file_manager_->GetRemotePathsToFileSize();
@@ -165,7 +285,45 @@ TextMatchIndex::Load(const Config& config) {
                index_valid_data->data.get(),
                (size_t)index_valid_data->size);
     }
-    disk_file_manager_->CacheTextLogToDisk(files_value, load_priority);
+    // Check for bundled text index
+    auto bundle_it = std::find_if(files_value.begin(),
+                                  files_value.end(),
+                                  [](const std::string& file) {
+                                      return boost::filesystem::path(file)
+                                                 .filename()
+                                                 .string() ==
+                                             storage::TANTIVY_BUNDLE_FILE_NAME;
+                                  });
+    if (bundle_it != files_value.end()) {
+        // Download and unpack the bundle into local text index dir
+        auto local_bundle_path =
+            (boost::filesystem::path(prefix) / storage::TANTIVY_BUNDLE_FILE_NAME)
+                .string();
+        {
+            auto remote_is =
+                disk_file_manager_->OpenInputStream(local_bundle_path);
+            storage::FileWriter fw(local_bundle_path,
+                                   storage::io::Priority::HIGH);
+            const size_t buf_size = 1 << 20;
+            std::vector<uint8_t> buf(buf_size);
+            size_t total = remote_is->Size();
+            size_t copied = 0;
+            while (copied < total) {
+                size_t chunk = std::min(buf_size, total - copied);
+                auto n = remote_is->ReadAt(buf.data(), copied, chunk);
+                AssertInfo(n == chunk, "failed to read remote bundle stream");
+                fw.Write(buf.data(), n);
+                copied += n;
+            }
+            fw.Finish();
+        }
+
+        storage::UnpackBundleToDir(local_bundle_path, prefix);
+    } else {
+        // Legacy: cache multi-file text log to disk
+        disk_file_manager_->CacheTextLogToDisk(files_value, load_priority);
+    }
+
     AssertInfo(
         tantivy_index_exist(prefix.c_str()), "index not exist: {}", prefix);
 
