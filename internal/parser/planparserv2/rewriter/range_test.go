@@ -363,3 +363,78 @@ func TestRewrite_Range_Array_Index_Different_NoMerge(t *testing.T) {
 	require.True(t, seenInterval)
 	require.True(t, seenLower)
 }
+
+// Test invalid BinaryRangeExpr: lower > upper → false
+func TestRewrite_Range_AND_InvalidRange_LowerGreaterThanUpper(t *testing.T) {
+	helper := buildSchemaHelperForRewriteT(t)
+	// Int64Field > 100 AND Int64Field < 50 → false (impossible range)
+	expr, err := parser.ParseExpr(helper, `Int64Field > 100 and Int64Field < 50`, nil)
+	require.NoError(t, err)
+	require.NotNil(t, expr)
+	ve := expr.GetValueExpr()
+	require.NotNil(t, ve, "should simplify to constant false")
+	require.Equal(t, false, ve.GetValue().GetBoolVal())
+}
+
+// Test invalid BinaryRangeExpr: lower == upper with exclusive bounds → false
+func TestRewrite_Range_AND_InvalidRange_EqualBoundsExclusive(t *testing.T) {
+	helper := buildSchemaHelperForRewriteT(t)
+	// Int64Field > 50 AND Int64Field < 50 → false (exclusive on equal bounds)
+	expr, err := parser.ParseExpr(helper, `Int64Field > 50 and Int64Field < 50`, nil)
+	require.NoError(t, err)
+	require.NotNil(t, expr)
+	ve := expr.GetValueExpr()
+	require.NotNil(t, ve, "should simplify to constant false")
+	require.Equal(t, false, ve.GetValue().GetBoolVal())
+}
+
+// Test invalid BinaryRangeExpr: lower == upper with one exclusive → false
+func TestRewrite_Range_AND_InvalidRange_EqualBoundsOneExclusive(t *testing.T) {
+	helper := buildSchemaHelperForRewriteT(t)
+	// Int64Field >= 50 AND Int64Field < 50 → false (one exclusive on equal bounds)
+	expr, err := parser.ParseExpr(helper, `Int64Field >= 50 and Int64Field < 50`, nil)
+	require.NoError(t, err)
+	require.NotNil(t, expr)
+	ve := expr.GetValueExpr()
+	require.NotNil(t, ve, "should simplify to constant false")
+	require.Equal(t, false, ve.GetValue().GetBoolVal())
+}
+
+// Test valid BinaryRangeExpr: lower == upper with both inclusive → valid
+func TestRewrite_Range_AND_ValidRange_EqualBoundsBothInclusive(t *testing.T) {
+	helper := buildSchemaHelperForRewriteT(t)
+	// Int64Field >= 50 AND Int64Field <= 50 → (50 <= x <= 50), which is valid (x == 50)
+	expr, err := parser.ParseExpr(helper, `Int64Field >= 50 and Int64Field <= 50`, nil)
+	require.NoError(t, err)
+	require.NotNil(t, expr)
+	bre := expr.GetBinaryRangeExpr()
+	require.NotNil(t, bre, "should create valid binary range for x == 50")
+	require.Equal(t, true, bre.GetLowerInclusive())
+	require.Equal(t, true, bre.GetUpperInclusive())
+	require.Equal(t, int64(50), bre.GetLowerValue().GetInt64Val())
+	require.Equal(t, int64(50), bre.GetUpperValue().GetInt64Val())
+}
+
+// Test invalid BinaryRangeExpr with float: lower > upper → false
+func TestRewrite_Range_AND_InvalidRange_Float_LowerGreaterThanUpper(t *testing.T) {
+	helper := buildSchemaHelperForRewriteT(t)
+	// FloatField > 99.9 AND FloatField < 10.5 → false
+	expr, err := parser.ParseExpr(helper, `FloatField > 99.9 and FloatField < 10.5`, nil)
+	require.NoError(t, err)
+	require.NotNil(t, expr)
+	ve := expr.GetValueExpr()
+	require.NotNil(t, ve, "should simplify to constant false")
+	require.Equal(t, false, ve.GetValue().GetBoolVal())
+}
+
+// Test invalid BinaryRangeExpr with string: lower > upper → false
+func TestRewrite_Range_AND_InvalidRange_String_LowerGreaterThanUpper(t *testing.T) {
+	helper := buildSchemaHelperForRewriteT(t)
+	// VarCharField > "zebra" AND VarCharField < "apple" → false
+	expr, err := parser.ParseExpr(helper, `VarCharField > "zebra" and VarCharField < "apple"`, nil)
+	require.NoError(t, err)
+	require.NotNil(t, expr)
+	ve := expr.GetValueExpr()
+	require.NotNil(t, ve, "should simplify to constant false")
+	require.Equal(t, false, ve.GetValue().GetBoolVal())
+}

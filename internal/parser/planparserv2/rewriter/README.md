@@ -5,6 +5,19 @@ This module performs rule-based logical rewrites on parsed `planpb.Expr` trees r
 ### Entry
 - `RewriteExpr(*planpb.Expr) *planpb.Expr` (in `entry.go`)
   - Recursively visits the expression tree and applies a set of composable, side-effect-free rewrite rules.
+  - Uses global configuration from `paramtable.Get().ProxyCfg.OptimizeExpr`
+- `RewriteExprWithConfig(*planpb.Expr, bool) *planpb.Expr` (in `entry.go`)
+  - Same as `RewriteExpr` but allows custom configuration for testing or special cases.
+
+### Configuration
+
+The rewriter can be configured via the following parameter (refreshable at runtime):
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `proxy.optimizeExpr` | `true` | Enable query expression optimization including range simplification, IN/NOT IN merge, TEXT_MATCH merge, and all other optimizations |
+
+**IMPORTANT**: IN/NOT IN value list sorting and deduplication **always** runs regardless of this configuration setting, because the execution engine depends on sorted value lists.
 
 ### Implemented Rules
 
@@ -52,14 +65,27 @@ This module performs rule-based logical rewrites on parsed `planpb.Expr` trees r
 - Supported columns for range optimization:
   - Scalar: Int8/Int16/Int32/Int64, Float/Double, VarChar
   - Array element access: when indexing an element (e.g., `ArrayInt[0]`), the element type above applies
-  - JSON/dynamic fields are not range-optimized
+  - JSON/dynamic fields with nested paths (e.g., `JSONField["price"]`, `$meta["age"]`) are range-optimized
+    - Type determined from literal value (int, float, string)
+    - Numeric types (int and float) are compatible and normalized to Double for merging
+    - Different type categories are not merged (e.g., `json["a"] > 10` and `json["a"] > "hello"` remain separate)
+    - Bool literals are not optimized (no meaningful ranges)
 - Literal compatibility:
   - Integer columns require integer literals (e.g., `Int64Field > 10`)
   - Float/Double columns accept both integer and float literals (e.g., `FloatField > 10` or `> 10.5`)
 - Column identity:
   - Merges only happen within the same `ColumnInfo` (including nested path and element index). For example, `ArrayInt[0]` and `ArrayInt[1]` are different columns and are not merged with each other.
-- BinaryRangeExpr scope:
-  - Once a `BinaryRangeExpr` is constructed, multiple `BinaryRangeExpr` nodes are not merged further.
+- BinaryRangeExpr merging:
+  - AND: Merge multiple `BinaryRangeExpr` nodes on the same column to compute intersection (max lower, min upper)
+    - `(10 < x < 50) AND (20 < x < 40)` → `(20 < x < 40)`
+    - Empty intersection → constant `false`
+  - AND with UnaryRangeExpr: Update appropriate bound of `BinaryRangeExpr`
+    - `(10 < x < 50) AND (x > 30)` → `(30 < x < 50)`
+  - OR: Merge overlapping or adjacent `BinaryRangeExpr` nodes into wider interval
+    - `(10 < x < 25) OR (20 < x < 40)` → `(10 < x < 40)` (overlapping)
+    - `(10 < x <= 20) OR (20 <= x < 30)` → `(10 < x < 30)` (adjacent with inclusive)
+    - Disjoint intervals remain separate: `(10 < x < 20) OR (30 < x < 40)` → remains as OR
+  - Inclusivity handling: AND prefers exclusive on equal bounds (stronger), OR prefers inclusive (weaker)
 
 ### General Notes
 - All merges require operands to target the same column (same `ColumnInfo`, including nested path/element type).
@@ -73,19 +99,21 @@ This module performs rule-based logical rewrites on parsed `planpb.Expr` trees r
   2. OR `==` → IN
   3. TEXT_MATCH merge (no options)
   4. Range weaken (same-direction bounds)
-  5. IN with `!=` short-circuiting
-  6. IN ∪ IN union
-  7. IN vs Equal redundancy elimination
-  8. Fold back to BinaryExpr
+  5. BinaryRangeExpr merge (overlapping/adjacent intervals)
+  6. IN with `!=` short-circuiting
+  7. IN ∪ IN union
+  8. IN vs Equal redundancy elimination
+  9. Fold back to BinaryExpr
 - AND branch:
   1. Flatten
   2. Range tighten / interval construction
-  3. IN ∪ IN intersection (if any)
-  4. IN with `!=` filtering
-  5. IN ∩ range filtering
-  6. IN vs Equal redundancy elimination
-  7. AND `!=` → NOT IN
-  8. Fold back to BinaryExpr
+  3. BinaryRangeExpr merge (intersection, also with UnaryRangeExpr)
+  4. IN ∪ IN intersection (if any)
+  5. IN with `!=` filtering
+  6. IN ∩ range filtering
+  7. IN vs Equal redundancy elimination
+  8. AND `!=` → NOT IN
+  9. Fold back to BinaryExpr
 
 Each construction of IN will be normalized (sorted and deduplicated). TEXT_MATCH OR merge concatenates literals with a single space; no tokenization, deduplication, or sorting is performed.
 
@@ -99,8 +127,12 @@ Each construction of IN will be normalized (sorted and deduplicated). TEXT_MATCH
 ### Future Extensions
 - More IN-range algebra (e.g., `IN` vs exact equality propagation across subtrees).
 - Merging phrase_match or other string ops with clearly-defined token rules.
-- More algebraic simplifications around equality and null checks.
-- Range optimization support for JSON/dynamic fields (define comparison semantics and safe gates).
-- Merge/union logic for BinaryRangeExpr nodes (e.g., coalescing intervals across AND/OR when compatible).
+- More algebraic simplifications around equality and null checks:
+  - Contradiction detection: `(a == 1) AND (a == 2)` → `false`; `(a > 10) AND (a == 5)` → `false`
+  - Tautology detection: `(a > 10) OR (a <= 10)` → `true` (for non-NULL values)
+  - Absorption laws: `(a > 10) OR ((a > 10) AND (b > 20))` → `a > 10`
+- Advanced BinaryRangeExpr merging:
+  - OR with 3+ intervals: Currently limited to 2 intervals. Full interval merging algorithm needed for `(10 < x < 20) OR (15 < x < 25) OR (22 < x < 30)` → `(10 < x < 30)`.
+  - OR with unbounded + bounded: Currently skipped. Could optimize `(x > 10) OR (5 < x < 15)` → `x > 5`.
 
 

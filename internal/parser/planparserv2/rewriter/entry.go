@@ -2,14 +2,19 @@ package rewriter
 
 import (
 	"github.com/milvus-io/milvus/pkg/v2/proto/planpb"
+	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
 )
 
-// RewriteExpr is the public entry to apply expression rewrite rules on a plan expression tree.
 func RewriteExpr(e *planpb.Expr) *planpb.Expr {
+	optimizeEnabled := paramtable.Get().ProxyCfg.OptimizeExpr.GetAsBool()
+	return RewriteExprWithConfig(e, optimizeEnabled)
+}
+
+func RewriteExprWithConfig(e *planpb.Expr, optimizeEnabled bool) *planpb.Expr {
 	if e == nil {
 		return nil
 	}
-	v := &visitor{}
+	v := &visitor{optimizeEnabled: optimizeEnabled}
 	res := v.visitExpr(e)
 	if out, ok := res.(*planpb.Expr); ok && out != nil {
 		return out
@@ -17,7 +22,9 @@ func RewriteExpr(e *planpb.Expr) *planpb.Expr {
 	return e
 }
 
-type visitor struct{}
+type visitor struct {
+	optimizeEnabled bool
+}
 
 func (v *visitor) visitExpr(expr *planpb.Expr) interface{} {
 	switch real := expr.GetExpr().(type) {
@@ -39,21 +46,27 @@ func (v *visitor) visitBinaryExpr(expr *planpb.BinaryExpr) interface{} {
 	switch expr.GetOp() {
 	case planpb.BinaryExpr_LogicalOr:
 		parts := flattenOr(left, right)
-		parts = v.combineOrEqualsToIn(parts)
-		parts = v.combineOrTextMatchToMerged(parts)
-		parts = v.combineOrRangePredicates(parts)
-		parts = v.combineOrInWithNotEqual(parts)
-		parts = v.combineOrInWithIn(parts)
-		parts = v.combineOrInWithEqual(parts)
+		if v.optimizeEnabled {
+			parts = v.combineOrEqualsToIn(parts)
+			parts = v.combineOrTextMatchToMerged(parts)
+			parts = v.combineOrRangePredicates(parts)
+			parts = v.combineOrBinaryRanges(parts)
+			parts = v.combineOrInWithNotEqual(parts)
+			parts = v.combineOrInWithIn(parts)
+			parts = v.combineOrInWithEqual(parts)
+		}
 		return foldBinary(planpb.BinaryExpr_LogicalOr, parts)
 	case planpb.BinaryExpr_LogicalAnd:
 		parts := flattenAnd(left, right)
-		parts = v.combineAndRangePredicates(parts)
-		parts = v.combineAndInWithIn(parts)
-		parts = v.combineAndInWithNotEqual(parts)
-		parts = v.combineAndInWithRange(parts)
-		parts = v.combineAndInWithEqual(parts)
-		parts = v.combineAndNotEqualsToNotIn(parts)
+		if v.optimizeEnabled {
+			parts = v.combineAndRangePredicates(parts)
+			parts = v.combineAndBinaryRanges(parts)
+			parts = v.combineAndInWithIn(parts)
+			parts = v.combineAndInWithNotEqual(parts)
+			parts = v.combineAndInWithRange(parts)
+			parts = v.combineAndInWithEqual(parts)
+			parts = v.combineAndNotEqualsToNotIn(parts)
+		}
 		return foldBinary(planpb.BinaryExpr_LogicalAnd, parts)
 	default:
 		return &planpb.Expr{
@@ -81,6 +94,7 @@ func (v *visitor) visitUnaryExpr(expr *planpb.UnaryExpr) interface{} {
 }
 
 func (v *visitor) visitTermExpr(expr *planpb.TermExpr) interface{} {
+	// sortTermValues always runs regardless of config settings
 	sortTermValues(expr)
 	return &planpb.Expr{Expr: &planpb.Expr_TermExpr{TermExpr: expr}}
 }
