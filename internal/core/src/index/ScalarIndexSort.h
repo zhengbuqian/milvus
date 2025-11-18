@@ -203,6 +203,7 @@ class ScalarIndexSort : public ScalarIndex<T> {
 
     // for mmap
     bool is_mmap_{false};
+    bool use_2_pointers_{false};
     int64_t mmap_size_ = 0;
     int64_t data_size_ = 0;
     // Note: it should not be used directly for accessing data. Use data_ptr_ instead.

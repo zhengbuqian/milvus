@@ -199,6 +199,10 @@ class StringIndexSortImpl {
 
     virtual int64_t
     Size() = 0;
+
+    // Strategy control
+    virtual void
+    SetUseTwoPointers(bool enable) = 0;
 };
 
 class StringIndexSortMemoryImpl : public StringIndexSortImpl {
@@ -273,6 +277,11 @@ class StringIndexSortMemoryImpl : public StringIndexSortImpl {
     int64_t
     Size() override;
 
+    void
+    SetUseTwoPointers(bool enable) override {
+        use_2_pointers_ = enable;
+    }
+
  private:
     // Helper method for binary search
     size_t
@@ -288,6 +297,8 @@ class StringIndexSortMemoryImpl : public StringIndexSortImpl {
     std::vector<std::string> unique_values_;
     // Corresponding posting lists
     std::vector<PostingList> posting_lists_;
+
+    bool use_2_pointers_{false};
 };
 
 class StringIndexSortMmapImpl : public StringIndexSortImpl {
@@ -387,6 +398,11 @@ class StringIndexSortMmapImpl : public StringIndexSortImpl {
     int64_t
     Size() override;
 
+    void
+    SetUseTwoPointers(bool enable) override {
+        use_2_pointers_ = enable;
+    }
+
  private:
     // Binary search for a value
     size_t
@@ -419,6 +435,8 @@ class StringIndexSortMmapImpl : public StringIndexSortImpl {
     const uint8_t* string_data_start_ = nullptr;
     const uint32_t* post_list_offsets_ = nullptr;
     const uint8_t* post_list_data_start_ = nullptr;
+
+    bool use_2_pointers_{false};
 };
 
 using StringIndexSortPtr = std::unique_ptr<StringIndexSort>;

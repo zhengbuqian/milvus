@@ -200,6 +200,8 @@ ScalarIndexSort<T>::LoadWithoutAssemble(const BinarySet& index_binary,
     memcpy(&index_size, index_length->data.get(), (size_t)index_length->size);
 
     is_mmap_ = GetValueFromConfig<bool>(config, ENABLE_MMAP).value_or(true);
+    use_2_pointers_ =
+        GetValueFromConfig<bool>(config, "use_2_pointers").value_or(false);
 
     auto index_data = index_binary.GetByName("index_data");
 
@@ -320,20 +322,97 @@ const TargetBitmap
 ScalarIndexSort<T>::In(const size_t n, const T* values) {
     AssertInfo(is_built_, "index has not been built");
     TargetBitmap bitset(Count());
-    for (size_t i = 0; i < n; ++i) {
-        auto lb =
-            std::lower_bound(begin(), end(), IndexStructure<T>(*(values + i)));
-        auto ub =
-            std::upper_bound(begin(), end(), IndexStructure<T>(*(values + i)));
-        for (; lb < ub; ++lb) {
-            if (lb->a_ != *(values + i)) {
-                std::cout << "error happens in ScalarIndexSort<T>::In, "
-                             "experted value is: "
-                          << *(values + i) << ", but real value is: " << lb->a_;
+
+    if (n == 0 || Count() == 0) {
+        return bitset;
+    }
+
+    std::vector<uint32_t> row_ids;
+    row_ids.reserve(n);
+
+    if (!use_2_pointers_) {
+        // Per-value binary search (values need not be sorted)
+        for (size_t i = 0; i < n; ++i) {
+            auto lb =
+                std::lower_bound(begin(), end(), IndexStructure<T>(*(values + i)));
+            auto ub =
+                std::upper_bound(begin(), end(), IndexStructure<T>(*(values + i)));
+            for (; lb < ub; ++lb) {
+                if (lb->a_ != *(values + i)) {
+                    std::cout << "error happens in ScalarIndexSort<T>::In, "
+                                 "experted value is: "
+                              << *(values + i)
+                              << ", but real value is: " << lb->a_;
+                }
+                row_ids.push_back(static_cast<uint32_t>(lb->idx_));
             }
-            bitset[lb->idx_] = true;
+        }
+    } else {
+        // Two-pointer merge algorithm with exponential search optimization.
+        // IMPORTANT: This assumes 'values' array is sorted in ascending order,
+        // which is guaranteed by the query rewriter for IN expressions.
+        constexpr size_t kInitialJump =
+            1;  // Initial jump size for exponential search
+
+        size_t ptr_values = 0;
+        size_t ptr_index = 0;
+        const size_t index_size = Count();
+        const auto* index_data = begin();
+
+        while (ptr_values < n && ptr_index < index_size) {
+            const T& value = values[ptr_values];
+            const T& index_value = index_data[ptr_index].a_;
+
+            if (value < index_value) {
+                // IN value is smaller, advance to next IN value
+                ptr_values++;
+            } else if (value > index_value) {
+                // Index value is smaller, use exponential search to find next position
+                // Start with kInitialJump, then double: 16, 32, 64, 128, ...
+                size_t left = ptr_index;
+                size_t right = ptr_index + kInitialJump;
+
+                // Exponential search: find the right boundary
+                while (right < index_size && index_data[right].a_ < value) {
+                    left = right;  // Previous right becomes new left
+                    size_t next_jump = (right - ptr_index) * 2;
+                    right = ptr_index + next_jump;
+                }
+
+                // Ensure right boundary doesn't exceed bounds
+                if (right > index_size) {
+                    right = index_size;
+                } else if (right < index_size) {
+                    right++;  // Include current right position (half-open interval)
+                }
+
+                // Binary search in [left, right)
+                while (left < right) {
+                    size_t mid = left + (right - left) / 2;
+                    if (index_data[mid].a_ < value) {
+                        left = mid + 1;
+                    } else {
+                        right = mid;
+                    }
+                }
+
+                ptr_index = left;
+            } else {
+                // Match found - collect all index entries with this value
+                while (ptr_index < index_size &&
+                       index_data[ptr_index].a_ == value) {
+                    row_ids.push_back(static_cast<uint32_t>(index_data[ptr_index].idx_));
+                    ptr_index++;
+                }
+                ptr_values++;
+            }
         }
     }
+
+    for (auto id : row_ids) {
+        bitset[id] = true;
+    }
+
     return bitset;
 }
 

@@ -280,6 +280,9 @@ void
 StringIndexSort::LoadWithoutAssemble(const BinarySet& binary_set,
                                      const Config& config) {
     config_ = config;
+    // Optional strategy flag read from config and applied to impl later
+    bool use_two_pointers =
+        GetValueFromConfig<bool>(config, "use_2_pointers").value_or(false);
 
     auto index_num_rows = binary_set.GetByName("index_num_rows");
     AssertInfo(index_num_rows != nullptr,
@@ -323,12 +326,14 @@ StringIndexSort::LoadWithoutAssemble(const BinarySet& binary_set,
         auto mmap_path =
             GetValueFromConfig<std::string>(config, MMAP_FILE_PATH).value();
         mmap_impl->SetMmapFilePath(mmap_path);
+        mmap_impl->SetUseTwoPointers(use_two_pointers);
         mmap_impl->LoadFromBinary(
             binary_set, total_num_rows_, valid_bitset_, idx_to_offsets_);
         impl_ = std::move(mmap_impl);
     } else {
         LOG_INFO("StringIndexSort: loading with memory strategy");
         impl_ = std::make_unique<StringIndexSortMemoryImpl>();
+        impl_->SetUseTwoPointers(use_two_pointers);
         impl_->LoadFromBinary(
             binary_set, total_num_rows_, valid_bitset_, idx_to_offsets_);
     }
@@ -664,14 +669,90 @@ StringIndexSortMemoryImpl::In(size_t n,
                               size_t total_num_rows) {
     TargetBitmap bitset(total_num_rows, false);
 
-    for (size_t i = 0; i < n; ++i) {
-        size_t idx = FindValueIndex(values[i]);
-        if (idx != std::numeric_limits<size_t>::max()) {
-            const auto& posting_list = posting_lists_[idx];
-            for (uint32_t row_id : posting_list) {
-                bitset[row_id] = true;
+    if (n == 0 || unique_values_.empty()) {
+        return bitset;
+    }
+
+    std::vector<uint32_t> row_ids;
+    row_ids.reserve(n);
+
+    if (!use_2_pointers_) {
+        // Per-value binary search
+        for (size_t i = 0; i < n; ++i) {
+            const std::string& value = values[i];
+            auto it = std::lower_bound(
+                unique_values_.begin(), unique_values_.end(), value);
+            if (it != unique_values_.end() && *it == value) {
+                size_t idx =
+                    static_cast<size_t>(std::distance(unique_values_.begin(), it));
+                const auto& posting_list = posting_lists_[idx];
+                for (uint32_t row_id : posting_list) {
+                    row_ids.push_back(row_id);
+                }
             }
         }
+    } else {
+        // Two-pointer merge algorithm with exponential search optimization.
+        // IMPORTANT: This assumes 'values' array is sorted in ascending order,
+        // which is guaranteed by the query rewriter for IN expressions.
+        constexpr size_t kInitialJump = 1;  // Initial jump size for exponential search
+
+        size_t ptr_values = 0;
+        size_t ptr_index = 0;
+        const size_t index_size = unique_values_.size();
+
+        while (ptr_values < n && ptr_index < index_size) {
+            const std::string& value = values[ptr_values];
+            const std::string& index_value = unique_values_[ptr_index];
+
+            if (value < index_value) {
+                // IN value is smaller, advance to next IN value
+                ptr_values++;
+            } else if (value > index_value) {
+                // Index value is smaller, use exponential search to find next position
+                // Start with kInitialJump, then double: 16, 32, 64, 128, ...
+                size_t left = ptr_index;
+                size_t right = ptr_index + kInitialJump;
+
+                // Exponential search: find the right boundary
+                while (right < index_size && unique_values_[right] < value) {
+                    left = right;  // Previous right becomes new left
+                    size_t next_jump = (right - ptr_index) * 2;
+                    right = ptr_index + next_jump;
+                }
+
+                // Ensure right boundary doesn't exceed bounds
+                if (right > index_size) {
+                    right = index_size;
+                } else if (right < index_size) {
+                    right++;  // Include current right position (half-open interval)
+                }
+
+                // Binary search in [left, right)
+                while (left < right) {
+                    size_t mid = left + (right - left) / 2;
+                    if (unique_values_[mid] < value) {
+                        left = mid + 1;
+                    } else {
+                        right = mid;
+                    }
+                }
+
+                ptr_index = left;
+            } else {
+                // Match found - collect all rows in posting list
+                const auto& posting_list = posting_lists_[ptr_index];
+                for (uint32_t row_id : posting_list) {
+                    row_ids.push_back(row_id);
+                }
+                ptr_index++;
+                ptr_values++;
+            }
+        }
+    }
+
+    for (auto id : row_ids) {
+        bitset[id] = true;
     }
 
     return bitset;
@@ -987,16 +1068,88 @@ StringIndexSortMmapImpl::In(size_t n,
                             size_t total_num_rows) {
     TargetBitmap bitset(total_num_rows, false);
 
-    for (size_t i = 0; i < n; ++i) {
-        size_t idx = FindValueIndex(values[i]);
-        if (idx < unique_count_) {
-            MmapEntry entry = GetEntry(idx);
-            // Set bits for all row_ids in posting list
-            entry.for_each_row_id(
-                [&bitset](uint32_t row_id) { bitset.set(row_id); });
-        }
+    if (n == 0 || unique_count_ == 0) {
+        return bitset;
     }
 
+    std::vector<uint32_t> row_ids;
+    row_ids.reserve(n);
+
+    if (!use_2_pointers_) {
+        // Per-value binary search
+        for (size_t i = 0; i < n; ++i) {
+            const std::string& value = values[i];
+            size_t pos = FindValueIndex(value);
+            if (pos < unique_count_) {
+                MmapEntry entry = GetEntry(pos);
+                entry.for_each_row_id([&row_ids](uint32_t row_id) {
+                    row_ids.push_back(row_id);
+                });
+            }
+        }
+    } else {
+        // Two-pointer merge algorithm with exponential search optimization.
+        // IMPORTANT: This assumes 'values' array is sorted in ascending order,
+        // which is guaranteed by the query rewriter for IN expressions.
+        constexpr size_t kInitialJump = 1;  // Initial jump size for exponential search
+
+        size_t ptr_values = 0;
+        size_t ptr_index = 0;
+
+        while (ptr_values < n && ptr_index < unique_count_) {
+            const std::string& value = values[ptr_values];
+            MmapEntry entry = GetEntry(ptr_index);
+            std::string_view index_value = entry.get_string_view();
+
+            int cmp = value.compare(index_value);
+            if (cmp < 0) {
+                // IN value is smaller, advance to next IN value
+                ptr_values++;
+            } else if (cmp > 0) {
+                // Index value is smaller, use exponential search to find next position
+                // Start with kInitialJump, then double: 16, 32, 64, 128, ...
+                size_t left = ptr_index;
+                size_t right = ptr_index + kInitialJump;
+
+                // Exponential search: find the right boundary
+                while (right < unique_count_ &&
+                       GetEntry(right).get_string_view() < value) {
+                    left = right;  // Previous right becomes new left
+                    size_t next_jump = (right - ptr_index) * 2;
+                    right = ptr_index + next_jump;
+                }
+
+                // Ensure right boundary doesn't exceed bounds
+                if (right > unique_count_) {
+                    right = unique_count_;
+                } else if (right < unique_count_) {
+                    right++;  // Include current right position (half-open interval)
+                }
+
+                // Binary search in [left, right)
+                while (left < right) {
+                    size_t mid = left + (right - left) / 2;
+                    if (GetEntry(mid).get_string_view() < value) {
+                        left = mid + 1;
+                    } else {
+                        right = mid;
+                    }
+                }
+
+                ptr_index = left;
+            } else {
+                // Match found - collect all rows in posting list
+                entry.for_each_row_id([&row_ids](uint32_t row_id) {
+                    row_ids.push_back(row_id);
+                });
+                ptr_index++;
+                ptr_values++;
+            }
+        }
+    }
+    for (auto id : row_ids) {
+        bitset.set(id);
+    }
     return bitset;
 }
 
