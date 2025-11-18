@@ -68,7 +68,6 @@ class ExecPlanNodeVisitor : public PlanNodeVisitor {
     RetrieveResult
     get_retrieve_result(PlanNode& node) {
         assert(!retrieve_result_opt_.has_value());
-        std::cout.flush();
         node.accept(*this);
         assert(retrieve_result_opt_.has_value());
         auto ret = std::move(retrieve_result_opt_).value();

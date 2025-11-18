@@ -23,6 +23,7 @@
 #include "exec/expression/Expr.h"
 #include "exec/operator/Operator.h"
 #include "exec/QueryContext.h"
+#include "expr/ITypeExpr.h"
 
 namespace milvus {
 namespace exec {
@@ -74,6 +75,8 @@ class PhyFilterBitsNode : public Operator {
  private:
     std::unique_ptr<ExprSet> exprs_;
     QueryContext* query_context_;
+    // keep a copy of the original logical filter expr for potential recompile
+    expr::TypedExprPtr filter_expr_;
     int64_t num_processed_rows_;
     int64_t need_process_rows_;
 };
