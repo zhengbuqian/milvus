@@ -32,6 +32,8 @@ extern std::atomic<bool> OPTIMIZE_EXPR_ENABLED;
 extern std::atomic<bool> GROWING_JSON_KEY_STATS_ENABLED;
 extern std::atomic<bool> CONFIG_PARAM_TYPE_CHECK_ENABLED;
 extern std::atomic<bool> ENABLE_PARQUET_STATS_SKIP_INDEX;
+// Enable index-only fast path to evaluate whole expression in one chunk
+extern std::atomic<bool> EXEC_ONE_CHUNK_INDEX_ONLY_ENABLED;
 
 void
 SetIndexSliceSize(const int64_t size);
@@ -55,6 +57,9 @@ void
 SetDefaultEnableParquetStatsSkipIndex(bool val);
 void
 SetLogLevel(const char* level);
+// Toggle index-only fast path behavior globally
+void
+SetDefaultExecOneChunkIndexOnlyEnable(bool val);
 
 struct BufferView {
     struct Element {

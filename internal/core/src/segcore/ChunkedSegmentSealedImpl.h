@@ -261,6 +261,17 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
         const std::function<void(const SegOffset offset, const Timestamp ts)>&
             callback) const;
 
+    // Controls whether to use two-pointers algorithm for pk search on sorted segments
+    void
+    SetPkUse2Pointers(bool enable) {
+        pk_use_2_pointers_ = enable;
+    }
+
+    bool
+    GetPkUse2Pointers() const {
+        return pk_use_2_pointers_;
+    }
+
  public:
     // count of chunk that has raw data
     int64_t
@@ -1016,6 +1027,8 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
     // whether the segment is sorted by the pk
     // 1. will skip index loading for primary key field
     bool is_sorted_by_pk_ = false;
+    // whether pk search uses two-pointers optimization (default false)
+    bool pk_use_2_pointers_ = false;
 };
 
 inline SegmentSealedUPtr

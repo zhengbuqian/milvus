@@ -19,6 +19,7 @@
 
 #include "query/Utils.h"
 #include "index/json_stats/JsonKeyStats.h"
+#include "segcore/ChunkedSegmentSealedImpl.h"
 namespace milvus {
 namespace exec {
 
@@ -169,10 +170,18 @@ template <typename T>
 VectorPtr
 PhyBinaryRangeFilterExpr::ExecRangeVisitorImpl(EvalCtx& context) {
     if (!has_offset_input_ && is_pk_field_ && segment_->type() == SegmentType::Sealed) {
-        if (pk_type_ == DataType::VARCHAR) {
-            return ExecRangeVisitorImplForPk<std::string_view>(context);
-        } else {
-            return ExecRangeVisitorImplForPk<int64_t>(context);
+        bool enable_pk_fast = false;
+        if (auto sealed =
+                dynamic_cast<const milvus::segcore::ChunkedSegmentSealedImpl*>(
+                    segment_)) {
+            enable_pk_fast = sealed->GetPkUse2Pointers();
+        }
+        if (enable_pk_fast) {
+            if (pk_type_ == DataType::VARCHAR) {
+                return ExecRangeVisitorImplForPk<std::string_view>(context);
+            } else {
+                return ExecRangeVisitorImplForPk<int64_t>(context);
+            }
         }
     }
 

@@ -32,6 +32,7 @@ std::atomic<bool> CONFIG_PARAM_TYPE_CHECK_ENABLED(
     DEFAULT_CONFIG_PARAM_TYPE_CHECK_ENABLED);
 std::atomic<bool> ENABLE_PARQUET_STATS_SKIP_INDEX(
     DEFAULT_ENABLE_PARQUET_STATS_SKIP_INDEX);
+std::atomic<bool> EXEC_ONE_CHUNK_INDEX_ONLY_ENABLED(false);
 
 void
 SetIndexSliceSize(const int64_t size) {
@@ -100,6 +101,13 @@ SetLogLevel(const char* level) {
             gflags::SetCommandLineOption("minloglevel", "2");
         }
     }
+}
+
+void
+SetDefaultExecOneChunkIndexOnlyEnable(bool val) {
+    EXEC_ONE_CHUNK_INDEX_ONLY_ENABLED.store(val);
+    LOG_INFO("set default exec one-chunk(index-only) enabled: {}",
+             EXEC_ONE_CHUNK_INDEX_ONLY_ENABLED.load());
 }
 
 }  // namespace milvus

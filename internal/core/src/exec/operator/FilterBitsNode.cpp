@@ -17,6 +17,7 @@
 #include "FilterBitsNode.h"
 #include "common/Tracer.h"
 #include "fmt/format.h"
+#include "common/Common.h"
 
 #include "monitor/Monitor.h"
 #include "exec/expression/ConjunctExpr.h"
@@ -123,7 +124,8 @@ PhyFilterBitsNode::GetOutput() {
     // Fast path: whole expression tree is index-only -> evaluate once with large batch
     {
         auto root = exprs_->expr(0);
-        if (IsIndexOnlyTree(root, query_context_->get_segment())) {
+        if (IsIndexOnlyTree(root, query_context_->get_segment()) &&
+            milvus::EXEC_ONE_CHUNK_INDEX_ONLY_ENABLED.load()) {
             tracer::AddEvent("fast_path_index_only: true");
             auto active_count = query_context_->get_active_count();
             auto qcfg = std::make_shared<QueryConfig>(

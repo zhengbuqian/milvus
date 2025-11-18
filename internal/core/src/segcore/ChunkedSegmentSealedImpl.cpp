@@ -1141,6 +1141,73 @@ ChunkedSegmentSealedImpl::search_pks(BitsetType& bitset,
     auto pk_column = get_column(pk_field_id);
     AssertInfo(pk_column != nullptr, "primary key column not loaded");
 
+    // If two-pointers optimization is disabled, fall back to the previous per-chunk per-pk search
+    if (!pk_use_2_pointers_) {
+        switch (schema_->get_fields().at(pk_field_id).get_data_type()) {
+            case DataType::INT64: {
+                auto all_chunk_pins = pk_column->GetAllChunks(nullptr);
+                auto num_chunk = pk_column->num_chunks();
+                for (int i = 0; i < num_chunk; ++i) {
+                    auto pw = all_chunk_pins[i];
+                    auto src =
+                        reinterpret_cast<const int64_t*>(pw.get()->RawData());
+                    auto chunk_row_num = pk_column->chunk_row_nums(i);
+                    for (size_t j = 0; j < pks.size(); j++) {
+                        // get int64 pks
+                        auto target = std::get<int64_t>(pks[j]);
+                        auto it = std::lower_bound(
+                            src,
+                            src + chunk_row_num,
+                            target,
+                            [](const int64_t& elem, const int64_t& value) {
+                                return elem < value;
+                            });
+                        auto num_rows_until_chunk =
+                            pk_column->GetNumRowsUntilChunk(i);
+                        for (; it != src + chunk_row_num && *it == target;
+                             ++it) {
+                            auto offset = it - src + num_rows_until_chunk;
+                            bitset[offset] = true;
+                        }
+                    }
+                }
+                return;
+            }
+            case DataType::VARCHAR: {
+                auto all_chunk_pins = pk_column->GetAllChunks(nullptr);
+                auto num_chunk = pk_column->num_chunks();
+                for (int i = 0; i < num_chunk; ++i) {
+                    // TODO @xiaocai2333, @sunby: chunk need to record the min/max.
+                    auto num_rows_until_chunk =
+                        pk_column->GetNumRowsUntilChunk(i);
+                    auto pw = all_chunk_pins[i];
+                    auto string_chunk = static_cast<StringChunk*>(pw.get());
+                    for (size_t j = 0; j < pks.size(); ++j) {
+                        // get varchar pks
+                        auto& target = std::get<std::string>(pks[j]);
+                        auto offset = string_chunk->binary_search_string(target);
+                        for (; offset != -1 &&
+                               offset < string_chunk->RowNums() &&
+                               string_chunk->operator[](offset) == target;
+                             ++offset) {
+                            auto segment_offset = offset + num_rows_until_chunk;
+                            bitset[segment_offset] = true;
+                        }
+                    }
+                }
+                return;
+            }
+            default: {
+                ThrowInfo(
+                    DataTypeInvalid,
+                    fmt::format("unsupported type {}",
+                                schema_->get_fields()
+                                    .at(pk_field_id)
+                                    .get_data_type()));
+            }
+        }
+    }
+
     switch (schema_->get_fields().at(pk_field_id).get_data_type()) {
         case DataType::INT64:
             search_pks_with_two_pointers_impl<int64_t>(
@@ -1284,6 +1351,171 @@ ChunkedSegmentSealedImpl::search_sorted_pk_range(milvus::OpContext* op_ctx,
     AssertInfo(pk_field_id.get() != -1, "Primary key is -1");
     auto pk_column = get_column(pk_field_id);
     AssertInfo(pk_column != nullptr, "primary key column not loaded");
+
+    // If two-pointers optimization is disabled, use legacy per-chunk logic
+    if (!pk_use_2_pointers_) {
+        switch (schema_->get_fields().at(pk_field_id).get_data_type()) {
+            case DataType::INT64: {
+                // get int64 pks
+                auto target = std::get<int64_t>(pk);
+
+                auto num_chunk = pk_column->num_chunks();
+                for (int i = 0; i < num_chunk; ++i) {
+                    auto pw = pk_column->DataOfChunk(op_ctx, i);
+                    auto src = reinterpret_cast<const int64_t*>(pw.get());
+                    auto chunk_row_num = pk_column->chunk_row_nums(i);
+                    if (op == proto::plan::OpType::GreaterEqual) {
+                        auto it = std::lower_bound(
+                            src,
+                            src + chunk_row_num,
+                            target,
+                            [](const int64_t& elem, const int64_t& value) {
+                                return elem < value;
+                            });
+                        auto num_rows_until_chunk =
+                            pk_column->GetNumRowsUntilChunk(i);
+                        for (; it != src + chunk_row_num; ++it) {
+                            auto offset = it - src + num_rows_until_chunk;
+                            bitset[offset] = true;
+                        }
+                    } else if (op == proto::plan::OpType::GreaterThan) {
+                        auto it = std::upper_bound(
+                            src,
+                            src + chunk_row_num,
+                            target,
+                            [](const int64_t& elem, const int64_t& value) {
+                                return elem < value;
+                            });
+                        auto num_rows_until_chunk =
+                            pk_column->GetNumRowsUntilChunk(i);
+                        for (; it != src + chunk_row_num; ++it) {
+                            auto offset = it - src + num_rows_until_chunk;
+                            bitset[offset] = true;
+                        }
+                    } else if (op == proto::plan::OpType::LessEqual) {
+                        auto it = std::upper_bound(
+                            src,
+                            src + chunk_row_num,
+                            target,
+                            [](const int64_t& elem, const int64_t& value) {
+                                return elem < value;
+                            });
+                        if (it == src) {
+                            break;
+                        }
+                        auto num_rows_until_chunk =
+                            pk_column->GetNumRowsUntilChunk(i);
+                        for (auto ptr = src; ptr < it; ++ptr) {
+                            auto offset = ptr - src + num_rows_until_chunk;
+                            bitset[offset] = true;
+                        }
+                    } else if (op == proto::plan::OpType::LessThan) {
+                        auto it = std::lower_bound(
+                            src, src + chunk_row_num, target);
+                        if (it == src) {
+                            break;
+                        }
+                        auto num_rows_until_chunk =
+                            pk_column->GetNumRowsUntilChunk(i);
+                        for (auto ptr = src; ptr < it; ++ptr) {
+                            auto offset = ptr - src + num_rows_until_chunk;
+                            bitset[offset] = true;
+                        }
+                    } else if (op == proto::plan::OpType::Equal) {
+                        auto it = std::lower_bound(
+                            src,
+                            src + chunk_row_num,
+                            target,
+                            [](const int64_t& elem, const int64_t& value) {
+                                return elem < value;
+                            });
+                        auto num_rows_until_chunk =
+                            pk_column->GetNumRowsUntilChunk(i);
+                        for (; it != src + chunk_row_num && *it == target;
+                             ++it) {
+                            auto offset = it - src + num_rows_until_chunk;
+                            bitset[offset] = true;
+                        }
+                        if (it != src + chunk_row_num && *it > target) {
+                            break;
+                        }
+                    } else {
+                        ThrowInfo(ErrorCode::Unsupported,
+                                  fmt::format("unsupported op type {}", op));
+                    }
+                }
+                return;
+            }
+            case DataType::VARCHAR: {
+                // get varchar pks
+                auto target = std::get<std::string>(pk);
+
+                auto num_chunk = pk_column->num_chunks();
+                for (int i = 0; i < num_chunk; ++i) {
+                    auto num_rows_until_chunk =
+                        pk_column->GetNumRowsUntilChunk(i);
+                    auto pw = pk_column->GetChunk(op_ctx, i);
+                    auto string_chunk = static_cast<StringChunk*>(pw.get());
+
+                    if (op == proto::plan::OpType::Equal) {
+                        auto offset = string_chunk->lower_bound_string(target);
+                        for (; offset < string_chunk->RowNums() &&
+                               string_chunk->operator[](offset) == target;
+                             ++offset) {
+                            auto segment_offset = offset + num_rows_until_chunk;
+                            bitset[segment_offset] = true;
+                        }
+                        if (offset < string_chunk->RowNums() &&
+                            string_chunk->operator[](offset) > target) {
+                            break;
+                        }
+                    } else if (op == proto::plan::OpType::GreaterEqual) {
+                        auto offset = string_chunk->lower_bound_string(target);
+                        for (; offset < string_chunk->RowNums(); ++offset) {
+                            auto segment_offset = offset + num_rows_until_chunk;
+                            bitset[segment_offset] = true;
+                        }
+                    } else if (op == proto::plan::OpType::GreaterThan) {
+                        auto offset = string_chunk->upper_bound_string(target);
+                        for (; offset < string_chunk->RowNums(); ++offset) {
+                            auto segment_offset = offset + num_rows_until_chunk;
+                            bitset[segment_offset] = true;
+                        }
+                    } else if (op == proto::plan::OpType::LessEqual) {
+                        auto pos = string_chunk->upper_bound_string(target);
+                        if (pos == 0) {
+                            break;
+                        }
+                        for (auto offset = 0; offset < pos; ++offset) {
+                            auto segment_offset = offset + num_rows_until_chunk;
+                            bitset[segment_offset] = true;
+                        }
+                    } else if (op == proto::plan::OpType::LessThan) {
+                        auto pos = string_chunk->lower_bound_string(target);
+                        if (pos == 0) {
+                            break;
+                        }
+                        for (auto offset = 0; offset < pos; ++offset) {
+                            auto segment_offset = offset + num_rows_until_chunk;
+                            bitset[segment_offset] = true;
+                        }
+                    } else {
+                        ThrowInfo(ErrorCode::Unsupported,
+                                  fmt::format("unsupported op type {}", op));
+                    }
+                }
+                return;
+            }
+            default: {
+                ThrowInfo(
+                    DataTypeInvalid,
+                    fmt::format("unsupported type {}",
+                                schema_->get_fields()
+                                    .at(pk_field_id)
+                                    .get_data_type()));
+            }
+        }
+    }
 
     switch (schema_->get_fields().at(pk_field_id).get_data_type()) {
         case DataType::INT64:

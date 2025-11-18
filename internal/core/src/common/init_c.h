@@ -74,6 +74,10 @@ SetExprResCacheEnable(bool val);
 void
 SetExprResCacheCapacityBytes(int64_t bytes);
 
+// Toggle index-only fast path that evaluates entire filter in one chunk
+void
+SetDefaultExecOneChunkIndexOnlyEnable(bool val);
+
 #ifdef __cplusplus
 };
 #endif

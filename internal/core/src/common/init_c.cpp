@@ -97,6 +97,11 @@ SetExprResCacheCapacityBytes(int64_t bytes) {
 }
 
 void
+SetDefaultExecOneChunkIndexOnlyEnable(bool val) {
+    milvus::SetDefaultExecOneChunkIndexOnlyEnable(val);
+}
+
+void
 InitTrace(CTraceConfig* config) {
     auto traceConfig = milvus::tracer::TraceConfig{config->exporter,
                                                    config->sampleFraction,
