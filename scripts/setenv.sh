@@ -65,17 +65,26 @@ case "${unameOut}" in
         exit 1
       fi
       llvm_prefix="$(brew --prefix llvm@${llvm_version})"
+      echo "Using LLVM ${llvm_version} at ${llvm_prefix}"
+      
+      # Get the macOS SDK path and export SDKROOT for proper system library detection
+      sdk_path="$(xcrun --show-sdk-path)"
+      export SDKROOT="${sdk_path}"
+      
       export CLANG_TOOLS_PATH="${llvm_prefix}/bin"
       export CC=${llvm_prefix}/bin/clang
       export CXX=${llvm_prefix}/bin/clang++
       export ASM=${llvm_prefix}/bin/clang
       export CFLAGS="-Wno-deprecated-declarations -I$(brew --prefix libomp)/include"
       export CXXFLAGS=${CFLAGS}
-      export LDFLAGS="-L$(brew --prefix libomp)/lib"
+      export LDFLAGS="-L${llvm_prefix}/lib -L${llvm_prefix}/lib/c++ -L$(brew --prefix libomp)/lib -L${sdk_path}/usr/lib -F${sdk_path}/System/Library/Frameworks -Wl,-rpath,${llvm_prefix}/lib -Wl,-rpath,${llvm_prefix}/lib/c++"
 
       export PKG_CONFIG_PATH="${PKG_CONFIG_PATH}:$ROOT_DIR/internal/core/output/lib/pkgconfig"
-      export DYLD_LIBRARY_PATH=$ROOT_DIR/internal/core/output/lib
-      export RPATH=$DYLD_LIBRARY_PATH;;
+      # Fix LLVM library loading issues on macOS
+      export DYLD_LIBRARY_PATH="${llvm_prefix}/lib:${llvm_prefix}/lib/c++:$ROOT_DIR/internal/core/output/lib:${DYLD_LIBRARY_PATH}"
+      export RPATH=$DYLD_LIBRARY_PATH
+      # Ensure LLVM tools can find their libraries
+      export DYLD_FALLBACK_LIBRARY_PATH="${sdk_path}/usr/lib:${DYLD_FALLBACK_LIBRARY_PATH}";;
     MINGW*)
       extra_path=$(cygpath -w "$ROOT_DIR/internal/core/output/lib")
       export PKG_CONFIG_PATH="${PKG_CONFIG_PATH};${extra_path}\pkgconfig"

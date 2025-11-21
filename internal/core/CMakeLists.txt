@@ -16,6 +16,23 @@
 
 cmake_minimum_required( VERSION 3.18 )
 
+# On macOS with Homebrew LLVM, we may need to skip compiler checks due to dyld issues
+if (APPLE AND DEFINED ENV{CC} AND "$ENV{CC}" MATCHES "homebrew.*llvm")
+    set(CMAKE_C_COMPILER_WORKS TRUE CACHE INTERNAL "")
+    set(CMAKE_CXX_COMPILER_WORKS TRUE CACHE INTERNAL "")
+    set(CMAKE_C_COMPILER_ID "Clang" CACHE STRING "" FORCE)
+    set(CMAKE_CXX_COMPILER_ID "Clang" CACHE STRING "" FORCE)
+    set(CMAKE_CXX_COMPILER_VERSION "17.0.0" CACHE STRING "" FORCE)
+    set(CMAKE_C_COMPILER_VERSION "17.0.0" CACHE STRING "" FORCE)
+    # Set compiler features that simdjson might be looking for
+    set(CMAKE_CXX_COMPILE_FEATURES "cxx_std_11;cxx_std_14;cxx_std_17;cxx_std_20" CACHE STRING "" FORCE)
+    message(STATUS "Skipping compiler checks for Homebrew LLVM")
+endif()
+
+# Enable C and CXX languages early for proper compiler detection
+enable_language(C)
+enable_language(CXX)
+
 if ( APPLE )
     set( CMAKE_CROSSCOMPILING TRUE )
     set( RUN_HAVE_GNU_POSIX_REGEX 0 )
@@ -39,6 +56,30 @@ endif()
 
 project(core)
 include(CheckCXXCompilerFlag)
+
+# Force compiler detection on macOS with LLVM
+if (APPLE)
+    # Check if we're using LLVM from Homebrew
+    if (CMAKE_CXX_COMPILER MATCHES "homebrew.*llvm.*clang\\+\\+")
+        message(STATUS "Detected Homebrew LLVM, forcing Clang compiler ID")
+        set(CMAKE_CXX_COMPILER_ID "Clang" CACHE STRING "CXX compiler identification" FORCE)
+        set(CMAKE_C_COMPILER_ID "Clang" CACHE STRING "C compiler identification" FORCE)
+        
+        # Extract version from path if possible
+        string(REGEX MATCH "llvm@([0-9]+)" LLVM_VERSION_MATCH "${CMAKE_CXX_COMPILER}")
+        if (LLVM_VERSION_MATCH)
+            string(REGEX REPLACE "llvm@" "" LLVM_VERSION "${LLVM_VERSION_MATCH}")
+            set(CMAKE_CXX_COMPILER_VERSION "${LLVM_VERSION}.0.0" CACHE STRING "CXX compiler version" FORCE)
+            set(CMAKE_C_COMPILER_VERSION "${LLVM_VERSION}.0.0" CACHE STRING "C compiler version" FORCE)
+            message(STATUS "Set LLVM version to ${CMAKE_CXX_COMPILER_VERSION}")
+        else()
+            set(CMAKE_CXX_COMPILER_VERSION "17.0.0" CACHE STRING "CXX compiler version" FORCE)
+            set(CMAKE_C_COMPILER_VERSION "17.0.0" CACHE STRING "C compiler version" FORCE)
+        endif()
+        # Set compiler features
+        set(CMAKE_CXX_COMPILE_FEATURES "cxx_std_11;cxx_std_14;cxx_std_17;cxx_std_20" CACHE STRING "" FORCE)
+    endif()
+endif()
 if ( APPLE )
     message(STATUS "==============Darwin Environment==============")
 elseif (${CMAKE_SYSTEM_NAME} MATCHES "Linux")
@@ -119,6 +160,9 @@ include( ThirdPartyPackages )
 
 # **************************** Compiler arguments ****************************
 message( STATUS "Building Milvus CPU version" )
+message( STATUS "CMAKE_CXX_COMPILER = ${CMAKE_CXX_COMPILER}" )
+message( STATUS "CMAKE_CXX_COMPILER_ID = ${CMAKE_CXX_COMPILER_ID}" )
+message( STATUS "CMAKE_CXX_COMPILER_VERSION = ${CMAKE_CXX_COMPILER_VERSION}" )
 
 if (LINUX OR MSYS)
     append_flags( CMAKE_CXX_FLAGS

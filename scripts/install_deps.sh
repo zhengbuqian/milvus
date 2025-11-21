@@ -65,11 +65,22 @@ function install_linux_deps() {
 
 function install_mac_deps() {
   sudo xcode-select --install > /dev/null 2>&1
-  brew install boost libomp ninja cmake llvm@15 ccache grep pkg-config zip unzip tbb
+  brew install boost libomp ninja llvm@15 ccache grep pkg-config zip unzip tbb
   export PATH="/usr/local/opt/grep/libexec/gnubin:$PATH"
   brew update && brew upgrade && brew cleanup
 
   pip3 install conan==1.64.1
+
+  # install cmake 3.26 (cmake 4.x is incompatible with conan packages)
+  cmake_version=$(cmake --version 2>/dev/null | head -1 | grep -o '[0-9][\.][0-9]*' || echo "0")
+  if [ ! "$cmake_version" ] || [ $(echo "$cmake_version < 3.26 || $cmake_version >= 4.0" | bc) -eq 1 ]; then
+    echo "cmake version $cmake_version is incompatible, installing 3.26.5 ..."
+    curl -L "https://cmake.org/files/v3.26/cmake-3.26.5-macos-universal.tar.gz" -o /tmp/cmake.tar.gz
+    sudo tar --strip-components=1 -xzf /tmp/cmake.tar.gz -C /usr/local
+    rm /tmp/cmake.tar.gz
+  else
+    echo "cmake version is $cmake_version"
+  fi
 
   if [[ $(arch) == 'arm64' ]]; then
     brew install openssl
