@@ -391,10 +391,38 @@ SegmentGrowingImpl::load_field_data_common(
     if (field_meta.enable_match()) {
         auto pinned = GetTextIndex(nullptr, field_id);
         auto index = pinned.get();
-        index->BuildIndexFromFieldData(field_data, field_meta.is_nullable());
-        index->Commit();
-        // Reload reader so that the index can be read immediately
-        index->Reload();
+        // Check if it's a regular TextMatchIndex or SharedTextIndexView
+        if (auto text_match_index =
+                dynamic_cast<milvus::index::TextMatchIndex*>(index)) {
+            text_match_index->BuildIndexFromFieldData(field_data,
+                                                      field_meta.is_nullable());
+            text_match_index->Commit();
+            // Reload reader so that the index can be read immediately
+            text_match_index->Reload();
+        } else if (auto shared_view =
+                       dynamic_cast<milvus::index::SharedTextIndexView*>(
+                           index)) {
+            // For shared index, use AddTexts batch API
+            auto shared_iter = shared_text_indexes_.find(field_id);
+            if (shared_iter != shared_text_indexes_.end()) {
+                // Extract texts from field data and add to shared index
+                int64_t offset = 0;
+                for (const auto& data : field_data) {
+                    auto n = data->get_num_rows();
+                    auto* str_data =
+                        static_cast<const std::string*>(data->Data());
+                    FixedVector<bool> valid_data(n, true);
+                    if (field_meta.is_nullable() && data->ValidDataSize() > 0) {
+                        for (size_t i = 0; i < n; ++i) {
+                            valid_data[i] = data->is_valid(i);
+                        }
+                    }
+                    shared_iter->second->AddTexts(
+                        id_, str_data, valid_data.data(), n, offset);
+                    offset += n;
+                }
+            }
+        }
     }
 
     // update the mem size
@@ -1226,18 +1254,40 @@ SegmentGrowingImpl::CreateTextIndex(FieldId field_id) {
     const auto& field_meta = schema_->operator[](field_id);
     AssertInfo(IsStringDataType(field_meta.get_data_type()),
                "cannot create text index on non-string type");
-    std::string unique_id = GetUniqueFieldId(field_meta.get_id().get());
-    // todo: make this(200) configurable.
-    auto index = std::make_unique<index::TextMatchIndex>(
-        200,
-        unique_id.c_str(),
-        "milvus_tokenizer",
-        field_meta.get_analyzer_params().c_str());
-    index->Commit();
-    index->CreateReader(milvus::index::SetBitsetGrowing);
-    index->RegisterTokenizer("milvus_tokenizer",
-                             field_meta.get_analyzer_params().c_str());
-    text_indexes_[field_id] = std::move(index);
+
+    auto analyzer_params = field_meta.get_analyzer_params();
+
+    // Check if shared text index is enabled
+    if (segcore_config_.get_enable_shared_text_index()) {
+        // Use shared text index for memory efficiency
+        size_t key_hash = std::hash<std::string>{}(analyzer_params);
+        index::SharedIndexKey key{key_hash};
+
+        auto shared_index =
+            index::SharedTextIndexManager::Instance().GetOrCreate(
+                key, "text", "milvus_tokenizer", analyzer_params);
+
+        shared_index->RegisterSegment(id_);
+        shared_text_indexes_[field_id] = shared_index;
+
+        // Also create a view for query path compatibility
+        auto view = std::make_shared<index::SharedTextIndexView>(
+            shared_index, id_, 0);  // row_count will be updated during query
+        text_indexes_[field_id] = view;
+    } else {
+        // Original path: create per-segment index
+        std::string unique_id = GetUniqueFieldId(field_meta.get_id().get());
+        // todo: make this(200) configurable.
+        auto index =
+            std::make_unique<index::TextMatchIndex>(200,
+                                                    unique_id.c_str(),
+                                                    "milvus_tokenizer",
+                                                    analyzer_params.c_str());
+        index->Commit();
+        index->CreateReader(milvus::index::SetBitsetGrowing);
+        index->RegisterTokenizer("milvus_tokenizer", analyzer_params.c_str());
+        text_indexes_[field_id] = std::move(index);
+    }
 }
 
 void
@@ -1257,6 +1307,16 @@ SegmentGrowingImpl::AddTexts(milvus::FieldId field_id,
                              size_t n,
                              int64_t offset_begin) {
     std::unique_lock lock(mutex_);
+
+    // First check if using shared text index
+    auto shared_iter = shared_text_indexes_.find(field_id);
+    if (shared_iter != shared_text_indexes_.end()) {
+        shared_iter->second->AddTexts(
+            id_, texts, texts_valid_data, n, offset_begin);
+        return;
+    }
+
+    // Fallback to original per-segment index
     auto iter = text_indexes_.find(field_id);
     if (iter == text_indexes_.end()) {
         throw SegcoreError(

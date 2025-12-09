@@ -34,6 +34,7 @@
 #include "common/Types.h"
 #include "query/PlanNode.h"
 #include "common/GeometryCache.h"
+#include "index/SharedTextIndex.h"
 
 namespace milvus::segcore {
 
@@ -333,6 +334,12 @@ class SegmentGrowingImpl : public SegmentGrowing {
     }
 
     ~SegmentGrowingImpl() {
+        // Unregister from shared text indexes
+        for (auto& [field_id, shared_index] : shared_text_indexes_) {
+            shared_index->UnregisterSegment(id_);
+        }
+        shared_text_indexes_.clear();
+
         // Clean up geometry cache for all fields in this segment
         auto& cache_manager =
             milvus::exec::SimpleGeometryCacheManager::Instance();
@@ -609,6 +616,11 @@ class SegmentGrowingImpl : public SegmentGrowing {
 
     // milvus storage internal api reader instance
     std::unique_ptr<milvus_storage::api::Reader> reader_;
+
+    // Shared text indexes for cross-collection memory sharing
+    // Only used when enable_shared_text_index is true
+    std::unordered_map<FieldId, std::shared_ptr<index::SharedTextIndex>>
+        shared_text_indexes_;
 };
 
 inline SegmentGrowingPtr

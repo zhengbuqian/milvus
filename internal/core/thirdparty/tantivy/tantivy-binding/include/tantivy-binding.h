@@ -507,4 +507,81 @@ RustResult tantivy_set_analyzer_options(const char *params);
 
 bool tantivy_index_exist(const char *path);
 
+// ==================== Shared Text Index APIs ====================
+// These APIs are designed for growing segments to share a single tantivy index.
+// Multiple segments can write to the same index, distinguished by segment_id field.
+
+// Create a shared text index writer (in-memory)
+RustResult tantivy_create_shared_text_writer(const char *field_name,
+                                             const char *tokenizer_name,
+                                             const char *analyzer_params,
+                                             uintptr_t num_threads,
+                                             uintptr_t overall_memory_budget_in_bytes);
+
+// Add a single text document with segment_id and local_doc_id
+RustResult tantivy_shared_text_writer_add_text(void *ptr,
+                                               uint64_t segment_id,
+                                               uint64_t local_doc_id,
+                                               const char *text);
+
+// Add multiple texts for a segment in batch
+RustResult tantivy_shared_text_writer_add_texts(void *ptr,
+                                                uint64_t segment_id,
+                                                const char *const *texts,
+                                                uintptr_t num_texts,
+                                                uint64_t offset_begin);
+
+// Delete all documents belonging to a segment
+RustResult tantivy_shared_text_writer_delete_segment(void *ptr, uint64_t segment_id);
+
+// Commit changes to the index
+RustResult tantivy_shared_text_writer_commit(void *ptr);
+
+// Create a reader from the writer
+RustResult tantivy_shared_text_writer_create_reader(void *ptr);
+
+// Register a tokenizer for the writer
+RustResult tantivy_shared_text_writer_register_tokenizer(void *ptr,
+                                                         const char *tokenizer_name,
+                                                         const char *analyzer_params);
+
+// Free the shared text writer
+void tantivy_free_shared_text_writer(void *ptr);
+
+// Reload the reader to see latest changes
+RustResult tantivy_shared_text_reader_reload(void *ptr);
+
+// Match query filtered by segment_id, returns local_doc_ids array
+// result_len will be set to the number of results
+// Returns array pointer via RustResult.value.ptr (caller must free with tantivy_free_u64_array)
+RustResult tantivy_shared_text_reader_match_query(void *ptr,
+                                                  uint64_t segment_id,
+                                                  const char *query,
+                                                  uintptr_t *result_len);
+
+// Match query with minimum should match, filtered by segment_id
+RustResult tantivy_shared_text_reader_match_query_with_minimum(void *ptr,
+                                                               uint64_t segment_id,
+                                                               const char *query,
+                                                               uintptr_t min_should_match,
+                                                               uintptr_t *result_len);
+
+// Phrase match query filtered by segment_id
+RustResult tantivy_shared_text_reader_phrase_match_query(void *ptr,
+                                                         uint64_t segment_id,
+                                                         const char *query,
+                                                         uint32_t slop,
+                                                         uintptr_t *result_len);
+
+// Register a tokenizer for the reader
+RustResult tantivy_shared_text_reader_register_tokenizer(void *ptr,
+                                                         const char *tokenizer_name,
+                                                         const char *analyzer_params);
+
+// Free the shared text reader
+void tantivy_free_shared_text_reader(void *ptr);
+
+// Free u64 array returned by query functions
+void tantivy_free_u64_array(uint64_t *ptr, uintptr_t len);
+
 }  // extern "C"

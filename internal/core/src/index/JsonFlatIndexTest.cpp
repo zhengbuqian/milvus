@@ -636,4 +636,224 @@ TEST_F(JsonFlatIndexExprTest, TestExistsExpr) {
     EXPECT_FALSE(final[14]);
     EXPECT_FALSE(final[15]);
 }
+
+// Test that reproduces the flaky test scenario where:
+// - Multiple JSON indexes exist with paths like /a, /a/0
+// - Query targets /a/0 but might use /a index due to race condition
+// - Tests both empty path querying (exact match) and relative path querying
+class JsonFlatIndexArrayPathTest : public ::testing::Test {
+ protected:
+    void
+    SetUp() override {
+        // Test data similar to the flaky test:
+        // Rows 0-1: {"a": {"b": 1}} - /a is object, /a/0 doesn't exist
+        // Rows 2-3: {"a": [1, 2, 3]} - /a is array, /a/0 = 1
+        // Rows 4-5: {"a": [4, 5, 6]} - /a is array, /a/0 = 4
+        json_data_ = {
+            R"({"a": {"b": 1}, "c": 1})",   // row 0
+            R"({"a": {"b": 2}, "c": 2})",   // row 1
+            R"({"a": [1, 2, 3], "c": 3})",  // row 2 - a[0] = 1
+            R"({"a": [1, 2, 4], "c": 4})",  // row 3 - a[0] = 1
+            R"({"a": [4, 5, 6], "c": 5})",  // row 4 - a[0] = 4
+            R"({"a": [4, 5, 7], "c": 6})",  // row 5 - a[0] = 4
+        };
+
+        auto schema = std::make_shared<Schema>();
+        auto vec_fid = schema->AddDebugField(
+            "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+        auto i64_fid = schema->AddDebugField("age64", DataType::INT64);
+        json_fid_ = schema->AddDebugField("json", DataType::JSON, true);
+        schema->set_primary_field_id(i64_fid);
+
+        segment_ = segcore::CreateSealedSegment(schema);
+
+        // Build JSON field data
+        auto json_field =
+            std::make_shared<FieldData<milvus::Json>>(DataType::JSON, true);
+        std::vector<milvus::Json> jsons;
+        for (auto& json_str : json_data_) {
+            jsons.push_back(milvus::Json(simdjson::padded_string(json_str)));
+        }
+        json_field->add_json_data(jsons);
+        auto json_valid_data = json_field->ValidData();
+        json_valid_data[0] = 0xFF;
+
+        // Load field data first
+        auto cm = milvus::storage::RemoteChunkManagerSingleton::GetInstance()
+                      .GetRemoteChunkManager();
+        auto load_info = PrepareSingleFieldInsertBinlog(
+            1, 1, 1, json_fid_.get(), {json_field}, cm);
+        segment_->LoadFieldData(load_info);
+
+        // Build and load /a index with unique build_id
+        BuildAndLoadIndex("/a", json_field, 5000);
+
+        // Build and load /a/0 index with unique build_id
+        BuildAndLoadIndex("/a/0", json_field, 5001);
+    }
+
+    void
+    BuildAndLoadIndex(const std::string& path,
+                      std::shared_ptr<FieldData<milvus::Json>> json_field,
+                      int64_t build_id) {
+        auto file_manager_ctx = storage::FileManagerContext();
+        file_manager_ctx.fieldDataMeta.field_schema.set_data_type(
+            milvus::proto::schema::JSON);
+        file_manager_ctx.fieldDataMeta.field_schema.set_fieldid(
+            json_fid_.get());
+        file_manager_ctx.fieldDataMeta.field_schema.set_nullable(true);
+        file_manager_ctx.fieldDataMeta.field_id = json_fid_.get();
+        // Set unique build_id to avoid temp directory conflicts
+        file_manager_ctx.indexMeta.build_id = build_id;
+        file_manager_ctx.indexMeta.index_version = build_id;
+
+        auto index = index::IndexFactory::GetInstance().CreateJsonIndex(
+            index::CreateIndexInfo{
+                .index_type = index::INVERTED_INDEX_TYPE,
+                .json_cast_type = JsonCastType::FromString("JSON"),
+                .json_path = path,
+            },
+            file_manager_ctx);
+
+        auto json_index = std::unique_ptr<index::JsonFlatIndex>(
+            static_cast<index::JsonFlatIndex*>(index.release()));
+
+        json_index->BuildWithFieldData({json_field});
+        json_index->finish();
+        json_index->create_reader(milvus::index::SetBitsetSealed);
+
+        segcore::LoadIndexInfo load_index_info;
+        load_index_info.field_id = json_fid_.get();
+        load_index_info.field_type = DataType::JSON;
+        load_index_info.index_params = {{JSON_PATH, path},
+                                        {JSON_CAST_TYPE, "JSON"}};
+        load_index_info.cache_index =
+            CreateTestCacheIndex("", std::move(json_index));
+        segment_->LoadIndex(load_index_info);
+    }
+
+    void
+    TearDown() override {
+    }
+
+    FieldId json_fid_;
+    std::vector<std::string> json_data_;
+    segcore::SegmentSealedUPtr segment_;
+};
+
+// This test verifies the core issue: querying /a/0 == 1
+// Expected: rows 2, 3 should match (a[0] = 1)
+TEST_F(JsonFlatIndexArrayPathTest, TestArrayElementQuery) {
+    // Query: my_json['a'][0] == 1
+    proto::plan::GenericValue value;
+    value.set_int64_val(1);
+    auto expr = std::make_shared<expr::UnaryRangeFilterExpr>(
+        expr::ColumnInfo(json_fid_, DataType::JSON, {"a", "0"}),
+        proto::plan::OpType::Equal,
+        value,
+        std::vector<proto::plan::GenericValue>());
+    auto plan =
+        std::make_shared<plan::FilterBitsNode>(DEFAULT_PLANNODE_ID, expr);
+    auto final = query::ExecuteQueryExpr(
+        plan, segment_.get(), json_data_.size(), MAX_TIMESTAMP);
+
+    // Should find rows 2 and 3 where a[0] = 1
+    EXPECT_EQ(final.count(), 2) << "Expected 2 matches for a[0] == 1";
+    EXPECT_FALSE(final[0]) << "Row 0: a is object, not array";
+    EXPECT_FALSE(final[1]) << "Row 1: a is object, not array";
+    EXPECT_TRUE(final[2]) << "Row 2: a[0] = 1, should match";
+    EXPECT_TRUE(final[3]) << "Row 3: a[0] = 1, should match";
+    EXPECT_FALSE(final[4]) << "Row 4: a[0] = 4, not 1";
+    EXPECT_FALSE(final[5]) << "Row 5: a[0] = 4, not 1";
+}
+
+// Test querying with /a index directly using relative path /0
+// This demonstrates that Tantivy CANNOT handle numeric array indices
+// When the query path contains numeric indices (like "0" for array access),
+// Tantivy interprets them as object keys, not array indices.
+// This is why we must prevent prefix matching when the relative path contains numbers.
+TEST_F(JsonFlatIndexArrayPathTest, TestDirectIndexQueryWithRelativePath) {
+    // Get the /a index directly and query with relative path /0
+    auto pins = segment_->PinJsonIndex(
+        nullptr, json_fid_, "/a", DataType::INT64, false, false);
+
+    ASSERT_EQ(pins.size(), 1) << "Should find /a index";
+
+    auto* json_flat_index =
+        dynamic_cast<const index::JsonFlatIndex*>(pins[0].get());
+    ASSERT_NE(json_flat_index, nullptr);
+
+    // Query with path /0 (relative to /a)
+    auto executor = json_flat_index->create_executor<int64_t>("/0");
+
+    int64_t search_val = 1;
+    auto result = executor->In(1, &search_val);
+
+    ASSERT_EQ(result.size(), json_data_.size());
+
+    // The /a index stores:
+    // Rows 0-1: {"b": 1} or {"b": 2} (objects)
+    // Rows 2-3: [1, 2, 3] or [1, 2, 4] (arrays)
+    // Rows 4-5: [4, 5, 6] or [4, 5, 7] (arrays)
+    //
+    // When querying path "0" (after conversion from /0):
+    // Tantivy looks for a key named "0", NOT the first array element.
+    // Since none of our JSON documents have a key "0", ALL results should be false.
+    //
+    // This test documents the ACTUAL Tantivy behavior, which is:
+    // - Numeric path segments are treated as object keys, not array indices
+    // - Arrays cannot be accessed by index through Tantivy's path syntax
+
+    // All results should be false because Tantivy can't access array elements by index
+    EXPECT_FALSE(result[0]) << "Row 0: Tantivy looks for key '0', not found";
+    EXPECT_FALSE(result[1]) << "Row 1: Tantivy looks for key '0', not found";
+    EXPECT_FALSE(result[2]) << "Row 2: Tantivy looks for key '0', not found "
+                               "(array access not supported)";
+    EXPECT_FALSE(result[3]) << "Row 3: Tantivy looks for key '0', not found "
+                               "(array access not supported)";
+    EXPECT_FALSE(result[4]) << "Row 4: Tantivy looks for key '0', not found "
+                               "(array access not supported)";
+    EXPECT_FALSE(result[5]) << "Row 5: Tantivy looks for key '0', not found "
+                               "(array access not supported)";
+}
+
+// Test querying with /a/0 index using empty path
+// This tests if empty path correctly matches the root value
+TEST_F(JsonFlatIndexArrayPathTest, TestDirectIndexQueryWithEmptyPath) {
+    // Get the /a/0 index directly and query with empty path
+    auto pins = segment_->PinJsonIndex(
+        nullptr, json_fid_, "/a/0", DataType::INT64, false, false);
+
+    ASSERT_EQ(pins.size(), 1) << "Should find /a/0 index";
+
+    auto* json_flat_index =
+        dynamic_cast<const index::JsonFlatIndex*>(pins[0].get());
+    ASSERT_NE(json_flat_index, nullptr);
+
+    // Query with empty path (exact match to index path)
+    auto executor = json_flat_index->create_executor<int64_t>("");
+
+    int64_t search_val = 1;
+    auto result = executor->In(1, &search_val);
+
+    ASSERT_EQ(result.size(), json_data_.size());
+
+    // The /a/0 index stores:
+    // Rows 0-1: null (path doesn't exist since /a is object)
+    // Rows 2-3: 1 (integer value)
+    // Rows 4-5: 4 (integer value)
+    //
+    // When querying with empty path:
+    // - Rows 0-1: no data (null) -> no match
+    // - Rows 2-3: value is 1 -> should match
+    // - Rows 4-5: value is 4 -> no match
+
+    EXPECT_FALSE(result[0]) << "Row 0: /a/0 doesn't exist";
+    EXPECT_FALSE(result[1]) << "Row 1: /a/0 doesn't exist";
+    EXPECT_TRUE(result[2]) << "Row 2: /a/0 = 1, should match";
+    EXPECT_TRUE(result[3]) << "Row 3: /a/0 = 1, should match";
+    EXPECT_FALSE(result[4]) << "Row 4: /a/0 = 4, not 1";
+    EXPECT_FALSE(result[5]) << "Row 5: /a/0 = 4, not 1";
+}
+
 }  // namespace milvus::test

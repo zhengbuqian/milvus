@@ -49,6 +49,13 @@ SegcoreSetEnableGeometryCache(const bool value) {
 }
 
 extern "C" void
+SegcoreSetEnableSharedTextIndex(const bool value) {
+    milvus::segcore::SegcoreConfig& config =
+        milvus::segcore::SegcoreConfig::default_config();
+    config.set_enable_shared_text_index(value);
+}
+
+extern "C" void
 SegcoreSetNlist(const int64_t value) {
     milvus::segcore::SegcoreConfig& config =
         milvus::segcore::SegcoreConfig::default_config();

@@ -22,6 +22,7 @@
 #include "common/Types.h"
 #include "exec/expression/ExprCache.h"
 #include "common/type_c.h"
+#include "index/SharedTextIndex.h"
 #include "log/Log.h"
 #include "monitor/Monitor.h"
 #include "common/ScopedTimer.h"
@@ -1759,7 +1760,7 @@ PhyUnaryRangeFilterExpr::CanUseIndexForJson(DataType val_type) {
 
 VectorPtr
 PhyUnaryRangeFilterExpr::ExecTextMatch() {
-    using Index = index::TextMatchIndex;
+    using Index = index::ITextMatchable;
     if (!arg_inited_) {
         value_arg_.SetValue<std::string>(expr_->val_);
         arg_inited_ = true;

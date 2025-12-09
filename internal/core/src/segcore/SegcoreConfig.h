@@ -157,6 +157,16 @@ class SegcoreConfig {
         return enable_geometry_cache_;
     }
 
+    void
+    set_enable_shared_text_index(bool enable) {
+        enable_shared_text_index_ = enable;
+    }
+
+    bool
+    get_enable_shared_text_index() const {
+        return enable_shared_text_index_;
+    }
+
  private:
     inline static const std::unordered_set<std::string>
         valid_dense_vector_index_type = {
@@ -176,6 +186,7 @@ class SegcoreConfig {
         knowhere::RefineType::DATA_VIEW;
     inline static bool refine_with_quant_flag_ = false;
     inline static bool enable_geometry_cache_ = false;
+    inline static bool enable_shared_text_index_ = false;
 };
 
 }  // namespace milvus::segcore

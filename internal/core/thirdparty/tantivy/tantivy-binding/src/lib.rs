@@ -24,6 +24,8 @@ mod index_writer_v5;
 mod index_writer_v7;
 mod log;
 mod milvus_id_collector;
+mod shared_text_index;
+mod shared_text_index_c;
 mod string_c;
 mod token_stream_c;
 mod tokenizer_c;

@@ -44,6 +44,7 @@
 #include "pb/segcore.pb.h"
 #include "index/SkipIndex.h"
 #include "index/TextMatchIndex.h"
+#include "index/SharedTextIndex.h"
 #include "segcore/ConcurrentVector.h"
 #include "segcore/InsertRecord.h"
 #include "index/NgramInvertedIndex.h"
@@ -177,7 +178,7 @@ class SegmentInterface {
     virtual void
     CreateTextIndex(FieldId field_id) = 0;
 
-    virtual PinWrapper<index::TextMatchIndex*>
+    virtual PinWrapper<index::ITextMatchable*>
     GetTextIndex(milvus::OpContext* op_ctx, FieldId field_id) const = 0;
 
     virtual std::vector<PinWrapper<const index::IndexBase*>>
@@ -428,7 +429,7 @@ class SegmentInternalInterface : public SegmentInterface {
     virtual DataType
     GetFieldDataType(FieldId fieldId) const = 0;
 
-    PinWrapper<index::TextMatchIndex*>
+    PinWrapper<index::ITextMatchable*>
     GetTextIndex(milvus::OpContext* op_ctx, FieldId field_id) const override;
 
     PinWrapper<index::NgramInvertedIndex*>
@@ -680,7 +681,8 @@ class SegmentInternalInterface : public SegmentInterface {
         std::variant<std::unique_ptr<milvus::index::TextMatchIndex>,
                      std::shared_ptr<milvus::index::TextMatchIndexHolder>,
                      std::shared_ptr<milvus::cachinglayer::CacheSlot<
-                         milvus::index::TextMatchIndex>>>>
+                         milvus::index::TextMatchIndex>>,
+                     std::shared_ptr<milvus::index::SharedTextIndexView>>>
         text_indexes_;
 
     // json stats cache (field_id -> CacheSlot of JsonKeyStats)

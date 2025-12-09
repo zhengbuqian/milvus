@@ -453,7 +453,7 @@ SegmentInternalInterface::GetSkipIndex() const {
     return skip_index_;
 }
 
-PinWrapper<index::TextMatchIndex*>
+PinWrapper<index::ITextMatchable*>
 SegmentInternalInterface::GetTextIndex(milvus::OpContext* op_ctx,
                                        FieldId field_id) const {
     std::shared_lock lock(mutex_);
@@ -464,25 +464,30 @@ SegmentInternalInterface::GetTextIndex(milvus::OpContext* op_ctx,
             fmt::format("text index not found for field {}", field_id.get()));
     }
 
-    auto make_pin = [&](auto&& alt) -> PinWrapper<index::TextMatchIndex*> {
+    auto make_pin = [&](auto&& alt) -> PinWrapper<index::ITextMatchable*> {
         using Alt = std::decay_t<decltype(alt)>;
 
         if constexpr (std::is_same_v<
                           Alt,
                           std::unique_ptr<milvus::index::TextMatchIndex>>) {
-            return PinWrapper<index::TextMatchIndex*>(alt.get());
+            return PinWrapper<index::ITextMatchable*>(alt.get());
         } else if constexpr (std::is_same_v<
                                  Alt,
                                  std::shared_ptr<
                                      milvus::index::TextMatchIndexHolder>>) {
-            return PinWrapper<index::TextMatchIndex*>(alt, alt->get());
+            return PinWrapper<index::ITextMatchable*>(alt, alt->get());
         } else if constexpr (std::is_same_v<
                                  Alt,
                                  std::shared_ptr<
                                      milvus::cachinglayer::CacheSlot<
                                          milvus::index::TextMatchIndex>>>) {
             auto ca = SemiInlineGet(alt->PinCells(op_ctx, {0}));
-            return PinWrapper<index::TextMatchIndex*>(ca, ca->get_cell_of(0));
+            return PinWrapper<index::ITextMatchable*>(ca, ca->get_cell_of(0));
+        } else if constexpr (std::is_same_v<
+                                 Alt,
+                                 std::shared_ptr<
+                                     milvus::index::SharedTextIndexView>>) {
+            return PinWrapper<index::ITextMatchable*>(alt, alt.get());
         } else {
             throw SegcoreError(
                 milvus::ErrorCode::UnexpectedError,
