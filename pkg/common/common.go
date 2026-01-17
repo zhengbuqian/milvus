@@ -91,7 +91,16 @@ const (
 
 const (
 	MinimalScalarIndexEngineVersion = int32(0)
-	CurrentScalarIndexEngineVersion = int32(2)
+	CurrentScalarIndexEngineVersion = int32(3)
+
+	// LastScalarIndexEngineVersionWithoutMeta is the last engine version where
+	// scalar index metadata might not include a version field. When metadata
+	// doesn't provide a version, control plane should fallback to this version.
+	LastScalarIndexEngineVersionWithoutMeta = int32(2)
+
+	// UnifiedScalarIndexVersion is the version that introduces unified scalar index format
+	// which stores all index data in a single file instead of multiple files
+	UnifiedScalarIndexVersion = int32(3)
 )
 
 const DefaultTimezone = "UTC"
