@@ -91,7 +91,11 @@ const (
 
 const (
 	MinimalScalarIndexEngineVersion = int32(0)
-	CurrentScalarIndexEngineVersion = int32(2)
+	CurrentScalarIndexEngineVersion = int32(3)
+
+	// UnifiedScalarIndexVersion is the version that introduces unified scalar index format
+	// which stores all index data in a single file instead of multiple files
+	UnifiedScalarIndexVersion = int32(3)
 )
 
 const DefaultTimezone = "UTC"
@@ -160,10 +164,12 @@ const (
 
 	DropRatioBuildKey = "drop_ratio_build"
 
-	IsSparseKey               = "is_sparse"
-	AutoIndexName             = "AUTOINDEX"
-	BitmapCardinalityLimitKey = "bitmap_cardinality_limit"
-	IgnoreGrowing             = "ignore_growing"
+	IsSparseKey                        = "is_sparse"
+	AutoIndexName                      = "AUTOINDEX"
+	BitmapCardinalityLimitKey          = "bitmap_cardinality_limit"
+	HybridLowCardinalityIndexTypeKey   = "hybrid_low_cardinality_index_type"
+	HybridHighCardinalityIndexTypeKey  = "hybrid_high_cardinality_index_type"
+	IgnoreGrowing                      = "ignore_growing"
 	ConsistencyLevel          = "consistency_level"
 	HintsKey                  = "hints"
 
