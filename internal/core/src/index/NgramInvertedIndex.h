@@ -94,6 +94,11 @@ class NgramInvertedIndex : public InvertedIndexTantivy<std::string> {
         return ScalarIndexType::NGRAM;
     }
 
+    std::string
+    PackedIndexFileToken() const override {
+        return "ngram";
+    }
+
     void
     finish() {
         this->wrapper_->finish();

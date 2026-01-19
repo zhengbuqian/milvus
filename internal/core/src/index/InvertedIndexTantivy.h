@@ -210,6 +210,13 @@ class InvertedIndexTantivy : public ScalarIndex<T> {
         return is_nested_index_;
     }
 
+    // Token used in packed_<type>_v<ver> file names.
+    // Override in derived classes to distinguish index types.
+    virtual std::string
+    PackedIndexFileToken() const {
+        return "inverted";
+    }
+
     virtual const TargetBitmap
     PrefixMatch(const std::string_view prefix);
 
@@ -302,6 +309,13 @@ class InvertedIndexTantivy : public ScalarIndex<T> {
     // Modifying the index_files in place.
     virtual void
     RetainTantivyIndexFiles(std::vector<std::string>& index_files);
+
+    // Loads extra data from unpacked BinarySet in unified format.
+    // Override this method to load additional data (e.g., non_exist_offsets).
+    virtual void
+    LoadExtraDataFromUnifiedFormat(const BinarySet& unpacked) {
+        // Default implementation: no extra data to load
+    }
 
  protected:
     std::shared_ptr<TantivyIndexWrapper> wrapper_;

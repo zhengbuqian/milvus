@@ -10,6 +10,7 @@
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
 #include "tantivy-binding.h"
+#include "common/Pack.h"
 #include "common/Slice.h"
 #include "common/RegexQuery.h"
 #include "common/Tracer.h"
@@ -25,10 +26,10 @@
 #include <boost/uuid/random_generator.hpp>
 #include <boost/uuid/uuid_io.hpp>
 #include <cstddef>
+#include <filesystem>
 #include <shared_mutex>
 #include <type_traits>
 #include <vector>
-#include "InvertedIndexTantivy.h"
 
 namespace milvus::index {
 inline TantivyDataType
@@ -122,7 +123,14 @@ InvertedIndexTantivy<T>::Serialize(const Config& config) {
                        index_valid_data,
                        index_valid_data_length);
     }
-    milvus::Disassemble(res_set);
+
+    // For unified scalar index version (>=3), skip slicing
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(milvus::kLastScalarIndexEngineVersionWithoutMeta);
+    if (!milvus::IsUnifiedScalarIndexVersion(version)) {
+        milvus::Disassemble(res_set);
+    }
     return res_set;
 }
 
@@ -131,6 +139,46 @@ IndexStatsPtr
 InvertedIndexTantivy<T>::Upload(const Config& config) {
     finish();
 
+    // Check if using unified format
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(milvus::kLastScalarIndexEngineVersionWithoutMeta);
+
+    if (milvus::IsUnifiedScalarIndexVersion(version)) {
+        // Unified format: pack directory + serialize data into single file
+        auto [dir_data, dir_size] = milvus::PackDirectoryToBinary(path_);
+
+        // Create BinarySet with packed directory data
+        BinarySet combined_set;
+        combined_set.Append("tantivy_index_data", dir_data, dir_size);
+
+        // Add null_offset data if any
+        auto serialized = Serialize(config);
+        for (const auto& [name, binary] : serialized.binary_map_) {
+            combined_set.Append(name, binary->data, binary->size);
+        }
+
+        // Pack into single file directly (no extra copy)
+        auto [packed_data, packed_size] =
+            milvus::PackBinarySetToBinary(combined_set);
+
+        BinarySet packed_set;
+        auto packed_file_name =
+            milvus::FormatPackedIndexFileName(PackedIndexFileToken(), version);
+        packed_set.Append(packed_file_name, packed_data, packed_size);
+        mem_file_manager_->AddFile(packed_set);
+
+        auto remote_mem_path_to_size =
+            mem_file_manager_->GetRemotePathsToFileSize();
+        std::vector<SerializedIndexFileInfo> index_files;
+        for (auto& file : remote_mem_path_to_size) {
+            index_files.emplace_back(file.first, file.second);
+        }
+        return IndexStats::New(mem_file_manager_->GetAddedTotalMemSize(),
+                               std::move(index_files));
+    }
+
+    // Legacy format: upload files individually
     boost::filesystem::path p(path_);
     boost::filesystem::directory_iterator end_iter;
 
@@ -202,23 +250,86 @@ InvertedIndexTantivy<T>::Load(milvus::tracer::TraceContext ctx,
              segment_id,
              field_id);
 
-    LoadIndexMetas(inverted_index_files, config);
-    RetainTantivyIndexFiles(inverted_index_files);
     auto load_priority =
         GetValueFromConfig<milvus::proto::common::LoadPriority>(
             config, milvus::LOAD_PRIORITY)
             .value_or(milvus::proto::common::LoadPriority::HIGH);
-    disk_file_manager_->CacheIndexToDisk(inverted_index_files, load_priority);
-    auto prefix = disk_file_manager_->GetLocalIndexObjectPrefix();
-    path_ = prefix;
-    auto load_in_mmap =
-        GetValueFromConfig<bool>(config, ENABLE_MMAP).value_or(true);
-    wrapper_ = std::make_shared<TantivyIndexWrapper>(
-        prefix.c_str(), load_in_mmap, milvus::index::SetBitsetSealed);
 
-    if (!load_in_mmap) {
-        // the index is loaded in ram, so we can remove files in advance
-        disk_file_manager_->RemoveIndexFiles();
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(milvus::kLastScalarIndexEngineVersionWithoutMeta);
+
+    if (milvus::IsUnifiedScalarIndexVersion(version)) {
+        // Unified format: download single file, unpack to directory
+        auto index_datas = mem_file_manager_->LoadIndexToMemory(
+            inverted_index_files, load_priority);
+        auto packed_name =
+            milvus::FormatPackedIndexFileName(PackedIndexFileToken(), version);
+        auto packed_data_it = index_datas.find(packed_name);
+        if (packed_data_it == index_datas.end()) {
+            for (auto it = index_datas.begin(); it != index_datas.end(); ++it) {
+                if (std::filesystem::path(it->first).filename().string() ==
+                    packed_name) {
+                    packed_data_it = it;
+                    break;
+                }
+            }
+        }
+        AssertInfo(packed_data_it != index_datas.end(),
+                   "packed index data not found for unified format");
+        auto packed_data = std::move(packed_data_it->second);
+
+        // Unpack the outer BinarySet
+        auto unpacked = milvus::UnpackBlobToBinarySet(
+            packed_data->PayloadData(), packed_data->PayloadSize());
+
+        // Extract and unpack tantivy directory data
+        auto tantivy_data = unpacked.GetByName("tantivy_index_data");
+        AssertInfo(tantivy_data != nullptr,
+                   "tantivy_index_data not found in packed index");
+
+        auto prefix = disk_file_manager_->GetLocalIndexObjectPrefix();
+        boost::filesystem::create_directories(prefix);
+        milvus::UnpackBlobToDirectory(
+            tantivy_data->data.get(), tantivy_data->size, prefix);
+        path_ = prefix;
+
+        // Load null_offset if present
+        auto null_offset_data = unpacked.GetByName(INDEX_NULL_OFFSET_FILE_NAME);
+        if (null_offset_data != nullptr && null_offset_data->size > 0) {
+            null_offset_.resize(null_offset_data->size / sizeof(size_t));
+            memcpy(null_offset_.data(),
+                   null_offset_data->data.get(),
+                   null_offset_data->size);
+        }
+
+        // Allow subclasses to load extra data from the unpacked BinarySet
+        LoadExtraDataFromUnifiedFormat(unpacked);
+
+        auto load_in_mmap =
+            GetValueFromConfig<bool>(config, ENABLE_MMAP).value_or(true);
+        wrapper_ = std::make_shared<TantivyIndexWrapper>(
+            prefix.c_str(), load_in_mmap, milvus::index::SetBitsetSealed);
+
+        if (!load_in_mmap) {
+            boost::filesystem::remove_all(prefix);
+        }
+    } else {
+        // Legacy format: load files individually
+        LoadIndexMetas(inverted_index_files, config);
+        RetainTantivyIndexFiles(inverted_index_files);
+        disk_file_manager_->CacheIndexToDisk(inverted_index_files,
+                                             load_priority);
+        auto prefix = disk_file_manager_->GetLocalIndexObjectPrefix();
+        path_ = prefix;
+        auto load_in_mmap =
+            GetValueFromConfig<bool>(config, ENABLE_MMAP).value_or(true);
+        wrapper_ = std::make_shared<TantivyIndexWrapper>(
+            prefix.c_str(), load_in_mmap, milvus::index::SetBitsetSealed);
+
+        if (!load_in_mmap) {
+            disk_file_manager_->RemoveIndexFiles();
+        }
     }
     ComputeByteSize();
 }
@@ -536,13 +647,11 @@ InvertedIndexTantivy<T>::BuildWithRawDataForUT(size_t n,
         d_type_ = get_tantivy_data_type(schema_);
         std::string field = "test_inverted_index";
         inverted_index_single_segment_ =
-            GetValueFromConfig<int32_t>(
-                config, milvus::index::SCALAR_INDEX_ENGINE_VERSION)
+            GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
                 .value_or(1) == 0;
         tantivy_index_version_ =
-            GetValueFromConfig<int32_t>(config,
-                                        milvus::index::TANTIVY_INDEX_VERSION)
-                .value_or(milvus::index::TANTIVY_INDEX_LATEST_VERSION);
+            GetValueFromConfig<int32_t>(config, TANTIVY_INDEX_VERSION)
+                .value_or(TANTIVY_INDEX_LATEST_VERSION);
         wrapper_ = std::make_shared<TantivyIndexWrapper>(
             field.c_str(),
             d_type_,

@@ -25,6 +25,7 @@
 
 #include "common/Consts.h"
 #include "common/File.h"
+#include "common/Pack.h"
 #include "common/Slice.h"
 #include "common/Common.h"
 #include "index/Meta.h"
@@ -39,6 +40,8 @@
 
 namespace milvus {
 namespace index {
+
+constexpr const char* kPackedIndexTypeToken = "bitmap";
 
 constexpr size_t ALIGNMENT = 32;  // 32-byte alignment
 
@@ -284,7 +287,13 @@ BitmapIndex<T>::Serialize(const Config& config) {
              data_.size(),
              total_num_rows_);
 
-    Disassemble(ret_set);
+    // For unified scalar index version (>=3), skip slicing to store as single file
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(kLastScalarIndexEngineVersionWithoutMeta);
+    if (!IsUnifiedScalarIndexVersion(version)) {
+        Disassemble(ret_set);
+    }
     return ret_set;
 }
 
@@ -293,7 +302,22 @@ IndexStatsPtr
 BitmapIndex<T>::Upload(const Config& config) {
     auto binary_set = Serialize(config);
 
-    file_manager_->AddFile(binary_set);
+    // For unified scalar index version (>=3), pack BinarySet into single file
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(kLastScalarIndexEngineVersionWithoutMeta);
+    if (IsUnifiedScalarIndexVersion(version)) {
+        // Pack the BinarySet into a single blob directly (no extra copy)
+        auto [packed_data, packed_size] = PackBinarySetToBinary(binary_set);
+
+        BinarySet packed_set;
+        auto packed_file_name =
+            FormatPackedIndexFileName(kPackedIndexTypeToken, version);
+        packed_set.Append(packed_file_name, packed_data, packed_size);
+        file_manager_->AddFile(packed_set);
+    } else {
+        file_manager_->AddFile(binary_set);
+    }
 
     auto remote_path_to_size = file_manager_->GetRemotePathsToFileSize();
     return IndexStats::NewFromSizeMap(file_manager_->GetAddedTotalMemSize(),
@@ -303,8 +327,23 @@ BitmapIndex<T>::Upload(const Config& config) {
 template <typename T>
 void
 BitmapIndex<T>::Load(const BinarySet& binary_set, const Config& config) {
-    milvus::Assemble(const_cast<BinarySet&>(binary_set));
-    LoadWithoutAssemble(binary_set, config);
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(kLastScalarIndexEngineVersionWithoutMeta);
+    if (IsUnifiedScalarIndexVersion(version)) {
+        auto packed_name =
+            FormatPackedIndexFileName(kPackedIndexTypeToken, version);
+        auto packed_data = binary_set.GetByName(packed_name);
+        AssertInfo(packed_data != nullptr,
+                   "packed index data not found for unified format");
+        auto unpacked =
+            UnpackBlobToBinarySet(packed_data->data.get(), packed_data->size);
+        LoadWithoutAssemble(unpacked, config);
+    } else {
+        // Legacy format - assemble sliced data first
+        milvus::Assemble(const_cast<BinarySet&>(binary_set));
+        LoadWithoutAssemble(binary_set, config);
+    }
 }
 
 template <typename T>
@@ -591,7 +630,21 @@ BitmapIndex<T>::Load(milvus::tracer::TraceContext ctx, const Config& config) {
     AssembleIndexDatas(index_datas, binary_set);
     // clear index_datas to free memory early
     index_datas.clear();
-    LoadWithoutAssemble(binary_set, config);
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(kLastScalarIndexEngineVersionWithoutMeta);
+    if (IsUnifiedScalarIndexVersion(version)) {
+        auto packed_name =
+            FormatPackedIndexFileName(kPackedIndexTypeToken, version);
+        auto packed_data = binary_set.GetByName(packed_name);
+        AssertInfo(packed_data != nullptr,
+                   "packed index data not found for unified format");
+        auto unpacked =
+            UnpackBlobToBinarySet(packed_data->data.get(), packed_data->size);
+        LoadWithoutAssemble(unpacked, config);
+    } else {
+        LoadWithoutAssemble(binary_set, config);
+    }
 }
 
 template <typename T>
@@ -1177,65 +1230,38 @@ BitmapIndex<T>::ShouldSkip(const T lower_value,
                            const T upper_value,
                            const OpType op) {
     auto skip = [&](OpType op, T lower_bound, T upper_bound) -> bool {
-        bool should_skip = false;
         switch (op) {
-            case OpType::LessThan: {
-                // lower_value == upper_value
-                should_skip = lower_bound >= lower_value;
-                break;
-            }
-            case OpType::LessEqual: {
-                // lower_value == upper_value
-                should_skip = lower_bound > lower_value;
-                break;
-            }
-            case OpType::GreaterThan: {
-                // lower_value == upper_value
-                should_skip = upper_bound <= lower_value;
-                break;
-            }
-            case OpType::GreaterEqual: {
-                // lower_value == upper_value
-                should_skip = upper_bound < lower_value;
-                break;
-            }
-            case OpType::Range: {
-                // lower_value == upper_value
-                should_skip =
-                    lower_bound > upper_value || upper_bound < lower_value;
-                break;
-            }
+            case OpType::LessThan:
+                return lower_bound >= lower_value;
+            case OpType::LessEqual:
+                return lower_bound > lower_value;
+            case OpType::GreaterThan:
+                return upper_bound <= lower_value;
+            case OpType::GreaterEqual:
+                return upper_bound < lower_value;
+            case OpType::Range:
+                return lower_bound > upper_value || upper_bound < lower_value;
             default:
                 ThrowInfo(OpTypeInvalid,
                           fmt::format("Invalid OperatorType for "
                                       "checking scalar index optimization: {}",
                                       op));
         }
-        return should_skip;
     };
 
     if (is_mmap_) {
         if (!bitmap_info_map_.empty()) {
-            auto lower_bound = bitmap_info_map_.begin()->first;
-            auto upper_bound = bitmap_info_map_.rbegin()->first;
-            bool should_skip = skip(op, lower_bound, upper_bound);
-            return should_skip;
+            return skip(op,
+                        bitmap_info_map_.begin()->first,
+                        bitmap_info_map_.rbegin()->first);
         }
-    }
-
-    if (build_mode_ == BitmapIndexBuildMode::ROARING) {
+    } else if (build_mode_ == BitmapIndexBuildMode::ROARING) {
         if (!data_.empty()) {
-            auto lower_bound = data_.begin()->first;
-            auto upper_bound = data_.rbegin()->first;
-            bool should_skip = skip(op, lower_bound, upper_bound);
-            return should_skip;
+            return skip(op, data_.begin()->first, data_.rbegin()->first);
         }
     } else {
         if (!bitsets_.empty()) {
-            auto lower_bound = bitsets_.begin()->first;
-            auto upper_bound = bitsets_.rbegin()->first;
-            bool should_skip = skip(op, lower_bound, upper_bound);
-            return should_skip;
+            return skip(op, bitsets_.begin()->first, bitsets_.rbegin()->first);
         }
     }
     return true;

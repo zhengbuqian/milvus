@@ -91,7 +91,11 @@ const (
 
 const (
 	MinimalScalarIndexEngineVersion = int32(0)
-	CurrentScalarIndexEngineVersion = int32(2)
+	CurrentScalarIndexEngineVersion = int32(3)
+
+	// UnifiedScalarIndexVersion is the version that introduces unified scalar index format
+	// which stores all index data in a single file instead of multiple files
+	UnifiedScalarIndexVersion = int32(3)
 )
 
 const DefaultTimezone = "UTC"

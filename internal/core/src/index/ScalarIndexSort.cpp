@@ -25,6 +25,7 @@
 #include "index/ScalarIndex.h"
 #include "knowhere/log.h"
 #include "Meta.h"
+#include "common/Pack.h"
 #include "common/Utils.h"
 #include "common/Slice.h"
 #include "common/Types.h"
@@ -35,6 +36,8 @@
 #include "storage/Util.h"
 
 namespace milvus::index {
+
+constexpr const char* kPackedIndexTypeToken = "scalarsort";
 
 const std::string MMAP_PATH_FOR_TEST = "/tmp/milvus/mmap_test";
 
@@ -168,7 +171,13 @@ ScalarIndexSort<T>::Serialize(const Config& config) {
     res_set.Append("index_length", index_length, sizeof(size_t));
     res_set.Append("index_num_rows", index_num_rows, sizeof(size_t));
 
-    milvus::Disassemble(res_set);
+    // For unified scalar index version (>=3), skip slicing to store as single file
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(milvus::kLastScalarIndexEngineVersionWithoutMeta);
+    if (!milvus::IsUnifiedScalarIndexVersion(version)) {
+        milvus::Disassemble(res_set);
+    }
 
     return res_set;
 }
@@ -186,7 +195,24 @@ ScalarIndexSort<T>::Upload(const Config& config) {
         index_build_duration);
 
     auto binary_set = Serialize(config);
-    file_manager_->AddFile(binary_set);
+
+    // For unified scalar index version (>=3), pack BinarySet into single file
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(milvus::kLastScalarIndexEngineVersionWithoutMeta);
+    if (milvus::IsUnifiedScalarIndexVersion(version)) {
+        // Pack the BinarySet into a single blob directly (no extra copy)
+        auto [packed_data, packed_size] =
+            milvus::PackBinarySetToBinary(binary_set);
+
+        BinarySet packed_set;
+        auto packed_file_name =
+            milvus::FormatPackedIndexFileName(kPackedIndexTypeToken, version);
+        packed_set.Append(packed_file_name, packed_data, packed_size);
+        file_manager_->AddFile(packed_set);
+    } else {
+        file_manager_->AddFile(binary_set);
+    }
 
     auto remote_paths_to_size = file_manager_->GetRemotePathsToFileSize();
     return IndexStats::NewFromSizeMap(file_manager_->GetAddedTotalMemSize(),
@@ -293,8 +319,23 @@ ScalarIndexSort<T>::LoadWithoutAssemble(const BinarySet& index_binary,
 template <typename T>
 void
 ScalarIndexSort<T>::Load(const BinarySet& index_binary, const Config& config) {
-    milvus::Assemble(const_cast<BinarySet&>(index_binary));
-    LoadWithoutAssemble(index_binary, config);
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(milvus::kLastScalarIndexEngineVersionWithoutMeta);
+    if (milvus::IsUnifiedScalarIndexVersion(version)) {
+        auto packed_name =
+            milvus::FormatPackedIndexFileName(kPackedIndexTypeToken, version);
+        auto packed_data = index_binary.GetByName(packed_name);
+        AssertInfo(packed_data != nullptr,
+                   "packed index data not found for unified format");
+        auto unpacked = milvus::UnpackBlobToBinarySet(packed_data->data.get(),
+                                                      packed_data->size);
+        LoadWithoutAssemble(unpacked, config);
+    } else {
+        // Legacy format - assemble sliced data first
+        milvus::Assemble(const_cast<BinarySet&>(index_binary));
+        LoadWithoutAssemble(index_binary, config);
+    }
 }
 
 template <typename T>
@@ -315,7 +356,21 @@ ScalarIndexSort<T>::Load(milvus::tracer::TraceContext ctx,
     AssembleIndexDatas(index_datas, binary_set);
     // clear index_datas to free memory early
     index_datas.clear();
-    LoadWithoutAssemble(binary_set, config);
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(milvus::kLastScalarIndexEngineVersionWithoutMeta);
+    if (milvus::IsUnifiedScalarIndexVersion(version)) {
+        auto packed_name =
+            milvus::FormatPackedIndexFileName(kPackedIndexTypeToken, version);
+        auto packed_data = binary_set.GetByName(packed_name);
+        AssertInfo(packed_data != nullptr,
+                   "packed index data not found for unified format");
+        auto unpacked = milvus::UnpackBlobToBinarySet(packed_data->data.get(),
+                                                      packed_data->size);
+        LoadWithoutAssemble(unpacked, config);
+    } else {
+        LoadWithoutAssemble(binary_set, config);
+    }
 }
 
 template <typename T>
