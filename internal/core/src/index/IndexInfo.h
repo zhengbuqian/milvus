@@ -31,10 +31,16 @@ struct CreateIndexInfo {
     DataType field_type;
     IndexType index_type;
     MetricType metric_type;
-    IndexVersion index_engine_version;
+    IndexVersion index_engine_version;  // For vector indexes (from knowhere)
     std::string field_name;
     int64_t dim;
+
+    // Scalar index engine version (Milvus-defined).
+    // Used here ONLY to determine single-segment mode for InvertedIndexTantivy (version == 0).
+    // For storage format control (unified single-file vs multi-file slicing),
+    // config[SCALAR_INDEX_ENGINE_VERSION] is used in Serialize()/Upload() methods.
     int32_t scalar_index_engine_version{1};
+
     uint32_t tantivy_index_version{7};
     JsonCastType json_cast_type{JsonCastType::UNKNOWN};
     std::string json_path;

@@ -10,6 +10,7 @@
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
 #include <boost/filesystem.hpp>
+#include "common/Pack.h"
 #include "common/Slice.h"  // for INDEX_FILE_SLICE_META and Disassemble
 #include "common/EasyAssert.h"
 #include "log/Log.h"
@@ -21,6 +22,7 @@
 namespace milvus::index {
 
 constexpr const char* TMP_RTREE_INDEX_PREFIX = "/tmp/milvus/rtree-index/";
+constexpr const char* kPackedIndexTypeToken = "rtree";
 
 // helper to check suffix
 static inline bool
@@ -101,6 +103,111 @@ RTreeIndex<T>::Load(milvus::tracer::TraceContext ctx, const Config& config) {
 
     auto files = index_files_opt.value();
 
+    auto load_priority =
+        GetValueFromConfig<milvus::proto::common::LoadPriority>(
+            config, milvus::LOAD_PRIORITY)
+            .value_or(milvus::proto::common::LoadPriority::HIGH);
+
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(milvus::kLastScalarIndexEngineVersionWithoutMeta);
+
+    if (milvus::IsUnifiedScalarIndexVersion(version)) {
+        // Unified format: download single file, unpack to directory
+        auto index_datas =
+            mem_file_manager_->LoadIndexToMemory(files, load_priority);
+
+        // Locate packed payload: packed_<type>_v<ver>
+        auto packed_name =
+            milvus::FormatPackedIndexFileName(kPackedIndexTypeToken, version);
+        auto packed_data_it = index_datas.find(packed_name);
+        if (packed_data_it == index_datas.end()) {
+            for (auto it = index_datas.begin(); it != index_datas.end(); ++it) {
+                if (boost::filesystem::path(it->first).filename().string() ==
+                    packed_name) {
+                    packed_data_it = it;
+                    break;
+                }
+            }
+        }
+        AssertInfo(packed_data_it != index_datas.end(),
+                   "packed index data not found for unified format");
+        auto packed_data = std::move(packed_data_it->second);
+
+        // Unpack the outer BinarySet
+        auto unpacked = milvus::UnpackBlobToBinarySet(
+            packed_data->PayloadData(), packed_data->PayloadSize());
+
+        // Extract and unpack rtree directory data
+        auto rtree_data = unpacked.GetByName("rtree_index_data");
+        AssertInfo(rtree_data != nullptr,
+                   "rtree_index_data not found in packed rtree index");
+
+        auto prefix = disk_file_manager_->GetLocalIndexObjectPrefix();
+        boost::filesystem::create_directories(prefix);
+        milvus::UnpackBlobToDirectory(
+            rtree_data->data.get(), rtree_data->size, prefix);
+        path_ = prefix;
+
+        // Load null_offset if present
+        auto null_offset_data = unpacked.GetByName("index_null_offset");
+        if (null_offset_data != nullptr && null_offset_data->size > 0) {
+            folly::SharedMutexWritePriority::WriteHolder lock(mutex_);
+            null_offset_.resize(null_offset_data->size / sizeof(size_t));
+            memcpy(null_offset_.data(),
+                   null_offset_data->data.get(),
+                   null_offset_data->size);
+        }
+
+        // Determine base path for RTreeIndexWrapper
+        std::string base_path;
+        for (const auto& entry :
+             boost::filesystem::directory_iterator(prefix)) {
+            if (ends_with(entry.path().string(), ".bgi")) {
+                base_path = entry.path().string();
+                base_path = base_path.substr(0, base_path.size() - 4);
+                break;
+            }
+        }
+        if (base_path.empty()) {
+            for (const auto& entry :
+                 boost::filesystem::directory_iterator(prefix)) {
+                if (ends_with(entry.path().string(), ".meta.json")) {
+                    base_path = entry.path().string();
+                    base_path = base_path.substr(
+                        0, base_path.size() - std::string(".meta.json").size());
+                    break;
+                }
+            }
+        }
+        if (base_path.empty()) {
+            // Use first file as base path
+            auto it = boost::filesystem::directory_iterator(prefix);
+            if (it != boost::filesystem::directory_iterator()) {
+                base_path = it->path().string();
+            }
+        }
+        path_ = base_path;
+
+        // Instantiate wrapper and load.
+        wrapper_ =
+            std::make_shared<RTreeIndexWrapper>(path_, /*is_build_mode=*/false);
+        wrapper_->load();
+
+        total_num_rows_ =
+            wrapper_->count() + static_cast<int64_t>(null_offset_.size());
+        is_built_ = true;
+        ComputeByteSize();
+
+        LOG_INFO(
+            "Loaded R-Tree index (unified) from {} with {} rows",
+            path_,
+            total_num_rows_);
+        return;
+    }
+
+    // Legacy format: load files individually
+
     // 1. Extract and load null_offset file(s) if present
     {
         auto find_file = [&](const std::string& target) -> auto {
@@ -115,11 +222,6 @@ RTreeIndex<T>::Load(milvus::tracer::TraceContext ctx, const Config& config) {
             null_offset_.resize((size_t)size / sizeof(size_t));
             memcpy(null_offset_.data(), data, (size_t)size);
         };
-
-        auto load_priority =
-            GetValueFromConfig<milvus::proto::common::LoadPriority>(
-                config, milvus::LOAD_PRIORITY)
-                .value_or(milvus::proto::common::LoadPriority::HIGH);
 
         std::vector<std::string> null_offset_files;
         if (auto it = find_file(INDEX_FILE_SLICE_META); it != files.end()) {
@@ -178,10 +280,6 @@ RTreeIndex<T>::Load(milvus::tracer::TraceContext ctx, const Config& config) {
     }
 
     // 3. Cache remote index files to local disk.
-    auto load_priority =
-        GetValueFromConfig<milvus::proto::common::LoadPriority>(
-            config, milvus::LOAD_PRIORITY)
-            .value_or(milvus::proto::common::LoadPriority::HIGH);
     disk_file_manager_->CacheIndexToDisk(files, load_priority);
 
     // 4. Determine local base path (without extension) for RTreeIndexWrapper.
@@ -301,6 +399,49 @@ RTreeIndex<T>::Upload(const Config& config) {
     // 1. Ensure all buffered data flushed to disk
     finish();
 
+    // Check if using unified format
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(milvus::kLastScalarIndexEngineVersionWithoutMeta);
+
+    if (milvus::IsUnifiedScalarIndexVersion(version)) {
+        // Unified format: pack directory + serialize data into single file
+        auto [dir_data, dir_size] = milvus::PackDirectoryToBinary(path_);
+
+        // Create BinarySet with packed directory data
+        BinarySet combined_set;
+        combined_set.Append("rtree_index_data", dir_data, dir_size);
+
+        // Add null_offset data if any
+        folly::SharedMutexWritePriority::ReadHolder lock(mutex_);
+        auto bytes = null_offset_.size() * sizeof(size_t);
+        if (bytes > 0) {
+            std::shared_ptr<uint8_t[]> buf(new uint8_t[bytes]);
+            std::memcpy(buf.get(), null_offset_.data(), bytes);
+            combined_set.Append("index_null_offset", buf, bytes);
+        }
+
+        // Pack into single file directly (no extra copy)
+        auto [packed_data, packed_size] =
+            milvus::PackBinarySetToBinary(combined_set);
+
+        BinarySet packed_set;
+        auto packed_file_name =
+            milvus::FormatPackedIndexFileName("rtree", version);
+        packed_set.Append(packed_file_name, packed_data, packed_size);
+        mem_file_manager_->AddFile(packed_set);
+
+        auto remote_mem_path_to_size =
+            mem_file_manager_->GetRemotePathsToFileSize();
+        std::vector<SerializedIndexFileInfo> index_files;
+        for (auto& file : remote_mem_path_to_size) {
+            index_files.emplace_back(file.first, file.second);
+        }
+        return IndexStats::New(mem_file_manager_->GetAddedTotalMemSize(),
+                               std::move(index_files));
+    }
+
+    // Legacy format: upload files individually
     // 2. Walk temp dir and register files to DiskFileManager
     boost::filesystem::path dir(path_);
     boost::filesystem::directory_iterator end_iter;
@@ -353,7 +494,12 @@ RTreeIndex<T>::Serialize(const Config& config) {
         std::memcpy(buf.get(), null_offset_.data(), bytes);
         res_set.Append("index_null_offset", buf, bytes);
     }
-    milvus::Disassemble(res_set);
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(milvus::kLastScalarIndexEngineVersionWithoutMeta);
+    if (!milvus::IsUnifiedScalarIndexVersion(version)) {
+        milvus::Disassemble(res_set);
+    }
     return res_set;
 }
 

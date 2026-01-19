@@ -12,7 +12,9 @@
 #include "index/NgramInvertedIndex.h"
 
 #include <chrono>
+#include <filesystem>
 
+#include "common/Pack.h"
 #include "exec/expression/Expr.h"
 #include "index/JsonIndexBuilder.h"
 
@@ -248,25 +250,101 @@ NgramInvertedIndex::Load(milvus::tracer::TraceContext ctx,
                "index file paths is empty when load ngram index");
     auto files_value = index_files.value();
 
-    LoadIndexMetas(files_value, config);
-    RetainTantivyIndexFiles(files_value);
-
     auto load_priority =
         GetValueFromConfig<milvus::proto::common::LoadPriority>(
             config, milvus::LOAD_PRIORITY)
             .value_or(milvus::proto::common::LoadPriority::HIGH);
-    disk_file_manager_->CacheNgramIndexToDisk(files_value, load_priority);
-    AssertInfo(
-        tantivy_index_exist(path_.c_str()), "index not exist: {}", path_);
 
-    auto load_in_mmap =
-        GetValueFromConfig<bool>(config, ENABLE_MMAP).value_or(true);
-    wrapper_ = std::make_shared<TantivyIndexWrapper>(
-        path_.c_str(), load_in_mmap, milvus::index::SetBitsetSealed);
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(milvus::kLastScalarIndexEngineVersionWithoutMeta);
 
-    if (!load_in_mmap) {
-        // the index is loaded in ram, so we can remove files in advance
-        disk_file_manager_->RemoveNgramIndexFiles();
+    if (milvus::IsUnifiedScalarIndexVersion(version)) {
+        // Unified format: download single file, unpack to directory
+        auto index_datas =
+            mem_file_manager_->LoadIndexToMemory(files_value, load_priority);
+        auto packed_name =
+            milvus::FormatPackedIndexFileName(PackedIndexFileToken(), version);
+        auto packed_data_it = index_datas.find(packed_name);
+        if (packed_data_it == index_datas.end()) {
+            for (auto it = index_datas.begin(); it != index_datas.end(); ++it) {
+                if (std::filesystem::path(it->first).filename().string() ==
+                    packed_name) {
+                    packed_data_it = it;
+                    break;
+                }
+            }
+        }
+        AssertInfo(packed_data_it != index_datas.end(),
+                   "packed index data not found for unified format");
+        auto packed_data = std::move(packed_data_it->second);
+
+        // Unpack the outer BinarySet
+        auto unpacked = milvus::UnpackBlobToBinarySet(
+            packed_data->PayloadData(), packed_data->PayloadSize());
+
+        // Extract and unpack tantivy directory data
+        auto tantivy_data = unpacked.GetByName("tantivy_index_data");
+        AssertInfo(tantivy_data != nullptr,
+                   "tantivy_index_data not found in packed ngram index");
+
+        auto prefix = disk_file_manager_->GetLocalNgramIndexPrefix();
+        boost::filesystem::create_directories(prefix);
+        milvus::UnpackBlobToDirectory(
+            tantivy_data->data.get(),
+            tantivy_data->size,
+            prefix);
+        path_ = prefix;
+
+        // Load null_offset if present
+        auto null_offset_data = unpacked.GetByName(INDEX_NULL_OFFSET_FILE_NAME);
+        if (null_offset_data != nullptr && null_offset_data->size > 0) {
+            null_offset_.resize(null_offset_data->size / sizeof(size_t));
+            memcpy(null_offset_.data(),
+                   null_offset_data->data.get(),
+                   null_offset_data->size);
+        }
+
+        // Load avg_row_size if present
+        auto avg_row_size_data =
+            unpacked.GetByName(NGRAM_AVG_ROW_SIZE_FILE_NAME);
+        if (avg_row_size_data != nullptr && avg_row_size_data->size > 0) {
+            memcpy(
+                &avg_row_size_, avg_row_size_data->data.get(), sizeof(size_t));
+            LOG_INFO("Loaded ngram index avg_row_size: {} bytes",
+                     avg_row_size_);
+        } else {
+            avg_row_size_ = kDefaultAvgRowSize;
+            LOG_INFO("No avg_row_size metadata found, using default: {}",
+                     kDefaultAvgRowSize);
+        }
+
+        auto load_in_mmap =
+            GetValueFromConfig<bool>(config, ENABLE_MMAP).value_or(true);
+        wrapper_ = std::make_shared<TantivyIndexWrapper>(
+            prefix.c_str(), load_in_mmap, milvus::index::SetBitsetSealed);
+
+        if (!load_in_mmap) {
+            boost::filesystem::remove_all(prefix);
+        }
+    } else {
+        // Legacy format: load files individually
+        LoadIndexMetas(files_value, config);
+        RetainTantivyIndexFiles(files_value);
+
+        disk_file_manager_->CacheNgramIndexToDisk(files_value, load_priority);
+        AssertInfo(
+            tantivy_index_exist(path_.c_str()), "index not exist: {}", path_);
+
+        auto load_in_mmap =
+            GetValueFromConfig<bool>(config, ENABLE_MMAP).value_or(true);
+        wrapper_ = std::make_shared<TantivyIndexWrapper>(
+            path_.c_str(), load_in_mmap, milvus::index::SetBitsetSealed);
+
+        if (!load_in_mmap) {
+            // the index is loaded in ram, so we can remove files in advance
+            disk_file_manager_->RemoveNgramIndexFiles();
+        }
     }
 
     LOG_INFO(

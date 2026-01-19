@@ -31,6 +31,7 @@
 #include "common/Types.h"
 #include "common/EasyAssert.h"
 #include "common/Exception.h"
+#include "common/Pack.h"
 #include "common/Utils.h"
 #include "common/Slice.h"
 #include "index/StringIndexMarisa.h"
@@ -42,6 +43,8 @@
 #include "storage/FileWriter.h"
 
 namespace milvus::index {
+
+constexpr const char* kPackedIndexTypeToken = "stringmarisa";
 
 StringIndexMarisa::StringIndexMarisa(
     const storage::FileManagerContext& file_manager_context)
@@ -214,7 +217,13 @@ StringIndexMarisa::Serialize(const Config& config) {
     res_set.Append(MARISA_TRIE_INDEX, index_data, size);
     res_set.Append(MARISA_STR_IDS, str_ids, str_ids_len);
 
-    Disassemble(res_set);
+    // For unified scalar index version (>=3), skip slicing to store as single file
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(kLastScalarIndexEngineVersionWithoutMeta);
+    if (!IsUnifiedScalarIndexVersion(version)) {
+        Disassemble(res_set);
+    }
 
     return res_set;
 }
@@ -222,7 +231,23 @@ StringIndexMarisa::Serialize(const Config& config) {
 IndexStatsPtr
 StringIndexMarisa::Upload(const Config& config) {
     auto binary_set = Serialize(config);
-    file_manager_->AddFile(binary_set);
+
+    // For unified scalar index version (>=3), pack BinarySet into single file
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(kLastScalarIndexEngineVersionWithoutMeta);
+    if (IsUnifiedScalarIndexVersion(version)) {
+        // Pack the BinarySet into a single blob directly (no extra copy)
+        auto [packed_data, packed_size] = PackBinarySetToBinary(binary_set);
+
+        BinarySet packed_set;
+        auto packed_file_name =
+            FormatPackedIndexFileName(kPackedIndexTypeToken, version);
+        packed_set.Append(packed_file_name, packed_data, packed_size);
+        file_manager_->AddFile(packed_set);
+    } else {
+        file_manager_->AddFile(binary_set);
+    }
 
     auto remote_paths_to_size = file_manager_->GetRemotePathsToFileSize();
     return IndexStats::NewFromSizeMap(file_manager_->GetAddedTotalMemSize(),
@@ -277,8 +302,23 @@ StringIndexMarisa::LoadWithoutAssemble(const BinarySet& set,
 
 void
 StringIndexMarisa::Load(const BinarySet& set, const Config& config) {
-    milvus::Assemble(const_cast<BinarySet&>(set));
-    LoadWithoutAssemble(set, config);
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(kLastScalarIndexEngineVersionWithoutMeta);
+    if (IsUnifiedScalarIndexVersion(version)) {
+        auto packed_name =
+            FormatPackedIndexFileName(kPackedIndexTypeToken, version);
+        auto packed_data = set.GetByName(packed_name);
+        AssertInfo(packed_data != nullptr,
+                   "packed index data not found for unified format");
+        auto unpacked =
+            UnpackBlobToBinarySet(packed_data->data.get(), packed_data->size);
+        LoadWithoutAssemble(unpacked, config);
+    } else {
+        // Legacy format - assemble sliced data first
+        milvus::Assemble(const_cast<BinarySet&>(set));
+        LoadWithoutAssemble(set, config);
+    }
 }
 
 void
@@ -298,7 +338,21 @@ StringIndexMarisa::Load(milvus::tracer::TraceContext ctx,
     AssembleIndexDatas(index_datas, binary_set);
     // clear index_datas to free memory early
     index_datas.clear();
-    LoadWithoutAssemble(binary_set, config);
+    auto version =
+        GetValueFromConfig<int32_t>(config, index::SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(kLastScalarIndexEngineVersionWithoutMeta);
+    if (IsUnifiedScalarIndexVersion(version)) {
+        auto packed_name =
+            FormatPackedIndexFileName(kPackedIndexTypeToken, version);
+        auto packed_data = binary_set.GetByName(packed_name);
+        AssertInfo(packed_data != nullptr,
+                   "packed index data not found for unified format");
+        auto unpacked =
+            UnpackBlobToBinarySet(packed_data->data.get(), packed_data->size);
+        LoadWithoutAssemble(unpacked, config);
+    } else {
+        LoadWithoutAssemble(binary_set, config);
+    }
 }
 
 const TargetBitmap
@@ -639,10 +693,6 @@ StringIndexMarisa::in_lexicographic_order() {
     // by default, marisa trie uses `MARISA_WEIGHT_ORDER` to build trie
     // so `predictive_search` will not iterate in lexicographic order
     // now we build trie using `MARISA_LABEL_ORDER` and also handle old index in weight order.
-    if (trie_.node_order() == MARISA_LABEL_ORDER) {
-        return true;
-    }
-
-    return false;
+    return trie_.node_order() == MARISA_LABEL_ORDER;
 }
 }  // namespace milvus::index

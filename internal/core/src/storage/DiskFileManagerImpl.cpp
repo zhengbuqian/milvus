@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "common/Common.h"
+#include "common/Pack.h"
 #include "common/Consts.h"
 #include "common/EasyAssert.h"
 #include "common/FieldData.h"
@@ -342,8 +343,26 @@ DiskFileManagerImpl::CacheIndexToDiskInternal(
     auto local_chunk_manager =
         LocalChunkManagerSingleton::GetInstance().GetChunkManager();
 
+    // Separate packed files (unified format) from sliced files
+    std::vector<std::string> packed_files;
     std::map<std::string, std::vector<int>> index_slices;
+
     for (auto& file_path : remote_files) {
+        // Extract filename from path
+        auto slash_pos = file_path.find_last_of('/');
+        std::string filename =
+            (slash_pos != std::string::npos) ? file_path.substr(slash_pos + 1)
+                                             : file_path;
+
+        // Check if this is a packed file (unified format)
+        std::string token;
+        int32_t ver = 0;
+        if (milvus::TryParsePackedIndexFileName(filename, &token, &ver)) {
+            packed_files.push_back(file_path);
+            continue;
+        }
+
+        // Legacy sliced format
         auto pos = file_path.find_last_of('_');
         AssertInfo(pos > 0, "invalided index file path:{}", file_path);
         try {
@@ -355,6 +374,32 @@ DiskFileManagerImpl::CacheIndexToDiskInternal(
             LOG_ERROR(err_message);
             throw std::logic_error(err_message);
         }
+    }
+
+    // Handle packed files (unified format) - download directly without slice merging
+    for (const auto& file_path : packed_files) {
+        auto slash_pos = file_path.find_last_of('/');
+        std::string filename =
+            (slash_pos != std::string::npos) ? file_path.substr(slash_pos + 1)
+                                             : file_path;
+        auto local_index_file_name = local_index_prefix + filename;
+        local_chunk_manager->CreateFile(local_index_file_name);
+
+        auto index_chunks_futures = GetObjectData(
+            rcm_.get(), {file_path}, milvus::PriorityForLoad(priority));
+        auto chunk_codecs =
+            storage::WaitAllFutures(std::move(index_chunks_futures));
+
+        auto file_writer = storage::FileWriter(
+            local_index_file_name,
+            storage::io::GetPriorityFromLoadPriority(priority));
+        for (auto& chunk_codec : chunk_codecs) {
+            file_writer.Write(chunk_codec->PayloadData(),
+                              chunk_codec->PayloadSize());
+        }
+        file_writer.Finish();
+        local_paths_.emplace_back(local_index_file_name);
+        LOG_INFO("CacheIndexToDisk: cached packed file {}", local_index_file_name);
     }
 
     for (auto& slices : index_slices) {
