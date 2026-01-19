@@ -12,6 +12,7 @@
 #pragma once
 #include <cstdint>
 #include <shared_mutex>
+#include "common/Pack.h"
 #include "common/Slice.h"
 #include "common/FieldDataInterface.h"
 #include "common/JsonCastFunction.h"
@@ -133,6 +134,11 @@ class JsonInvertedIndex : public index::InvertedIndexTantivy<T> {
         return cast_type_;
     }
 
+    std::string
+    PackedIndexFileToken() const override {
+        return "json";
+    }
+
     BinarySet
     Serialize(const Config& config) override {
         std::shared_lock<folly::SharedMutex> lock(this->mutex_);
@@ -163,7 +169,14 @@ class JsonInvertedIndex : public index::InvertedIndexTantivy<T> {
                            non_exist_data,
                            non_exist_data_length);
         }
-        milvus::Disassemble(res_set);
+
+        // For unified scalar index version (>=3), skip slicing
+        auto version =
+            GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+                .value_or(milvus::kLastScalarIndexEngineVersionWithoutMeta);
+        if (!milvus::IsUnifiedScalarIndexVersion(version)) {
+            milvus::Disassemble(res_set);
+        }
         return res_set;
     }
 
@@ -179,6 +192,21 @@ class JsonInvertedIndex : public index::InvertedIndexTantivy<T> {
     void
     RetainTantivyIndexFiles(
         std::vector<std::string>& index_files) override final;
+
+    void
+    LoadExtraDataFromUnifiedFormat(const BinarySet& unpacked) override {
+        auto non_exist_data =
+            unpacked.GetByName(INDEX_NON_EXIST_OFFSET_FILE_NAME);
+        if (non_exist_data != nullptr && non_exist_data->size > 0) {
+            non_exist_offsets_.resize(non_exist_data->size / sizeof(size_t));
+            memcpy(non_exist_offsets_.data(),
+                   non_exist_data->data.get(),
+                   non_exist_data->size);
+        } else {
+            // Fallback for legacy data without non_exist_offset
+            non_exist_offsets_ = this->null_offset_;
+        }
+    }
 
  private:
     std::string nested_path_;
