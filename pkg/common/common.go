@@ -160,10 +160,12 @@ const (
 
 	DropRatioBuildKey = "drop_ratio_build"
 
-	IsSparseKey               = "is_sparse"
-	AutoIndexName             = "AUTOINDEX"
-	BitmapCardinalityLimitKey = "bitmap_cardinality_limit"
-	IgnoreGrowing             = "ignore_growing"
+	IsSparseKey                        = "is_sparse"
+	AutoIndexName                      = "AUTOINDEX"
+	BitmapCardinalityLimitKey          = "bitmap_cardinality_limit"
+	HybridLowCardinalityIndexTypeKey   = "hybrid_low_cardinality_index_type"
+	HybridHighCardinalityIndexTypeKey  = "hybrid_high_cardinality_index_type"
+	IgnoreGrowing                      = "ignore_growing"
 	ConsistencyLevel          = "consistency_level"
 	HintsKey                  = "hints"
 
