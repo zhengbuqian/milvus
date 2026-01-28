@@ -25,6 +25,7 @@
 #include <filesystem>
 #include "storage/FileWriter.h"
 #include "common/CDataType.h"
+#include "common/Pack.h"
 #include "common/RegexQuery.h"
 #include "knowhere/log.h"
 #include "index/Meta.h"
@@ -36,6 +37,8 @@
 #include "storage/Util.h"
 
 namespace milvus::index {
+
+constexpr const char* kPackedIndexTypeToken = "stringsort";
 
 StringIndexSortImpl::ParsedData
 StringIndexSortImpl::ParseBinaryData(const uint8_t* data, size_t data_size) {
@@ -227,7 +230,13 @@ StringIndexSort::Serialize(const Config& config) {
     }
     res_set.Append("valid_bitset", valid_bitset_data, valid_bitset_size);
 
-    milvus::Disassemble(res_set);
+    // For unified scalar index version (>=3), skip slicing to store as single file
+    auto version_config =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(milvus::kLastScalarIndexEngineVersionWithoutMeta);
+    if (!milvus::IsUnifiedScalarIndexVersion(version_config)) {
+        milvus::Disassemble(res_set);
+    }
     return res_set;
 }
 
@@ -243,7 +252,24 @@ StringIndexSort::Upload(const Config& config) {
         index_build_duration);
 
     auto binary_set = Serialize(config);
-    file_manager_->AddFile(binary_set);
+
+    // For unified scalar index version (>=3), pack BinarySet into single file
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(milvus::kLastScalarIndexEngineVersionWithoutMeta);
+    if (milvus::IsUnifiedScalarIndexVersion(version)) {
+        // Pack the BinarySet into a single blob directly (no extra copy)
+        auto [packed_data, packed_size] =
+            milvus::PackBinarySetToBinary(binary_set);
+
+        BinarySet packed_set;
+        auto packed_file_name =
+            milvus::FormatPackedIndexFileName(kPackedIndexTypeToken, version);
+        packed_set.Append(packed_file_name, packed_data, packed_size);
+        file_manager_->AddFile(packed_set);
+    } else {
+        file_manager_->AddFile(binary_set);
+    }
 
     auto remote_paths_to_size = file_manager_->GetRemotePathsToFileSize();
     return IndexStats::NewFromSizeMap(file_manager_->GetAddedTotalMemSize(),
@@ -252,8 +278,23 @@ StringIndexSort::Upload(const Config& config) {
 
 void
 StringIndexSort::Load(const BinarySet& index_binary, const Config& config) {
-    milvus::Assemble(const_cast<BinarySet&>(index_binary));
-    LoadWithoutAssemble(index_binary, config);
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(milvus::kLastScalarIndexEngineVersionWithoutMeta);
+    if (milvus::IsUnifiedScalarIndexVersion(version)) {
+        auto packed_name =
+            milvus::FormatPackedIndexFileName(kPackedIndexTypeToken, version);
+        auto packed_data = index_binary.GetByName(packed_name);
+        AssertInfo(packed_data != nullptr,
+                   "packed index data not found for unified format");
+        auto unpacked = milvus::UnpackBlobToBinarySet(packed_data->data.get(),
+                                                      packed_data->size);
+        LoadWithoutAssemble(unpacked, config);
+    } else {
+        // Legacy format - assemble sliced data first
+        milvus::Assemble(const_cast<BinarySet&>(index_binary));
+        LoadWithoutAssemble(index_binary, config);
+    }
 }
 
 void
@@ -276,7 +317,21 @@ StringIndexSort::Load(milvus::tracer::TraceContext ctx, const Config& config) {
 
     index_datas.clear();
 
-    LoadWithoutAssemble(binary_set, config);
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(milvus::kLastScalarIndexEngineVersionWithoutMeta);
+    if (milvus::IsUnifiedScalarIndexVersion(version)) {
+        auto packed_name =
+            milvus::FormatPackedIndexFileName(kPackedIndexTypeToken, version);
+        auto packed_data = binary_set.GetByName(packed_name);
+        AssertInfo(packed_data != nullptr,
+                   "packed index data not found for unified format");
+        auto unpacked = milvus::UnpackBlobToBinarySet(packed_data->data.get(),
+                                                      packed_data->size);
+        LoadWithoutAssemble(unpacked, config);
+    } else {
+        LoadWithoutAssemble(binary_set, config);
+    }
 }
 
 void
