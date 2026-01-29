@@ -1,8 +1,34 @@
 #include "segcore/storagev1translator/InterimSealedIndexTranslator.h"
 
+#include <bits/exception.h>
+#include <algorithm>
+#include <map>
+#include <optional>
+
+#include "cachinglayer/CacheSlot.h"
+#include "common/Chunk.h"
+#include "common/OffsetMapping.h"
+#include "fmt/core.h"
+#include "folly/FBVector.h"
+#include "index/Index.h"
+#include "index/Utils.h"
+#include "index/VectorIndex.h"
 #include "index/VectorMemIndex.h"
+#include "knowhere/dataset.h"
+#include "knowhere/expected.h"
+#include "knowhere/object.h"
+#include "knowhere/version.h"
+#include "mmap/ChunkedColumnInterface.h"
+#include "nlohmann/json.hpp"
 #include "segcore/Utils.h"
-#include "segcore/Utils.h"
+
+namespace knowhere {
+struct bf16;
+struct fp16;
+}  // namespace knowhere
+namespace milvus {
+struct OpContext;
+}  // namespace milvus
 
 namespace milvus::segcore::storagev1translator {
 

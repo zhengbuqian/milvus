@@ -16,15 +16,9 @@
 
 // AVX512 instantiation
 
-#include "bitset/common.h"
-
 #ifndef BITSET_HEADER_ONLY
 
-#include "avx512-decl.h"
-#include "avx512-impl.h"
 
-#include <cstddef>
-#include <cstdint>
 
 namespace milvus {
 namespace bitset {

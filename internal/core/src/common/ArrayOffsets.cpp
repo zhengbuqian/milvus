@@ -15,11 +15,24 @@
 // limitations under the License.
 
 #include "ArrayOffsets.h"
-#include "segcore/SegmentInterface.h"
-#include "log/Log.h"
+
+#include <assert.h>
+#include <cstddef>
+#include <type_traits>
+
+#include "bitset/bitset.h"
+#include "cachinglayer/CacheSlot.h"
+#include "cachinglayer/Utils.h"
 #include "common/EasyAssert.h"
+#include "common/FieldMeta.h"
+#include "common/OpContext.h"
+#include "glog/logging.h"
+#include "log/Log.h"
+#include "segcore/SegmentInterface.h"
 
 namespace milvus {
+class ArrayView;
+class VectorArrayView;
 
 std::pair<int32_t, int32_t>
 ArrayOffsetsSealed::ElementIDToRowID(int32_t elem_id) const {

@@ -1,0 +1,19 @@
+# Milvus IWYU mapping file
+# This file tells IWYU how to handle project-specific headers.
+#
+# Usage:
+#   include-what-you-use -Xiwyu --mapping_file=/path/to/milvus.imp ...
+#
+# Note: IWYU has built-in mappings for GCC/libstdc++ internal headers.
+# This file only adds project-specific mappings that IWYU doesn't know about.
+
+[
+  # ============================================================================
+  # Protobuf internal headers (Google internal paths -> public API)
+  # ============================================================================
+  { include: ["<net/proto2/public/repeated_field.h>", "private", "<google/protobuf/repeated_field.h>", "public"] },
+  { include: ["\"net/proto2/public/repeated_field.h\"", "private", "<google/protobuf/repeated_field.h>", "public"] }
+
+  # Note: Removed incorrect symbol mappings that pointed to non-existent files.
+  # IWYU will use the actual header locations from the codebase.
+]

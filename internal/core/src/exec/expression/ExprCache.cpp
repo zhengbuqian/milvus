@@ -16,6 +16,11 @@
 
 #include "exec/expression/ExprCache.h"
 
+#include <utility>
+
+#include "../oneapi/tbb/concurrent_unordered_map.h"
+#include "bitset/bitset.h"
+
 namespace milvus {
 namespace exec {
 

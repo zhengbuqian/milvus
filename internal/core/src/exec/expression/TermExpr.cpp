@@ -15,11 +15,50 @@
 // limitations under the License.
 
 #include "TermExpr.h"
+
+#include <math.h>
+#include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <utility>
+#include <variant>
+
+#include "bitset/bitset.h"
+#include "common/Array.h"
+#include "common/EasyAssert.h"
+#include "common/Json.h"
+#include "common/Tracer.h"
+#include "common/bson_view.h"
+#include "common/type_c.h"
+#include "exec/expression/EvalCtx.h"
+#include "exec/expression/Utils.h"
+#include "folly/FBVector.h"
+#include "glog/logging.h"
+#include "index/json_stats/JsonKeyStats.h"
+#include "index/json_stats/utils.h"
 #include "log/Log.h"
-#include "query/Utils.h"
+#include "opentelemetry/trace/span.h"
+#include "pb/plan.pb.h"
+#include "pb/schema.pb.h"
+#include "segcore/SegmentInterface.h"
+#include "segcore/SegmentSealed.h"
+#include "simdjson/error.h"
+#include "simdjson/error-inl.h"
+#include "simdjson/generic/implementation_simdjson_result_base-inl.h"
+#include "simdjson/generic/ondemand/array.h"
+#include "simdjson/generic/ondemand/array-inl.h"
+#include "simdjson/generic/ondemand/array_iterator.h"
+#include "simdjson/generic/ondemand/array_iterator-inl.h"
+#include "simdjson/generic/ondemand/document.h"
+#include "simdjson/generic/ondemand/document-inl.h"
+#include "simdjson/generic/ondemand/value.h"
+#include "simdjson/generic/ondemand/value-inl.h"
+#include "storage/MmapManager.h"
+#include "storage/Types.h"
+
 namespace milvus {
+class SkipIndex;
+
 namespace exec {
 
 void

@@ -11,10 +11,15 @@
 
 #include "SkipIndex.h"
 
+#include <any>
+
 #include "cachinglayer/CacheSlot.h"
 #include "cachinglayer/Utils.h"
+#include "folly/Try-inl.h"
+#include "folly/futures/Promise-inl.h"
 
 namespace milvus {
+struct OpContext;
 
 static const index::NoneFieldChunkMetrics defaultFieldChunkMetrics{};
 

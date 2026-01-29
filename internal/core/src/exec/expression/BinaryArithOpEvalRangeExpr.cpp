@@ -16,7 +16,28 @@
 
 #include "BinaryArithOpEvalRangeExpr.h"
 
+#include <cstdint>
+#include <string_view>
+#include <variant>
+
+#include "common/Array.h"
+#include "common/Json.h"
+#include "common/Tracer.h"
+#include "fmt/core.h"
+#include "opentelemetry/trace/span.h"
+#include "simdjson/error.h"
+#include "simdjson/error-inl.h"
+#include "simdjson/generic/implementation_simdjson_result_base-inl.h"
+#include "simdjson/generic/ondemand/array.h"
+#include "simdjson/generic/ondemand/array-inl.h"
+#include "simdjson/generic/ondemand/document.h"
+#include "simdjson/generic/ondemand/document-inl.h"
+#include "simdjson/generic/ondemand/value.h"
+#include "simdjson/generic/ondemand/value-inl.h"
+
 namespace milvus {
+class SkipIndex;
+
 namespace exec {
 
 void

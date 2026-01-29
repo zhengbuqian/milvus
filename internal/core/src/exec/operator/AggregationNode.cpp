@@ -14,7 +14,15 @@
 //
 
 #include "AggregationNode.h"
+
+#include <ext/alloc_traits.h>
+#include <functional>
+#include <utility>
+
 #include "common/Utils.h"
+#include "exec/VectorHasher.h"
+#include "exec/operator/query-agg/AggregateInfo.h"
+#include "plan/PlanNode.h"
 
 namespace milvus {
 namespace exec {

@@ -14,9 +14,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <utility>
+#include <bits/exception.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <folly/ExceptionWrapper.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <cassert>
 #include <cstdlib>
+#include <exception>
+#include <utility>
+
+#include "folly/ExceptionWrapper.h"
+#include "folly/Try-inl.h"
+#include "folly/Unit.h"
 #include "folly/futures/Future.h"
+#include "folly/futures/Future-inl.h"
+#include "folly/futures/Promise.h"
+#include "folly/futures/Promise-inl.h"
 #include "storage/FileWriter.h"
 
 namespace milvus::storage {

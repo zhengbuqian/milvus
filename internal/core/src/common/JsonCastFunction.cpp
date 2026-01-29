@@ -1,6 +1,19 @@
 #include "common/JsonCastFunction.h"
+
+#include <bits/exception.h>
+#include <cstdint>
 #include <string>
+#include <string_view>
+#include <utility>
+
 #include "common/EasyAssert.h"
+#include "common/Json.h"
+#include "simdjson/error.h"
+#include "simdjson/error-inl.h"
+#include "simdjson/generic/implementation_simdjson_result_base-inl.h"
+#include "simdjson/generic/ondemand/base.h"
+#include "simdjson/generic/ondemand/json_type.h"
+#include "simdjson/generic/ondemand/value-inl.h"
 
 namespace milvus {
 

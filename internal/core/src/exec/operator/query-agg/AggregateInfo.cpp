@@ -13,7 +13,18 @@
 // Created by hanchun on 24-10-22.
 //
 #include "AggregateInfo.h"
+
+#include <ext/alloc_traits.h>
+#include <string>
+#include <utility>
+
+#include "common/EasyAssert.h"
 #include "common/Types.h"
+#include "exec/QueryContext.h"
+#include "exec/operator/Operator.h"
+#include "exec/operator/query-agg/Aggregate.h"
+#include "expr/ITypeExpr.h"
+#include "plan/PlanNode.h"
 
 namespace milvus {
 namespace exec {

@@ -11,20 +11,32 @@
 
 #include "segcore/storagev1translator/ChunkTranslator.h"
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "arrow/type_fwd.h"
 #include "cachinglayer/Utils.h"
-#include "segcore/Utils.h"
+#include "common/ArrowDataWrapper.h"
+#include "common/Channel.h"
+#include "common/Chunk.h"
 #include "common/ChunkWriter.h"
 #include "common/EasyAssert.h"
-#include "common/Types.h"
 #include "common/SystemProperty.h"
-#include "segcore/Utils.h"
-#include "storage/ThreadPools.h"
+#include "common/Types.h"
+#include "common/protobuf_utils.h"
+#include "core.h"
+#include "fmt/core.h"
+#include "glog/logging.h"
+#include "log/Log.h"
 #include "mmap/Types.h"
+#include "segcore/Utils.h"
+
+namespace milvus {
+struct OpContext;
+}  // namespace milvus
 
 namespace milvus::segcore::storagev1translator {
 

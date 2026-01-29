@@ -10,12 +10,24 @@
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
 #include "index/JsonFlatIndex.h"
-#include "common/Types.h"
-#include "index/InvertedIndexUtil.h"
-#include "log/Log.h"
-#include "simdjson/builtin.h"
-#include "simdjson/padded_string.h"
+
+#include <string.h>
+
+#include "common/FieldDataInterface.h"
+#include "common/Json.h"
 #include "common/JsonUtils.h"
+#include "pb/schema.pb.h"
+#include "simdjson/dom/element.h"
+#include "simdjson/error.h"
+#include "simdjson/error-inl.h"
+#include "simdjson/generic/implementation_simdjson_result_base-inl.h"
+#include "simdjson/generic/ondemand/document.h"
+#include "simdjson/generic/ondemand/document-inl.h"
+#include "simdjson/generic/ondemand/serialization-inl.h"
+#include "simdjson/generic/ondemand/value.h"
+#include "simdjson/padded_string.h"
+#include "simdjson/padded_string-inl.h"
+
 namespace milvus::index {
 
 void

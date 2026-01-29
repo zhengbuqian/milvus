@@ -1,5 +1,16 @@
 #include "common/JsonUtils.h"
 
+#include <stdlib.h>
+#include <cstddef>
+#include <stdexcept>
+
+#include "simdjson/dom/array.h"
+#include "simdjson/dom/array-inl.h"
+#include "simdjson/dom/element-inl.h"
+#include "simdjson/dom/object.h"
+#include "simdjson/dom/object-inl.h"
+#include "simdjson/error-inl.h"
+
 namespace milvus {
 
 // Parse a JSON Pointer into unescaped path segments
