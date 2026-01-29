@@ -29,6 +29,7 @@
 #include "fmt/core.h"
 #include "folly/FBVector.h"
 #include "glog/logging.h"
+#include "index/SkipIndex.h"
 #include "index/json_stats/JsonKeyStats.h"
 #include "index/json_stats/utils.h"
 #include "log/Log.h"
@@ -40,7 +41,6 @@
 #include "storage/Types.h"
 
 namespace milvus {
-class SkipIndex;
 
 namespace exec {
 
