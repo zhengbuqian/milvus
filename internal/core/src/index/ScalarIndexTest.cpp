@@ -18,6 +18,7 @@
 #include "index/BitmapIndex.h"
 #include "index/InvertedIndexTantivy.h"
 #include "index/ScalarIndex.h"
+#include "index/StringIndexMarisa.h"
 #include "common/CDataType.h"
 #include "common/Types.h"
 #include "knowhere/comp/index_param.h"
