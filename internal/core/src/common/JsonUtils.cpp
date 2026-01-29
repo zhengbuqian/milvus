@@ -2,6 +2,7 @@
 
 #include <simdjson.h>
 #include <stdlib.h>
+#include <algorithm>
 #include <cstddef>
 #include <stdexcept>
 
