@@ -10,9 +10,27 @@
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
 #include "GroupReduce.h"
-#include "log/Log.h"
-#include "segcore/SegmentInterface.h"
+
+#include <algorithm>
+#include <cstdint>
+#include <queue>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <variant>
+
+#include "common/Consts.h"
+#include "common/EasyAssert.h"
+#include "common/QueryResult.h"
 #include "segcore/ReduceUtils.h"
+
+namespace milvus {
+namespace proto {
+namespace schema {
+class SearchResultData;
+}  // namespace schema
+}  // namespace proto
+}  // namespace milvus
 
 namespace milvus::segcore {
 
