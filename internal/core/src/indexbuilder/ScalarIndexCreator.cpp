@@ -28,12 +28,6 @@
 #include "knowhere/dataset.h"
 #include "nlohmann/json.hpp"
 
-namespace milvus {
-namespace storage {
-struct FileManagerContext;
-}  // namespace storage
-}  // namespace milvus
-
 namespace milvus::indexbuilder {
 
 ScalarIndexCreator::ScalarIndexCreator(

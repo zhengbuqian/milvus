@@ -17,6 +17,7 @@
 #include <string.h>
 #include <cstdint>
 #include <exception>
+#include <iosfwd>
 #include <map>
 #include <set>
 #include <utility>
@@ -33,6 +34,7 @@
 #include "index/InvertedIndexTantivy.h"
 #include "index/Meta.h"
 #include "index/ScalarIndex.h"
+#include "index/ScalarIndexSort.h"
 #include "index/StringIndexMarisa.h"
 #include "index/Utils.h"
 #include "knowhere/binaryset.h"
@@ -46,7 +48,6 @@
 
 namespace milvus {
 namespace index {
-template <typename T> class ScalarIndexSort;
 
 template <typename T>
 HybridScalarIndex<T>::HybridScalarIndex(

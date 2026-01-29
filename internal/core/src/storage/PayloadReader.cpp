@@ -19,7 +19,6 @@
 
 #include "arrow/api.h"
 #include "arrow/io/memory.h"
-#include "arrow/status.h"
 #include "common/Consts.h"
 #include "common/EasyAssert.h"
 #include "common/Types.h"

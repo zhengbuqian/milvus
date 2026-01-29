@@ -33,18 +33,10 @@
 #include "knowhere/config.h"
 #include "knowhere/dataset.h"
 #include "knowhere/index/index_node.h"
+#include "knowhere/sparse_utils.h"
 #include "log/Log.h"
 #include "nlohmann/json.hpp"
 #include "query/helper.h"
-
-namespace knowhere {
-namespace sparse {
-template <typename T> class SparseRow;
-}  // namespace sparse
-}  // namespace knowhere
-namespace milvus {
-struct OpContext;
-}  // namespace milvus
 
 namespace milvus::query {
 

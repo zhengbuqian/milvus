@@ -39,7 +39,6 @@
 
 namespace milvus {
 namespace exec {
-class EvalCtx;
 
 #define GEOMETRY_EXECUTE_SUB_BATCH_WITH_COMPARISON(_DataType, method)       \
     auto execute_sub_batch = [this](const _DataType* data,                  \

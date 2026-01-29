@@ -16,7 +16,6 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <folly/ExceptionWrapper.h>
 #include <folly/Try.h>
 #include <folly/futures/Future.h>
 #include <folly/futures/Promise.h>

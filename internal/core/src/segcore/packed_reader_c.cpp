@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "arrow/c/abi.h"
+#include "arrow/record_batch.h"
 #include "arrow/result.h"
 #include "common/EasyAssert.h"
 #include "common/type_c.h"
@@ -32,10 +33,6 @@
 #include "storage/PluginLoader.h"
 #include "storage/StorageV2FSCache.h"
 #include "storage/plugin/PluginInterface.h"
-
-namespace arrow {
-class RecordBatch;
-}  // namespace arrow
 
 CStatus
 NewPackedReaderWithStorageConfig(char** paths,

@@ -25,6 +25,7 @@
 #include "common/OffsetMapping.h"
 #include "common/Types.h"
 #include "common/Utils.h"
+#include "common/VectorTrait.h"
 #include "common/type_c.h"
 #include "fmt/core.h"
 #include "folly/FBVector.h"
@@ -46,13 +47,6 @@
 #include "storage/ChunkManager.h"
 #include "storage/FileManager.h"
 #include "storage/LocalChunkManagerSingleton.h"
-
-namespace milvus {
-class BFloat16Vector;
-class Float16Vector;
-class FloatVector;
-class SparseFloatVector;
-}  // namespace milvus
 
 namespace milvus::segcore {
 using std::unique_ptr;

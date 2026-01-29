@@ -16,6 +16,7 @@
 
 #include <simdjson.h>
 #include <string.h>
+#include <algorithm>
 #include <cstdint>
 #include <exception>
 #include <iostream>

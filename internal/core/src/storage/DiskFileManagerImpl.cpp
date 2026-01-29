@@ -23,6 +23,7 @@
 #include <exception>
 #include <filesystem>
 #include <future>
+#include <iosfwd>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -43,6 +44,7 @@
 #include "common/Types.h"
 #include "common/Utils.h"
 #include "common/VectorArray.h"
+#include "common/VectorTrait.h"
 #include "filemanager/FileManager.h"
 #include "fmt/core.h"
 #include "glog/logging.h"
@@ -65,12 +67,6 @@
 #include "storage/ThreadPools.h"
 #include "storage/Types.h"
 #include "storage/Util.h"
-
-namespace milvus {
-class InputStream;
-class OutputStream;
-class SparseFloatVector;
-}  // namespace milvus
 
 namespace milvus::storage {
 DiskFileManagerImpl::DiskFileManagerImpl(

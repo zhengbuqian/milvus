@@ -16,6 +16,7 @@
 
 #include "ElementFilterNode.h"
 
+#include <algorithm>
 #include <chrono>
 #include <functional>
 #include <optional>

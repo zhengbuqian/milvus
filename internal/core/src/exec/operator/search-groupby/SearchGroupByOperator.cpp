@@ -26,7 +26,6 @@
 #include "query/Utils.h"
 
 namespace milvus {
-struct OpContext;
 
 namespace exec {
 

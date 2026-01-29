@@ -18,15 +18,9 @@
 
 #include <cstdint>
 
+#include "arrow/array/array_primitive.h"
 #include "common/Span.h"
 #include "parquet/types.h"
-
-namespace arrow {
-class BooleanArray;
-}  // namespace arrow
-namespace parquet {
-class Statistics;
-}  // namespace parquet
 
 namespace milvus::index {
 

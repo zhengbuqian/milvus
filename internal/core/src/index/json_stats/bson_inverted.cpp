@@ -32,12 +32,6 @@
 #include "storage/LocalChunkManagerSingleton.h"
 #include "storage/Types.h"
 
-namespace milvus {
-namespace storage {
-struct FileManagerContext;
-}  // namespace storage
-}  // namespace milvus
-
 namespace milvus::index {
 
 BsonInvertedIndex::BsonInvertedIndex(const std::string& path,

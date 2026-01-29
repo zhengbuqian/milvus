@@ -15,6 +15,7 @@
 // limitations under the License.
 
 #include "arrow/api.h"
+#include "arrow/array/array_base.h"
 #include "arrow/array/builder_base.h"
 #include "arrow/util/type_fwd.h"
 #include "common/EasyAssert.h"
@@ -24,10 +25,6 @@
 #include "storage/PayloadStream.h"
 #include "storage/PayloadWriter.h"
 #include "storage/Util.h"
-
-namespace arrow {
-class Array;
-}  // namespace arrow
 
 namespace milvus::storage {
 

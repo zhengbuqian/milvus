@@ -14,7 +14,6 @@
 
 namespace milvus {
 namespace exec {
-class QueryConfig;
 
 void
 Aggregate::setOffsetsInternal(int32_t offset,

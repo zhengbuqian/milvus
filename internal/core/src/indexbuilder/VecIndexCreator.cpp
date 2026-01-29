@@ -20,11 +20,6 @@
 #include "nlohmann/json.hpp"
 #include "storage/Types.h"
 
-namespace milvus {
-struct OpContext;
-struct SearchInfo;
-}  // namespace milvus
-
 namespace milvus::indexbuilder {
 
 VecIndexCreator::VecIndexCreator(

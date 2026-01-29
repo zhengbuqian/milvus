@@ -11,13 +11,13 @@
 #include "CountAggregateBase.h"
 
 #include "common/Utils.h"
+#include "exec/QueryContext.h"
 #include "exec/operator/query-agg/Aggregate.h"
 #include "glog/logging.h"
 #include "log/Log.h"
 
 namespace milvus {
 namespace exec {
-class QueryConfig;
 
 void
 registerCount(const std::string& name) {

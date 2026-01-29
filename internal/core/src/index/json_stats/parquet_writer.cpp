@@ -23,13 +23,6 @@
 #include "arrow/array/builder_base.h"
 #include "milvus-storage/packed/writer.h"
 
-namespace arrow {
-class Array;
-namespace fs {
-class FileSystem;
-}  // namespace fs
-}  // namespace arrow
-
 namespace milvus::index {
 
 JsonStatsParquetWriter::JsonStatsParquetWriter(

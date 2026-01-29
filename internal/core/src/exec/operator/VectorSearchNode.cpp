@@ -16,6 +16,7 @@
 
 #include "VectorSearchNode.h"
 
+#include <algorithm>
 #include <chrono>
 #include <functional>
 #include <ratio>

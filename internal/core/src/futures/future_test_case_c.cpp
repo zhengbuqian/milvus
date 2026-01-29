@@ -13,7 +13,6 @@
 #include <folly/ExceptionWrapper.h>
 #include <folly/Try.h>
 #include <folly/futures/Promise.h>
-#include <algorithm>
 #include <chrono>
 #include <exception>
 #include <memory>
@@ -28,10 +27,6 @@
 #include "folly/executors/CPUThreadPoolExecutor.h"
 #include "folly/futures/Future.h"
 #include "futures/future_c_types.h"
-
-namespace folly {
-class CancellationToken;
-}  // namespace folly
 
 extern "C" CFuture*
 future_create_test_case(int interval, int loop_cnt, int case_no) {

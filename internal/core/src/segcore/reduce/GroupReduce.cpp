@@ -24,14 +24,6 @@
 #include "common/QueryResult.h"
 #include "segcore/ReduceUtils.h"
 
-namespace milvus {
-namespace proto {
-namespace schema {
-class SearchResultData;
-}  // namespace schema
-}  // namespace proto
-}  // namespace milvus
-
 namespace milvus::segcore {
 
 void
