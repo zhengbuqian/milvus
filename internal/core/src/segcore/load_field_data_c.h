@@ -22,8 +22,6 @@
 extern "C" {
 #endif
 
-
-
 typedef void* CLoadFieldDataInfo;
 
 CStatus
