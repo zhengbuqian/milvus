@@ -20,8 +20,8 @@
 extern "C" {
 #endif
 
-#include <stdbool.h>
 #include <stdint.h>
+
 #include "common/type_c.h"
 
 void
