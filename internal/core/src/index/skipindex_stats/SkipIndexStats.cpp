@@ -15,8 +15,18 @@
 // limitations under the License.
 
 #include "index/skipindex_stats/SkipIndexStats.h"
-#include <cstring>
+
+#include <cstdint>
+
+#include "common/Span.h"
 #include "parquet/types.h"
+
+namespace arrow {
+class BooleanArray;
+}  // namespace arrow
+namespace parquet {
+class Statistics;
+}  // namespace parquet
 
 namespace milvus::index {
 
