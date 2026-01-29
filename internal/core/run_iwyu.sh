@@ -2,6 +2,10 @@
 #
 # IWYU (Include What You Use) analysis and fix script for Milvus C++ code
 #
+# This script uses --no_fwd_decls to prefer includes over forward declarations,
+# following Google C++ Style Guide recommendations. Forward declarations should
+# only be used when includes would cause circular dependencies.
+#
 # Usage:
 #   ./run_iwyu.sh <file_or_directory>... [options]
 #
@@ -109,6 +113,10 @@ if [[ ! -f "$MAPPING_FILE" ]]; then
 else
     MAPPING_ARG="-Xiwyu --mapping_file=$MAPPING_FILE"
 fi
+
+# Prefer includes over forward declarations (Google C++ Style Guide recommendation)
+# Forward declarations are only needed when includes would cause circular dependencies
+IWYU_ARGS="-Xiwyu --no_fwd_decls"
 
 # Collect C++ files from a single target
 collect_files_from_target() {
@@ -244,7 +252,7 @@ trap "rm -f $IWYU_OUTPUT" EXIT
 # Run IWYU analysis
 echo -e "${GREEN}Running IWYU analysis...${NC}"
 if $VERBOSE; then
-    echo "Command: iwyu_tool.py -p $COMPILE_DB <files> -- $MAPPING_ARG"
+    echo "Command: iwyu_tool.py -p $COMPILE_DB <files> -- $IWYU_ARGS $MAPPING_ARG"
 fi
 
 export PATH="$IWYU_DIR:$PATH"
@@ -257,7 +265,7 @@ python3 "$IWYU_DIR/iwyu_tool.py" \
     -p "$COMPILE_DB" \
     -j "$JOBS" \
     $SRC_FILES_ARGS \
-    -- $MAPPING_ARG \
+    -- $IWYU_ARGS $MAPPING_ARG \
     2>&1 | tee "$IWYU_OUTPUT"
 
 # Check if there are any suggestions
