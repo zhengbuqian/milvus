@@ -15,33 +15,11 @@
 // limitations under the License.
 
 #include "BinaryRangeExpr.h"
-
-#include <cstdint>
-#include <limits>
 #include <utility>
-#include <variant>
 
-#include "common/EasyAssert.h"
-#include "common/Tracer.h"
-#include "common/bson_view.h"
-#include "common/type_c.h"
-#include "exec/expression/Utils.h"
-#include "fmt/core.h"
-#include "folly/FBVector.h"
-#include "glog/logging.h"
-#include "index/json_stats/JsonKeyStats.h"
-#include "index/json_stats/utils.h"
-#include "log/Log.h"
-#include "opentelemetry/trace/span.h"
 #include "query/Utils.h"
-#include "segcore/SegmentInterface.h"
-#include "segcore/SegmentSealed.h"
-#include "storage/MmapManager.h"
-#include "storage/Types.h"
-
+#include "index/json_stats/JsonKeyStats.h"
 namespace milvus {
-class SkipIndex;
-
 namespace exec {
 
 void

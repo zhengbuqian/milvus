@@ -13,37 +13,32 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-#include <bits/exception.h>
-#include <cxxabi.h>
+#include <cstddef>
 #include <algorithm>
 #include <atomic>
-#include <cstddef>
+#include "common/OpContext.h"
+#include "milvus-storage/common/metadata.h"
+#include "segcore/memory_planner.h"
+#include <memory>
+#include <vector>
+#include <arrow/record_batch.h>
+
 #include <future>
 #include <memory>
 #include <string>
-#include <utility>
 #include <vector>
 
-#include "arrow/api.h"
-#include "common/Channel.h"
-#include "common/Common.h"
+#include "arrow/type.h"
 #include "common/EasyAssert.h"
-#include "common/protobuf_utils.h"
+#include "common/FieldData.h"
 #include "folly/ScopeGuard.h"
-#include "glog/logging.h"
-#include "log/Log.h"
-#include "milvus-storage/common/metadata.h"
-#include "milvus-storage/filesystem/fs.h"
 #include "milvus-storage/format/parquet/file_reader.h"
+#include "milvus-storage/filesystem/fs.h"
+#include "log/Log.h"
 #include "segcore/Utils.h"
-#include "segcore/memory_planner.h"
-#include "storage/KeyRetriever.h"
-#include "storage/ThreadPool.h"
 #include "storage/ThreadPools.h"
-
-namespace milvus {
-struct OpContext;
-}  // namespace milvus
+#include "common/Common.h"
+#include "storage/KeyRetriever.h"
 
 namespace milvus::segcore {
 

@@ -15,14 +15,11 @@
 // limitations under the License.
 
 #include "segcore/arrow_fs_c.h"
-
-#include <bits/exception.h>
-#include <string>
-
+#include "milvus-storage/filesystem/fs.h"
 #include "common/EasyAssert.h"
 #include "common/type_c.h"
-#include "milvus-storage/filesystem/fs.h"
 #include "storage/loon_ffi/property_singleton.h"
+#include "storage/loon_ffi/util.h"
 
 CStatus
 InitLocalArrowFileSystemSingleton(const char* c_path) {

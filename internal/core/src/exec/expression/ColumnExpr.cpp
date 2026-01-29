@@ -16,15 +16,6 @@
 
 #include "ColumnExpr.h"
 
-#include <cstdint>
-#include <functional>
-
-#include "bitset/bitset.h"
-#include "boost/variant/get.hpp"
-#include "common/Tracer.h"
-#include "common/Types.h"
-#include "opentelemetry/trace/span.h"
-
 namespace milvus {
 namespace exec {
 

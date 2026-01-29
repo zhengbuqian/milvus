@@ -15,22 +15,14 @@
 // limitations under the License.
 
 #include "storage/MmapChunkManager.h"
-
-#include <bits/exception.h>
-#include <fcntl.h>
+#include "storage/LocalChunkManagerSingleton.h"
+#include <fstream>
 #include <sys/mman.h>
 #include <unistd.h>
-#include <utility>
-
-#include "common/EasyAssert.h"
-#include "glog/logging.h"
+#include "stdio.h"
+#include <fcntl.h>
 #include "log/Log.h"
 #include "monitor/Monitor.h"
-#include "prometheus/gauge.h"
-#include "prometheus/histogram.h"
-#include "stdio.h"
-#include "storage/LocalChunkManager.h"
-#include "storage/LocalChunkManagerSingleton.h"
 
 namespace milvus::storage {
 namespace {

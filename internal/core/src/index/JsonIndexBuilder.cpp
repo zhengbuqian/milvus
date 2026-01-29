@@ -11,20 +11,9 @@
 
 #include <string>
 #include <string_view>
-#include <type_traits>
-
-#include "common/FieldDataInterface.h"
-#include "common/Json.h"
-#include "common/JsonCastType.h"
 #include "common/JsonUtils.h"
-#include "folly/FBVector.h"
 #include "index/JsonIndexBuilder.h"
-#include "pb/schema.pb.h"
-#include "simdjson/dom/array.h"
-#include "simdjson/dom/element.h"
-#include "simdjson/dom/element-inl.h"
 #include "simdjson/error.h"
-#include "simdjson/error-inl.h"
 
 namespace milvus::index {
 

@@ -10,29 +10,18 @@
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
 #include "indexbuilder/ScalarIndexCreator.h"
-
-#include <bits/exception.h>
-#include <cstdint>
-#include <map>
-#include <optional>
-#include <string>
-
 #include "common/Consts.h"
-#include "common/EasyAssert.h"
+#include "common/FieldDataInterface.h"
 #include "common/JsonCastType.h"
 #include "common/Types.h"
 #include "index/IndexFactory.h"
 #include "index/IndexInfo.h"
 #include "index/Meta.h"
 #include "index/Utils.h"
-#include "knowhere/dataset.h"
-#include "nlohmann/json.hpp"
+#include "pb/index_cgo_msg.pb.h"
 
-namespace milvus {
-namespace storage {
-struct FileManagerContext;
-}  // namespace storage
-}  // namespace milvus
+#include <string>
+#include <utility>
 
 namespace milvus::indexbuilder {
 

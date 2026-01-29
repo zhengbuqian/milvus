@@ -1,9 +1,5 @@
 #include "common/JsonCastType.h"
 
-#include <utility>
-
-#include "common/EasyAssert.h"
-
 namespace milvus {
 
 const std::unordered_map<std::string, const JsonCastType>

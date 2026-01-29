@@ -15,16 +15,18 @@
 // limitations under the License.
 
 #include <algorithm>
-#include <memory>
+#include <cstddef>
 #include <optional>
 #include <string>
-#include <tuple>
+#include "arrow/type.h"
+#include <boost/lexical_cast.hpp>
+#include <google/protobuf/text_format.h>
+#include <memory>
 
 #include "Schema.h"
-#include "arrow/type.h"
+#include "SystemProperty.h"
 #include "arrow/util/key_value_metadata.h"
 #include "common/Consts.h"
-#include "common/FieldMeta.h"
 #include "milvus-storage/common/constants.h"
 #include "pb/common.pb.h"
 #include "protobuf_utils.h"

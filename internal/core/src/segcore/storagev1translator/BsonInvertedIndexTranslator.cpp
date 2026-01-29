@@ -16,25 +16,15 @@
 
 #include "segcore/storagev1translator/BsonInvertedIndexTranslator.h"
 
-#include <algorithm>
-#include <functional>
-#include <string_view>
 #include <utility>
 
-#include "common/ScopedTimer.h"
-#include "fmt/core.h"
-#include "glog/logging.h"
-#include "index/json_stats/bson_inverted.h"
-#include "log/Log.h"
-#include "pb/common.pb.h"
+#include "cachinglayer/CacheSlot.h"
 #include "segcore/Utils.h"
-
-namespace milvus {
-namespace storage {
-class DiskFileManagerImpl;
-}  // namespace storage
-struct OpContext;
-}  // namespace milvus
+#include "segcore/Utils.h"
+#include "monitor/Monitor.h"
+#include "common/ScopedTimer.h"
+#include "log/Log.h"
+#include "fmt/format.h"
 
 namespace milvus::segcore::storagev1translator {
 

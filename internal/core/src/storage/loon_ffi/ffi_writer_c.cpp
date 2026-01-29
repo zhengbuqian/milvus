@@ -12,18 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <bits/exception.h>
-#include <string.h>
-#include <memory>
-#include <string>
-#include <utility>
-
-#include "PluginInterface.h"
 #include "common/EasyAssert.h"
-#include "common/common_type_c.h"
-#include "storage/KeyRetriever.h"
-#include "storage/PluginLoader.h"
 #include "storage/loon_ffi/ffi_writer_c.h"
+#include "common/common_type_c.h"
+#include "storage/PluginLoader.h"
+#include "storage/KeyRetriever.h"
+#include "monitor/scope_metric.h"
 
 /**
  * @brief Implementation of GetEncParams - retrieves encryption parameters for CMEK.

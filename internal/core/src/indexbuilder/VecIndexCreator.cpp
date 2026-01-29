@@ -9,21 +9,14 @@
 // is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
-#include "common/Consts.h"
-#include "common/EasyAssert.h"
-#include "common/QueryResult.h"
-#include "index/IndexFactory.h"
-#include "index/IndexInfo.h"
-#include "index/Utils.h"
-#include "index/VectorIndex.h"
-#include "indexbuilder/VecIndexCreator.h"
-#include "nlohmann/json.hpp"
-#include "storage/Types.h"
+#include <map>
+#include <utility>
 
-namespace milvus {
-struct OpContext;
-struct SearchInfo;
-}  // namespace milvus
+#include "common/EasyAssert.h"
+#include "indexbuilder/VecIndexCreator.h"
+#include "index/Utils.h"
+#include "index/IndexFactory.h"
+#include "pb/index_cgo_msg.pb.h"
 
 namespace milvus::indexbuilder {
 

@@ -14,15 +14,7 @@
 //
 
 #include "ThreadPools.h"
-
-#include <math.h>
-#include <atomic>
 #include <mutex>
-#include <utility>
-
-#include "glog/logging.h"
-#include "log/Log.h"
-#include "storage/ThreadPool.h"
 
 namespace milvus {
 

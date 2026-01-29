@@ -11,24 +11,23 @@
 
 #include "MinHashComputer.h"
 
-// SHA1 from OpenSSL (conan dependencies)
-#include <openssl/sha.h>
-#include <algorithm>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
-#include <iosfwd>
+#include <cstdio>
+#include <algorithm>
+#include <limits>
 #include <memory>
-#include <random>
-#include <string>
 #include <vector>
-
-#include "MinHashHook.h"
-#include "fusion_compute_native.h"
-#include "tantivy/token-stream.h"
-#include "tantivy/tokenizer.h"
+#include <random>
 // xxHash from conan dependencies (includes XXH3)
 #include "xxhash.h"
+
+// SHA1 from OpenSSL (conan dependencies)
+#include <openssl/sha.h>
+
+#include "tantivy/tokenizer.h"
+#include "tantivy/token-stream.h"
+#include "MinHashHook.h"
 
 namespace milvus {
 namespace minhash {

@@ -1,24 +1,11 @@
 #include "segcore/storagev1translator/SealedIndexTranslator.h"
 
-#include <filesystem>
 #include <utility>
 
-#include "common/EasyAssert.h"
-#include "common/common_type_c.h"
-#include "common/resource_c.h"
-#include "fmt/core.h"
-#include "glog/logging.h"
-#include "index/Index.h"
 #include "index/IndexFactory.h"
-#include "index/Meta.h"
-#include "log/Log.h"
-#include "nlohmann/json.hpp"
-#include "segcore/Types.h"
 #include "segcore/Utils.h"
-
-namespace milvus {
-struct OpContext;
-}  // namespace milvus
+#include "segcore/load_index_c.h"
+#include "segcore/Utils.h"
 
 namespace milvus::segcore::storagev1translator {
 

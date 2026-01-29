@@ -1,12 +1,8 @@
 #include <chrono>
 #include <string>
-#include <utility>
-
-#include "common/PrometheusClient.h"
-#include "glog/logging.h"
+#include <iostream>
 #include "log/Log.h"
-#include "prometheus/family.h"
-#include "prometheus/histogram.h"
+#include "Monitor.h"
 #include "scope_metric.h"
 
 namespace milvus::monitor {

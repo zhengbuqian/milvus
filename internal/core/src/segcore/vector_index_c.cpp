@@ -11,26 +11,15 @@
 
 #include "segcore/vector_index_c.h"
 
-#include <bits/exception.h>
-#include <string.h>
-#include <iosfwd>
-#include <map>
-#include <memory>
-#include <string>
-#include <utility>
-
-#include "common/EasyAssert.h"
 #include "common/Types.h"
-#include "common/protobuf_utils.h"
+#include "common/EasyAssert.h"
+#include "knowhere/utils.h"
 #include "knowhere/config.h"
-#include "knowhere/expected.h"
-#include "knowhere/index/index_factory.h"
-#include "knowhere/index/index_static.h"
-#include "knowhere/operands.h"
 #include "knowhere/version.h"
-#include "nlohmann/json.hpp"
-#include "pb/common.pb.h"
+#include "index/Meta.h"
+#include "index/IndexFactory.h"
 #include "pb/index_cgo_msg.pb.h"
+#include "segcore/SegcoreConfig.h"
 
 CStatus
 ValidateIndexParams(const char* index_type,

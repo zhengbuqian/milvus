@@ -11,12 +11,6 @@
 
 #include "index/IndexStats.h"
 
-#include <algorithm>
-#include <utility>
-
-#include "common/EasyAssert.h"
-#include "pb/cgo_msg.pb.h"
-
 namespace milvus::index {
 
 IndexStatsPtr

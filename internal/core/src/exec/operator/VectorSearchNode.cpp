@@ -15,30 +15,12 @@
 // limitations under the License.
 
 #include "VectorSearchNode.h"
-
-#include <chrono>
-#include <functional>
-#include <ratio>
-#include <utility>
-#include <vector>
-
-#include "bitset/bitset.h"
-#include "common/ArrayOffsets.h"
-#include "common/BitsetView.h"
-#include "common/EasyAssert.h"
-#include "common/QueryResult.h"
 #include "common/Tracer.h"
-#include "common/Utils.h"
-#include "exec/QueryContext.h"
-#include "exec/expression/Utils.h"
+#include "fmt/format.h"
+#include "common/ArrayOffsets.h"
 #include "exec/operator/Utils.h"
-#include "monitor/Monitor.h"
-#include "opentelemetry/trace/span.h"
-#include "plan/PlanNode.h"
-#include "prometheus/histogram.h"
-#include "query/PlanImpl.h"
-#include "segcore/SegmentInterface.h"
 
+#include "monitor/Monitor.h"
 namespace milvus {
 namespace exec {
 

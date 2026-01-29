@@ -14,39 +14,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <bits/exception.h>
-#include <string.h>
-#include <cstdint>
-#include <map>
-#include <set>
-#include <utility>
+#include <algorithm>
 
-#include "common/Array.h"
-#include "common/Consts.h"
-#include "common/EasyAssert.h"
-#include "common/FieldDataInterface.h"
-#include "common/Tracer.h"
-#include "fmt/core.h"
-#include "glog/logging.h"
-#include "index/BitmapIndex.h"
 #include "index/HybridScalarIndex.h"
-#include "index/InvertedIndexTantivy.h"
+#include "common/Slice.h"
+#include "common/Common.h"
 #include "index/Meta.h"
 #include "index/ScalarIndex.h"
-#include "index/StringIndexMarisa.h"
 #include "index/Utils.h"
-#include "knowhere/binaryset.h"
-#include "log/Log.h"
-#include "nlohmann/json.hpp"
-#include "pb/common.pb.h"
-#include "storage/MemFileManagerImpl.h"
-#include "storage/ThreadPools.h"
-#include "storage/Types.h"
 #include "storage/Util.h"
 
 namespace milvus {
 namespace index {
-template <typename T> class ScalarIndexSort;
 
 template <typename T>
 HybridScalarIndex<T>::HybridScalarIndex(

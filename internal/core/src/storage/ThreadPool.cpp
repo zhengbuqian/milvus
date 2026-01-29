@@ -15,11 +15,7 @@
 // limitations under the License.
 
 #include "ThreadPool.h"
-
-#include <chrono>
-
 #include "log/Log.h"
-#include "storage/SafeQueue.h"
 
 namespace milvus {
 

@@ -16,28 +16,21 @@
 
 #include <aws/core/auth/AWSCredentials.h>
 #include <aws/core/auth/AWSCredentialsProviderChain.h>
-#include <functional>
-#include <memory>
-#include <string>
+#include <aws/core/auth/STSCredentialsProvider.h>
+#include <aws/core/utils/logging/ConsoleLogSystem.h>
+#include <aws/s3/model/CreateBucketRequest.h>
+#include <aws/s3/model/DeleteBucketRequest.h>
+#include <aws/s3/model/DeleteObjectRequest.h>
+#include <aws/s3/model/GetObjectRequest.h>
+#include <aws/s3/model/HeadBucketRequest.h>
+#include <aws/s3/model/HeadObjectRequest.h>
+#include <aws/s3/model/ListObjectsRequest.h>
+#include <aws/s3/model/PutObjectRequest.h>
 
-#include "aws/core/Aws.h"
-#include "aws/core/auth/signer/AWSAuthV4Signer.h"
-#include "aws/core/client/ClientConfiguration.h"
-#include "aws/core/http/Scheme.h"
-#include "aws/core/utils/memory/stl/AWSAllocator.h"
-#include "aws/core/utils/memory/stl/AWSString.h"
-#include "aws/s3/S3Client.h"
+#include "storage/minio/MinioChunkManager.h"
 #include "common/Consts.h"
 #include "common/EasyAssert.h"
-#include "glog/logging.h"
-#include "google/cloud/storage/oauth2/compute_engine_credentials.h"
-#include "google/cloud/version.h"
 #include "log/Log.h"
-#include "storage/Types.h"
-#include "storage/aliyun/AliyunCredentialsProvider.h"
-#include "storage/huawei/HuaweiCloudCredentialsProvider.h"
-#include "storage/minio/MinioChunkManager.h"
-#include "storage/tencent/TencentCloudCredentialsProvider.h"
 
 namespace milvus::storage {
 

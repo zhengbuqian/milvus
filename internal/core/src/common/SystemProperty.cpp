@@ -14,11 +14,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <map>
-#include <string>
+#include <yaml-cpp/yaml.h>
 
-#include "Consts.h"
 #include "SystemProperty.h"
+#include "Consts.h"
 #include "common/EasyAssert.h"
 
 namespace milvus {

@@ -15,44 +15,9 @@
 // limitations under the License.
 
 #include "JsonContainsExpr.h"
-
-#include <algorithm>
 #include <cmath>
-#include <cstdint>
-#include <type_traits>
-#include <unordered_set>
 #include <utility>
-#include <variant>
-
-#include "boost/container/vector.hpp"
-#include "boost/cstdint.hpp"
-#include "common/Array.h"
-#include "common/Json.h"
-#include "common/Tracer.h"
 #include "common/Types.h"
-#include "common/type_c.h"
-#include "exec/expression/EvalCtx.h"
-#include "fmt/core.h"
-#include "folly/FBVector.h"
-#include "index/ScalarIndex.h"
-#include "index/json_stats/JsonKeyStats.h"
-#include "index/json_stats/utils.h"
-#include "opentelemetry/trace/span.h"
-#include "segcore/SegmentInterface.h"
-#include "segcore/SegmentSealed.h"
-#include "simdjson/dom/array.h"
-#include "simdjson/dom/array-inl.h"
-#include "simdjson/dom/element.h"
-#include "simdjson/dom/element-inl.h"
-#include "simdjson/error.h"
-#include "simdjson/error-inl.h"
-#include "simdjson/generic/implementation_simdjson_result_base-inl.h"
-#include "simdjson/generic/ondemand/array.h"
-#include "simdjson/generic/ondemand/array-inl.h"
-#include "simdjson/generic/ondemand/document.h"
-#include "simdjson/generic/ondemand/document-inl.h"
-#include "simdjson/generic/ondemand/value.h"
-#include "simdjson/generic/ondemand/value-inl.h"
 
 namespace milvus {
 namespace exec {

@@ -16,7 +16,7 @@
 
 #include "common/FieldData.h"
 
-#include <ext/alloc_traits.h>
+#include <simdjson.h>
 #include <string.h>
 #include <cstdint>
 #include <optional>
@@ -36,7 +36,6 @@
 #include "common/Json.h"
 #include "pb/schema.pb.h"
 #include "simdjson/padded_string.h"
-#include "simdjson/padded_string-inl.h"
 
 namespace milvus {
 

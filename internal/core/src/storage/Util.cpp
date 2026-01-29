@@ -14,56 +14,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <bits/exception.h>
-#include <cxxabi.h>
-#include <ext/alloc_traits.h>
-#include <math.h>
-#include <sys/mman.h>
-#include <atomic>
-#include <cstddef>
 #include <memory>
-#include <mutex>
-#include <numeric>
 
-#include "NamedType/underlying_functionalities.hpp"
-#include "arrow/api.h"
 #include "arrow/array/builder_binary.h"
 #include "arrow/array/builder_nested.h"
 #include "arrow/array/builder_primitive.h"
+#include <arrow/c/bridge.h>
 #include "arrow/scalar.h"
 #include "arrow/type_fwd.h"
-#include "boost/core/enable_if.hpp"
-#include "boost/filesystem/path.hpp"
-#include "boost/type_traits/remove_cv.hpp"
-#include "common/Array.h"
-#include "common/Channel.h"
+#include "common/type_c.h"
+#include "fmt/format.h"
+#include "index/Utils.h"
+#include "log/Log.h"
+
 #include "common/Consts.h"
 #include "common/EasyAssert.h"
 #include "common/FieldData.h"
 #include "common/FieldDataInterface.h"
-#include "common/FieldMeta.h"
-#include "common/Json.h"
-#include "common/LoadInfo.h"
-#include "common/type_c.h"
-#include "core.h"
-#include "fmt/core.h"
-#include "glog/logging.h"
-#include "index/Utils.h"
-#include "log/Log.h"
-#include "milvus-storage/column_groups.h"
-#include "milvus-storage/common/config.h"
-#include "milvus-storage/manifest.h"
-#include "nlohmann/json.hpp"
-#include "parquet/schema.h"
 #include "pb/common.pb.h"
-#include "pb/schema.pb.h"
-#include "simdjson/padded_string-inl.h"
-#include "storage/DataCodec.h"
-#include "storage/FileManager.h"
-#include "storage/IndexData.h"
-#include "storage/PayloadStream.h"
 #include "storage/StorageV2FSCache.h"
-#include "storage/ThreadPool.h"
 #ifdef AZURE_BUILD_DIR
 #include "storage/azure/AzureChunkManager.h"
 #endif
@@ -71,38 +40,31 @@
 #include "storage/gcp-native-storage/GcpNativeChunkManager.h"
 #endif
 #include "storage/ChunkManager.h"
+#include "storage/DiskFileManagerImpl.h"
+#include "storage/InsertData.h"
 #include "storage/LocalChunkManager.h"
 #include "storage/MemFileManagerImpl.h"
 #include "storage/minio/MinioChunkManager.h"
 #ifdef USE_OPENDAL
 #include "storage/opendal/OpenDALChunkManager.h"
 #endif
+#include "storage/Types.h"
+#include "storage/Util.h"
 #include "common/Common.h"
 #include "common/Types.h"
 #include "common/VectorArray.h"
-#include "milvus-storage/filesystem/fs.h"
-#include "milvus-storage/format/parquet/file_reader.h"
-#include "milvus-storage/reader.h"
-#include "mmap/Types.h"
-#include "segcore/memory_planner.h"
-#include "storage/KeyRetriever.h"
 #include "storage/ThreadPools.h"
-#include "storage/Types.h"
-#include "storage/Util.h"
+#include "storage/MemFileManagerImpl.h"
+#include "storage/DiskFileManagerImpl.h"
+#include "storage/KeyRetriever.h"
+#include "segcore/memory_planner.h"
+#include "mmap/Types.h"
+#include "storage/loon_ffi/ffi_reader_c.h"
 #include "storage/loon_ffi/util.h"
-
-namespace arrow {
-class ArrayBuilder;
-}  // namespace arrow
-namespace milvus {
-class BFloat16Vector;
-class BinaryVector;
-class Float16Vector;
-class FloatVector;
-class Geometry;
-class Int8Vector;
-class SparseFloatVector;
-}  // namespace milvus
+#include "milvus-storage/ffi_c.h"
+#include "milvus-storage/format/parquet/file_reader.h"
+#include "milvus-storage/filesystem/fs.h"
+#include "milvus-storage/reader.h"
 
 namespace milvus::storage {
 

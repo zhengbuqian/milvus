@@ -11,7 +11,6 @@
 
 #include "common/ChunkWriter.h"
 
-#include <ext/alloc_traits.h>
 #include <cstdint>
 #include <memory>
 #include <tuple>

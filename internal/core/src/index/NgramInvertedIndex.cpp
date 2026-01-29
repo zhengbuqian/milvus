@@ -11,46 +11,10 @@
 
 #include "index/NgramInvertedIndex.h"
 
-#include <bits/exception.h>
-#include <string.h>
-#include <algorithm>
 #include <chrono>
-#include <cstdint>
-#include <map>
-#include <string_view>
-#include <type_traits>
-#include <utility>
 
-#include "bitset/bitset.h"
-#include "boost/filesystem/operations.hpp"
-#include "common/EasyAssert.h"
-#include "common/FieldDataInterface.h"
-#include "common/Json.h"
-#include "common/JsonCastFunction.h"
-#include "common/JsonCastType.h"
-#include "common/RegexQuery.h"
-#include "common/Tracer.h"
-#include "glog/logging.h"
-#include "index/IndexInfo.h"
+#include "exec/expression/Expr.h"
 #include "index/JsonIndexBuilder.h"
-#include "index/Meta.h"
-#include "index/Utils.h"
-#include "knowhere/binaryset.h"
-#include "log/Log.h"
-#include "nlohmann/json.hpp"
-#include "opentelemetry/trace/span.h"
-#include "pb/common.pb.h"
-#include "pb/schema.pb.h"
-#include "simdjson/error.h"
-#include "simdjson/error-inl.h"
-#include "simdjson/generic/ondemand/value-inl.h"
-#include "simdjson/padded_string-inl.h"
-#include "storage/DataCodec.h"
-#include "storage/DiskFileManagerImpl.h"
-#include "storage/FileManager.h"
-#include "storage/MemFileManagerImpl.h"
-#include "storage/ThreadPools.h"
-#include "storage/Types.h"
 
 namespace milvus::index {
 

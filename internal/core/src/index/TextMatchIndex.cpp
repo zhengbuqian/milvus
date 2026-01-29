@@ -9,37 +9,15 @@
 // is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
-#include <bits/exception.h>
-#include <string.h>
-#include <algorithm>
-#include <limits>
-#include <map>
+#include <boost/uuid/random_generator.hpp>
+#include <boost/uuid/uuid_io.hpp>
 #include <memory>
-#include <ratio>
+#include <shared_mutex>
 
-#include "boost/filesystem/directory.hpp"
-#include "boost/filesystem/operations.hpp"
-#include "boost/filesystem/path.hpp"
-#include "boost/iterator/iterator_facade.hpp"
-#include "common/EasyAssert.h"
-#include "common/FieldDataInterface.h"
-#include "common/Tracer.h"
-#include "folly/SharedMutex.h"
-#include "glog/logging.h"
-#include "index/Meta.h"
 #include "index/TextMatchIndex.h"
+#include "index/InvertedIndexUtil.h"
 #include "index/Utils.h"
-#include "knowhere/binaryset.h"
-#include "log/Log.h"
-#include "nlohmann/json.hpp"
-#include "pb/common.pb.h"
-#include "pb/schema.pb.h"
-#include "storage/DiskFileManagerImpl.h"
-#include "storage/FileManager.h"
-#include "storage/MemFileManagerImpl.h"
 #include "storage/ThreadPools.h"
-#include "storage/Types.h"
-#include "tantivy-wrapper.h"
 
 namespace milvus::index {
 TextMatchIndex::TextMatchIndex(int64_t commit_interval_in_ms,

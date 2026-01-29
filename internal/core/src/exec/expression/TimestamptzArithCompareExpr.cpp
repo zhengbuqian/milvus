@@ -1,14 +1,8 @@
 #include "TimestamptzArithCompareExpr.h"
-
 #include <cstddef>
-#include <cstdint>
 #include <memory>
-#include <variant>
-
-#include "BinaryArithOpEvalRangeExpr.h"
 #include "absl/time/civil_time.h"
 #include "absl/time/time.h"
-#include "bitset/bitset.h"
 #include "common/EasyAssert.h"
 #include "common/Types.h"
 #include "common/Vector.h"
@@ -16,6 +10,7 @@
 #include "exec/expression/Expr.h"
 #include "expr/ITypeExpr.h"
 #include "pb/plan.pb.h"
+#include "BinaryArithOpEvalRangeExpr.h"
 
 namespace milvus {
 namespace exec {

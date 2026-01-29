@@ -15,21 +15,11 @@
 // limitations under the License.
 
 #include "storage/InsertData.h"
-
-#include <any>
-#include <cstdint>
-#include <string>
-#include <unordered_map>
-#include <utility>
-
-#include "common/Consts.h"
-#include "common/EasyAssert.h"
-#include "common/FieldData.h"
-#include "common/FieldDataInterface.h"
-#include "fmt/core.h"
-#include "pb/schema.pb.h"
 #include "storage/Event.h"
-#include "storage/PayloadReader.h"
+#include "storage/Util.h"
+#include "common/Json.h"
+#include "common/FieldMeta.h"
+#include "common/Consts.h"
 
 namespace milvus::storage {
 

@@ -14,19 +14,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <bits/exception.h>
-#include <stdio.h>
-#include <string.h>
 #include <mutex>
 
 #include "ConfigKnowhere.h"
 #include "common/EasyAssert.h"
-#include "common/logging_c.h"
-#include "gflags/gflags.h"
-#include "glog/logging.h"
+#include "log/Log.h"
 #include "knowhere/comp/knowhere_config.h"
 #include "knowhere/version.h"
-#include "log/Log.h"
+#include "common/logging_c.h"
 
 namespace milvus::config {
 

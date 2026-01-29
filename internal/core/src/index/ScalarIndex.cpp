@@ -14,18 +14,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <stddef.h>
-#include <cstdint>
 #include <iostream>
 #include <string>
 #include <vector>
 
-#include "common/Types.h"
-#include "fmt/core.h"
 #include "index/Meta.h"
-#include "index/ScalarIndex.h"
 #include "knowhere/dataset.h"
-#include "pb/schema.pb.h"
+#include "common/Types.h"
+#include "index/ScalarIndex.h"
 
 namespace milvus::index {
 template <typename T>

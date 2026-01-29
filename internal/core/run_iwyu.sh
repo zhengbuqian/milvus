@@ -3,7 +3,7 @@
 # IWYU (Include What You Use) analysis and fix script for Milvus C++ code
 #
 # Usage:
-#   ./run_iwyu.sh <file_or_directory> [options]
+#   ./run_iwyu.sh <file_or_directory>... [options]
 #
 # Options:
 #   --fix-headers    Also fix header files (default: only fix .cpp/.cc files)
@@ -16,6 +16,7 @@
 # Examples:
 #   ./run_iwyu.sh src/query/Plan.cpp              # Analyze and fix single file
 #   ./run_iwyu.sh src/query/                      # Analyze and fix all C++ files in directory
+#   ./run_iwyu.sh file1.cpp file2.cpp file3.cpp   # Analyze multiple files
 #   ./run_iwyu.sh src/query/ --dry-run            # Only analyze, show suggestions
 #   ./run_iwyu.sh src/query/ --fix-headers        # Also fix header files (risky!)
 #
@@ -43,7 +44,7 @@ SKIP_TESTS=false
 JOBS=1
 
 # Parse arguments
-TARGET=""
+TARGETS=()
 while [[ $# -gt 0 ]]; do
     case $1 in
         --fix-headers)
@@ -75,31 +76,16 @@ while [[ $# -gt 0 ]]; do
             exit 1
             ;;
         *)
-            if [[ -z "$TARGET" ]]; then
-                TARGET="$1"
-            else
-                echo -e "${RED}Error: Multiple targets specified${NC}"
-                exit 1
-            fi
+            TARGETS+=("$1")
             shift
             ;;
     esac
 done
 
-# Validate target
-if [[ -z "$TARGET" ]]; then
+# Validate targets
+if [[ ${#TARGETS[@]} -eq 0 ]]; then
     echo -e "${RED}Error: No file or directory specified${NC}"
-    echo "Usage: $0 <file_or_directory> [options]"
-    exit 1
-fi
-
-# Convert to absolute path if relative
-if [[ ! "$TARGET" = /* ]]; then
-    TARGET="$PWD/$TARGET"
-fi
-
-if [[ ! -e "$TARGET" ]]; then
-    echo -e "${RED}Error: $TARGET does not exist${NC}"
+    echo "Usage: $0 <file_or_directory>... [options]"
     exit 1
 fi
 
@@ -124,9 +110,19 @@ else
     MAPPING_ARG="-Xiwyu --mapping_file=$MAPPING_FILE"
 fi
 
-# Collect C++ files
-collect_files() {
+# Collect C++ files from a single target
+collect_files_from_target() {
     local target="$1"
+
+    # Convert to absolute path if relative
+    if [[ ! "$target" = /* ]]; then
+        target="$PWD/$target"
+    fi
+
+    if [[ ! -e "$target" ]]; then
+        echo -e "${RED}Warning: $target does not exist${NC}" >&2
+        return
+    fi
 
     if [[ -f "$target" ]]; then
         # Single file - check if it's a C++ file
@@ -153,11 +149,18 @@ collect_files() {
     fi
 }
 
+# Collect files from all targets
+collect_all_files() {
+    for target in "${TARGETS[@]}"; do
+        collect_files_from_target "$target"
+    done
+}
+
 # Filter files that exist in compile_commands.json
 filter_compiled_files() {
     local file
     while read -r file; do
-        # For header files, we need to find a corresponding source file
+        [[ -z "$file" ]] && continue
         # For source files, check if they're in compile_commands.json
         case "$file" in
             *.cpp|*.cc|*.cxx|*.c++)
@@ -169,7 +172,6 @@ filter_compiled_files() {
                 ;;
             *.h|*.hpp|*.hxx|*.h++)
                 # Headers are analyzed through their including source files
-                # We'll include them but they'll be processed via source files
                 echo "$file"
                 ;;
         esac
@@ -179,15 +181,12 @@ filter_compiled_files() {
 # Separate source and header files
 separate_files() {
     local src_files=()
-    local hdr_files=()
 
     while read -r file; do
+        [[ -z "$file" ]] && continue
         case "$file" in
             *.cpp|*.cc|*.cxx|*.c++)
                 src_files+=("$file")
-                ;;
-            *.h|*.hpp|*.hxx|*.h++)
-                hdr_files+=("$file")
                 ;;
         esac
     done
@@ -200,6 +199,7 @@ separate_files() {
 filter_test_files() {
     local file
     while read -r file; do
+        [[ -z "$file" ]] && continue
         if $SKIP_TESTS; then
             # Skip files ending with Test.cpp, _test.cpp, etc.
             case "$(basename "$file")" in
@@ -217,7 +217,7 @@ filter_test_files() {
 
 # Main execution
 echo -e "${GREEN}=== IWYU Analysis ===${NC}"
-echo "Target: $TARGET"
+echo "Targets: ${TARGETS[*]}"
 echo "Fix headers: $FIX_HEADERS"
 echo "Dry run: $DRY_RUN"
 echo "Skip tests: $SKIP_TESTS"
@@ -226,7 +226,7 @@ echo ""
 
 # Collect and filter files
 echo -e "${GREEN}Collecting C++ files...${NC}"
-ALL_FILES=$(collect_files "$TARGET")
+ALL_FILES=$(collect_all_files)
 SRC_FILES=$(echo "$ALL_FILES" | separate_files | filter_compiled_files | filter_test_files)
 
 if [[ -z "$SRC_FILES" ]]; then
@@ -250,11 +250,13 @@ fi
 export PATH="$IWYU_DIR:$PATH"
 
 # Run iwyu_tool.py with collected source files
+# Convert newline-separated files to space-separated for command line
+SRC_FILES_ARGS=$(echo "$SRC_FILES" | tr '\n' ' ')
 # shellcheck disable=SC2086
 python3 "$IWYU_DIR/iwyu_tool.py" \
     -p "$COMPILE_DB" \
     -j "$JOBS" \
-    $SRC_FILES \
+    $SRC_FILES_ARGS \
     -- $MAPPING_ARG \
     2>&1 | tee "$IWYU_OUTPUT"
 

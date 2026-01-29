@@ -11,41 +11,25 @@
 
 #include "PlanProto.h"
 
-#include <ext/alloc_traits.h>
 #include <google/protobuf/text_format.h>
-#include <algorithm>
-#include <cstddef>
-#include <initializer_list>
-#include <map>
+
+#include <cstdint>
 #include <memory>
-#include <optional>
 #include <string>
-#include <type_traits>
-#include <unordered_map>
 #include <vector>
 
-#include "NamedType/underlying_functionalities.hpp"
+#include "common/Geometry.h"
 #include "common/Consts.h"
-#include "common/EasyAssert.h"
-#include "common/FieldMeta.h"
 #include "common/Types.h"
-#include "common/Utils.h"
-#include "common/protobuf_utils.h"
+#include "common/VectorTrait.h"
+#include "common/EasyAssert.h"
 #include "exec/expression/function/FunctionFactory.h"
-#include "expr/ITypeExpr.h"
-#include "glog/logging.h"
-#include "knowhere/comp/index_param.h"
-#include "knowhere/comp/materialized_view.h"
-#include "knowhere/config.h"
 #include "log/Log.h"
-#include "nlohmann/json.hpp"
-#include "nlohmann/json_fwd.hpp"
+#include "expr/ITypeExpr.h"
 #include "pb/plan.pb.h"
-#include "pb/schema.pb.h"
+#include "query/Utils.h"
+#include "knowhere/comp/materialized_view.h"
 #include "plan/PlanNode.h"
-#include "plan/PlanNodeIdGenerator.h"
-#include "query/PlanImpl.h"
-#include "query/PlanNode.h"
 #include "rescores/Scorer.h"
 
 namespace milvus::query {

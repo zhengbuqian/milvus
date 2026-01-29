@@ -12,8 +12,40 @@
   # Protobuf internal headers (Google internal paths -> public API)
   # ============================================================================
   { include: ["<net/proto2/public/repeated_field.h>", "private", "<google/protobuf/repeated_field.h>", "public"] },
-  { include: ["\"net/proto2/public/repeated_field.h\"", "private", "<google/protobuf/repeated_field.h>", "public"] }
+  { include: ["\"net/proto2/public/repeated_field.h\"", "private", "<google/protobuf/repeated_field.h>", "public"] },
 
-  # Note: Removed incorrect symbol mappings that pointed to non-existent files.
-  # IWYU will use the actual header locations from the codebase.
+  # ============================================================================
+  # GCC internal headers - should not be directly included
+  # ============================================================================
+  { include: ["<bits/exception.h>", "private", "<exception>", "public"] },
+  { include: ["<bits/std_abs.h>", "private", "<cstdlib>", "public"] },
+  { include: ["<bits/stdint-intn.h>", "private", "<cstdint>", "public"] },
+  { include: ["<bits/stdint-uintn.h>", "private", "<cstdint>", "public"] },
+  { include: ["<bits/types/struct_tm.h>", "private", "<ctime>", "public"] },
+  { include: ["<ext/alloc_traits.h>", "private", "<memory>", "public"] },
+
+  # ============================================================================
+  # Folly internal implementation headers (-inl.h files)
+  # These are included by the main headers and should not be directly included
+  # ============================================================================
+  { include: ["\"folly/CancellationToken-inl.h\"", "private", "<folly/CancellationToken.h>", "public"] },
+  { include: ["\"folly/Try-inl.h\"", "private", "<folly/Try.h>", "public"] },
+  { include: ["\"folly/futures/Future-inl.h\"", "private", "<folly/futures/Future.h>", "public"] },
+  { include: ["\"folly/futures/Promise-inl.h\"", "private", "<folly/futures/Promise.h>", "public"] },
+  { include: ["<folly/CancellationToken-inl.h>", "private", "<folly/CancellationToken.h>", "public"] },
+  { include: ["<folly/Try-inl.h>", "private", "<folly/Try.h>", "public"] },
+  { include: ["<folly/futures/Future-inl.h>", "private", "<folly/futures/Future.h>", "public"] },
+  { include: ["<folly/futures/Promise-inl.h>", "private", "<folly/futures/Promise.h>", "public"] },
+
+  # ============================================================================
+  # simdjson internal implementation headers (-inl.h files)
+  # ============================================================================
+  { include: ["\"simdjson/padded_string-inl.h\"", "private", "<simdjson.h>", "public"] },
+  { include: ["\"simdjson/error-inl.h\"", "private", "<simdjson.h>", "public"] },
+  { include: ["\"simdjson/dom/element-inl.h\"", "private", "<simdjson.h>", "public"] },
+  { include: ["\"simdjson/dom/parser-inl.h\"", "private", "<simdjson.h>", "public"] },
+  { include: ["\"simdjson/generic/ondemand/value-inl.h\"", "private", "<simdjson.h>", "public"] },
+  { include: ["\"simdjson/generic/ondemand/document-inl.h\"", "private", "<simdjson.h>", "public"] },
+  { include: ["\"simdjson/generic/ondemand/serialization-inl.h\"", "private", "<simdjson.h>", "public"] },
+  { include: ["\"simdjson/generic/implementation_simdjson_result_base-inl.h\"", "private", "<simdjson.h>", "public"] }
 ]

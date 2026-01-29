@@ -15,12 +15,7 @@
 // limitations under the License.
 
 #include "logging_c.h"
-
 #include <glog/logging.h>
-#include <string.h>
-#include <string>
-
-#include "glog/log_severity.h"
 
 #ifdef WITHOUT_GO_LOGGING
 

@@ -9,51 +9,25 @@
 // is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
-#include <bits/exception.h>
-#include <ext/alloc_traits.h>
-#include <string.h>
-#include <algorithm>
-#include <cstddef>
 #include <map>
-#include <optional>
 #include <string>
-#include <utility>
-#include <vector>
+#include <thread>
+#include <unordered_map>
 
-#include "IndexConfigGenerator.h"
 #include "common/EasyAssert.h"
-#include "common/FieldDataInterface.h"
-#include "common/OffsetMapping.h"
 #include "common/Types.h"
-#include "common/Utils.h"
-#include "common/type_c.h"
-#include "fmt/core.h"
-#include "folly/FBVector.h"
-#include "index/RTreeIndex.h"
+#include "fmt/format.h"
 #include "index/ScalarIndexSort.h"
 #include "index/StringIndexMarisa.h"
-#include "index/VectorMemIndex.h"
-#include "knowhere/comp/index_param.h"
-#include "knowhere/dataset.h"
-#include "knowhere/expected.h"
-#include "knowhere/object.h"
-#include "knowhere/sparse_utils.h"
-#include "knowhere/version.h"
-#include "milvus-storage/filesystem/fs.h"
-#include "nlohmann/json.hpp"
-#include "pb/schema.pb.h"
+
+#include "common/SystemProperty.h"
 #include "segcore/ConcurrentVector.h"
 #include "segcore/FieldIndexing.h"
-#include "storage/ChunkManager.h"
+#include "index/VectorMemIndex.h"
+#include "IndexConfigGenerator.h"
+#include "index/RTreeIndex.h"
 #include "storage/FileManager.h"
 #include "storage/LocalChunkManagerSingleton.h"
-
-namespace milvus {
-class BFloat16Vector;
-class Float16Vector;
-class FloatVector;
-class SparseFloatVector;
-}  // namespace milvus
 
 namespace milvus::segcore {
 using std::unique_ptr;

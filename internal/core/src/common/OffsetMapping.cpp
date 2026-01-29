@@ -1,8 +1,5 @@
 #include "common/OffsetMapping.h"
 
-#include <mutex>
-#include <utility>
-
 namespace milvus {
 
 void

@@ -9,18 +9,17 @@
 // is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
-#include <bits/exception.h>
-#include <string.h>
-#include <cstdint>
-#include <memory>
-#include <string_view>
-#include <vector>
-
+#include <exception>
 #include "common/EasyAssert.h"
-#include "common/Schema.h"
+#include "common/type_c.h"
+#ifdef __linux__
+#include <malloc.h>
+#endif
+
+#include <iostream>
+#include "segcore/collection_c.h"
 #include "monitor/scope_metric.h"
 #include "segcore/Collection.h"
-#include "segcore/collection_c.h"
 
 CStatus
 NewCollection(const void* schema_proto_blob,

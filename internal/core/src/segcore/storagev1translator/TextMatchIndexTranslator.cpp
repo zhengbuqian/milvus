@@ -16,22 +16,13 @@
 
 #include "segcore/storagev1translator/TextMatchIndexTranslator.h"
 
-#include <algorithm>
-#include <functional>
-#include <string_view>
-#include <type_traits>
 #include <utility>
 
-#include "common/ScopedTimer.h"
-#include "fmt/core.h"
-#include "glog/logging.h"
-#include "index/TextMatchIndex.h"
-#include "log/Log.h"
+#include "cachinglayer/CacheSlot.h"
 #include "segcore/Utils.h"
-
-namespace milvus {
-struct OpContext;
-}  // namespace milvus
+#include "segcore/Utils.h"
+#include "monitor/Monitor.h"
+#include "common/ScopedTimer.h"
 
 namespace milvus::segcore::storagev1translator {
 

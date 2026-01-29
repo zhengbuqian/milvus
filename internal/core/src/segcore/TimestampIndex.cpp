@@ -11,14 +11,6 @@
 
 #include "TimestampIndex.h"
 
-#include <assert.h>
-#include <algorithm>
-#include <cstdint>
-#include <limits>
-
-#include "bitset/bitset.h"
-#include "common/EasyAssert.h"
-
 namespace milvus::segcore {
 
 void

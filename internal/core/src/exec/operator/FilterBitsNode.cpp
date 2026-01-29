@@ -15,22 +15,9 @@
 // limitations under the License.
 
 #include "FilterBitsNode.h"
-
-#include <chrono>
-#include <ratio>
-#include <utility>
-#include <vector>
-
-#include "common/EasyAssert.h"
 #include "common/Tracer.h"
-#include "common/Types.h"
-#include "exec/QueryContext.h"
-#include "exec/expression/EvalCtx.h"
-#include "expr/ITypeExpr.h"
-#include "fmt/core.h"
+#include "fmt/format.h"
 #include "monitor/Monitor.h"
-#include "plan/PlanNode.h"
-#include "prometheus/histogram.h"
 
 namespace milvus {
 namespace exec {

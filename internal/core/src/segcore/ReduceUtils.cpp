@@ -14,21 +14,8 @@
 //
 
 #include "ReduceUtils.h"
-
-#include <cstddef>
-#include <cstdint>
-#include <optional>
-#include <string>
-#include <variant>
-
-#include "common/EasyAssert.h"
-#include "common/FieldMeta.h"
-#include "common/QueryInfo.h"
-#include "common/Schema.h"
-#include "fmt/core.h"
+#include "google/protobuf/repeated_field.h"
 #include "pb/schema.pb.h"
-#include "query/PlanImpl.h"
-#include "query/PlanNode.h"
 
 namespace milvus::segcore {
 

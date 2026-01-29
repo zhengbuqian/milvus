@@ -15,20 +15,13 @@
 // limitations under the License.
 
 #include "index/json_stats/parquet_writer.h"
-
+#include <arrow/array/array_binary.h>
+#include <arrow/array/array_primitive.h>
 #include <arrow/array/builder_binary.h>
 #include <arrow/array/builder_primitive.h>
-#include <bits/exception.h>
-
-#include "arrow/array/builder_base.h"
-#include "milvus-storage/packed/writer.h"
-
-namespace arrow {
-class Array;
-namespace fs {
-class FileSystem;
-}  // namespace fs
-}  // namespace arrow
+#include <arrow/io/file.h>
+#include <parquet/arrow/writer.h>
+#include <parquet/exception.h>
 
 namespace milvus::index {
 

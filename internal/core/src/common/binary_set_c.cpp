@@ -14,9 +14,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <bits/exception.h>
 #include <string.h>
 #include <cstdint>
+#include <exception>
 #include <iosfwd>
 #include <map>
 #include <memory>
