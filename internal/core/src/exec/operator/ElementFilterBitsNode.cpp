@@ -15,10 +15,32 @@
 // limitations under the License.
 
 #include "ElementFilterBitsNode.h"
-#include "common/Tracer.h"
-#include "fmt/format.h"
 
+#include <chrono>
+#include <cstddef>
+#include <functional>
+#include <ratio>
+#include <type_traits>
+#include <vector>
+
+#include "NamedType/named_type_impl.hpp"
+#include "bitset/bitset.h"
+#include "bitset/detail/element_vectorized.h"
+#include "common/ArrayOffsets.h"
+#include "common/EasyAssert.h"
+#include "common/FieldMeta.h"
+#include "common/Schema.h"
+#include "common/Tracer.h"
+#include "common/Utils.h"
+#include "exec/QueryContext.h"
+#include "exec/expression/EvalCtx.h"
+#include "exec/expression/Utils.h"
+#include "expr/ITypeExpr.h"
+#include "fmt/core.h"
 #include "monitor/Monitor.h"
+#include "plan/PlanNode.h"
+#include "prometheus/histogram.h"
+#include "segcore/SegmentInterface.h"
 
 namespace milvus {
 namespace exec {

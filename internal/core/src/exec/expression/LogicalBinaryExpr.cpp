@@ -16,8 +16,12 @@
 
 #include "LogicalBinaryExpr.h"
 
+#include "common/Tracer.h"
+#include "exec/expression/Utils.h"
+
 namespace milvus {
 namespace exec {
+class EvalCtx;
 
 void
 PhyLogicalBinaryExpr::Eval(EvalCtx& context, VectorPtr& result) {

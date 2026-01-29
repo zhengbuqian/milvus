@@ -15,9 +15,27 @@
 // limitations under the License.
 
 #include "ElementFilterNode.h"
-#include "common/Tracer.h"
+
+#include <chrono>
+#include <functional>
+#include <optional>
+#include <ratio>
+#include <utility>
+#include <vector>
+
+#include "NamedType/named_type_impl.hpp"
+#include "common/EasyAssert.h"
 #include "common/ElementFilterIterator.h"
-#include "monitor/Monitor.h"
+#include "common/FieldMeta.h"
+#include "common/QueryResult.h"
+#include "common/Schema.h"
+#include "common/Tracer.h"
+#include "common/Utils.h"
+#include "exec/QueryContext.h"
+#include "expr/ITypeExpr.h"
+#include "fmt/core.h"
+#include "plan/PlanNode.h"
+#include "segcore/SegmentInterface.h"
 
 namespace milvus {
 namespace exec {

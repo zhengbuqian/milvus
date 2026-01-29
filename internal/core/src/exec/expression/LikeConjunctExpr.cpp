@@ -15,9 +15,17 @@
 // limitations under the License.
 
 #include "exec/expression/LikeConjunctExpr.h"
+
+#include <utility>
+
+#include "bitset/bitset.h"
+#include "common/EasyAssert.h"
+#include "exec/expression/EvalCtx.h"
 #include "exec/expression/UnaryExpr.h"
 
 namespace milvus {
+struct OpContext;
+
 namespace exec {
 
 PhyLikeConjunctExpr::PhyLikeConjunctExpr(
