@@ -166,28 +166,28 @@ Legend:
 ### index
 - [!] /home/zilliz/milvus/internal/core/src/index/BitmapIndex.cpp (IWYU removes required YAML include causing compilation error)
 - [x] /home/zilliz/milvus/internal/core/src/index/BitmapIndexArrayTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/BitmapIndexTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/BoolIndexTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/HybridScalarIndex.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/HybridScalarIndexTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/IndexFactory.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/IndexStats.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/InvertedIndexArrayTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/InvertedIndexTantivy.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/InvertedIndexTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/JsonFlatIndex.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/JsonFlatIndexTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/JsonIndexBuilder.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/JsonInvertedIndex.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/JsonInvertedIndexTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/NgramInvertedIndex.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/NgramInvertedIndexTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/RTreeIndex.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/RTreeIndexTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/RTreeIndexWrapper.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/RTreeIndexWrapperTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/ScalarIndex.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/ScalarIndexSort.cpp
+- [x] /home/zilliz/milvus/internal/core/src/index/BitmapIndexTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/index/BoolIndexTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/index/HybridScalarIndex.cpp
+- [x] /home/zilliz/milvus/internal/core/src/index/HybridScalarIndexTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/index/IndexFactory.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/index/IndexStats.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/index/InvertedIndexArrayTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/index/InvertedIndexTantivy.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/index/InvertedIndexTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/index/JsonFlatIndex.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/index/JsonFlatIndexTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/index/JsonIndexBuilder.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/index/JsonInvertedIndex.cpp
+- [x] /home/zilliz/milvus/internal/core/src/index/JsonInvertedIndexTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/index/NgramInvertedIndex.cpp
+- [x] /home/zilliz/milvus/internal/core/src/index/NgramInvertedIndexTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/index/RTreeIndex.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/index/RTreeIndexTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/index/RTreeIndexWrapper.cpp
+- [x] /home/zilliz/milvus/internal/core/src/index/RTreeIndexWrapperTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/index/ScalarIndex.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/index/ScalarIndexSort.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/index/ScalarIndexSortTest.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/index/ScalarIndexTest.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/index/SkipIndex.cpp
