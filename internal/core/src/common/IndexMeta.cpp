@@ -23,7 +23,6 @@
 #include "IndexMeta.h"
 #include "NamedType/named_type_impl.hpp"
 #include "common/Types.h"
-#include "pb/common.pb.h"
 #include "pb/segcore.pb.h"
 #include "protobuf_utils.h"
 

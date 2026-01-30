@@ -19,6 +19,7 @@
 #include <simdjson.h>
 #include <string.h>
 #include <cstdint>
+#include <iosfwd>
 #include <optional>
 
 #include "arrow/api.h"
@@ -26,7 +27,6 @@
 #include "arrow/array/array_binary.h"
 #include "arrow/array/array_nested.h"
 #include "arrow/array/array_primitive.h"
-#include "arrow/chunked_array.h"
 #include "bitset/detail/element_wise.h"
 #include "bitset/detail/popcount.h"
 #include "common/Array.h"
