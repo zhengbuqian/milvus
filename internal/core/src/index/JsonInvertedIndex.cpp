@@ -19,6 +19,7 @@
 #include <utility>
 
 #include "boost/filesystem/path.hpp"
+#include "common/Json.h"
 #include "common/Types.h"
 #include "index/JsonIndexBuilder.h"
 #include "index/Utils.h"
@@ -27,11 +28,6 @@
 #include "pb/common.pb.h"
 #include "simdjson/error.h"
 #include "storage/ThreadPools.h"
-
-namespace milvus {
-class FieldDataBase;
-class Json;
-}  // namespace milvus
 
 namespace milvus::index {
 

@@ -17,7 +17,6 @@
 #include <string.h>
 #include <cstdint>
 #include <exception>
-#include <iosfwd>
 #include <map>
 #include <set>
 #include <utility>

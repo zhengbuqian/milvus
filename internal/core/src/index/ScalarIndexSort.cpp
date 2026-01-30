@@ -22,7 +22,6 @@
 #include <cstdint>
 #include <exception>
 #include <filesystem>
-#include <iostream>
 #include <map>
 #include <memory>
 #include <optional>
@@ -31,6 +30,7 @@
 
 #include "Meta.h"
 #include "bitset/bitset.h"
+#include "common/Array.h"
 #include "common/EasyAssert.h"
 #include "common/FieldDataInterface.h"
 #include "common/File.h"
@@ -52,7 +52,6 @@
 #include "storage/ThreadPools.h"
 #include "storage/Types.h"
 #include "storage/Util.h"
-#include "common/Array.h"
 
 namespace milvus::index {
 
