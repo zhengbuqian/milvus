@@ -88,28 +88,28 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/exec/expression/BinaryRangeExpr.cpp
 - [x] /home/zilliz/milvus/internal/core/src/exec/expression/CallExpr.cpp
 - [x] /home/zilliz/milvus/internal/core/src/exec/expression/ColumnExpr.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/CompareExpr.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/ConjunctExpr.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/ExistsExpr.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/Expr.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/ExprArithMiscTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/ExprArithOpTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/ExprArrayTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/ExprCache.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/ExprCacheTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/ExprCompareTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/ExprGISMiscTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/ExprJsonAdvancedTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/ExprJsonContainsTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/ExprJsonIndexTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/ExprJsonRangeTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/ExprRangeTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/ExprTermTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/GISFunctionFilterExpr.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/JsonContainsByStatsTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/JsonContainsExpr.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/LikeConjunctExpr.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/LikeConjunctExprTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/CompareExpr.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/ConjunctExpr.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/ExistsExpr.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/Expr.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/ExprArithMiscTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/ExprArithOpTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/ExprArrayTest.cpp
+- [!] /home/zilliz/milvus/internal/core/src/exec/expression/ExprCache.cpp (IWYU generates incorrect include path for TBB)
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/ExprCacheTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/ExprCompareTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/ExprGISMiscTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/ExprJsonAdvancedTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/ExprJsonContainsTest.cpp
+- [!] /home/zilliz/milvus/internal/core/src/exec/expression/ExprJsonIndexTest.cpp (IWYU removes required using declarations, causes compilation errors)
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/ExprJsonRangeTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/ExprRangeTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/ExprTermTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/GISFunctionFilterExpr.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/JsonContainsByStatsTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/JsonContainsExpr.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/LikeConjunctExpr.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/LikeConjunctExprTest.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/exec/expression/LogicalBinaryExpr.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/exec/expression/LogicalUnaryExpr.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/exec/expression/MatchExpr.cpp
