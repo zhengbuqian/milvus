@@ -16,11 +16,11 @@
 
 #include "ElementFilterBitsNode.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <functional>
 #include <ratio>
-#include <type_traits>
 #include <vector>
 
 #include "NamedType/named_type_impl.hpp"
@@ -37,6 +37,7 @@
 #include "exec/expression/Utils.h"
 #include "expr/ITypeExpr.h"
 #include "fmt/core.h"
+#include "folly/FBVector.h"
 #include "monitor/Monitor.h"
 #include "plan/PlanNode.h"
 #include "prometheus/histogram.h"

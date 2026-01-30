@@ -23,7 +23,6 @@
 
 namespace milvus {
 namespace exec {
-class EvalCtx;
 
 void
 PhyLogicalUnaryExpr::Eval(EvalCtx& context, VectorPtr& result) {

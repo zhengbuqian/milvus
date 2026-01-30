@@ -21,6 +21,7 @@
 #include <functional>
 #include <optional>
 #include <ratio>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
