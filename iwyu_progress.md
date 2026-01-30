@@ -136,36 +136,36 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/exec/operator/IterativeFilterNode.cpp (IWYU reports no contentful changes)
 - [x] /home/zilliz/milvus/internal/core/src/exec/operator/MvccNode.cpp (IWYU reports no contentful changes)
 - [x] /home/zilliz/milvus/internal/core/src/exec/operator/Operator.cpp (IWYU reports no contentful changes)
-- [ ] /home/zilliz/milvus/internal/core/src/exec/operator/ProjectNode.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/operator/RandomSampleNode.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/operator/RandomSampleNodeTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/operator/RescoresNode.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/operator/RescoresNodeTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/operator/SearchGroupByNode.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/operator/VectorSearchNode.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/operator/ProjectNode.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/exec/operator/RandomSampleNode.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/exec/operator/RandomSampleNodeTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/operator/RescoresNode.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/exec/operator/RescoresNodeTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/operator/SearchGroupByNode.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/exec/operator/VectorSearchNode.cpp (IWYU reports no contentful changes)
 
 ### exec/operator/query-agg
-- [ ] /home/zilliz/milvus/internal/core/src/exec/operator/query-agg/Aggregate.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/operator/query-agg/AggregateInfo.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/operator/query-agg/CountAggregateBase.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/operator/query-agg/GroupingSet.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/operator/query-agg/MaxAggregate.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/operator/query-agg/MinAggregate.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/operator/query-agg/RowContainer.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/operator/query-agg/SumAggregate.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/operator/query-agg/Aggregate.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/exec/operator/query-agg/AggregateInfo.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/exec/operator/query-agg/CountAggregateBase.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/exec/operator/query-agg/GroupingSet.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/exec/operator/query-agg/MaxAggregate.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/operator/query-agg/MinAggregate.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/operator/query-agg/RowContainer.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/exec/operator/query-agg/SumAggregate.cpp
 
 ### exec/operator/search-groupby
-- [ ] /home/zilliz/milvus/internal/core/src/exec/operator/search-groupby/SearchGroupByOperator.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/operator/search-groupby/SearchGroupByOperator.cpp (IWYU reports no contentful changes)
 
 ### futures
-- [ ] /home/zilliz/milvus/internal/core/src/futures/Executor.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/futures/future_c.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/futures/future_test_case_c.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/futures/FutureTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/futures/Executor.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/futures/future_c.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/futures/future_test_case_c.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/futures/FutureTest.cpp
 
 ### index
-- [ ] /home/zilliz/milvus/internal/core/src/index/BitmapIndex.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/BitmapIndexArrayTest.cpp
+- [!] /home/zilliz/milvus/internal/core/src/index/BitmapIndex.cpp (IWYU removes required YAML include causing compilation error)
+- [x] /home/zilliz/milvus/internal/core/src/index/BitmapIndexArrayTest.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/index/BitmapIndexTest.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/index/BoolIndexTest.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/index/HybridScalarIndex.cpp
