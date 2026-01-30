@@ -22,7 +22,6 @@
 #include "arrow/array/array_nested.h"
 #include "arrow/record_batch.h"
 #include "arrow/result.h"
-#include "arrow/type_fwd.h"
 #include "common/Array.h"
 #include "common/Chunk.h"
 #include "common/EasyAssert.h"

@@ -36,6 +36,7 @@ using namespace milvus::bitset::detail::arm;
 
 #endif
 
+#include "bitset/detail/platform/x86/avx2-decl.h"
 #include "vectorized_ref.h"
 
 // a facility to run through all possible compare operations

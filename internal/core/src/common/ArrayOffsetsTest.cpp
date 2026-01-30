@@ -15,10 +15,17 @@
 // limitations under the License.
 
 #include <gtest/gtest.h>
+#include <cstdint>
+#include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
+#include "bitset/bitset.h"
 #include "common/ArrayOffsets.h"
+#include "common/PrometheusClient.h"
+#include "common/Types.h"
+#include "gtest/gtest.h"
 
 using namespace milvus;
 
