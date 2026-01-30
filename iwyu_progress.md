@@ -188,34 +188,34 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/index/RTreeIndexWrapperTest.cpp
 - [x] /home/zilliz/milvus/internal/core/src/index/ScalarIndex.cpp (IWYU reports no contentful changes)
 - [x] /home/zilliz/milvus/internal/core/src/index/ScalarIndexSort.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/ScalarIndexSortTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/ScalarIndexTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/SkipIndex.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/StringIndexMarisa.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/StringIndexSort.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/StringIndexSortTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/StringIndexTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/TextMatchIndex.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/TextMatchIndexTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/Utils.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/UtilsTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/VectorDiskIndex.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/VectorMemIndex.cpp
+- [x] /home/zilliz/milvus/internal/core/src/index/ScalarIndexSortTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/index/ScalarIndexTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/index/SkipIndex.cpp
+- [x] /home/zilliz/milvus/internal/core/src/index/StringIndexMarisa.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/index/StringIndexSort.cpp
+- [x] /home/zilliz/milvus/internal/core/src/index/StringIndexSortTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/index/StringIndexTest.cpp
+- [!] /home/zilliz/milvus/internal/core/src/index/TextMatchIndex.cpp (IWYU adds tantivy-wrapper.h causing redefinition errors)
+- [x] /home/zilliz/milvus/internal/core/src/index/TextMatchIndexTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/index/Utils.cpp
+- [x] /home/zilliz/milvus/internal/core/src/index/UtilsTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/index/VectorDiskIndex.cpp
+- [x] /home/zilliz/milvus/internal/core/src/index/VectorMemIndex.cpp
 
 ### index/json_stats
-- [ ] /home/zilliz/milvus/internal/core/src/index/json_stats/bson_builder.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/json_stats/bson_inverted.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/json_stats/JsonKeyStats.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/json_stats/parquet_writer.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/json_stats/utils.cpp
+- [x] /home/zilliz/milvus/internal/core/src/index/json_stats/bson_builder.cpp
+- [x] /home/zilliz/milvus/internal/core/src/index/json_stats/bson_inverted.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/index/json_stats/JsonKeyStats.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/index/json_stats/parquet_writer.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/index/json_stats/utils.cpp
 
 ### index/skipindex_stats
-- [ ] /home/zilliz/milvus/internal/core/src/index/skipindex_stats/SkipIndexStats.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/index/skipindex_stats/SkipIndexStatsTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/index/skipindex_stats/SkipIndexStats.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/index/skipindex_stats/SkipIndexStatsTest.cpp
 
 ### indexbuilder
-- [ ] /home/zilliz/milvus/internal/core/src/indexbuilder/index_c.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/indexbuilder/init_c.cpp
+- [x] /home/zilliz/milvus/internal/core/src/indexbuilder/index_c.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/indexbuilder/init_c.cpp (IWYU reports no contentful changes)
 - [ ] /home/zilliz/milvus/internal/core/src/indexbuilder/ScalarIndexCreator.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/indexbuilder/ScalarIndexCreatorTest.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/indexbuilder/VecIndexCreator.cpp
