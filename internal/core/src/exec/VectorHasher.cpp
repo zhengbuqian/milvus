@@ -16,7 +16,6 @@
 
 #include "VectorHasher.h"
 
-#include <algorithm>
 #include <cstddef>
 
 #include "common/BitUtil.h"

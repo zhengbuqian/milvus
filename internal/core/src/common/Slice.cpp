@@ -21,7 +21,6 @@
 #include <atomic>
 #include <cstdint>
 #include <initializer_list>
-#include <iosfwd>
 #include <map>
 #include <memory>
 #include <utility>

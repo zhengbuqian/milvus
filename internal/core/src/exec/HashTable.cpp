@@ -16,7 +16,6 @@
 
 #include "HashTable.h"
 
-#include <stdint.h>
 #include <cstring>
 #include <memory>
 #include <new>
