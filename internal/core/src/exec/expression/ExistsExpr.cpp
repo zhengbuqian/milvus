@@ -16,7 +16,6 @@
 
 #include "ExistsExpr.h"
 
-#include <iosfwd>
 #include <set>
 
 #include "bitset/bitset.h"

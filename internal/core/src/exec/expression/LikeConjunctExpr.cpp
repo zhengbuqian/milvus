@@ -24,7 +24,6 @@
 #include "exec/expression/UnaryExpr.h"
 
 namespace milvus {
-struct OpContext;
 
 namespace exec {
 
