@@ -110,32 +110,32 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/exec/expression/JsonContainsExpr.cpp (IWYU reports no contentful changes)
 - [x] /home/zilliz/milvus/internal/core/src/exec/expression/LikeConjunctExpr.cpp
 - [x] /home/zilliz/milvus/internal/core/src/exec/expression/LikeConjunctExprTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/LogicalBinaryExpr.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/LogicalUnaryExpr.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/MatchExpr.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/MatchExprTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/NullExpr.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/TermExpr.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/TimestamptzArithCompareExpr.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/UnaryExpr.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/ValueExpr.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/LogicalBinaryExpr.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/LogicalUnaryExpr.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/MatchExpr.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/MatchExprTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/NullExpr.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/TermExpr.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/TimestamptzArithCompareExpr.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/UnaryExpr.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/ValueExpr.cpp (IWYU reports no contentful changes)
 
 ### exec/expression/function
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/function/FunctionFactory.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/function/FunctionImplUtils.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/function/FunctionTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/function/impl/Empty.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/function/impl/StartsWith.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/function/init_c.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/function/FunctionFactory.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/function/FunctionImplUtils.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/function/FunctionTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/function/impl/Empty.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/function/impl/StartsWith.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/function/init_c.cpp (IWYU reports no contentful changes)
 
 ### exec/operator
-- [ ] /home/zilliz/milvus/internal/core/src/exec/operator/AggregationNode.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/operator/ElementFilterBitsNode.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/operator/ElementFilterNode.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/operator/FilterBitsNode.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/operator/IterativeFilterNode.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/operator/MvccNode.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/operator/Operator.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/operator/AggregationNode.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/exec/operator/ElementFilterBitsNode.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/operator/ElementFilterNode.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/operator/FilterBitsNode.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/operator/IterativeFilterNode.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/exec/operator/MvccNode.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/exec/operator/Operator.cpp (IWYU reports no contentful changes)
 - [ ] /home/zilliz/milvus/internal/core/src/exec/operator/ProjectNode.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/exec/operator/RandomSampleNode.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/exec/operator/RandomSampleNodeTest.cpp
