@@ -60,34 +60,34 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/common/RegexQueryUtilTest.cpp
 - [x] /home/zilliz/milvus/internal/core/src/common/Schema.cpp
 - [x] /home/zilliz/milvus/internal/core/src/common/SchemaTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/Slice.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/SpanTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/SystemProperty.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/ThreeValuedLogicOpTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/Types.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/TypesTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/UtilsTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/VectorArrayChunkTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/VectorArrayStorageV2Test.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/VectorArrayTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/VectorTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/Slice.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/SpanTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/SystemProperty.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/ThreeValuedLogicOpTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/Types.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/TypesTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/UtilsTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/VectorArrayChunkTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/VectorArrayStorageV2Test.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/VectorArrayTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/VectorTest.cpp
 
 ### config
-- [ ] /home/zilliz/milvus/internal/core/src/config/ConfigKnowhere.cpp
+- [x] /home/zilliz/milvus/internal/core/src/config/ConfigKnowhere.cpp
 
 ### exec
-- [ ] /home/zilliz/milvus/internal/core/src/exec/Driver.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/HashTable.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/Task.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/VectorHasher.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/Driver.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/HashTable.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/Task.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/VectorHasher.cpp
 
 ### exec/expression
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/AlwaysTrueExpr.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/AlwaysTrueExprTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/BinaryArithOpEvalRangeExpr.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/BinaryRangeExpr.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/CallExpr.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/exec/expression/ColumnExpr.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/AlwaysTrueExpr.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/AlwaysTrueExprTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/BinaryArithOpEvalRangeExpr.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/BinaryRangeExpr.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/CallExpr.cpp
+- [x] /home/zilliz/milvus/internal/core/src/exec/expression/ColumnExpr.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/exec/expression/CompareExpr.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/exec/expression/ConjunctExpr.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/exec/expression/ExistsExpr.cpp
