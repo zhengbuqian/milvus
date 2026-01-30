@@ -17,6 +17,7 @@
 #include "indexbuilder/IndexFactory.h"
 #include "index/VectorDiskIndex.h"
 #include "index/IndexFactory.h"
+#include "index/StringIndexMarisa.h"
 #include "index/Meta.h"
 
 #include <folly/Conv.h>

@@ -15,6 +15,7 @@
 // limitations under the License.
 
 #include "ExprTestBase.h"
+#include "index/StringIndexMarisa.h"
 
 EXPR_TEST_INSTANTIATE();
 

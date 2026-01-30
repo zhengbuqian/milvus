@@ -19,6 +19,8 @@
 #include <gtest/gtest.h>
 #include <arrow/api.h>
 #include <arrow/type_fwd.h>
+#include <arrow/buffer.h>
+#include <arrow/io/memory.h>
 #include <parquet/statistics.h>
 
 #include "storage/Util.h"

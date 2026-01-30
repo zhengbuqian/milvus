@@ -18,6 +18,7 @@
 
 #include "storage/MmapChunkManager.h"
 #include "storage/Types.h"
+#include "log/Log.h"
 
 namespace milvus::storage {
 /**
