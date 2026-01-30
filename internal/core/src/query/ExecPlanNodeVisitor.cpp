@@ -22,6 +22,7 @@
 #include "exec/Task.h"
 #include "fmt/core.h"
 #include "glog/logging.h"
+#include "google/protobuf/message.h"
 #include "log/Log.h"
 #include "opentelemetry/trace/span.h"
 #include "pb/schema.pb.h"
