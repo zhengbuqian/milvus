@@ -17,7 +17,6 @@
 #include "cachinglayer/Utils.h"
 
 namespace milvus {
-struct OpContext;
 
 static const index::NoneFieldChunkMetrics defaultFieldChunkMetrics{};
 

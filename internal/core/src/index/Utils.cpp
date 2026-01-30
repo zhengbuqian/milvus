@@ -14,7 +14,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <fcntl.h>
 #include <google/protobuf/text_format.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -44,12 +43,6 @@
 #include "index/Utils.h"
 #include "knowhere/comp/index_param.h"
 #include "storage/Util.h"
-
-namespace google {
-namespace protobuf {
-class Message;
-}  // namespace protobuf
-}  // namespace google
 
 namespace milvus::index {
 

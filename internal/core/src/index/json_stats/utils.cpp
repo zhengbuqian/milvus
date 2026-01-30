@@ -30,10 +30,6 @@
 #include "nlohmann/detail/iterators/iteration_proxy.hpp"
 #include "nlohmann/json_fwd.hpp"
 
-namespace arrow {
-class ArrayBuilder;
-}  // namespace arrow
-
 namespace milvus::index {
 
 std::shared_ptr<arrow::ArrayBuilder>

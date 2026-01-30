@@ -36,6 +36,7 @@
 #include "common/Types.h"
 #include "common/Utils.h"
 #include "common/protobuf_utils.h"
+#include "filemanager/FileManager.h"
 #include "fmt/core.h"
 #include "glog/logging.h"
 #include "index/Meta.h"
@@ -54,11 +55,6 @@
 #include "storage/ThreadPools.h"
 #include "storage/Types.h"
 #include "storage/Util.h"
-
-namespace milvus {
-class FileManager;
-struct OpContext;
-}  // namespace milvus
 
 namespace milvus::index {
 

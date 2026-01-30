@@ -31,6 +31,7 @@
 
 #include "bitset/bitset.h"
 #include "bitset/detail/element_vectorized.h"
+#include "common/Array.h"
 #include "common/EasyAssert.h"
 #include "common/FieldDataInterface.h"
 #include "common/RegexQuery.h"
@@ -51,8 +52,6 @@
 #include "storage/ThreadPools.h"
 #include "storage/Types.h"
 #include "storage/Util.h"
-#include "common/Array.h"
-#include "pb/schema.pb.h"
 
 namespace milvus::index {
 
