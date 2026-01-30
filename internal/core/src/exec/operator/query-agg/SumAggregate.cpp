@@ -24,13 +24,13 @@
 #include "common/Types.h"
 #include "common/Utils.h"
 #include "common/protobuf_utils.h"
+#include "exec/QueryContext.h"
 #include "exec/operator/query-agg/Aggregate.h"
 #include "glog/logging.h"
 #include "log/Log.h"
 
 namespace milvus {
 namespace exec {
-class QueryConfig;
 
 template <typename TInput, typename TAccumulator, typename ResultType>
 using SumAggregate = SumAggregateBase<TInput, TAccumulator, ResultType, false>;
