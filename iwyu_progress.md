@@ -216,38 +216,38 @@ Legend:
 ### indexbuilder
 - [x] /home/zilliz/milvus/internal/core/src/indexbuilder/index_c.cpp (IWYU reports no contentful changes)
 - [x] /home/zilliz/milvus/internal/core/src/indexbuilder/init_c.cpp (IWYU reports no contentful changes)
-- [ ] /home/zilliz/milvus/internal/core/src/indexbuilder/ScalarIndexCreator.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/indexbuilder/ScalarIndexCreatorTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/indexbuilder/VecIndexCreator.cpp
+- [x] /home/zilliz/milvus/internal/core/src/indexbuilder/ScalarIndexCreator.cpp (IWYU reports no contentful changes)
+- [!] /home/zilliz/milvus/internal/core/src/indexbuilder/ScalarIndexCreatorTest.cpp (not in compile_commands.json)
+- [x] /home/zilliz/milvus/internal/core/src/indexbuilder/VecIndexCreator.cpp (IWYU reports no contentful changes)
 
 ### minhash
-- [ ] /home/zilliz/milvus/internal/core/src/minhash/MinHashComputer.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/minhash/MinHashHook.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/minhash/fusion_compute/arm/fusion_compute_neon.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/minhash/fusion_compute/arm/fusion_compute_sve.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/minhash/fusion_compute/x86/fusion_compute_avx2.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/minhash/fusion_compute/x86/fusion_compute_avx512.cpp
+- [x] /home/zilliz/milvus/internal/core/src/minhash/MinHashComputer.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/minhash/MinHashHook.cpp (IWYU reports no contentful changes)
+- [!] /home/zilliz/milvus/internal/core/src/minhash/fusion_compute/arm/fusion_compute_neon.cpp (not in compile_commands.json - ARM only)
+- [!] /home/zilliz/milvus/internal/core/src/minhash/fusion_compute/arm/fusion_compute_sve.cpp (not in compile_commands.json - ARM only)
+- [x] /home/zilliz/milvus/internal/core/src/minhash/fusion_compute/x86/fusion_compute_avx2.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/minhash/fusion_compute/x86/fusion_compute_avx512.cpp (IWYU reports no contentful changes)
 
 ### mmap
-- [ ] /home/zilliz/milvus/internal/core/src/mmap/ChunkedColumnGroupTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/mmap/ChunkedColumnTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/mmap/ChunkVectorTest.cpp
+- [!] /home/zilliz/milvus/internal/core/src/mmap/ChunkedColumnGroupTest.cpp (not in compile_commands.json)
+- [!] /home/zilliz/milvus/internal/core/src/mmap/ChunkedColumnTest.cpp (not in compile_commands.json)
+- [!] /home/zilliz/milvus/internal/core/src/mmap/ChunkVectorTest.cpp (not in compile_commands.json)
 
 ### monitor
-- [ ] /home/zilliz/milvus/internal/core/src/monitor/jemalloc_stats_c.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/monitor/monitor_c.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/monitor/Monitor.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/monitor/MonitorTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/monitor/scope_metric.cpp
+- [x] /home/zilliz/milvus/internal/core/src/monitor/jemalloc_stats_c.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/monitor/monitor_c.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/monitor/Monitor.cpp (IWYU reports no contentful changes)
+- [!] /home/zilliz/milvus/internal/core/src/monitor/MonitorTest.cpp (not in compile_commands.json)
+- [x] /home/zilliz/milvus/internal/core/src/monitor/scope_metric.cpp (IWYU reports no contentful changes)
 
 ### plan
-- [ ] /home/zilliz/milvus/internal/core/src/plan/PlanNode.cpp
+- [x] /home/zilliz/milvus/internal/core/src/plan/PlanNode.cpp (IWYU reports no contentful changes)
 
 ### query
-- [ ] /home/zilliz/milvus/internal/core/src/query/CachedSearchIterator.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/query/CachedSearchIteratorTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/query/ExecPlanNodeVisitor.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/query/Plan.cpp
+- [x] /home/zilliz/milvus/internal/core/src/query/CachedSearchIterator.cpp (IWYU reports no contentful changes)
+- [!] /home/zilliz/milvus/internal/core/src/query/CachedSearchIteratorTest.cpp (not in compile_commands.json)
+- [x] /home/zilliz/milvus/internal/core/src/query/ExecPlanNodeVisitor.cpp
+- [x] /home/zilliz/milvus/internal/core/src/query/Plan.cpp (IWYU reports no contentful changes)
 - [ ] /home/zilliz/milvus/internal/core/src/query/PlanNode.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/query/PlanProto.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/query/PlanProtoTest.cpp
