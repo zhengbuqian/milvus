@@ -38,28 +38,28 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/common/ChunkTest.cpp
 - [x] /home/zilliz/milvus/internal/core/src/common/ChunkWriter.cpp
 - [x] /home/zilliz/milvus/internal/core/src/common/ChunkWriterTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/Common.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/ComplexVector.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/ElementFilterIterator.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/FieldData.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/FieldMeta.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/IndexMeta.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/init_c.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/JsonCastFunction.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/JsonCastType.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/JsonUtils.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/logging_c.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/OffsetMapping.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/PreparedGeometryTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/protobuf_utils.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/ProtobufUtilsTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/RangeSearchHelper.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/RangeSearchHelperTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/RegexQuery.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/RegexQueryTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/RegexQueryUtilTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/Schema.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/common/SchemaTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/Common.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/ComplexVector.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/ElementFilterIterator.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/FieldData.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/FieldMeta.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/IndexMeta.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/init_c.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/JsonCastFunction.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/JsonCastType.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/JsonUtils.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/logging_c.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/OffsetMapping.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/PreparedGeometryTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/protobuf_utils.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/ProtobufUtilsTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/RangeSearchHelper.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/RangeSearchHelperTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/RegexQuery.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/RegexQueryTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/RegexQueryUtilTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/Schema.cpp
+- [x] /home/zilliz/milvus/internal/core/src/common/SchemaTest.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/common/Slice.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/common/SpanTest.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/common/SystemProperty.cpp
