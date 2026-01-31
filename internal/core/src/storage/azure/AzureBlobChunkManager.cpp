@@ -16,7 +16,6 @@
 
 #include <azure/identity/managed_identity_credential.hpp>
 #include <azure/identity/workload_identity_credential.hpp>
-#include <stdlib.h>
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
