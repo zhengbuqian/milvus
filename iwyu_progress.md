@@ -492,17 +492,17 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/bitset/detail/proxy.h (IWYU: correct includes)
 
 ### clustering
-- [ ] /home/zilliz/milvus/internal/core/src/clustering/analyze_c.h
+- [x] /home/zilliz/milvus/internal/core/src/clustering/analyze_c.h (IWYU: correct includes)
 - [ ] /home/zilliz/milvus/internal/core/src/clustering/file_utils.h
-- [ ] /home/zilliz/milvus/internal/core/src/clustering/KmeansClustering.h
+- [x] /home/zilliz/milvus/internal/core/src/clustering/KmeansClustering.h (IWYU: correct includes)
 - [ ] /home/zilliz/milvus/internal/core/src/clustering/type_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/clustering/types.h
 
 ### common
 - [ ] /home/zilliz/milvus/internal/core/src/common/Array.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/ArrayOffsets.h
+- [x] /home/zilliz/milvus/internal/core/src/common/ArrayOffsets.h (IWYU: correct includes)
 - [ ] /home/zilliz/milvus/internal/core/src/common/ArrowDataWrapper.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/binary_set_c.h
+- [x] /home/zilliz/milvus/internal/core/src/common/binary_set_c.h (IWYU: correct includes)
 - [ ] /home/zilliz/milvus/internal/core/src/common/BitsetView.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/BitUtil.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/BloomFilter.h
