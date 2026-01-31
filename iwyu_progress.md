@@ -346,30 +346,30 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/segcore/storagev1translator/V1SealedIndexTranslator.cpp
 
 ### segcore/storagev2translator
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/storagev2translator/GroupChunkTranslator.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/storagev2translator/GroupChunkTranslatorTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/storagev2translator/ManifestGroupTranslator.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/storagev2translator/GroupChunkTranslator.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/storagev2translator/GroupChunkTranslatorTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/storagev2translator/ManifestGroupTranslator.cpp
 
 ### storage
-- [ ] /home/zilliz/milvus/internal/core/src/storage/BinlogReader.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/ChunkManager.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/DataCodec.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/DataCodecTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/DiskFileManagerImpl.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/DiskFileManagerTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/Event.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/FileWriter.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/FileWriterTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/IndexData.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/InsertData.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/KeyRetriever.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/LocalChunkManager.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/LocalChunkManagerTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/MemFileManagerImpl.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/MmapChunkManager.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/MmapChunkManagerTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/PayloadReader.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/PayloadStream.cpp
+- [x] /home/zilliz/milvus/internal/core/src/storage/BinlogReader.cpp
+- [!] /home/zilliz/milvus/internal/core/src/storage/ChunkManager.cpp (IWYU adds duplicate HuaweiCloudCredentialsProvider.h include causing redefinition error)
+- [x] /home/zilliz/milvus/internal/core/src/storage/DataCodec.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/storage/DataCodecTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/storage/DiskFileManagerImpl.cpp
+- [x] /home/zilliz/milvus/internal/core/src/storage/DiskFileManagerTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/storage/Event.cpp
+- [x] /home/zilliz/milvus/internal/core/src/storage/FileWriter.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/storage/FileWriterTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/storage/IndexData.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/storage/InsertData.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/storage/KeyRetriever.cpp (IWYU reports no contentful changes)
+- [!] /home/zilliz/milvus/internal/core/src/storage/LocalChunkManager.cpp (IWYU removes sstream causing incomplete type error for std::stringstream)
+- [x] /home/zilliz/milvus/internal/core/src/storage/LocalChunkManagerTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/storage/MemFileManagerImpl.cpp
+- [x] /home/zilliz/milvus/internal/core/src/storage/MmapChunkManager.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/storage/MmapChunkManagerTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/storage/PayloadReader.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/storage/PayloadStream.cpp (IWYU reports no contentful changes)
 - [ ] /home/zilliz/milvus/internal/core/src/storage/PayloadWriter.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/storage/RemoteChunkManagerTest.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/storage/RemoteInputStream.cpp
