@@ -71,15 +71,15 @@ Legend:
 ### bitset
 
 ### clustering
-- [ ] /home/zilliz/milvus/internal/core/src/clustering/file_utils.h
-- [ ] /home/zilliz/milvus/internal/core/src/clustering/type_c.h
+- [!] /home/zilliz/milvus/internal/core/src/clustering/file_utils.h (no changes suggested by IWYU)
+- [!] /home/zilliz/milvus/internal/core/src/clustering/type_c.h (C header, no direct analysis needed)
 - [ ] /home/zilliz/milvus/internal/core/src/clustering/types.h
 
 ### common
 - [!] /home/zilliz/milvus/internal/core/src/common/BitsetView.h (no changes suggested by IWYU)
 - [ ] /home/zilliz/milvus/internal/core/src/common/BitUtil.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/BloomFilter.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/bson_view.h
+- [!] /home/zilliz/milvus/internal/core/src/common/bson_view.h (no changes suggested by IWYU)
 - [ ] /home/zilliz/milvus/internal/core/src/common/CDataType.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/CustomBitset.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/ElementFilterIterator.h
@@ -87,7 +87,7 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/common/float_util_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/Geometry.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/init_c.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/jsmn.h
+- [!] /home/zilliz/milvus/internal/core/src/common/jsmn.h (C header with extern "C", no direct analysis needed)
 - [ ] /home/zilliz/milvus/internal/core/src/common/JsonCastFunction.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/JsonUtils.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/logging_c.h
@@ -96,7 +96,7 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/common/protobuf_utils_c.h
 - [x] /home/zilliz/milvus/internal/core/src/common/protobuf_utils.h
 - [x] /home/zilliz/milvus/internal/core/src/common/QueryResult.h (analyzed via test_sealed.cpp entry)
-- [ ] /home/zilliz/milvus/internal/core/src/common/RangeSearchHelper.h
+- [!] /home/zilliz/milvus/internal/core/src/common/RangeSearchHelper.h (no changes suggested by IWYU)
 - [!] /home/zilliz/milvus/internal/core/src/common/resource_c.h (C header with only struct definition, no includes needed)
 - [ ] /home/zilliz/milvus/internal/core/src/common/ScopedTimer.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/SimdUtil.h
@@ -126,7 +126,7 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/mmap/ChunkData.h
 - [ ] /home/zilliz/milvus/internal/core/src/mmap/ChunkedColumnGroup.h
 - [ ] /home/zilliz/milvus/internal/core/src/mmap/ChunkedColumn.h
-- [ ] /home/zilliz/milvus/internal/core/src/mmap/ChunkedColumnInterface.h
+- [!] /home/zilliz/milvus/internal/core/src/mmap/ChunkedColumnInterface.h (no changes suggested by IWYU)
 - [ ] /home/zilliz/milvus/internal/core/src/mmap/ChunkVector.h
 - [ ] /home/zilliz/milvus/internal/core/src/mmap/Types.h
 
@@ -140,17 +140,19 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/plan/PlanNodeIdGenerator.h
 
 ### query
-- [ ] /home/zilliz/milvus/internal/core/src/query/CachedSearchIterator.h
+- [!] /home/zilliz/milvus/internal/core/src/query/CachedSearchIterator.h (no changes suggested by IWYU)
 - [!] /home/zilliz/milvus/internal/core/src/query/helper.h (no changes suggested by IWYU)
 - [!] /home/zilliz/milvus/internal/core/src/query/Plan.h (IWYU removes necessary forward declarations, causing compilation errors)
 - [!] /home/zilliz/milvus/internal/core/src/query/PlanImpl.h (header not directly analyzed, depends on Plan.h)
 - [x] /home/zilliz/milvus/internal/core/src/query/PlanNode.h
-- [ ] /home/zilliz/milvus/internal/core/src/query/PlanNodeVisitor.h
+- [!] /home/zilliz/milvus/internal/core/src/query/PlanNodeVisitor.h (no changes suggested by IWYU)
 - [x] /home/zilliz/milvus/internal/core/src/query/PlanProto.h
 - [ ] /home/zilliz/milvus/internal/core/src/query/Relational.h
 - [!] /home/zilliz/milvus/internal/core/src/query/SearchBruteForce.h (no changes suggested by IWYU)
 - [ ] /home/zilliz/milvus/internal/core/src/query/SearchOnGrowing.h
-- [ ] /home/zilliz/milvus/internal/core/src/query/SearchOnSealed.h
+- [x] /home/zilliz/milvus/internal/core/src/query/SearchOnIndex.h
+- [x] /home/zilliz/milvus/internal/core/src/query/SearchOnSealed.h
+- [x] /home/zilliz/milvus/internal/core/src/query/ExecPlanNodeVisitor.h
 - [!] /home/zilliz/milvus/internal/core/src/query/SubSearchResult.h (no changes suggested by IWYU)
 - [!] /home/zilliz/milvus/internal/core/src/query/Utils.h (no changes suggested by IWYU)
 
@@ -165,7 +167,7 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/segcore/ChunkedSegmentSealedImpl.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/collection_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/column_groups_c.h
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/ConcurrentVector.h
+- [!] /home/zilliz/milvus/internal/core/src/segcore/ConcurrentVector.h (no changes suggested by IWYU)
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/DeletedRecord.h
 - [x] /home/zilliz/milvus/internal/core/src/segcore/InsertRecord.h (analyzed via test_sealed.cpp entry)
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/load_field_data_c.h
@@ -192,7 +194,7 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/tokenizer_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/token_stream_c.h
 - [!] /home/zilliz/milvus/internal/core/src/segcore/Types.h (no changes suggested by IWYU)
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/Utils.h
+- [!] /home/zilliz/milvus/internal/core/src/segcore/Utils.h (no changes suggested by IWYU)
 
 ### segcore/reduce
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/reduce/GroupReduce.h
@@ -233,7 +235,7 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/storage/RemoteOutputStream.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/SafeQueue.h
 - [x] /home/zilliz/milvus/internal/core/src/storage/storage_c.h
-- [ ] /home/zilliz/milvus/internal/core/src/storage/StorageV2FSCache.h
+- [!] /home/zilliz/milvus/internal/core/src/storage/StorageV2FSCache.h (no changes suggested by IWYU)
 - [ ] /home/zilliz/milvus/internal/core/src/storage/ThreadPool.h
 - [!] /home/zilliz/milvus/internal/core/src/storage/ThreadPools.h (no changes suggested by IWYU)
 - [x] /home/zilliz/milvus/internal/core/src/storage/Types.h
