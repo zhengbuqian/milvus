@@ -296,28 +296,28 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/segcore/metrics_c.cpp (IWYU reports no contentful changes)
 - [x] /home/zilliz/milvus/internal/core/src/segcore/minhash_c.cpp (IWYU reports no contentful changes)
 - [x] /home/zilliz/milvus/internal/core/src/segcore/packed_reader_c.cpp (IWYU reports no contentful changes)
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/PackedReaderWriterTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/packed_writer_c.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/phrase_match_c.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/plan_c.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/plan_c_test.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/reduce_c.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/reduce_c_test.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/ReduceCTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/ReduceStructureTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/ReduceUtils.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/SegcoreConfig.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/segcore_init_c.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/SegcoreInitCTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/segment_c.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/SegmentChunkReader.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/segment_c_test.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/SegmentGrowingImpl.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/SegmentGrowingIndexTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/SegmentGrowingStorageV2Test.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/SegmentGrowingTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/SegmentInterface.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/SegmentLoadInfo.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/PackedReaderWriterTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/packed_writer_c.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/phrase_match_c.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/plan_c.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/plan_c_test.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/reduce_c.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/reduce_c_test.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/ReduceCTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/ReduceStructureTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/ReduceUtils.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/SegcoreConfig.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/segcore_init_c.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/SegcoreInitCTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/segment_c.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/SegmentChunkReader.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/segment_c_test.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/SegmentGrowingImpl.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/SegmentGrowingIndexTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/SegmentGrowingStorageV2Test.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/SegmentGrowingTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/SegmentInterface.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/SegmentLoadInfo.cpp (IWYU reports no contentful changes)
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/SegmentLoadInfoTest.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/SegmentSealedRetrieveTest.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/TimestampIndex.cpp
