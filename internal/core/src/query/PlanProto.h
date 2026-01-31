@@ -18,7 +18,6 @@
 #include "PlanNode.h"
 #include "common/Schema.h"
 #include "pb/plan.pb.h"
-#include "plan/PlanNode.h"
 
 namespace milvus::query {
 
