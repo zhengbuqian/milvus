@@ -499,47 +499,47 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/clustering/types.h
 
 ### common
-- [ ] /home/zilliz/milvus/internal/core/src/common/Array.h
+- [!] /home/zilliz/milvus/internal/core/src/common/Array.h (IWYU tool script issues - needs manual processing or fixed script)
 - [x] /home/zilliz/milvus/internal/core/src/common/ArrayOffsets.h (IWYU: correct includes)
-- [ ] /home/zilliz/milvus/internal/core/src/common/ArrowDataWrapper.h
+- [!] /home/zilliz/milvus/internal/core/src/common/ArrowDataWrapper.h (IWYU tool script issues - needs manual processing or fixed script)
 - [x] /home/zilliz/milvus/internal/core/src/common/binary_set_c.h (IWYU: correct includes)
 - [ ] /home/zilliz/milvus/internal/core/src/common/BitsetView.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/BitUtil.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/BloomFilter.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/bson_view.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/CDataType.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/Channel.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/Chunk.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/ChunkTarget.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/ChunkWriter.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/Common.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/Consts.h
+- [!] /home/zilliz/milvus/internal/core/src/common/Channel.h (IWYU tool script issues - needs manual processing or fixed script)
+- [!] /home/zilliz/milvus/internal/core/src/common/Chunk.h (IWYU tool script issues - needs manual processing or fixed script)
+- [!] /home/zilliz/milvus/internal/core/src/common/ChunkTarget.h (IWYU tool script issues - needs manual processing or fixed script)
+- [!] /home/zilliz/milvus/internal/core/src/common/ChunkWriter.h (IWYU tool script issues - needs manual processing or fixed script)
+- [!] /home/zilliz/milvus/internal/core/src/common/Common.h (IWYU tool script issues - needs manual processing or fixed script)
+- [!] /home/zilliz/milvus/internal/core/src/common/Consts.h (IWYU tool script issues - needs manual processing or fixed script)
 - [ ] /home/zilliz/milvus/internal/core/src/common/CustomBitset.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/ElementFilterIterator.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/Exception.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/FieldData.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/FieldDataInterface.h
+- [!] /home/zilliz/milvus/internal/core/src/common/FieldData.h (IWYU tool script issues - needs manual processing or fixed script)
+- [!] /home/zilliz/milvus/internal/core/src/common/FieldDataInterface.h (IWYU tool script issues - needs manual processing or fixed script)
 - [x] /home/zilliz/milvus/internal/core/src/common/FieldMeta.h (IWYU: correct includes)
 - [ ] /home/zilliz/milvus/internal/core/src/common/File.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/float_util_c.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/GeometryCache.h
+- [!] /home/zilliz/milvus/internal/core/src/common/GeometryCache.h (IWYU tool script issues - needs manual processing or fixed script)
 - [ ] /home/zilliz/milvus/internal/core/src/common/Geometry.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/GroupChunk.h
+- [!] /home/zilliz/milvus/internal/core/src/common/GroupChunk.h (IWYU tool script issues - needs manual processing or fixed script)
 - [ ] /home/zilliz/milvus/internal/core/src/common/IndexMeta.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/init_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/jsmn.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/JsonCastFunction.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/JsonCastType.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/Json.h
+- [!] /home/zilliz/milvus/internal/core/src/common/JsonCastType.h (IWYU tool script issues - needs manual processing or fixed script)
+- [!] /home/zilliz/milvus/internal/core/src/common/Json.h (IWYU tool script issues - needs manual processing or fixed script)
 - [ ] /home/zilliz/milvus/internal/core/src/common/JsonUtils.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/LoadInfo.h
+- [!] /home/zilliz/milvus/internal/core/src/common/LoadInfo.h (IWYU tool script issues - needs manual processing or fixed script)
 - [ ] /home/zilliz/milvus/internal/core/src/common/logging_c.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/OffsetMapping.h
+- [!] /home/zilliz/milvus/internal/core/src/common/OffsetMapping.h (IWYU tool script issues - needs manual processing or fixed script)
 - [ ] /home/zilliz/milvus/internal/core/src/common/PreparedGeometry.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/Promise.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/protobuf_utils_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/protobuf_utils.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/QueryInfo.h
+- [!] /home/zilliz/milvus/internal/core/src/common/QueryInfo.h (IWYU tool script issues - needs manual processing or fixed script)
 - [ ] /home/zilliz/milvus/internal/core/src/common/QueryResult.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/RangeSearchHelper.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/RegexQuery.h
@@ -548,16 +548,16 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/common/ScopedTimer.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/SimdUtil.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/Slice.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/Span.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/SystemProperty.h
+- [!] /home/zilliz/milvus/internal/core/src/common/Span.h (IWYU tool script issues - needs manual processing or fixed script)
+- [!] /home/zilliz/milvus/internal/core/src/common/SystemProperty.h (IWYU tool script issues - needs manual processing or fixed script)
 - [ ] /home/zilliz/milvus/internal/core/src/common/type_c.h
 - [x] /home/zilliz/milvus/internal/core/src/common/Types.h (IWYU: fixed includes)
-- [ ] /home/zilliz/milvus/internal/core/src/common/TypeTraits.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/Utils.h
+- [!] /home/zilliz/milvus/internal/core/src/common/TypeTraits.h (IWYU tool script issues - needs manual processing or fixed script)
+- [!] /home/zilliz/milvus/internal/core/src/common/Utils.h (IWYU tool script issues - needs manual processing or fixed script)
 - [ ] /home/zilliz/milvus/internal/core/src/common/ValueOp.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/VectorArray.h
+- [!] /home/zilliz/milvus/internal/core/src/common/VectorArray.h (IWYU tool script issues - needs manual processing or fixed script)
 - [ ] /home/zilliz/milvus/internal/core/src/common/Vector.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/VectorTrait.h
+- [!] /home/zilliz/milvus/internal/core/src/common/VectorTrait.h (IWYU tool script issues - needs manual processing or fixed script)
 
 ### config
 - [ ] /home/zilliz/milvus/internal/core/src/config/ConfigKnowhere.h
