@@ -46,12 +46,6 @@
 #include "storage/Types.h"
 #include "storage/Util.h"
 
-namespace milvus {
-class InputStream;
-class OutputStream;
-struct FileMeta;
-}  // namespace milvus
-
 namespace milvus::storage {
 
 MemFileManagerImpl::MemFileManagerImpl(

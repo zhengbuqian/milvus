@@ -28,10 +28,10 @@
 
 #include "NamedType/named_type_impl.hpp"
 #include "arrow/api.h"
-#include "arrow/type.h"
 #include "cachinglayer/Utils.h"
 #include "common/ArrowDataWrapper.h"
 #include "common/Channel.h"
+#include "common/Chunk.h"
 #include "common/ChunkWriter.h"
 #include "common/Common.h"
 #include "common/Consts.h"
@@ -54,11 +54,6 @@
 #include "segcore/storagev2translator/GroupCTMeta.h"
 #include "storage/KeyRetriever.h"
 #include "storage/Util.h"
-
-namespace milvus {
-class Chunk;
-struct OpContext;
-}  // namespace milvus
 
 namespace milvus::segcore::storagev2translator {
 

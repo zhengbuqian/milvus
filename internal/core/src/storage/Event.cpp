@@ -31,7 +31,7 @@
 #include "common/EasyAssert.h"
 #include "common/FieldDataInterface.h"
 #include "common/Json.h"
-#include "common/Utils.h"
+#include "common/TypeTraits.h"
 #include "common/VectorArray.h"
 #include "fmt/core.h"
 #include "knowhere/sparse_utils.h"

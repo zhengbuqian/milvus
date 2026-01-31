@@ -17,7 +17,6 @@
 #include "storage/BinlogReader.h"
 
 #include <string.h>
-#include <type_traits>
 
 #include "common/EasyAssert.h"
 
