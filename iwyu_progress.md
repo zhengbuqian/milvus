@@ -76,7 +76,7 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/clustering/types.h
 
 ### common
-- [ ] /home/zilliz/milvus/internal/core/src/common/BitsetView.h
+- [!] /home/zilliz/milvus/internal/core/src/common/BitsetView.h (no changes suggested by IWYU)
 - [ ] /home/zilliz/milvus/internal/core/src/common/BitUtil.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/BloomFilter.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/bson_view.h
@@ -97,7 +97,7 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/common/protobuf_utils.h
 - [x] /home/zilliz/milvus/internal/core/src/common/QueryResult.h (analyzed via test_sealed.cpp entry)
 - [ ] /home/zilliz/milvus/internal/core/src/common/RangeSearchHelper.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/resource_c.h
+- [!] /home/zilliz/milvus/internal/core/src/common/resource_c.h (C header with only struct definition, no includes needed)
 - [ ] /home/zilliz/milvus/internal/core/src/common/ScopedTimer.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/SimdUtil.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/Slice.h
@@ -137,21 +137,21 @@ Legend:
 
 ### plan
 - [x] /home/zilliz/milvus/internal/core/src/plan/PlanNode.h
-- [ ] /home/zilliz/milvus/internal/core/src/plan/PlanNodeIdGenerator.h
+- [x] /home/zilliz/milvus/internal/core/src/plan/PlanNodeIdGenerator.h
 
 ### query
 - [ ] /home/zilliz/milvus/internal/core/src/query/CachedSearchIterator.h
-- [ ] /home/zilliz/milvus/internal/core/src/query/helper.h
+- [!] /home/zilliz/milvus/internal/core/src/query/helper.h (no changes suggested by IWYU)
 - [!] /home/zilliz/milvus/internal/core/src/query/Plan.h (IWYU removes necessary forward declarations, causing compilation errors)
 - [!] /home/zilliz/milvus/internal/core/src/query/PlanImpl.h (header not directly analyzed, depends on Plan.h)
 - [x] /home/zilliz/milvus/internal/core/src/query/PlanNode.h
 - [ ] /home/zilliz/milvus/internal/core/src/query/PlanNodeVisitor.h
-- [ ] /home/zilliz/milvus/internal/core/src/query/PlanProto.h
+- [x] /home/zilliz/milvus/internal/core/src/query/PlanProto.h
 - [ ] /home/zilliz/milvus/internal/core/src/query/Relational.h
-- [ ] /home/zilliz/milvus/internal/core/src/query/SearchBruteForce.h
+- [!] /home/zilliz/milvus/internal/core/src/query/SearchBruteForce.h (no changes suggested by IWYU)
 - [ ] /home/zilliz/milvus/internal/core/src/query/SearchOnGrowing.h
 - [ ] /home/zilliz/milvus/internal/core/src/query/SearchOnSealed.h
-- [ ] /home/zilliz/milvus/internal/core/src/query/SubSearchResult.h
+- [!] /home/zilliz/milvus/internal/core/src/query/SubSearchResult.h (no changes suggested by IWYU)
 - [!] /home/zilliz/milvus/internal/core/src/query/Utils.h (no changes suggested by IWYU)
 
 ### rescores
@@ -209,13 +209,13 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/storagev2translator/ManifestGroupTranslator.h
 
 ### storage
-- [ ] /home/zilliz/milvus/internal/core/src/storage/BinlogReader.h
+- [x] /home/zilliz/milvus/internal/core/src/storage/BinlogReader.h
 - [x] /home/zilliz/milvus/internal/core/src/storage/ChunkManager.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/DataCodec.h
-- [ ] /home/zilliz/milvus/internal/core/src/storage/DiskFileManagerImpl.h
+- [!] /home/zilliz/milvus/internal/core/src/storage/DiskFileManagerImpl.h (no changes suggested by IWYU)
 - [ ] /home/zilliz/milvus/internal/core/src/storage/Event.h
 - [x] /home/zilliz/milvus/internal/core/src/storage/FileManager.h
-- [ ] /home/zilliz/milvus/internal/core/src/storage/FileWriter.h
+- [!] /home/zilliz/milvus/internal/core/src/storage/FileWriter.h (no changes suggested by IWYU)
 - [x] /home/zilliz/milvus/internal/core/src/storage/InsertData.h (analyzed via test_sealed.cpp entry)
 - [ ] /home/zilliz/milvus/internal/core/src/storage/KeyRetriever.h
 - [x] /home/zilliz/milvus/internal/core/src/storage/LocalChunkManager.h
@@ -235,7 +235,7 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/storage/storage_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/StorageV2FSCache.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/ThreadPool.h
-- [ ] /home/zilliz/milvus/internal/core/src/storage/ThreadPools.h
+- [!] /home/zilliz/milvus/internal/core/src/storage/ThreadPools.h (no changes suggested by IWYU)
 - [x] /home/zilliz/milvus/internal/core/src/storage/Types.h
 - [x] /home/zilliz/milvus/internal/core/src/storage/Util.h
 
@@ -275,7 +275,7 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/storage/tencent/TencentCloudSTSClient.h
 
 ### unittest/test_utils
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_utils/AssertUtils.h
+- [!] /home/zilliz/milvus/internal/core/unittest/test_utils/AssertUtils.h (no changes suggested by IWYU)
 - [x] /home/zilliz/milvus/internal/core/unittest/test_utils/cachinglayer_test_utils.h (analyzed via test_sealed.cpp entry)
 - [x] /home/zilliz/milvus/internal/core/unittest/test_utils/c_api_test_utils.h (analyzed via test_exec.cpp entry)
 - [x] /home/zilliz/milvus/internal/core/unittest/test_utils/Constants.h
