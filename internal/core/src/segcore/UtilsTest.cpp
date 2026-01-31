@@ -11,8 +11,6 @@
 
 #include <folly/CancellationToken.h>
 #include <folly/FBVector.h>
-#include <gtest/gtest.h>
-#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -37,7 +35,6 @@
 #include "segcore/DeletedRecord.h"
 #include "segcore/InsertRecord.h"
 #include "segcore/Record.h"
-#include "segcore/SegcoreConfig.h"
 #include "segcore/Utils.h"
 
 TEST(Util_Segcore, UpperBound) {
