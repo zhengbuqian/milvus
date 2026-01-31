@@ -34,12 +34,6 @@
 #include "storage/Types.h"
 #include "storage/loon_ffi/util.h"
 
-namespace milvus_storage {
-namespace api {
-class Manifest;
-}  // namespace api
-}  // namespace milvus_storage
-
 using json = nlohmann::json;
 
 std::shared_ptr<LoonProperties>
