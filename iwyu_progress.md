@@ -318,32 +318,32 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/segcore/SegmentGrowingTest.cpp
 - [x] /home/zilliz/milvus/internal/core/src/segcore/SegmentInterface.cpp
 - [x] /home/zilliz/milvus/internal/core/src/segcore/SegmentLoadInfo.cpp (IWYU reports no contentful changes)
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/SegmentLoadInfoTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/SegmentSealedRetrieveTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/TimestampIndex.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/TimestampIndexTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/tokenizer_c.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/TokenizerCTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/token_stream_c.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/Utils.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/UtilsTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/vector_index_c.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/vector_index_c_test.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/SegmentLoadInfoTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/SegmentSealedRetrieveTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/TimestampIndex.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/TimestampIndexTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/tokenizer_c.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/TokenizerCTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/token_stream_c.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/Utils.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/UtilsTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/vector_index_c.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/vector_index_c_test.cpp
 
 ### segcore/reduce
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/reduce/GroupReduce.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/reduce/Reduce.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/reduce/StreamReduce.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/reduce/GroupReduce.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/reduce/Reduce.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/reduce/StreamReduce.cpp
 
 ### segcore/storagev1translator
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/storagev1translator/BsonInvertedIndexTranslator.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/storagev1translator/ChunkTranslator.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/storagev1translator/DefaultValueChunkTranslator.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/storagev1translator/DefaultValueChunkTranslatorTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/storagev1translator/InterimSealedIndexTranslator.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/storagev1translator/SealedIndexTranslator.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/storagev1translator/TextMatchIndexTranslator.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/storagev1translator/V1SealedIndexTranslator.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/storagev1translator/BsonInvertedIndexTranslator.cpp
+- [!] /home/zilliz/milvus/internal/core/src/segcore/storagev1translator/ChunkTranslator.cpp (IWYU adds non-existent core.h include)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/storagev1translator/DefaultValueChunkTranslator.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/storagev1translator/DefaultValueChunkTranslatorTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/storagev1translator/InterimSealedIndexTranslator.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/storagev1translator/SealedIndexTranslator.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/storagev1translator/TextMatchIndexTranslator.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/storagev1translator/V1SealedIndexTranslator.cpp
 
 ### segcore/storagev2translator
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/storagev2translator/GroupChunkTranslator.cpp
