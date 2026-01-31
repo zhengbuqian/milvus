@@ -129,7 +129,7 @@ Legend:
 ### mmap
 - [ ] /home/zilliz/milvus/internal/core/src/mmap/ChunkData.h
 - [!] /home/zilliz/milvus/internal/core/src/mmap/ChunkedColumnGroup.h (no direct cpp entry)
-- [ ] /home/zilliz/milvus/internal/core/src/mmap/ChunkedColumn.h
+- [!] /home/zilliz/milvus/internal/core/src/mmap/ChunkedColumn.h (ChunkedSegmentSealedImpl.cpp has IWYU analysis errors)
 - [!] /home/zilliz/milvus/internal/core/src/mmap/ChunkedColumnInterface.h (no changes suggested by IWYU)
 - [ ] /home/zilliz/milvus/internal/core/src/mmap/ChunkVector.h
 - [!] /home/zilliz/milvus/internal/core/src/mmap/Types.h (no changes suggested by IWYU)
@@ -167,20 +167,20 @@ Legend:
 
 ### segcore
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/AckResponder.h
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/arrow_fs_c.h
+- [!] /home/zilliz/milvus/internal/core/src/segcore/arrow_fs_c.h (ChunkedSegmentSealedImpl.cpp has IWYU analysis errors)
 - [x] /home/zilliz/milvus/internal/core/src/segcore/ChunkedSegmentSealedImpl.h
 - [!] /home/zilliz/milvus/internal/core/src/segcore/collection_c.h (no changes suggested by IWYU)
 - [!] /home/zilliz/milvus/internal/core/src/segcore/column_groups_c.h (C header, no direct analysis needed)
 - [!] /home/zilliz/milvus/internal/core/src/segcore/ConcurrentVector.h (no changes suggested by IWYU)
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/DeletedRecord.h
+- [!] /home/zilliz/milvus/internal/core/src/segcore/DeletedRecord.h (ChunkedSegmentSealedImpl.cpp has IWYU analysis errors)
 - [x] /home/zilliz/milvus/internal/core/src/segcore/InsertRecord.h (analyzed via test_sealed.cpp entry)
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/load_field_data_c.h
 - [!] /home/zilliz/milvus/internal/core/src/segcore/memory_planner.h (no changes suggested by IWYU)
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/metrics_c.h
+- [x] /home/zilliz/milvus/internal/core/src/segcore/metrics_c.h (no changes suggested by IWYU)
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/minhash_c.h
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/packed_reader_c.h
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/packed_writer_c.h
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/phrase_match_c.h
+- [!] /home/zilliz/milvus/internal/core/src/segcore/packed_reader_c.h (C header, no direct analysis needed)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/packed_writer_c.h (no changes suggested by IWYU)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/phrase_match_c.h (no changes suggested by IWYU)
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/pkVisitor.h
 - [x] /home/zilliz/milvus/internal/core/src/segcore/plan_c.h (C header, no direct analysis needed)
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/Record.h
@@ -195,7 +195,7 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/segcore/SegmentGrowingImpl.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/SegmentLoadInfo.h
 - [!] /home/zilliz/milvus/internal/core/src/segcore/SegmentSealed.h (no changes suggested by IWYU)
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/tokenizer_c.h
+- [x] /home/zilliz/milvus/internal/core/src/segcore/tokenizer_c.h (no changes suggested by IWYU)
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/token_stream_c.h
 - [!] /home/zilliz/milvus/internal/core/src/segcore/Types.h (no changes suggested by IWYU)
 - [!] /home/zilliz/milvus/internal/core/src/segcore/Utils.h (no changes suggested by IWYU)
@@ -207,12 +207,12 @@ Legend:
 
 ### segcore/storagev1translator
 - [x] /home/zilliz/milvus/internal/core/src/segcore/storagev1translator/ChunkTranslator.h (analyzed via test_sealed.cpp entry)
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/storagev1translator/DefaultValueChunkTranslator.h
+- [x] /home/zilliz/milvus/internal/core/src/segcore/storagev1translator/DefaultValueChunkTranslator.h (IWYU changes applied)
 
 ### segcore/storagev2translator
 - [!] /home/zilliz/milvus/internal/core/src/segcore/storagev2translator/GroupChunkTranslator.h (no direct cpp entry)
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/storagev2translator/GroupCTMeta.h
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/storagev2translator/ManifestGroupTranslator.h
+- [x] /home/zilliz/milvus/internal/core/src/segcore/storagev2translator/ManifestGroupTranslator.h (IWYU changes applied)
 
 ### storage
 - [x] /home/zilliz/milvus/internal/core/src/storage/BinlogReader.h
@@ -264,8 +264,8 @@ Legend:
 ### storage/loon_ffi
 - [!] /home/zilliz/milvus/internal/core/src/storage/loon_ffi/ffi_reader_c.h (C header, no direct analysis needed)
 - [x] /home/zilliz/milvus/internal/core/src/storage/loon_ffi/ffi_writer_c.h (no changes suggested by IWYU)
-- [ ] /home/zilliz/milvus/internal/core/src/storage/loon_ffi/property_singleton.h
-- [!] /home/zilliz/milvus/internal/core/src/storage/loon_ffi/util.h (no changes suggested by IWYU)
+- [x] /home/zilliz/milvus/internal/core/src/storage/loon_ffi/property_singleton.h (no changes suggested by IWYU)
+- [x] /home/zilliz/milvus/internal/core/src/storage/loon_ffi/util.h (IWYU changes applied)
 
 ### storage/minio
 - [x] /home/zilliz/milvus/internal/core/src/storage/minio/MinioChunkManager.h (IWYU changes applied)
@@ -274,7 +274,7 @@ Legend:
 - [!] /home/zilliz/milvus/internal/core/src/storage/opendal/OpenDALChunkManager.h (not analyzed - USE_OPENDAL flag dependent)
 
 ### storage/plugin
-- [ ] /home/zilliz/milvus/internal/core/src/storage/plugin/PluginInterface.h
+- [x] /home/zilliz/milvus/internal/core/src/storage/plugin/PluginInterface.h (no changes suggested by IWYU)
 
 ### storage/tencent
 - [x] /home/zilliz/milvus/internal/core/src/storage/tencent/TencentCloudCredentialsProvider.h (no changes suggested by IWYU)
