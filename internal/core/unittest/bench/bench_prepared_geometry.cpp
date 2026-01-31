@@ -30,13 +30,18 @@
  */
 
 #include <benchmark/benchmark.h>
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <map>
+#include <memory>
 #include <random>
 #include <string>
 #include <vector>
 
 #include "common/Geometry.h"
 #include "common/PreparedGeometry.h"
+#include "geos_c.h"
 
 namespace milvus {
 namespace {

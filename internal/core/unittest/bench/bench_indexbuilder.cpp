@@ -10,16 +10,27 @@
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
 #include <benchmark/benchmark.h>
-#include <tuple>
-#include <map>
-#include <google/protobuf/text_format.h>
+#include <folly/FBVector.h>
 #include <knowhere/comp/index_param.h>
+#include <nlohmann/json.hpp>
+#include <algorithm>
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <string>
+#include <tuple>
 
-#include "pb/index_cgo_msg.pb.h"
-#include "indexbuilder/VecIndexCreator.h"
-#include "indexbuilder/index_c.h"
-#include "test_utils/indexbuilder_test_utils.h"
 #include "common/Consts.h"
+#include "common/Types.h"
+#include "common/protobuf_utils.h"
+#include "index/Meta.h"
+#include "indexbuilder/VecIndexCreator.h"
+#include "knowhere/dataset.h"
+#include "knowhere/version.h"
+#include "pb/common.pb.h"
+#include "pb/index_cgo_msg.pb.h"
+#include "test_utils/DataGen.h"
+#include "test_utils/indexbuilder_test_utils.h"
 
 constexpr int64_t NB = 1000000;
 

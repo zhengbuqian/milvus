@@ -9,16 +9,41 @@
 // is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
-#include <cstdint>
 #include <benchmark/benchmark.h>
-#include <string>
 #include <folly/CancellationToken.h>
-#include "common/type_c.h"
-#include "segcore/segment_c.h"
+#include <folly/FBVector.h>
+#include <algorithm>
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "common/EasyAssert.h"
+#include "common/FieldMeta.h"
+#include "common/IndexMeta.h"
+#include "common/Schema.h"
+#include "common/Types.h"
+#include "common/common_type_c.h"
+#include "common/protobuf_utils.h"
+#include "filemanager/InputStream.h"
+#include "gtest/gtest.h"
+#include "index/Index.h"
+#include "knowhere/comp/index_param.h"
+#include "pb/common.pb.h"
+#include "query/Plan.h"
+#include "query/PlanNode.h"
+#include "segcore/ChunkedSegmentSealedImpl.h"
+#include "segcore/SegcoreConfig.h"
 #include "segcore/SegmentGrowing.h"
+#include "segcore/SegmentGrowingImpl.h"
 #include "segcore/SegmentSealed.h"
-#include "test_utils/cachinglayer_test_utils.h"
+#include "segcore/Types.h"
+#include "segcore/segment_c.h"
+#include "storage/Util.h"
 #include "test_utils/DataGen.h"
+#include "test_utils/cachinglayer_test_utils.h"
 #include "test_utils/storage_test_utils.h"
 
 using namespace milvus;

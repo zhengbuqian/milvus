@@ -10,15 +10,18 @@
 
 #include <gtest/gtest.h>
 #include <cstring>
-#include <string>
-#include <vector>
 #include <map>
+#include <string>
+#include <utility>
+#include <vector>
 
-#include "index/json_stats/JsonKeyStats.h"
 #include "common/jsmn.h"
-#include "storage/ChunkManager.h"
-#include "storage/Types.h"
+#include "common/protobuf_utils.h"
+#include "gtest/gtest.h"
+#include "index/json_stats/JsonKeyStats.h"
+#include "index/json_stats/utils.h"
 #include "storage/FileManager.h"
+#include "storage/Types.h"
 #include "storage/Util.h"
 
 using milvus::index::JsonKey;
