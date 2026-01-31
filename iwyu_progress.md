@@ -83,14 +83,14 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/common/CDataType.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/CustomBitset.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/ElementFilterIterator.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/File.h
+- [!] /home/zilliz/milvus/internal/core/src/common/File.h (not analyzed - no direct cpp entry)
 - [ ] /home/zilliz/milvus/internal/core/src/common/float_util_c.h
 - [!] /home/zilliz/milvus/internal/core/src/common/Geometry.h (no changes suggested by IWYU)
 - [ ] /home/zilliz/milvus/internal/core/src/common/init_c.h
 - [!] /home/zilliz/milvus/internal/core/src/common/jsmn.h (C header with extern "C", no direct analysis needed)
-- [ ] /home/zilliz/milvus/internal/core/src/common/JsonCastFunction.h
+- [!] /home/zilliz/milvus/internal/core/src/common/JsonCastFunction.h (not analyzed - no direct cpp entry)
 - [ ] /home/zilliz/milvus/internal/core/src/common/JsonUtils.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/logging_c.h
+- [!] /home/zilliz/milvus/internal/core/src/common/logging_c.h (C header, no direct analysis needed)
 - [ ] /home/zilliz/milvus/internal/core/src/common/PreparedGeometry.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/Promise.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/protobuf_utils_c.h
@@ -100,13 +100,13 @@ Legend:
 - [!] /home/zilliz/milvus/internal/core/src/common/resource_c.h (C header with only struct definition, no includes needed)
 - [ ] /home/zilliz/milvus/internal/core/src/common/ScopedTimer.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/SimdUtil.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/Slice.h
+- [!] /home/zilliz/milvus/internal/core/src/common/Slice.h (not analyzed - no direct cpp entry)
 - [x] /home/zilliz/milvus/internal/core/src/common/type_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/ValueOp.h
 - [x] /home/zilliz/milvus/internal/core/src/common/Vector.h (analyzed via test_sealed.cpp entry)
 
 ### config
-- [ ] /home/zilliz/milvus/internal/core/src/config/ConfigKnowhere.h
+- [x] /home/zilliz/milvus/internal/core/src/config/ConfigKnowhere.h (no changes suggested by IWYU)
 
 ### futures
 - [ ] /home/zilliz/milvus/internal/core/src/futures/future_c.h
@@ -114,6 +114,9 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/futures/Future.h
 - [ ] /home/zilliz/milvus/internal/core/src/futures/LeakyResult.h
 - [ ] /home/zilliz/milvus/internal/core/src/futures/Ready.h
+
+### index
+- [x] /home/zilliz/milvus/internal/core/src/index/VectorMemIndex.h (IWYU changes applied)
 
 ### minhash
 - [x] /home/zilliz/milvus/internal/core/src/minhash/MinHashComputer.h (analyzed via test_minhash.cpp entry)
@@ -242,8 +245,8 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/storage/Util.h
 
 ### storage/aliyun
-- [ ] /home/zilliz/milvus/internal/core/src/storage/aliyun/AliyunCredentialsProvider.h
-- [ ] /home/zilliz/milvus/internal/core/src/storage/aliyun/AliyunSTSClient.h
+- [x] /home/zilliz/milvus/internal/core/src/storage/aliyun/AliyunCredentialsProvider.h (no changes suggested by IWYU)
+- [!] /home/zilliz/milvus/internal/core/src/storage/aliyun/AliyunSTSClient.h (not analyzed - no direct cpp entry)
 
 ### storage/azure
 - [!] /home/zilliz/milvus/internal/core/src/storage/azure/AzureBlobChunkManager.h (not analyzed - AZURE_BUILD_DIR flag dependent)
@@ -254,17 +257,17 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/storage/gcp-native-storage/GcpNativeClientManager.h
 
 ### storage/huawei
-- [ ] /home/zilliz/milvus/internal/core/src/storage/huawei/HuaweiCloudCredentialsProvider.h
-- [ ] /home/zilliz/milvus/internal/core/src/storage/huawei/HuaweiCloudSTSClient.h
+- [x] /home/zilliz/milvus/internal/core/src/storage/huawei/HuaweiCloudCredentialsProvider.h (no changes suggested by IWYU)
+- [x] /home/zilliz/milvus/internal/core/src/storage/huawei/HuaweiCloudSTSClient.h (no changes suggested by IWYU)
 
 ### storage/loon_ffi
 - [!] /home/zilliz/milvus/internal/core/src/storage/loon_ffi/ffi_reader_c.h (C header, no direct analysis needed)
-- [ ] /home/zilliz/milvus/internal/core/src/storage/loon_ffi/ffi_writer_c.h
+- [x] /home/zilliz/milvus/internal/core/src/storage/loon_ffi/ffi_writer_c.h (no changes suggested by IWYU)
 - [ ] /home/zilliz/milvus/internal/core/src/storage/loon_ffi/property_singleton.h
 - [!] /home/zilliz/milvus/internal/core/src/storage/loon_ffi/util.h (no changes suggested by IWYU)
 
 ### storage/minio
-- [!] /home/zilliz/milvus/internal/core/src/storage/minio/MinioChunkManager.h (no changes suggested by IWYU)
+- [x] /home/zilliz/milvus/internal/core/src/storage/minio/MinioChunkManager.h (IWYU changes applied)
 
 ### storage/opendal
 - [!] /home/zilliz/milvus/internal/core/src/storage/opendal/OpenDALChunkManager.h (not analyzed - USE_OPENDAL flag dependent)
@@ -273,8 +276,8 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/storage/plugin/PluginInterface.h
 
 ### storage/tencent
-- [ ] /home/zilliz/milvus/internal/core/src/storage/tencent/TencentCloudCredentialsProvider.h
-- [ ] /home/zilliz/milvus/internal/core/src/storage/tencent/TencentCloudSTSClient.h
+- [x] /home/zilliz/milvus/internal/core/src/storage/tencent/TencentCloudCredentialsProvider.h (no changes suggested by IWYU)
+- [x] /home/zilliz/milvus/internal/core/src/storage/tencent/TencentCloudSTSClient.h (no changes suggested by IWYU)
 
 ### unittest/test_utils
 - [!] /home/zilliz/milvus/internal/core/unittest/test_utils/AssertUtils.h (no changes suggested by IWYU)
