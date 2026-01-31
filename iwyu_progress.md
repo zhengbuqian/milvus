@@ -85,7 +85,7 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/common/ElementFilterIterator.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/File.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/float_util_c.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/Geometry.h
+- [!] /home/zilliz/milvus/internal/core/src/common/Geometry.h (no changes suggested by IWYU)
 - [ ] /home/zilliz/milvus/internal/core/src/common/init_c.h
 - [!] /home/zilliz/milvus/internal/core/src/common/jsmn.h (C header with extern "C", no direct analysis needed)
 - [ ] /home/zilliz/milvus/internal/core/src/common/JsonCastFunction.h
@@ -133,7 +133,7 @@ Legend:
 ### monitor
 - [ ] /home/zilliz/milvus/internal/core/src/monitor/jemalloc_stats_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/monitor/monitor_c.h
-- [ ] /home/zilliz/milvus/internal/core/src/monitor/Monitor.h
+- [x] /home/zilliz/milvus/internal/core/src/monitor/Monitor.h
 
 ### plan
 - [x] /home/zilliz/milvus/internal/core/src/plan/PlanNode.h
@@ -213,7 +213,7 @@ Legend:
 ### storage
 - [x] /home/zilliz/milvus/internal/core/src/storage/BinlogReader.h
 - [x] /home/zilliz/milvus/internal/core/src/storage/ChunkManager.h
-- [ ] /home/zilliz/milvus/internal/core/src/storage/DataCodec.h
+- [!] /home/zilliz/milvus/internal/core/src/storage/DataCodec.h (no changes suggested by IWYU)
 - [!] /home/zilliz/milvus/internal/core/src/storage/DiskFileManagerImpl.h (no changes suggested by IWYU)
 - [!] /home/zilliz/milvus/internal/core/src/storage/Event.h (no changes suggested by IWYU)
 - [x] /home/zilliz/milvus/internal/core/src/storage/FileManager.h
@@ -223,20 +223,20 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/storage/LocalChunkManager.h
 - [x] /home/zilliz/milvus/internal/core/src/storage/LocalChunkManagerSingleton.h
 - [!] /home/zilliz/milvus/internal/core/src/storage/MemFileManagerImpl.h (no changes suggested by IWYU)
-- [ ] /home/zilliz/milvus/internal/core/src/storage/MmapChunkManager.h
+- [!] /home/zilliz/milvus/internal/core/src/storage/MmapChunkManager.h (no changes suggested by IWYU)
 - [x] /home/zilliz/milvus/internal/core/src/storage/MmapManager.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/parquet_c.h
 - [x] /home/zilliz/milvus/internal/core/src/storage/PayloadReader.h (analyzed via test_sealed.cpp entry)
-- [ ] /home/zilliz/milvus/internal/core/src/storage/PayloadStream.h
-- [ ] /home/zilliz/milvus/internal/core/src/storage/PayloadWriter.h
-- [ ] /home/zilliz/milvus/internal/core/src/storage/PluginLoader.h
+- [!] /home/zilliz/milvus/internal/core/src/storage/PayloadStream.h (no changes suggested by IWYU)
+- [!] /home/zilliz/milvus/internal/core/src/storage/PayloadWriter.h (no changes suggested by IWYU)
+- [!] /home/zilliz/milvus/internal/core/src/storage/PluginLoader.h (header-only file, no corresponding cpp, includes appear reasonable)
 - [x] /home/zilliz/milvus/internal/core/src/storage/RemoteChunkManagerSingleton.h
-- [ ] /home/zilliz/milvus/internal/core/src/storage/RemoteInputStream.h
-- [ ] /home/zilliz/milvus/internal/core/src/storage/RemoteOutputStream.h
-- [ ] /home/zilliz/milvus/internal/core/src/storage/SafeQueue.h
+- [x] /home/zilliz/milvus/internal/core/src/storage/RemoteInputStream.h
+- [x] /home/zilliz/milvus/internal/core/src/storage/RemoteOutputStream.h
+- [!] /home/zilliz/milvus/internal/core/src/storage/SafeQueue.h (no changes suggested by IWYU - template header)
 - [x] /home/zilliz/milvus/internal/core/src/storage/storage_c.h
 - [!] /home/zilliz/milvus/internal/core/src/storage/StorageV2FSCache.h (no changes suggested by IWYU)
-- [ ] /home/zilliz/milvus/internal/core/src/storage/ThreadPool.h
+- [!] /home/zilliz/milvus/internal/core/src/storage/ThreadPool.h (no changes suggested by IWYU)
 - [!] /home/zilliz/milvus/internal/core/src/storage/ThreadPools.h (no changes suggested by IWYU)
 - [x] /home/zilliz/milvus/internal/core/src/storage/Types.h
 - [x] /home/zilliz/milvus/internal/core/src/storage/Util.h
@@ -246,7 +246,7 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/storage/aliyun/AliyunSTSClient.h
 
 ### storage/azure
-- [ ] /home/zilliz/milvus/internal/core/src/storage/azure/AzureBlobChunkManager.h
+- [!] /home/zilliz/milvus/internal/core/src/storage/azure/AzureBlobChunkManager.h (not analyzed - AZURE_BUILD_DIR flag dependent)
 - [!] /home/zilliz/milvus/internal/core/src/storage/azure/AzureChunkManager.h (not analyzed - AZURE_BUILD_DIR flag dependent)
 
 ### storage/gcp-native-storage
