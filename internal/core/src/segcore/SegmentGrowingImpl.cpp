@@ -80,21 +80,6 @@
 #include "storage/loon_ffi/property_singleton.h"
 #include "storage/loon_ffi/util.h"
 
-namespace milvus {
-class BFloat16Vector;
-class BinaryVector;
-class Float16Vector;
-class FloatVector;
-class Int8Vector;
-class SparseFloatVector;
-namespace tracer {
-struct TraceContext;
-}  // namespace tracer
-struct OpContext;
-struct SearchInfo;
-struct SearchResult;
-}  // namespace milvus
-
 namespace milvus::segcore {
 
 using namespace milvus::cachinglayer;

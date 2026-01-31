@@ -45,15 +45,6 @@
 #include "query/PlanNode.h"
 #include "segcore/ConcurrentVector.h"
 
-namespace milvus {
-namespace index {
-class JsonKeyStats;
-class NgramInvertedIndex;
-class TextMatchIndex;
-class TextMatchIndexHolder;
-}  // namespace index
-}  // namespace milvus
-
 namespace milvus::segcore {
 
 void

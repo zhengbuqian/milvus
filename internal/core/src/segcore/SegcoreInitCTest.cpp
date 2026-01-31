@@ -10,12 +10,15 @@
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
 #include <gtest/gtest.h>
+#include <stdlib.h>
 #include <exception>
+#include <string>
 
+#include "common/protobuf_utils.h"
 #include "config/ConfigKnowhere.h"
-#include "gtest/gtest-death-test.h"
+#include "gtest/gtest.h"
+#include "segcore/Collection.h"
 #include "segcore/segcore_init_c.h"
-#include "test_utils/DataGen.h"
 
 TEST(Init, Naive) {
     using namespace milvus;

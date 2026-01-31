@@ -15,7 +15,6 @@
 #include <folly/ExceptionWrapper.h>
 #include <folly/Try.h>
 #include <folly/futures/Promise.h>
-#include <algorithm>
 #include <exception>
 #include <functional>
 #include <limits>
@@ -66,16 +65,11 @@
 #include "segcore/SegmentGrowingImpl.h"
 #include "segcore/SegmentInterface.h"
 #include "segcore/SegmentSealed.h"
+#include "segcore/Types.h"
 #include "storage/FileManager.h"
 #include "storage/RemoteChunkManagerSingleton.h"
 #include "storage/ThreadPools.h"
 #include "storage/Types.h"
-
-namespace milvus {
-namespace segcore {
-struct LoadIndexInfo;
-}  // namespace segcore
-}  // namespace milvus
 
 //////////////////////////////    common interfaces    //////////////////////////////
 
