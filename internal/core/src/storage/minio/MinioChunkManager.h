@@ -46,6 +46,7 @@
 #include "aws/s3/S3Errors.h"
 #include "common/EasyAssert.h"
 #include "glog/logging.h"
+#include "google/cloud/internal/oauth2_compute_engine_credentials.h"
 #include "google/cloud/internal/oauth2_credentials.h"
 #include "google/cloud/internal/oauth2_google_credentials.h"
 #include "google/cloud/status.h"
