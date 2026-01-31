@@ -16,13 +16,19 @@
 
 #pragma once
 
-#include <string>
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <iterator>
 #include <map>
-#include <google/protobuf/text_format.h>
+#include <memory>
+#include <stdexcept>
+#include <string>
+
 #include <google/protobuf/repeated_field.h>
 
-#include "pb/schema.pb.h"
 #include "common/EasyAssert.h"
+#include "pb/schema.pb.h"
 
 using std::string;
 

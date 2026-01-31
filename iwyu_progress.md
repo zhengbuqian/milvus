@@ -94,14 +94,14 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/common/PreparedGeometry.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/Promise.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/protobuf_utils_c.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/protobuf_utils.h
+- [x] /home/zilliz/milvus/internal/core/src/common/protobuf_utils.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/QueryResult.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/RangeSearchHelper.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/resource_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/ScopedTimer.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/SimdUtil.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/Slice.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/type_c.h
+- [x] /home/zilliz/milvus/internal/core/src/common/type_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/ValueOp.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/Vector.h
 
@@ -156,7 +156,7 @@ Legend:
 
 ### rescores
 - [ ] /home/zilliz/milvus/internal/core/src/rescores/Murmur3.h
-- [ ] /home/zilliz/milvus/internal/core/src/rescores/Scorer.h
+- [x] /home/zilliz/milvus/internal/core/src/rescores/Scorer.h
 - [ ] /home/zilliz/milvus/internal/core/src/rescores/Utils.h
 
 ### segcore
@@ -210,34 +210,34 @@ Legend:
 
 ### storage
 - [ ] /home/zilliz/milvus/internal/core/src/storage/BinlogReader.h
-- [ ] /home/zilliz/milvus/internal/core/src/storage/ChunkManager.h
+- [x] /home/zilliz/milvus/internal/core/src/storage/ChunkManager.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/DataCodec.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/DiskFileManagerImpl.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/Event.h
-- [ ] /home/zilliz/milvus/internal/core/src/storage/FileManager.h
+- [x] /home/zilliz/milvus/internal/core/src/storage/FileManager.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/FileWriter.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/InsertData.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/KeyRetriever.h
-- [ ] /home/zilliz/milvus/internal/core/src/storage/LocalChunkManager.h
-- [ ] /home/zilliz/milvus/internal/core/src/storage/LocalChunkManagerSingleton.h
+- [x] /home/zilliz/milvus/internal/core/src/storage/LocalChunkManager.h
+- [x] /home/zilliz/milvus/internal/core/src/storage/LocalChunkManagerSingleton.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/MemFileManagerImpl.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/MmapChunkManager.h
-- [ ] /home/zilliz/milvus/internal/core/src/storage/MmapManager.h
+- [x] /home/zilliz/milvus/internal/core/src/storage/MmapManager.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/parquet_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/PayloadReader.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/PayloadStream.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/PayloadWriter.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/PluginLoader.h
-- [ ] /home/zilliz/milvus/internal/core/src/storage/RemoteChunkManagerSingleton.h
+- [x] /home/zilliz/milvus/internal/core/src/storage/RemoteChunkManagerSingleton.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/RemoteInputStream.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/RemoteOutputStream.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/SafeQueue.h
-- [ ] /home/zilliz/milvus/internal/core/src/storage/storage_c.h
+- [x] /home/zilliz/milvus/internal/core/src/storage/storage_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/StorageV2FSCache.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/ThreadPool.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/ThreadPools.h
-- [ ] /home/zilliz/milvus/internal/core/src/storage/Types.h
-- [ ] /home/zilliz/milvus/internal/core/src/storage/Util.h
+- [x] /home/zilliz/milvus/internal/core/src/storage/Types.h
+- [x] /home/zilliz/milvus/internal/core/src/storage/Util.h
 
 ### storage/aliyun
 - [ ] /home/zilliz/milvus/internal/core/src/storage/aliyun/AliyunCredentialsProvider.h
@@ -278,10 +278,10 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/unittest/test_utils/AssertUtils.h
 - [ ] /home/zilliz/milvus/internal/core/unittest/test_utils/cachinglayer_test_utils.h
 - [ ] /home/zilliz/milvus/internal/core/unittest/test_utils/c_api_test_utils.h
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_utils/Constants.h
+- [x] /home/zilliz/milvus/internal/core/unittest/test_utils/Constants.h
 - [ ] /home/zilliz/milvus/internal/core/unittest/test_utils/DataGen.h
 - [ ] /home/zilliz/milvus/internal/core/unittest/test_utils/Distance.h
 - [ ] /home/zilliz/milvus/internal/core/unittest/test_utils/PbHelper.h
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_utils/storage_test_utils.h
+- [x] /home/zilliz/milvus/internal/core/unittest/test_utils/storage_test_utils.h
 - [ ] /home/zilliz/milvus/internal/core/unittest/test_utils/Timer.h
 - [ ] /home/zilliz/milvus/internal/core/unittest/test_utils/TmpPath.h
