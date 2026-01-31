@@ -274,28 +274,28 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/segcore/ChunkedSegmentSealedStorageV2Test.cpp
 - [x] /home/zilliz/milvus/internal/core/src/segcore/ChunkedSegmentSealedTest.cpp
 - [x] /home/zilliz/milvus/internal/core/src/segcore/collection_c.cpp (IWYU reports no contentful changes)
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/Collection.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/collection_c_test.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/column_groups_c.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/ColumnGroupsCTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/ConcurrentVector.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/ConcurrentVectorTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/DeletedRecordTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/FieldIndexing.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/IndexConfigGenerator.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/IndexCTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/InsertRecordOffsetOrderedArrayTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/InsertRecordOffsetOrderedMapTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/LoadCancellationTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/load_field_data_c.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/load_field_data_c_test.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/load_index_c.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/load_index_c_test.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/memory_planner.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/MemoryPlannerTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/metrics_c.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/minhash_c.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/packed_reader_c.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/Collection.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/collection_c_test.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/column_groups_c.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/ColumnGroupsCTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/ConcurrentVector.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/ConcurrentVectorTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/DeletedRecordTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/FieldIndexing.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/IndexConfigGenerator.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/IndexCTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/InsertRecordOffsetOrderedArrayTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/InsertRecordOffsetOrderedMapTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/LoadCancellationTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/load_field_data_c.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/load_field_data_c_test.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/load_index_c.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/load_index_c_test.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/memory_planner.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/MemoryPlannerTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/metrics_c.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/minhash_c.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/packed_reader_c.cpp (IWYU reports no contentful changes)
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/PackedReaderWriterTest.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/packed_writer_c.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/phrase_match_c.cpp
