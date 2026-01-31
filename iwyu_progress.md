@@ -402,36 +402,36 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/storage/huawei/HuaweiCloudSTSClient.cpp (IWYU reports no contentful changes)
 
 ### storage/loon_ffi
-- [ ] /home/zilliz/milvus/internal/core/src/storage/loon_ffi/ffi_reader_c.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/loon_ffi/ffi_writer_c.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/loon_ffi/util.cpp
+- [x] /home/zilliz/milvus/internal/core/src/storage/loon_ffi/ffi_reader_c.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/storage/loon_ffi/ffi_writer_c.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/storage/loon_ffi/util.cpp
 
 ### storage/minio
-- [ ] /home/zilliz/milvus/internal/core/src/storage/minio/MinioChunkManager.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/minio/MinioChunkManagerTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/storage/minio/MinioChunkManager.cpp (IWYU reports no contentful changes)
+- [!] /home/zilliz/milvus/internal/core/src/storage/minio/MinioChunkManagerTest.cpp (not in compile_commands.json)
 
 ### storage/opendal
-- [ ] /home/zilliz/milvus/internal/core/src/storage/opendal/OpenDALChunkManager.cpp
+- [!] /home/zilliz/milvus/internal/core/src/storage/opendal/OpenDALChunkManager.cpp (not in compile_commands.json)
 
 ### storage/tencent
-- [ ] /home/zilliz/milvus/internal/core/src/storage/tencent/TencentCloudCredentialsProvider.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/tencent/TencentCloudSTSClient.cpp
+- [x] /home/zilliz/milvus/internal/core/src/storage/tencent/TencentCloudCredentialsProvider.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/storage/tencent/TencentCloudSTSClient.cpp (IWYU reports no contentful changes)
 
 ### unittest
-- [ ] /home/zilliz/milvus/internal/core/unittest/init_gtest.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_element_filter.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_exec.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_expr_materialized_view.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_float16.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_group_by_json.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_indexing.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_index_wrapper.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_integer_overflow.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_iterative_filter.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_loading.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_minhash.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_query.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_query_group_by.cpp
+- [x] /home/zilliz/milvus/internal/core/unittest/init_gtest.cpp
+- [x] /home/zilliz/milvus/internal/core/unittest/test_element_filter.cpp
+- [x] /home/zilliz/milvus/internal/core/unittest/test_exec.cpp
+- [x] /home/zilliz/milvus/internal/core/unittest/test_expr_materialized_view.cpp
+- [x] /home/zilliz/milvus/internal/core/unittest/test_float16.cpp
+- [x] /home/zilliz/milvus/internal/core/unittest/test_group_by_json.cpp
+- [x] /home/zilliz/milvus/internal/core/unittest/test_indexing.cpp
+- [x] /home/zilliz/milvus/internal/core/unittest/test_index_wrapper.cpp
+- [x] /home/zilliz/milvus/internal/core/unittest/test_integer_overflow.cpp
+- [x] /home/zilliz/milvus/internal/core/unittest/test_iterative_filter.cpp
+- [x] /home/zilliz/milvus/internal/core/unittest/test_loading.cpp
+- [x] /home/zilliz/milvus/internal/core/unittest/test_minhash.cpp
+- [x] /home/zilliz/milvus/internal/core/unittest/test_query.cpp
+- [x] /home/zilliz/milvus/internal/core/unittest/test_query_group_by.cpp
 - [ ] /home/zilliz/milvus/internal/core/unittest/test_rust_result.cpp
 - [ ] /home/zilliz/milvus/internal/core/unittest/test_schema_reopen.cpp
 - [ ] /home/zilliz/milvus/internal/core/unittest/test_scorer.cpp
