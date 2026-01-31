@@ -27,10 +27,6 @@
 #include "rescores/Murmur3.h"
 #include "segcore/SegmentInterface.h"
 
-namespace milvus {
-struct OpContext;
-}  // namespace milvus
-
 namespace milvus::rescores {
 
 void

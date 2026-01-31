@@ -47,10 +47,6 @@
 #include "query/helper.h"
 #include "segcore/SealedIndexingRecord.h"
 
-namespace milvus {
-struct OpContext;
-}  // namespace milvus
-
 namespace milvus::query {
 
 void

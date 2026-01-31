@@ -29,10 +29,6 @@
 #include "knowhere/dataset.h"
 #include "query/helper.h"
 
-namespace milvus {
-struct OpContext;
-}  // namespace milvus
-
 namespace milvus::query {
 void
 SearchOnIndex(const dataset::SearchDataset& search_dataset,

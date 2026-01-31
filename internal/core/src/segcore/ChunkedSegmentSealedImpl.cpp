@@ -129,11 +129,6 @@
 #include "storage/Util.h"
 #include "storage/loon_ffi/property_singleton.h"
 
-namespace milvus {
-struct OpContext;
-struct SearchResult;
-}  // namespace milvus
-
 namespace milvus::segcore {
 using namespace milvus::cachinglayer;
 

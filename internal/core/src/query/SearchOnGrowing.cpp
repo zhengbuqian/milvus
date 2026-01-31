@@ -51,10 +51,6 @@
 #include "segcore/InsertRecord.h"
 #include "segcore/SegmentGrowingImpl.h"
 
-namespace milvus {
-struct OpContext;
-}  // namespace milvus
-
 namespace milvus::query {
 
 void
