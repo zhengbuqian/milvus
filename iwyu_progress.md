@@ -464,32 +464,32 @@ Legend:
 ## Header Files (.h / .hpp)
 
 ### bitset
-- [ ] /home/zilliz/milvus/internal/core/src/bitset/bitset.h
-- [ ] /home/zilliz/milvus/internal/core/src/bitset/common.h
-- [ ] /home/zilliz/milvus/internal/core/src/bitset/detail/bit_wise.h
-- [ ] /home/zilliz/milvus/internal/core/src/bitset/detail/ctz.h
-- [ ] /home/zilliz/milvus/internal/core/src/bitset/detail/element_vectorized.h
-- [ ] /home/zilliz/milvus/internal/core/src/bitset/detail/element_wise.h
-- [ ] /home/zilliz/milvus/internal/core/src/bitset/detail/maybe_vector.h
-- [ ] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/arm/instruction_set.h
-- [ ] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/arm/neon-decl.h
-- [ ] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/arm/neon.h
-- [ ] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/arm/neon-impl.h
-- [ ] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/arm/sve-decl.h
-- [ ] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/arm/sve.h
-- [ ] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/arm/sve-impl.h
-- [ ] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/dynamic.h
-- [ ] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/vectorized_ref.h
-- [ ] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/x86/avx2-decl.h
-- [ ] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/x86/avx2.h
-- [ ] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/x86/avx2-impl.h
-- [ ] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/x86/avx512-decl.h
-- [ ] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/x86/avx512.h
-- [ ] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/x86/avx512-impl.h
-- [ ] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/x86/common.h
-- [ ] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/x86/instruction_set.h
-- [ ] /home/zilliz/milvus/internal/core/src/bitset/detail/popcount.h
-- [ ] /home/zilliz/milvus/internal/core/src/bitset/detail/proxy.h
+- [x] /home/zilliz/milvus/internal/core/src/bitset/bitset.h (IWYU: correct includes)
+- [x] /home/zilliz/milvus/internal/core/src/bitset/common.h (IWYU: correct includes)
+- [x] /home/zilliz/milvus/internal/core/src/bitset/detail/bit_wise.h (IWYU: correct includes)
+- [x] /home/zilliz/milvus/internal/core/src/bitset/detail/ctz.h (IWYU: correct includes)
+- [x] /home/zilliz/milvus/internal/core/src/bitset/detail/element_vectorized.h (IWYU: correct includes)
+- [x] /home/zilliz/milvus/internal/core/src/bitset/detail/element_wise.h (IWYU: correct includes)
+- [x] /home/zilliz/milvus/internal/core/src/bitset/detail/maybe_vector.h (IWYU: correct includes)
+- [!] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/arm/instruction_set.h (ARM-only: cannot analyze on x86)
+- [!] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/arm/neon-decl.h (ARM-only: cannot analyze on x86)
+- [!] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/arm/neon.h (ARM-only: cannot analyze on x86)
+- [!] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/arm/neon-impl.h (ARM-only: cannot analyze on x86)
+- [!] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/arm/sve-decl.h (ARM-only: cannot analyze on x86)
+- [!] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/arm/sve.h (ARM-only: cannot analyze on x86)
+- [!] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/arm/sve-impl.h (ARM-only: cannot analyze on x86)
+- [x] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/dynamic.h (IWYU: correct includes)
+- [x] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/vectorized_ref.h (IWYU: correct includes)
+- [x] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/x86/avx2-decl.h (IWYU: correct includes)
+- [x] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/x86/avx2.h (IWYU: correct includes)
+- [x] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/x86/avx2-impl.h (IWYU: correct includes)
+- [x] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/x86/avx512-decl.h (IWYU: correct includes)
+- [x] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/x86/avx512.h (IWYU: correct includes)
+- [x] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/x86/avx512-impl.h (IWYU: correct includes)
+- [x] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/x86/common.h (IWYU: correct includes)
+- [x] /home/zilliz/milvus/internal/core/src/bitset/detail/platform/x86/instruction_set.h (IWYU: correct includes)
+- [x] /home/zilliz/milvus/internal/core/src/bitset/detail/popcount.h (IWYU: correct includes)
+- [x] /home/zilliz/milvus/internal/core/src/bitset/detail/proxy.h (IWYU: correct includes)
 
 ### clustering
 - [ ] /home/zilliz/milvus/internal/core/src/clustering/analyze_c.h
