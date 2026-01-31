@@ -95,7 +95,7 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/common/Promise.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/protobuf_utils_c.h
 - [x] /home/zilliz/milvus/internal/core/src/common/protobuf_utils.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/QueryResult.h
+- [x] /home/zilliz/milvus/internal/core/src/common/QueryResult.h (analyzed via test_sealed.cpp entry)
 - [ ] /home/zilliz/milvus/internal/core/src/common/RangeSearchHelper.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/resource_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/ScopedTimer.h
@@ -103,7 +103,7 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/common/Slice.h
 - [x] /home/zilliz/milvus/internal/core/src/common/type_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/ValueOp.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/Vector.h
+- [x] /home/zilliz/milvus/internal/core/src/common/Vector.h (analyzed via test_sealed.cpp entry)
 
 ### config
 - [ ] /home/zilliz/milvus/internal/core/src/config/ConfigKnowhere.h
@@ -116,11 +116,11 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/futures/Ready.h
 
 ### minhash
-- [ ] /home/zilliz/milvus/internal/core/src/minhash/MinHashComputer.h
-- [ ] /home/zilliz/milvus/internal/core/src/minhash/MinHashHook.h
+- [x] /home/zilliz/milvus/internal/core/src/minhash/MinHashComputer.h (analyzed via test_minhash.cpp entry)
+- [x] /home/zilliz/milvus/internal/core/src/minhash/MinHashHook.h (analyzed via test_minhash.cpp entry)
 - [ ] /home/zilliz/milvus/internal/core/src/minhash/fusion_compute/arm/fusion_compute_neon.h
 - [ ] /home/zilliz/milvus/internal/core/src/minhash/fusion_compute/arm/fusion_compute_sve.h
-- [ ] /home/zilliz/milvus/internal/core/src/minhash/fusion_compute/fusion_compute_native.h
+- [x] /home/zilliz/milvus/internal/core/src/minhash/fusion_compute/fusion_compute_native.h (analyzed via test_minhash.cpp entry)
 
 ### mmap
 - [ ] /home/zilliz/milvus/internal/core/src/mmap/ChunkData.h
@@ -167,7 +167,7 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/column_groups_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/ConcurrentVector.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/DeletedRecord.h
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/InsertRecord.h
+- [x] /home/zilliz/milvus/internal/core/src/segcore/InsertRecord.h (analyzed via test_sealed.cpp entry)
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/load_field_data_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/memory_planner.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/metrics_c.h
@@ -176,14 +176,14 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/packed_writer_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/phrase_match_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/pkVisitor.h
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/plan_c.h
+- [x] /home/zilliz/milvus/internal/core/src/segcore/plan_c.h (C header, no direct analysis needed)
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/Record.h
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/reduce_c.h
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/ReduceStructure.h
+- [x] /home/zilliz/milvus/internal/core/src/segcore/reduce_c.h (C header, no direct analysis needed)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/ReduceStructure.h (analyzed via test_search_group_by.cpp entry)
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/ReduceUtils.h
 - [x] /home/zilliz/milvus/internal/core/src/segcore/SegcoreConfig.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/segcore_init_c.h
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/segment_c.h
+- [x] /home/zilliz/milvus/internal/core/src/segcore/segment_c.h (C header, no direct analysis needed)
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/SegmentChunkReader.h
 - [!] /home/zilliz/milvus/internal/core/src/segcore/SegmentGrowing.h (no changes suggested by IWYU)
 - [x] /home/zilliz/milvus/internal/core/src/segcore/SegmentGrowingImpl.h
@@ -200,7 +200,7 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/reduce/StreamReduce.h
 
 ### segcore/storagev1translator
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/storagev1translator/ChunkTranslator.h
+- [x] /home/zilliz/milvus/internal/core/src/segcore/storagev1translator/ChunkTranslator.h (analyzed via test_sealed.cpp entry)
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/storagev1translator/DefaultValueChunkTranslator.h
 
 ### segcore/storagev2translator
@@ -216,7 +216,7 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/storage/Event.h
 - [x] /home/zilliz/milvus/internal/core/src/storage/FileManager.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/FileWriter.h
-- [ ] /home/zilliz/milvus/internal/core/src/storage/InsertData.h
+- [x] /home/zilliz/milvus/internal/core/src/storage/InsertData.h (analyzed via test_sealed.cpp entry)
 - [ ] /home/zilliz/milvus/internal/core/src/storage/KeyRetriever.h
 - [x] /home/zilliz/milvus/internal/core/src/storage/LocalChunkManager.h
 - [x] /home/zilliz/milvus/internal/core/src/storage/LocalChunkManagerSingleton.h
@@ -224,7 +224,7 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/storage/MmapChunkManager.h
 - [x] /home/zilliz/milvus/internal/core/src/storage/MmapManager.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/parquet_c.h
-- [ ] /home/zilliz/milvus/internal/core/src/storage/PayloadReader.h
+- [x] /home/zilliz/milvus/internal/core/src/storage/PayloadReader.h (analyzed via test_sealed.cpp entry)
 - [ ] /home/zilliz/milvus/internal/core/src/storage/PayloadStream.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/PayloadWriter.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/PluginLoader.h
@@ -276,8 +276,8 @@ Legend:
 
 ### unittest/test_utils
 - [ ] /home/zilliz/milvus/internal/core/unittest/test_utils/AssertUtils.h
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_utils/cachinglayer_test_utils.h
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_utils/c_api_test_utils.h
+- [x] /home/zilliz/milvus/internal/core/unittest/test_utils/cachinglayer_test_utils.h (analyzed via test_sealed.cpp entry)
+- [x] /home/zilliz/milvus/internal/core/unittest/test_utils/c_api_test_utils.h (analyzed via test_exec.cpp entry)
 - [x] /home/zilliz/milvus/internal/core/unittest/test_utils/Constants.h
 - [!] /home/zilliz/milvus/internal/core/unittest/test_utils/DataGen.h (large file, not directly analyzed)
 - [ ] /home/zilliz/milvus/internal/core/unittest/test_utils/Distance.h
