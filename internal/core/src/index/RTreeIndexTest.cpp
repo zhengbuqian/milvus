@@ -13,7 +13,6 @@
 #include <boost/filesystem/directory.hpp>
 #include <boost/filesystem/operations.hpp>
 #include <boost/filesystem/path.hpp>
-#include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 #include <nlohmann/json_fwd.hpp>
 #include <stddef.h>
@@ -58,7 +57,7 @@
 #include "plan/PlanNode.h"
 #include "query/ExecPlanNodeVisitor.h"
 #include "query/Utils.h"
-#include "segcore/Collection.h"
+#include "segcore/SegcoreConfig.h"
 #include "segcore/SegmentSealed.h"
 #include "segcore/Types.h"
 #include "storage/ChunkManager.h"

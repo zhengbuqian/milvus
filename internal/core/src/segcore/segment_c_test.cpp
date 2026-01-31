@@ -10,7 +10,6 @@
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
 #include <folly/FBVector.h>
-#include <gtest/gtest.h>
 #include <stdlib.h>
 #include <time.h>
 #include <algorithm>
@@ -28,6 +27,7 @@
 
 #include "NamedType/named_type_impl.hpp"
 #include "bitset/bitset.h"
+#include "bitset/common.h"
 #include "common/EasyAssert.h"
 #include "common/IndexMeta.h"
 #include "common/LoadInfo.h"
@@ -39,7 +39,6 @@
 #include "common/protobuf_utils.h"
 #include "exec/expression/Element.h"
 #include "expr/ITypeExpr.h"
-#include "filemanager/InputStream.h"
 #include "gtest/gtest.h"
 #include "index/Index.h"
 #include "index/Meta.h"

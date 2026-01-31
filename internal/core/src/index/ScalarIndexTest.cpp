@@ -15,7 +15,6 @@
 #include <arrow/array/builder_primitive.h>
 #include <arrow/type.h>
 #include <folly/FBVector.h>
-#include <gtest/gtest.h>
 #include <algorithm>
 #include <cstdint>
 #include <iostream>
