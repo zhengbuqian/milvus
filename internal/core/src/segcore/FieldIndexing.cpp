@@ -23,6 +23,7 @@
 #include "common/EasyAssert.h"
 #include "common/FieldDataInterface.h"
 #include "common/OffsetMapping.h"
+#include "common/TypeTraits.h"
 #include "common/Types.h"
 #include "common/Utils.h"
 #include "common/VectorTrait.h"

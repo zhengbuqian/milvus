@@ -41,10 +41,6 @@
 #include "storage/ThreadPool.h"
 #include "storage/ThreadPools.h"
 
-namespace milvus {
-struct OpContext;
-}  // namespace milvus
-
 namespace milvus::segcore {
 
 MemoryBasedSplitStrategy::MemoryBasedSplitStrategy(

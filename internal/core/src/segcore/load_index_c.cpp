@@ -43,6 +43,7 @@
 #include "index/IndexInfo.h"
 #include "index/Meta.h"
 #include "index/Utils.h"
+#include "knowhere/binaryset.h"
 #include "knowhere/utils.h"
 #include "log/Log.h"
 #include "monitor/scope_metric.h"
@@ -58,10 +59,6 @@
 #include "storage/LocalChunkManagerSingleton.h"
 #include "storage/RemoteChunkManagerSingleton.h"
 #include "storage/Util.h"
-
-namespace knowhere {
-class BinarySet;
-}  // namespace knowhere
 
 bool
 IsLoadWithDisk(const char* index_type, int index_engine_version) {
