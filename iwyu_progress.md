@@ -128,7 +128,7 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/mmap/ChunkedColumn.h
 - [!] /home/zilliz/milvus/internal/core/src/mmap/ChunkedColumnInterface.h (no changes suggested by IWYU)
 - [ ] /home/zilliz/milvus/internal/core/src/mmap/ChunkVector.h
-- [ ] /home/zilliz/milvus/internal/core/src/mmap/Types.h
+- [!] /home/zilliz/milvus/internal/core/src/mmap/Types.h (no changes suggested by IWYU)
 
 ### monitor
 - [ ] /home/zilliz/milvus/internal/core/src/monitor/jemalloc_stats_c.h
@@ -146,10 +146,10 @@ Legend:
 - [!] /home/zilliz/milvus/internal/core/src/query/PlanImpl.h (header not directly analyzed, depends on Plan.h)
 - [x] /home/zilliz/milvus/internal/core/src/query/PlanNode.h
 - [!] /home/zilliz/milvus/internal/core/src/query/PlanNodeVisitor.h (no changes suggested by IWYU)
-- [x] /home/zilliz/milvus/internal/core/src/query/PlanProto.h
-- [ ] /home/zilliz/milvus/internal/core/src/query/Relational.h
+- [x] /home/zilliz/milvus/internal/core/src/query/PlanProto.h (added expr/ITypeExpr.h and rescores/Scorer.h to fix build)
+- [!] /home/zilliz/milvus/internal/core/src/query/Relational.h (no changes suggested by IWYU)
 - [!] /home/zilliz/milvus/internal/core/src/query/SearchBruteForce.h (no changes suggested by IWYU)
-- [ ] /home/zilliz/milvus/internal/core/src/query/SearchOnGrowing.h
+- [x] /home/zilliz/milvus/internal/core/src/query/SearchOnGrowing.h
 - [x] /home/zilliz/milvus/internal/core/src/query/SearchOnIndex.h
 - [x] /home/zilliz/milvus/internal/core/src/query/SearchOnSealed.h
 - [x] /home/zilliz/milvus/internal/core/src/query/ExecPlanNodeVisitor.h
@@ -171,7 +171,7 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/DeletedRecord.h
 - [x] /home/zilliz/milvus/internal/core/src/segcore/InsertRecord.h (analyzed via test_sealed.cpp entry)
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/load_field_data_c.h
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/memory_planner.h
+- [!] /home/zilliz/milvus/internal/core/src/segcore/memory_planner.h (no changes suggested by IWYU)
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/metrics_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/minhash_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/packed_reader_c.h
@@ -215,14 +215,14 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/storage/ChunkManager.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/DataCodec.h
 - [!] /home/zilliz/milvus/internal/core/src/storage/DiskFileManagerImpl.h (no changes suggested by IWYU)
-- [ ] /home/zilliz/milvus/internal/core/src/storage/Event.h
+- [!] /home/zilliz/milvus/internal/core/src/storage/Event.h (no changes suggested by IWYU)
 - [x] /home/zilliz/milvus/internal/core/src/storage/FileManager.h
 - [!] /home/zilliz/milvus/internal/core/src/storage/FileWriter.h (no changes suggested by IWYU)
 - [x] /home/zilliz/milvus/internal/core/src/storage/InsertData.h (analyzed via test_sealed.cpp entry)
-- [ ] /home/zilliz/milvus/internal/core/src/storage/KeyRetriever.h
+- [!] /home/zilliz/milvus/internal/core/src/storage/KeyRetriever.h (no changes suggested by IWYU)
 - [x] /home/zilliz/milvus/internal/core/src/storage/LocalChunkManager.h
 - [x] /home/zilliz/milvus/internal/core/src/storage/LocalChunkManagerSingleton.h
-- [ ] /home/zilliz/milvus/internal/core/src/storage/MemFileManagerImpl.h
+- [!] /home/zilliz/milvus/internal/core/src/storage/MemFileManagerImpl.h (no changes suggested by IWYU)
 - [ ] /home/zilliz/milvus/internal/core/src/storage/MmapChunkManager.h
 - [x] /home/zilliz/milvus/internal/core/src/storage/MmapManager.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/parquet_c.h
@@ -247,10 +247,10 @@ Legend:
 
 ### storage/azure
 - [ ] /home/zilliz/milvus/internal/core/src/storage/azure/AzureBlobChunkManager.h
-- [ ] /home/zilliz/milvus/internal/core/src/storage/azure/AzureChunkManager.h
+- [!] /home/zilliz/milvus/internal/core/src/storage/azure/AzureChunkManager.h (not analyzed - AZURE_BUILD_DIR flag dependent)
 
 ### storage/gcp-native-storage
-- [ ] /home/zilliz/milvus/internal/core/src/storage/gcp-native-storage/GcpNativeChunkManager.h
+- [!] /home/zilliz/milvus/internal/core/src/storage/gcp-native-storage/GcpNativeChunkManager.h (not analyzed - ENABLE_GCP_NATIVE flag dependent)
 - [ ] /home/zilliz/milvus/internal/core/src/storage/gcp-native-storage/GcpNativeClientManager.h
 
 ### storage/huawei
@@ -258,16 +258,16 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/storage/huawei/HuaweiCloudSTSClient.h
 
 ### storage/loon_ffi
-- [ ] /home/zilliz/milvus/internal/core/src/storage/loon_ffi/ffi_reader_c.h
+- [!] /home/zilliz/milvus/internal/core/src/storage/loon_ffi/ffi_reader_c.h (C header, no direct analysis needed)
 - [ ] /home/zilliz/milvus/internal/core/src/storage/loon_ffi/ffi_writer_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/storage/loon_ffi/property_singleton.h
-- [ ] /home/zilliz/milvus/internal/core/src/storage/loon_ffi/util.h
+- [!] /home/zilliz/milvus/internal/core/src/storage/loon_ffi/util.h (no changes suggested by IWYU)
 
 ### storage/minio
-- [ ] /home/zilliz/milvus/internal/core/src/storage/minio/MinioChunkManager.h
+- [!] /home/zilliz/milvus/internal/core/src/storage/minio/MinioChunkManager.h (no changes suggested by IWYU)
 
 ### storage/opendal
-- [ ] /home/zilliz/milvus/internal/core/src/storage/opendal/OpenDALChunkManager.h
+- [!] /home/zilliz/milvus/internal/core/src/storage/opendal/OpenDALChunkManager.h (not analyzed - USE_OPENDAL flag dependent)
 
 ### storage/plugin
 - [ ] /home/zilliz/milvus/internal/core/src/storage/plugin/PluginInterface.h
@@ -282,7 +282,7 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/unittest/test_utils/c_api_test_utils.h (analyzed via test_exec.cpp entry)
 - [x] /home/zilliz/milvus/internal/core/unittest/test_utils/Constants.h
 - [!] /home/zilliz/milvus/internal/core/unittest/test_utils/DataGen.h (large file, not directly analyzed)
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_utils/Distance.h
+- [!] /home/zilliz/milvus/internal/core/unittest/test_utils/Distance.h (no changes suggested by IWYU)
 - [ ] /home/zilliz/milvus/internal/core/unittest/test_utils/PbHelper.h
 - [x] /home/zilliz/milvus/internal/core/unittest/test_utils/storage_test_utils.h
 - [ ] /home/zilliz/milvus/internal/core/unittest/test_utils/Timer.h

@@ -10,7 +10,6 @@
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
 #include <folly/FBVector.h>
-#include <gtest/gtest.h>
 #include <stdint.h>
 #include <algorithm>
 #include <map>
@@ -20,6 +19,7 @@
 #include <vector>
 
 #include "bitset/bitset.h"
+#include "bitset/common.h"
 #include "common/BitsetView.h"
 #include "common/EasyAssert.h"
 #include "common/QueryInfo.h"
@@ -27,7 +27,6 @@
 #include "common/Types.h"
 #include "common/Utils.h"
 #include "common/protobuf_utils.h"
-#include "filemanager/InputStream.h"
 #include "gtest/gtest.h"
 #include "knowhere/comp/index_param.h"
 #include "query/SearchBruteForce.h"
