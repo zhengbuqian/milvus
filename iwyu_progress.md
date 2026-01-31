@@ -432,32 +432,32 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/unittest/test_minhash.cpp
 - [x] /home/zilliz/milvus/internal/core/unittest/test_query.cpp
 - [x] /home/zilliz/milvus/internal/core/unittest/test_query_group_by.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_rust_result.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_schema_reopen.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_scorer.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_sealed.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_search_group_by.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_storage.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_storage_v2_index_raw_data.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_string_chunk_writer.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_string_expr.cpp
+- [x] /home/zilliz/milvus/internal/core/unittest/test_rust_result.cpp
+- [!] /home/zilliz/milvus/internal/core/unittest/test_schema_reopen.cpp (not in compile_commands.json)
+- [x] /home/zilliz/milvus/internal/core/unittest/test_scorer.cpp
+- [x] /home/zilliz/milvus/internal/core/unittest/test_sealed.cpp
+- [x] /home/zilliz/milvus/internal/core/unittest/test_search_group_by.cpp
+- [x] /home/zilliz/milvus/internal/core/unittest/test_storage.cpp
+- [x] /home/zilliz/milvus/internal/core/unittest/test_storage_v2_index_raw_data.cpp
+- [!] /home/zilliz/milvus/internal/core/unittest/test_string_chunk_writer.cpp (not in compile_commands.json)
+- [x] /home/zilliz/milvus/internal/core/unittest/test_string_expr.cpp
 
 ### unittest/bench
-- [ ] /home/zilliz/milvus/internal/core/unittest/bench/bench_applyhits.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/bench/bench_filewrite.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/bench/bench_findfirst.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/bench/bench_indexbuilder.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/bench/bench_naive.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/bench/bench_prepared_geometry.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/bench/bench_search.cpp
+- [!] /home/zilliz/milvus/internal/core/unittest/bench/bench_applyhits.cpp (not in compile_commands.json)
+- [!] /home/zilliz/milvus/internal/core/unittest/bench/bench_filewrite.cpp (not in compile_commands.json)
+- [!] /home/zilliz/milvus/internal/core/unittest/bench/bench_findfirst.cpp (not in compile_commands.json)
+- [x] /home/zilliz/milvus/internal/core/unittest/bench/bench_indexbuilder.cpp
+- [x] /home/zilliz/milvus/internal/core/unittest/bench/bench_naive.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/unittest/bench/bench_prepared_geometry.cpp
+- [x] /home/zilliz/milvus/internal/core/unittest/bench/bench_search.cpp
 
 ### unittest/test_json_stats
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_json_stats/test_bson_builder.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_json_stats/test_bson_view.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_json_stats/test_json_key_stats.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_json_stats/test_parquet_writer.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_json_stats/test_traverse_json_for_build_stats.cpp
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_json_stats/test_utils.cpp
+- [x] /home/zilliz/milvus/internal/core/unittest/test_json_stats/test_bson_builder.cpp
+- [x] /home/zilliz/milvus/internal/core/unittest/test_json_stats/test_bson_view.cpp
+- [x] /home/zilliz/milvus/internal/core/unittest/test_json_stats/test_json_key_stats.cpp
+- [x] /home/zilliz/milvus/internal/core/unittest/test_json_stats/test_parquet_writer.cpp
+- [x] /home/zilliz/milvus/internal/core/unittest/test_json_stats/test_traverse_json_for_build_stats.cpp
+- [x] /home/zilliz/milvus/internal/core/unittest/test_json_stats/test_utils.cpp
 
 ---
 
