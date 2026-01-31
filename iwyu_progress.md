@@ -71,7 +71,7 @@ Legend:
 ### bitset
 
 ### clustering
-- [!] /home/zilliz/milvus/internal/core/src/clustering/file_utils.h (no changes suggested by IWYU)
+- [x] /home/zilliz/milvus/internal/core/src/clustering/file_utils.h
 - [!] /home/zilliz/milvus/internal/core/src/clustering/type_c.h (C header, no direct analysis needed)
 - [ ] /home/zilliz/milvus/internal/core/src/clustering/types.h
 
@@ -79,7 +79,7 @@ Legend:
 - [!] /home/zilliz/milvus/internal/core/src/common/BitsetView.h (no changes suggested by IWYU)
 - [ ] /home/zilliz/milvus/internal/core/src/common/BitUtil.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/BloomFilter.h
-- [!] /home/zilliz/milvus/internal/core/src/common/bson_view.h (no changes suggested by IWYU)
+- [x] /home/zilliz/milvus/internal/core/src/common/bson_view.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/CDataType.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/CustomBitset.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/ElementFilterIterator.h
