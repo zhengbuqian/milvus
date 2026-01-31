@@ -66,6 +66,7 @@
 #include "common/Span.h"
 #include "common/SystemProperty.h"
 #include "common/Tracer.h"
+#include "common/TypeTraits.h"
 #include "common/Types.h"
 #include "common/Utils.h"
 #include "common/VectorArray.h"

@@ -136,15 +136,15 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/monitor/Monitor.h
 
 ### plan
-- [ ] /home/zilliz/milvus/internal/core/src/plan/PlanNode.h
+- [x] /home/zilliz/milvus/internal/core/src/plan/PlanNode.h
 - [ ] /home/zilliz/milvus/internal/core/src/plan/PlanNodeIdGenerator.h
 
 ### query
 - [ ] /home/zilliz/milvus/internal/core/src/query/CachedSearchIterator.h
 - [ ] /home/zilliz/milvus/internal/core/src/query/helper.h
-- [ ] /home/zilliz/milvus/internal/core/src/query/Plan.h
-- [ ] /home/zilliz/milvus/internal/core/src/query/PlanImpl.h
-- [ ] /home/zilliz/milvus/internal/core/src/query/PlanNode.h
+- [!] /home/zilliz/milvus/internal/core/src/query/Plan.h (IWYU removes necessary forward declarations, causing compilation errors)
+- [!] /home/zilliz/milvus/internal/core/src/query/PlanImpl.h (header not directly analyzed, depends on Plan.h)
+- [x] /home/zilliz/milvus/internal/core/src/query/PlanNode.h
 - [ ] /home/zilliz/milvus/internal/core/src/query/PlanNodeVisitor.h
 - [ ] /home/zilliz/milvus/internal/core/src/query/PlanProto.h
 - [ ] /home/zilliz/milvus/internal/core/src/query/Relational.h
@@ -152,7 +152,7 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/query/SearchOnGrowing.h
 - [ ] /home/zilliz/milvus/internal/core/src/query/SearchOnSealed.h
 - [ ] /home/zilliz/milvus/internal/core/src/query/SubSearchResult.h
-- [ ] /home/zilliz/milvus/internal/core/src/query/Utils.h
+- [!] /home/zilliz/milvus/internal/core/src/query/Utils.h (no changes suggested by IWYU)
 
 ### rescores
 - [ ] /home/zilliz/milvus/internal/core/src/rescores/Murmur3.h
@@ -162,7 +162,7 @@ Legend:
 ### segcore
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/AckResponder.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/arrow_fs_c.h
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/ChunkedSegmentSealedImpl.h
+- [x] /home/zilliz/milvus/internal/core/src/segcore/ChunkedSegmentSealedImpl.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/collection_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/column_groups_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/ConcurrentVector.h
@@ -181,22 +181,22 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/reduce_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/ReduceStructure.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/ReduceUtils.h
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/SegcoreConfig.h
+- [x] /home/zilliz/milvus/internal/core/src/segcore/SegcoreConfig.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/segcore_init_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/segment_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/SegmentChunkReader.h
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/SegmentGrowing.h
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/SegmentGrowingImpl.h
+- [!] /home/zilliz/milvus/internal/core/src/segcore/SegmentGrowing.h (no changes suggested by IWYU)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/SegmentGrowingImpl.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/SegmentLoadInfo.h
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/SegmentSealed.h
+- [!] /home/zilliz/milvus/internal/core/src/segcore/SegmentSealed.h (no changes suggested by IWYU)
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/tokenizer_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/token_stream_c.h
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/Types.h
+- [!] /home/zilliz/milvus/internal/core/src/segcore/Types.h (no changes suggested by IWYU)
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/Utils.h
 
 ### segcore/reduce
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/reduce/GroupReduce.h
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/reduce/Reduce.h
+- [x] /home/zilliz/milvus/internal/core/src/segcore/reduce/Reduce.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/reduce/StreamReduce.h
 
 ### segcore/storagev1translator
@@ -279,7 +279,7 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/unittest/test_utils/cachinglayer_test_utils.h
 - [ ] /home/zilliz/milvus/internal/core/unittest/test_utils/c_api_test_utils.h
 - [x] /home/zilliz/milvus/internal/core/unittest/test_utils/Constants.h
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_utils/DataGen.h
+- [!] /home/zilliz/milvus/internal/core/unittest/test_utils/DataGen.h (large file, not directly analyzed)
 - [ ] /home/zilliz/milvus/internal/core/unittest/test_utils/Distance.h
 - [ ] /home/zilliz/milvus/internal/core/unittest/test_utils/PbHelper.h
 - [x] /home/zilliz/milvus/internal/core/unittest/test_utils/storage_test_utils.h

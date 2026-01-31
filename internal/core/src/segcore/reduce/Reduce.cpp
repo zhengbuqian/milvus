@@ -20,6 +20,7 @@
 #include <optional>
 #include <queue>
 #include <ratio>
+#include <type_traits>
 #include <vector>
 
 #include "NamedType/named_type_impl.hpp"
