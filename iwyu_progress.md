@@ -519,7 +519,7 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/common/Exception.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/FieldData.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/FieldDataInterface.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/FieldMeta.h
+- [x] /home/zilliz/milvus/internal/core/src/common/FieldMeta.h (IWYU: correct includes)
 - [ ] /home/zilliz/milvus/internal/core/src/common/File.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/float_util_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/GeometryCache.h
@@ -544,14 +544,14 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/common/RangeSearchHelper.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/RegexQuery.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/resource_c.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/Schema.h
+- [x] /home/zilliz/milvus/internal/core/src/common/Schema.h (IWYU: correct includes)
 - [ ] /home/zilliz/milvus/internal/core/src/common/ScopedTimer.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/SimdUtil.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/Slice.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/Span.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/SystemProperty.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/type_c.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/Types.h
+- [x] /home/zilliz/milvus/internal/core/src/common/Types.h (IWYU: fixed includes)
 - [ ] /home/zilliz/milvus/internal/core/src/common/TypeTraits.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/Utils.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/ValueOp.h
@@ -664,7 +664,7 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/index/RTreeIndexSerialization.h
 - [ ] /home/zilliz/milvus/internal/core/src/index/RTreeIndexWrapper.h
 - [ ] /home/zilliz/milvus/internal/core/src/index/ScalarIndex.h
-- [ ] /home/zilliz/milvus/internal/core/src/index/ScalarIndexSort.h
+- [x] /home/zilliz/milvus/internal/core/src/index/ScalarIndexSort.h (IWYU: fixed includes)
 - [ ] /home/zilliz/milvus/internal/core/src/index/SkipIndex.h
 - [ ] /home/zilliz/milvus/internal/core/src/index/StringIndex.h
 - [ ] /home/zilliz/milvus/internal/core/src/index/StringIndexMarisa.h
@@ -717,7 +717,7 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/monitor/jemalloc_stats_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/monitor/monitor_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/monitor/Monitor.h
-- [ ] /home/zilliz/milvus/internal/core/src/monitor/scope_metric.h
+- [x] /home/zilliz/milvus/internal/core/src/monitor/scope_metric.h (IWYU: correct includes)
 
 ### plan
 - [ ] /home/zilliz/milvus/internal/core/src/plan/PlanNode.h
@@ -752,7 +752,7 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/check_vec_index_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/ChunkedSegmentSealedImpl.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/collection_c.h
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/Collection.h
+- [x] /home/zilliz/milvus/internal/core/src/segcore/Collection.h (IWYU: correct includes)
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/column_groups_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/ConcurrentVector.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/DeletedRecord.h
@@ -780,7 +780,7 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/SegmentChunkReader.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/SegmentGrowing.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/SegmentGrowingImpl.h
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/SegmentInterface.h
+- [x] /home/zilliz/milvus/internal/core/src/segcore/SegmentInterface.h (IWYU: fixed includes)
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/SegmentLoadInfo.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/SegmentSealed.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/TimestampIndex.h
