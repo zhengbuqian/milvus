@@ -14,11 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <boost/format/alt_sstream.hpp>
-#include <boost/format/format_class.hpp>
-#include <boost/format/format_fwd.hpp>
-#include <boost/format/format_implementation.hpp>
-#include <boost/format/free_funcs.hpp>
+#include <boost/format.hpp>
 #include <boost/optional/optional.hpp>
 #include <folly/FBVector.h>
 #include <stddef.h>
