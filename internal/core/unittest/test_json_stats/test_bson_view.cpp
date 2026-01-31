@@ -2,7 +2,6 @@
 #include <bsoncxx/builder/basic/document.hpp>
 #include <bsoncxx/types.hpp>
 #include <bsoncxx/types/bson_value/view.hpp>
-#include <gtest/gtest.h>
 #include <stddef.h>
 #include <cstdint>
 #include <iostream>
