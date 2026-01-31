@@ -370,36 +370,36 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/storage/MmapChunkManagerTest.cpp
 - [x] /home/zilliz/milvus/internal/core/src/storage/PayloadReader.cpp (IWYU reports no contentful changes)
 - [x] /home/zilliz/milvus/internal/core/src/storage/PayloadStream.cpp (IWYU reports no contentful changes)
-- [ ] /home/zilliz/milvus/internal/core/src/storage/PayloadWriter.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/RemoteChunkManagerTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/RemoteInputStream.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/RemoteOutputStream.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/storage_c.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/StorageV2FSCache.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/ThreadPool.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/ThreadPools.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/ThreadPoolsTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/ThreadPoolTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/Util.cpp
+- [x] /home/zilliz/milvus/internal/core/src/storage/PayloadWriter.cpp (IWYU reports no contentful changes)
+- [!] /home/zilliz/milvus/internal/core/src/storage/RemoteChunkManagerTest.cpp (not in compile_commands.json)
+- [x] /home/zilliz/milvus/internal/core/src/storage/RemoteInputStream.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/storage/RemoteOutputStream.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/storage/storage_c.cpp (IWYU reports no contentful changes)
+- [!] /home/zilliz/milvus/internal/core/src/storage/StorageV2FSCache.cpp (IWYU generates incorrect include path for TBB)
+- [x] /home/zilliz/milvus/internal/core/src/storage/ThreadPool.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/storage/ThreadPools.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/storage/ThreadPoolsTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/storage/ThreadPoolTest.cpp
+- [!] /home/zilliz/milvus/internal/core/src/storage/Util.cpp (IWYU adds non-existent core.h include)
 
 ### storage/aliyun
-- [ ] /home/zilliz/milvus/internal/core/src/storage/aliyun/AliyunCredentialsProvider.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/aliyun/AliyunSTSClient.cpp
+- [x] /home/zilliz/milvus/internal/core/src/storage/aliyun/AliyunCredentialsProvider.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/storage/aliyun/AliyunSTSClient.cpp (IWYU reports no contentful changes)
 
 ### storage/azure
-- [ ] /home/zilliz/milvus/internal/core/src/storage/azure/AzureBlobChunkManager.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/azure/AzureBlobChunkManagerTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/azure/AzureChunkManager.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/azure/AzureChunkManagerTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/storage/azure/AzureBlobChunkManager.cpp
+- [x] /home/zilliz/milvus/internal/core/src/storage/azure/AzureBlobChunkManagerTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/storage/azure/AzureChunkManager.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/storage/azure/AzureChunkManagerTest.cpp
 
 ### storage/gcp-native-storage
-- [ ] /home/zilliz/milvus/internal/core/src/storage/gcp-native-storage/GcpNativeChunkManager.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/gcp-native-storage/GcpNativeChunkManagerTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/gcp-native-storage/GcpNativeClientManager.cpp
+- [!] /home/zilliz/milvus/internal/core/src/storage/gcp-native-storage/GcpNativeChunkManager.cpp (not in compile_commands.json)
+- [!] /home/zilliz/milvus/internal/core/src/storage/gcp-native-storage/GcpNativeChunkManagerTest.cpp (not in compile_commands.json)
+- [!] /home/zilliz/milvus/internal/core/src/storage/gcp-native-storage/GcpNativeClientManager.cpp (not in compile_commands.json)
 
 ### storage/huawei
-- [ ] /home/zilliz/milvus/internal/core/src/storage/huawei/HuaweiCloudCredentialsProvider.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/storage/huawei/HuaweiCloudSTSClient.cpp
+- [x] /home/zilliz/milvus/internal/core/src/storage/huawei/HuaweiCloudCredentialsProvider.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/storage/huawei/HuaweiCloudSTSClient.cpp (IWYU reports no contentful changes)
 
 ### storage/loon_ffi
 - [ ] /home/zilliz/milvus/internal/core/src/storage/loon_ffi/ffi_reader_c.cpp
