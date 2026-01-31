@@ -248,32 +248,32 @@ Legend:
 - [!] /home/zilliz/milvus/internal/core/src/query/CachedSearchIteratorTest.cpp (not in compile_commands.json)
 - [x] /home/zilliz/milvus/internal/core/src/query/ExecPlanNodeVisitor.cpp
 - [x] /home/zilliz/milvus/internal/core/src/query/Plan.cpp (IWYU reports no contentful changes)
-- [ ] /home/zilliz/milvus/internal/core/src/query/PlanNode.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/query/PlanProto.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/query/PlanProtoTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/query/RelationalTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/query/SearchBruteForce.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/query/SearchBruteForceSparseTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/query/SearchBruteForceTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/query/SearchOnGrowing.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/query/SearchOnIndex.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/query/SearchOnSealed.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/query/SubSearchResult.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/query/SubSearchResultTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/query/UtilsTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/query/PlanNode.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/query/PlanProto.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/query/PlanProtoTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/query/RelationalTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/query/SearchBruteForce.cpp
+- [x] /home/zilliz/milvus/internal/core/src/query/SearchBruteForceSparseTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/query/SearchBruteForceTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/query/SearchOnGrowing.cpp
+- [x] /home/zilliz/milvus/internal/core/src/query/SearchOnIndex.cpp
+- [x] /home/zilliz/milvus/internal/core/src/query/SearchOnSealed.cpp
+- [x] /home/zilliz/milvus/internal/core/src/query/SubSearchResult.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/query/SubSearchResultTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/query/UtilsTest.cpp
 
 ### rescores
-- [ ] /home/zilliz/milvus/internal/core/src/rescores/Scorer.cpp
+- [x] /home/zilliz/milvus/internal/core/src/rescores/Scorer.cpp
 
 ### segcore
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/arrow_fs_c.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/ArrowFsCTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/check_vec_index_c.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/ChunkedSegmentSealedBinlogIndexTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/ChunkedSegmentSealedImpl.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/ChunkedSegmentSealedStorageV2Test.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/ChunkedSegmentSealedTest.cpp
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/collection_c.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/arrow_fs_c.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/ArrowFsCTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/check_vec_index_c.cpp (IWYU reports no contentful changes)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/ChunkedSegmentSealedBinlogIndexTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/ChunkedSegmentSealedImpl.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/ChunkedSegmentSealedStorageV2Test.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/ChunkedSegmentSealedTest.cpp
+- [x] /home/zilliz/milvus/internal/core/src/segcore/collection_c.cpp (IWYU reports no contentful changes)
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/Collection.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/collection_c_test.cpp
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/column_groups_c.cpp
