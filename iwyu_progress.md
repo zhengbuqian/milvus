@@ -80,7 +80,7 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/common/BitUtil.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/BloomFilter.h
 - [x] /home/zilliz/milvus/internal/core/src/common/bson_view.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/CDataType.h
+- [!] /home/zilliz/milvus/internal/core/src/common/CDataType.h (C header, no direct analysis needed)
 - [ ] /home/zilliz/milvus/internal/core/src/common/CustomBitset.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/ElementFilterIterator.h
 - [!] /home/zilliz/milvus/internal/core/src/common/File.h (not analyzed - no direct cpp entry)
@@ -89,7 +89,7 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/common/init_c.h
 - [!] /home/zilliz/milvus/internal/core/src/common/jsmn.h (C header with extern "C", no direct analysis needed)
 - [!] /home/zilliz/milvus/internal/core/src/common/JsonCastFunction.h (not analyzed - no direct cpp entry)
-- [ ] /home/zilliz/milvus/internal/core/src/common/JsonUtils.h
+- [!] /home/zilliz/milvus/internal/core/src/common/JsonUtils.h (no direct cpp entry)
 - [!] /home/zilliz/milvus/internal/core/src/common/logging_c.h (C header, no direct analysis needed)
 - [ ] /home/zilliz/milvus/internal/core/src/common/PreparedGeometry.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/Promise.h
@@ -117,6 +117,7 @@ Legend:
 
 ### index
 - [x] /home/zilliz/milvus/internal/core/src/index/VectorMemIndex.h (IWYU changes applied)
+- [x] /home/zilliz/milvus/internal/core/src/index/json_stats/JsonKeyStats.h (IWYU added explicit includes)
 
 ### minhash
 - [x] /home/zilliz/milvus/internal/core/src/minhash/MinHashComputer.h (analyzed via test_minhash.cpp entry)
@@ -127,15 +128,15 @@ Legend:
 
 ### mmap
 - [ ] /home/zilliz/milvus/internal/core/src/mmap/ChunkData.h
-- [ ] /home/zilliz/milvus/internal/core/src/mmap/ChunkedColumnGroup.h
+- [!] /home/zilliz/milvus/internal/core/src/mmap/ChunkedColumnGroup.h (no direct cpp entry)
 - [ ] /home/zilliz/milvus/internal/core/src/mmap/ChunkedColumn.h
 - [!] /home/zilliz/milvus/internal/core/src/mmap/ChunkedColumnInterface.h (no changes suggested by IWYU)
 - [ ] /home/zilliz/milvus/internal/core/src/mmap/ChunkVector.h
 - [!] /home/zilliz/milvus/internal/core/src/mmap/Types.h (no changes suggested by IWYU)
 
 ### monitor
-- [ ] /home/zilliz/milvus/internal/core/src/monitor/jemalloc_stats_c.h
-- [ ] /home/zilliz/milvus/internal/core/src/monitor/monitor_c.h
+- [x] /home/zilliz/milvus/internal/core/src/monitor/jemalloc_stats_c.h (removed unused stdbool.h)
+- [!] /home/zilliz/milvus/internal/core/src/monitor/monitor_c.h (no changes suggested by IWYU)
 - [x] /home/zilliz/milvus/internal/core/src/monitor/Monitor.h
 
 ### plan
@@ -160,16 +161,16 @@ Legend:
 - [!] /home/zilliz/milvus/internal/core/src/query/Utils.h (no changes suggested by IWYU)
 
 ### rescores
-- [ ] /home/zilliz/milvus/internal/core/src/rescores/Murmur3.h
-- [x] /home/zilliz/milvus/internal/core/src/rescores/Scorer.h
-- [ ] /home/zilliz/milvus/internal/core/src/rescores/Utils.h
+- [!] /home/zilliz/milvus/internal/core/src/rescores/Murmur3.h (no direct cpp entry)
+- [x] /home/zilliz/milvus/internal/core/src/rescores/Scorer.h (updated with additional includes via IWYU)
+- [!] /home/zilliz/milvus/internal/core/src/rescores/Utils.h (no direct cpp entry)
 
 ### segcore
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/AckResponder.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/arrow_fs_c.h
 - [x] /home/zilliz/milvus/internal/core/src/segcore/ChunkedSegmentSealedImpl.h
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/collection_c.h
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/column_groups_c.h
+- [!] /home/zilliz/milvus/internal/core/src/segcore/collection_c.h (no changes suggested by IWYU)
+- [!] /home/zilliz/milvus/internal/core/src/segcore/column_groups_c.h (C header, no direct analysis needed)
 - [!] /home/zilliz/milvus/internal/core/src/segcore/ConcurrentVector.h (no changes suggested by IWYU)
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/DeletedRecord.h
 - [x] /home/zilliz/milvus/internal/core/src/segcore/InsertRecord.h (analyzed via test_sealed.cpp entry)
@@ -188,7 +189,7 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/ReduceUtils.h
 - [x] /home/zilliz/milvus/internal/core/src/segcore/SegcoreConfig.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/segcore_init_c.h
-- [x] /home/zilliz/milvus/internal/core/src/segcore/segment_c.h (C header, no direct analysis needed)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/segment_c.h (reorganized includes via IWYU analysis)
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/SegmentChunkReader.h
 - [!] /home/zilliz/milvus/internal/core/src/segcore/SegmentGrowing.h (no changes suggested by IWYU)
 - [x] /home/zilliz/milvus/internal/core/src/segcore/SegmentGrowingImpl.h
@@ -209,7 +210,7 @@ Legend:
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/storagev1translator/DefaultValueChunkTranslator.h
 
 ### segcore/storagev2translator
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/storagev2translator/GroupChunkTranslator.h
+- [!] /home/zilliz/milvus/internal/core/src/segcore/storagev2translator/GroupChunkTranslator.h (no direct cpp entry)
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/storagev2translator/GroupCTMeta.h
 - [ ] /home/zilliz/milvus/internal/core/src/segcore/storagev2translator/ManifestGroupTranslator.h
 
@@ -286,7 +287,7 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/unittest/test_utils/Constants.h
 - [!] /home/zilliz/milvus/internal/core/unittest/test_utils/DataGen.h (large file, not directly analyzed)
 - [!] /home/zilliz/milvus/internal/core/unittest/test_utils/Distance.h (no changes suggested by IWYU)
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_utils/PbHelper.h
+- [!] /home/zilliz/milvus/internal/core/unittest/test_utils/PbHelper.h (no direct cpp entry)
 - [x] /home/zilliz/milvus/internal/core/unittest/test_utils/storage_test_utils.h
 - [ ] /home/zilliz/milvus/internal/core/unittest/test_utils/Timer.h
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_utils/TmpPath.h
+- [!] /home/zilliz/milvus/internal/core/unittest/test_utils/TmpPath.h (no direct cpp entry)
