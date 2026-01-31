@@ -16,10 +16,6 @@
 #include "segcore/Types.h"
 #include "segcore/Utils.h"
 
-namespace milvus {
-struct OpContext;
-}  // namespace milvus
-
 namespace milvus::segcore::storagev1translator {
 
 SealedIndexTranslator::SealedIndexTranslator(

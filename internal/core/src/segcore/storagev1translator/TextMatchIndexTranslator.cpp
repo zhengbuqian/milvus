@@ -29,10 +29,6 @@
 #include "log/Log.h"
 #include "segcore/Utils.h"
 
-namespace milvus {
-struct OpContext;
-}  // namespace milvus
-
 namespace milvus::segcore::storagev1translator {
 
 TextMatchIndexTranslator::TextMatchIndexTranslator(

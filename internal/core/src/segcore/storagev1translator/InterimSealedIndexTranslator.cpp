@@ -4,6 +4,7 @@
 #include <exception>
 #include <map>
 #include <optional>
+#include <type_traits>
 
 #include "cachinglayer/CacheSlot.h"
 #include "common/Chunk.h"
@@ -17,18 +18,11 @@
 #include "knowhere/dataset.h"
 #include "knowhere/expected.h"
 #include "knowhere/object.h"
+#include "knowhere/operands.h"
 #include "knowhere/version.h"
 #include "mmap/ChunkedColumnInterface.h"
 #include "nlohmann/json.hpp"
 #include "segcore/Utils.h"
-
-namespace knowhere {
-struct bf16;
-struct fp16;
-}  // namespace knowhere
-namespace milvus {
-struct OpContext;
-}  // namespace milvus
 
 namespace milvus::segcore::storagev1translator {
 

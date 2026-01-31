@@ -29,13 +29,6 @@
 #include "pb/common.pb.h"
 #include "segcore/Utils.h"
 
-namespace milvus {
-namespace storage {
-class DiskFileManagerImpl;
-}  // namespace storage
-struct OpContext;
-}  // namespace milvus
-
 namespace milvus::segcore::storagev1translator {
 
 BsonInvertedIndexTranslator::BsonInvertedIndexTranslator(

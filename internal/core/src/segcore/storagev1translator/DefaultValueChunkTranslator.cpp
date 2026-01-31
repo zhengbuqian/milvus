@@ -32,10 +32,6 @@
 #include "segcore/Utils.h"
 #include "storage/Util.h"
 
-namespace milvus {
-struct OpContext;
-}  // namespace milvus
-
 namespace milvus::segcore::storagev1translator {
 
 DefaultValueChunkTranslator::DefaultValueChunkTranslator(

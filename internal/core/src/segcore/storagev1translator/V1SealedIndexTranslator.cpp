@@ -19,13 +19,6 @@
 #include "storage/RemoteChunkManagerSingleton.h"
 #include "storage/Types.h"
 
-namespace knowhere {
-class BinarySet;
-}  // namespace knowhere
-namespace milvus {
-struct OpContext;
-}  // namespace milvus
-
 namespace milvus::segcore::storagev1translator {
 
 V1SealedIndexTranslator::V1SealedIndexTranslator(

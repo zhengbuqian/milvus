@@ -11,7 +11,6 @@
 
 #include "GroupReduce.h"
 
-#include <algorithm>
 #include <cstdint>
 #include <queue>
 #include <string>

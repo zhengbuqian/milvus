@@ -33,6 +33,7 @@
 #include "common/FieldDataInterface.h"
 #include "common/FieldMeta.h"
 #include "common/JsonCastType.h"
+#include "common/TypeTraits.h"
 #include "common/Types.h"
 #include "common/Utils.h"
 #include "folly/FBVector.h"
@@ -61,12 +62,6 @@
 #include "storage/ThreadPools.h"
 #include "storage/Types.h"
 #include "storage/Util.h"
-
-namespace milvus {
-namespace tracer {
-struct TraceContext;
-}  // namespace tracer
-}  // namespace milvus
 
 namespace milvus::segcore {
 

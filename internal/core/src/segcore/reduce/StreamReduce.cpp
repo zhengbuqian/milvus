@@ -11,8 +11,6 @@
 
 #include "StreamReduce.h"
 
-#include <type_traits>
-
 #include "NamedType/named_type_impl.hpp"
 #include "common/FieldMeta.h"
 #include "common/QueryInfo.h"
