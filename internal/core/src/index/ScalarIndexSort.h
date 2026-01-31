@@ -28,8 +28,6 @@
 #include <string>
 #include <vector>
 
-#include <boost/container/vector.hpp>
-
 #include "common/FieldData.h"
 #include "common/Tracer.h"
 #include "common/Types.h"
