@@ -12,7 +12,6 @@
 #include <fmt/core.h>
 #include <folly/CancellationToken.h>
 #include <folly/FBVector.h>
-#include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 #include <stdlib.h>
 #include <time.h>
@@ -68,11 +67,11 @@
 #include "query/Utils.h"
 #include "segcore/ChunkedSegmentSealedImpl.h"
 #include "segcore/InsertRecord.h"
+#include "segcore/SegcoreConfig.h"
 #include "segcore/SegmentGrowing.h"
 #include "segcore/SegmentGrowingImpl.h"
 #include "segcore/SegmentSealed.h"
 #include "segcore/Types.h"
-#include "segcore/storagev1translator/ChunkTranslator.h"
 #include "storage/FileManager.h"
 #include "storage/InsertData.h"
 #include "storage/PayloadReader.h"

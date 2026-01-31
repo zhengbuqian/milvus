@@ -10,7 +10,6 @@
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
 #include <folly/FBVector.h>
-#include <gtest/gtest.h>
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -36,7 +35,6 @@
 #include "common/common_type_c.h"
 #include "common/protobuf_utils.h"
 #include "common/type_c.h"
-#include "filemanager/InputStream.h"
 #include "gtest/gtest.h"
 #include "index/Index.h"
 #include "index/VectorIndex.h"
@@ -44,7 +42,7 @@
 #include "pb/common.pb.h"
 #include "pb/schema.pb.h"
 #include "query/Plan.h"
-#include "query/PlanNode.h"
+#include "query/Utils.h"
 #include "segcore/Collection.h"
 #include "segcore/ReduceStructure.h"
 #include "segcore/SegcoreConfig.h"

@@ -9,7 +9,6 @@
 // is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
-#include <gtest/gtest.h>
 #include <stddef.h>
 #include <algorithm>
 #include <atomic>
@@ -23,6 +22,7 @@
 #include <vector>
 
 #include "NamedType/named_type_impl.hpp"
+#include "bitset/common.h"
 #include "common/Common.h"
 #include "common/Consts.h"
 #include "common/FieldData.h"
@@ -37,7 +37,6 @@
 #include "exec/expression/Expr.h"
 #include "exec/expression/function/FunctionFactory.h"
 #include "expr/ITypeExpr.h"
-#include "filemanager/InputStream.h"
 #include "gtest/gtest.h"
 #include "index/NgramInvertedIndex.h"
 #include "index/SkipIndex.h"
@@ -47,8 +46,8 @@
 #include "query/PlanNode.h"
 #include "query/Utils.h"
 #include "segcore/ChunkedSegmentSealedImpl.h"
+#include "segcore/SegcoreConfig.h"
 #include "segcore/SegmentSealed.h"
-#include "segcore/TimestampIndex.h"
 #include "storage/RemoteChunkManagerSingleton.h"
 #include "storage/Util.h"
 #include "test_utils/DataGen.h"
