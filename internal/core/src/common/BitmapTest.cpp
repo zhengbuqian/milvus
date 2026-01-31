@@ -10,15 +10,14 @@
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
 #include <folly/FBVector.h>
-#include <gtest/gtest.h>
 #include <algorithm>
 #include <cstddef>
 #include <memory>
 #include <optional>
 
 #include "bitset/bitset.h"
+#include "bitset/common.h"
 #include "bitset/detail/element_vectorized.h"
-#include "common/EasyAssert.h"
 #include "common/Schema.h"
 #include "common/Types.h"
 #include "gtest/gtest.h"
