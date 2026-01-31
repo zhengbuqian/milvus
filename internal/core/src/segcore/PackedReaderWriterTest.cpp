@@ -23,7 +23,6 @@
 #include <arrow/status.h>
 #include <arrow/type.h>
 #include <arrow/util/key_value_metadata.h>
-#include <gtest/gtest.h>
 #include <cstdint>
 #include <memory>
 #include <numeric>
