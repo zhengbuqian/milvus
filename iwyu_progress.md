@@ -73,7 +73,7 @@ Legend:
 ### clustering
 - [x] /home/zilliz/milvus/internal/core/src/clustering/file_utils.h
 - [!] /home/zilliz/milvus/internal/core/src/clustering/type_c.h (C header, no direct analysis needed)
-- [ ] /home/zilliz/milvus/internal/core/src/clustering/types.h
+- [!] /home/zilliz/milvus/internal/core/src/clustering/types.h (orphaned header - not included by any file, missing pragma once and header guard)
 
 ### common
 - [!] /home/zilliz/milvus/internal/core/src/common/BitsetView.h (no changes suggested by IWYU)
@@ -81,7 +81,7 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/common/BloomFilter.h (no changes suggested by IWYU via BloomFilterTest.cpp)
 - [x] /home/zilliz/milvus/internal/core/src/common/bson_view.h
 - [!] /home/zilliz/milvus/internal/core/src/common/CDataType.h (C header, no direct analysis needed)
-- [ ] /home/zilliz/milvus/internal/core/src/common/CustomBitset.h
+- [!] /home/zilliz/milvus/internal/core/src/common/CustomBitset.h (no changes suggested by IWYU via Task.cpp - included transitively via Types.h)
 - [x] /home/zilliz/milvus/internal/core/src/common/ElementFilterIterator.h (no changes suggested by IWYU via ElementFilterNode.cpp)
 - [!] /home/zilliz/milvus/internal/core/src/common/File.h (not analyzed - no direct cpp entry)
 - [x] /home/zilliz/milvus/internal/core/src/common/float_util_c.h (analyzed via HashTable.cpp - no changes needed)
@@ -92,7 +92,7 @@ Legend:
 - [!] /home/zilliz/milvus/internal/core/src/common/JsonUtils.h (no direct cpp entry)
 - [!] /home/zilliz/milvus/internal/core/src/common/logging_c.h (C header, no direct analysis needed)
 - [x] /home/zilliz/milvus/internal/core/src/common/PreparedGeometry.h (no changes suggested by IWYU via GISFunctionFilterExpr.cpp)
-- [ ] /home/zilliz/milvus/internal/core/src/common/Promise.h
+- [!] /home/zilliz/milvus/internal/core/src/common/Promise.h (no changes suggested by IWYU via Task.cpp - included by Task.h and Driver.h)
 - [x] /home/zilliz/milvus/internal/core/src/common/protobuf_utils_c.h (C header with extern "C", no direct analysis needed)
 - [x] /home/zilliz/milvus/internal/core/src/common/protobuf_utils.h
 - [x] /home/zilliz/milvus/internal/core/src/common/QueryResult.h (analyzed via test_sealed.cpp entry)
@@ -127,11 +127,11 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/minhash/fusion_compute/fusion_compute_native.h (analyzed via test_minhash.cpp entry)
 
 ### mmap
-- [ ] /home/zilliz/milvus/internal/core/src/mmap/ChunkData.h
+- [!] /home/zilliz/milvus/internal/core/src/mmap/ChunkData.h (no changes suggested by IWYU via ConcurrentVector.cpp - included by ChunkVector.h)
 - [!] /home/zilliz/milvus/internal/core/src/mmap/ChunkedColumnGroup.h (no direct cpp entry)
 - [!] /home/zilliz/milvus/internal/core/src/mmap/ChunkedColumn.h (ChunkedSegmentSealedImpl.cpp has IWYU analysis errors)
 - [!] /home/zilliz/milvus/internal/core/src/mmap/ChunkedColumnInterface.h (no changes suggested by IWYU)
-- [ ] /home/zilliz/milvus/internal/core/src/mmap/ChunkVector.h
+- [!] /home/zilliz/milvus/internal/core/src/mmap/ChunkVector.h (no changes suggested by IWYU via ConcurrentVector.cpp - included by ConcurrentVector.h)
 - [!] /home/zilliz/milvus/internal/core/src/mmap/Types.h (no changes suggested by IWYU)
 
 ### monitor
@@ -229,7 +229,7 @@ Legend:
 - [!] /home/zilliz/milvus/internal/core/src/storage/MemFileManagerImpl.h (no changes suggested by IWYU)
 - [!] /home/zilliz/milvus/internal/core/src/storage/MmapChunkManager.h (no changes suggested by IWYU)
 - [x] /home/zilliz/milvus/internal/core/src/storage/MmapManager.h
-- [ ] /home/zilliz/milvus/internal/core/src/storage/parquet_c.h
+- [!] /home/zilliz/milvus/internal/core/src/storage/parquet_c.h (orphaned header - not included by any C++ file, appears to be legacy CGO header defining type aliases)
 - [x] /home/zilliz/milvus/internal/core/src/storage/PayloadReader.h (analyzed via test_sealed.cpp entry)
 - [!] /home/zilliz/milvus/internal/core/src/storage/PayloadStream.h (no changes suggested by IWYU)
 - [!] /home/zilliz/milvus/internal/core/src/storage/PayloadWriter.h (no changes suggested by IWYU)
@@ -255,7 +255,7 @@ Legend:
 
 ### storage/gcp-native-storage
 - [!] /home/zilliz/milvus/internal/core/src/storage/gcp-native-storage/GcpNativeChunkManager.h (not analyzed - ENABLE_GCP_NATIVE flag dependent)
-- [ ] /home/zilliz/milvus/internal/core/src/storage/gcp-native-storage/GcpNativeClientManager.h
+- [!] /home/zilliz/milvus/internal/core/src/storage/gcp-native-storage/GcpNativeClientManager.h (not in compile_commands.json - ENABLE_GCP_NATIVE flag dependent)
 
 ### storage/huawei
 - [x] /home/zilliz/milvus/internal/core/src/storage/huawei/HuaweiCloudCredentialsProvider.h (no changes suggested by IWYU)
@@ -289,5 +289,5 @@ Legend:
 - [!] /home/zilliz/milvus/internal/core/unittest/test_utils/Distance.h (no changes suggested by IWYU)
 - [!] /home/zilliz/milvus/internal/core/unittest/test_utils/PbHelper.h (no direct cpp entry)
 - [x] /home/zilliz/milvus/internal/core/unittest/test_utils/storage_test_utils.h
-- [ ] /home/zilliz/milvus/internal/core/unittest/test_utils/Timer.h
+- [!] /home/zilliz/milvus/internal/core/unittest/test_utils/Timer.h (orphaned header - not included by any test file)
 - [!] /home/zilliz/milvus/internal/core/unittest/test_utils/TmpPath.h (no direct cpp entry)
