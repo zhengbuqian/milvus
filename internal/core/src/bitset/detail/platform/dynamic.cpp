@@ -18,12 +18,11 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <type_traits>
 
 #if defined(__x86_64__)
-#include "x86/instruction_set.h"
 #include "x86/avx2.h"
 #include "x86/avx512.h"
+#include "x86/instruction_set.h"
 
 using namespace milvus::bitset::detail::x86;
 #endif
@@ -37,6 +36,7 @@ using namespace milvus::bitset::detail::arm;
 
 #endif
 
+#include "bitset/detail/platform/x86/avx2-decl.h"
 #include "vectorized_ref.h"
 
 // a facility to run through all possible compare operations

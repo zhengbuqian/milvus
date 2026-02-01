@@ -14,13 +14,14 @@
 
 #pragma once
 
+#include <stdint.h>
+
 #include "common/common_type_c.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 #include "common/type_c.h"
-#include <arrow/c/abi.h>
 #include "segcore/column_groups_c.h"
 
 typedef void* CPackedWriter;

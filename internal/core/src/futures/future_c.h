@@ -11,8 +11,8 @@
 
 #pragma once
 
+#include "common/common_type_c.h"
 #include "future_c_types.h"
-#include "common/type_c.h"
 
 #ifdef __cplusplus
 extern "C" {
