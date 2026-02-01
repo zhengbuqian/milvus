@@ -78,22 +78,22 @@ Legend:
 ### common
 - [!] /home/zilliz/milvus/internal/core/src/common/BitsetView.h (no changes suggested by IWYU)
 - [x] /home/zilliz/milvus/internal/core/src/common/BitUtil.h (analyzed via VectorHasher.cpp - no changes needed)
-- [ ] /home/zilliz/milvus/internal/core/src/common/BloomFilter.h
+- [x] /home/zilliz/milvus/internal/core/src/common/BloomFilter.h (no changes suggested by IWYU via BloomFilterTest.cpp)
 - [x] /home/zilliz/milvus/internal/core/src/common/bson_view.h
 - [!] /home/zilliz/milvus/internal/core/src/common/CDataType.h (C header, no direct analysis needed)
 - [ ] /home/zilliz/milvus/internal/core/src/common/CustomBitset.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/ElementFilterIterator.h
+- [x] /home/zilliz/milvus/internal/core/src/common/ElementFilterIterator.h (no changes suggested by IWYU via ElementFilterNode.cpp)
 - [!] /home/zilliz/milvus/internal/core/src/common/File.h (not analyzed - no direct cpp entry)
 - [x] /home/zilliz/milvus/internal/core/src/common/float_util_c.h (analyzed via HashTable.cpp - no changes needed)
 - [!] /home/zilliz/milvus/internal/core/src/common/Geometry.h (no changes suggested by IWYU)
-- [ ] /home/zilliz/milvus/internal/core/src/common/init_c.h
+- [x] /home/zilliz/milvus/internal/core/src/common/init_c.h (no changes suggested by IWYU via init_c.cpp)
 - [!] /home/zilliz/milvus/internal/core/src/common/jsmn.h (C header with extern "C", no direct analysis needed)
 - [!] /home/zilliz/milvus/internal/core/src/common/JsonCastFunction.h (not analyzed - no direct cpp entry)
 - [!] /home/zilliz/milvus/internal/core/src/common/JsonUtils.h (no direct cpp entry)
 - [!] /home/zilliz/milvus/internal/core/src/common/logging_c.h (C header, no direct analysis needed)
-- [ ] /home/zilliz/milvus/internal/core/src/common/PreparedGeometry.h
+- [x] /home/zilliz/milvus/internal/core/src/common/PreparedGeometry.h (no changes suggested by IWYU via GISFunctionFilterExpr.cpp)
 - [ ] /home/zilliz/milvus/internal/core/src/common/Promise.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/protobuf_utils_c.h
+- [x] /home/zilliz/milvus/internal/core/src/common/protobuf_utils_c.h (C header with extern "C", no direct analysis needed)
 - [x] /home/zilliz/milvus/internal/core/src/common/protobuf_utils.h
 - [x] /home/zilliz/milvus/internal/core/src/common/QueryResult.h (analyzed via test_sealed.cpp entry)
 - [!] /home/zilliz/milvus/internal/core/src/common/RangeSearchHelper.h (no changes suggested by IWYU)
@@ -102,7 +102,7 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/common/SimdUtil.h (analyzed via VectorHasher.cpp - no changes needed)
 - [!] /home/zilliz/milvus/internal/core/src/common/Slice.h (not analyzed - no direct cpp entry)
 - [x] /home/zilliz/milvus/internal/core/src/common/type_c.h
-- [ ] /home/zilliz/milvus/internal/core/src/common/ValueOp.h
+- [x] /home/zilliz/milvus/internal/core/src/common/ValueOp.h (no changes suggested by IWYU via ConjunctExpr.cpp)
 - [x] /home/zilliz/milvus/internal/core/src/common/Vector.h (analyzed via test_sealed.cpp entry)
 
 ### config
