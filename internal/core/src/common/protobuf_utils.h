@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <ctype.h>
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -24,11 +25,10 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
-
-#include <google/protobuf/repeated_field.h>
+#include <utility>
 
 #include "common/EasyAssert.h"
-#include "pb/schema.pb.h"
+#include "pb/common.pb.h"
 
 using std::string;
 
@@ -78,6 +78,7 @@ GetBoolFromRepeatedKVs(
 }
 
 class ProtoLayout;
+
 using ProtoLayoutPtr = std::unique_ptr<ProtoLayout>;
 
 // ProtoLayout is a c++ type for esaier resource management at C-side.
