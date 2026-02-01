@@ -77,14 +77,14 @@ Legend:
 
 ### common
 - [!] /home/zilliz/milvus/internal/core/src/common/BitsetView.h (no changes suggested by IWYU)
-- [ ] /home/zilliz/milvus/internal/core/src/common/BitUtil.h
+- [x] /home/zilliz/milvus/internal/core/src/common/BitUtil.h (analyzed via VectorHasher.cpp - no changes needed)
 - [ ] /home/zilliz/milvus/internal/core/src/common/BloomFilter.h
 - [x] /home/zilliz/milvus/internal/core/src/common/bson_view.h
 - [!] /home/zilliz/milvus/internal/core/src/common/CDataType.h (C header, no direct analysis needed)
 - [ ] /home/zilliz/milvus/internal/core/src/common/CustomBitset.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/ElementFilterIterator.h
 - [!] /home/zilliz/milvus/internal/core/src/common/File.h (not analyzed - no direct cpp entry)
-- [ ] /home/zilliz/milvus/internal/core/src/common/float_util_c.h
+- [x] /home/zilliz/milvus/internal/core/src/common/float_util_c.h (analyzed via HashTable.cpp - no changes needed)
 - [!] /home/zilliz/milvus/internal/core/src/common/Geometry.h (no changes suggested by IWYU)
 - [ ] /home/zilliz/milvus/internal/core/src/common/init_c.h
 - [!] /home/zilliz/milvus/internal/core/src/common/jsmn.h (C header with extern "C", no direct analysis needed)
@@ -99,7 +99,7 @@ Legend:
 - [!] /home/zilliz/milvus/internal/core/src/common/RangeSearchHelper.h (no changes suggested by IWYU)
 - [!] /home/zilliz/milvus/internal/core/src/common/resource_c.h (C header with only struct definition, no includes needed)
 - [!] /home/zilliz/milvus/internal/core/src/common/ScopedTimer.h (no direct cpp entry in this batch)
-- [ ] /home/zilliz/milvus/internal/core/src/common/SimdUtil.h
+- [x] /home/zilliz/milvus/internal/core/src/common/SimdUtil.h (analyzed via VectorHasher.cpp - no changes needed)
 - [!] /home/zilliz/milvus/internal/core/src/common/Slice.h (not analyzed - no direct cpp entry)
 - [x] /home/zilliz/milvus/internal/core/src/common/type_c.h
 - [ ] /home/zilliz/milvus/internal/core/src/common/ValueOp.h
@@ -109,11 +109,11 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/config/ConfigKnowhere.h (no changes suggested by IWYU)
 
 ### futures
-- [ ] /home/zilliz/milvus/internal/core/src/futures/future_c.h
-- [ ] /home/zilliz/milvus/internal/core/src/futures/future_c_types.h
-- [!] /home/zilliz/milvus/internal/core/src/futures/Future.h (no direct cpp entry in this batch)
-- [ ] /home/zilliz/milvus/internal/core/src/futures/LeakyResult.h
-- [ ] /home/zilliz/milvus/internal/core/src/futures/Ready.h
+- [x] /home/zilliz/milvus/internal/core/src/futures/future_c.h (analyzed via future_c.cpp - no changes needed)
+- [x] /home/zilliz/milvus/internal/core/src/futures/future_c_types.h (analyzed via FutureTest.cpp - no changes needed, C header)
+- [x] /home/zilliz/milvus/internal/core/src/futures/Future.h (analyzed via FutureTest.cpp - no changes needed)
+- [x] /home/zilliz/milvus/internal/core/src/futures/LeakyResult.h (analyzed via FutureTest.cpp - no changes needed)
+- [x] /home/zilliz/milvus/internal/core/src/futures/Ready.h (added <stdexcept> for std::runtime_error)
 
 ### index
 - [x] /home/zilliz/milvus/internal/core/src/index/VectorMemIndex.h (IWYU changes applied)
@@ -122,8 +122,8 @@ Legend:
 ### minhash
 - [x] /home/zilliz/milvus/internal/core/src/minhash/MinHashComputer.h (analyzed via test_minhash.cpp entry)
 - [x] /home/zilliz/milvus/internal/core/src/minhash/MinHashHook.h (analyzed via test_minhash.cpp entry)
-- [ ] /home/zilliz/milvus/internal/core/src/minhash/fusion_compute/arm/fusion_compute_neon.h
-- [ ] /home/zilliz/milvus/internal/core/src/minhash/fusion_compute/arm/fusion_compute_sve.h
+- [!] /home/zilliz/milvus/internal/core/src/minhash/fusion_compute/arm/fusion_compute_neon.h (ARM only - not in compile_commands.json)
+- [!] /home/zilliz/milvus/internal/core/src/minhash/fusion_compute/arm/fusion_compute_sve.h (ARM only - not in compile_commands.json)
 - [x] /home/zilliz/milvus/internal/core/src/minhash/fusion_compute/fusion_compute_native.h (analyzed via test_minhash.cpp entry)
 
 ### mmap
@@ -181,7 +181,7 @@ Legend:
 - [!] /home/zilliz/milvus/internal/core/src/segcore/packed_reader_c.h (C header, no direct analysis needed)
 - [x] /home/zilliz/milvus/internal/core/src/segcore/packed_writer_c.h (no changes suggested by IWYU)
 - [x] /home/zilliz/milvus/internal/core/src/segcore/phrase_match_c.h (no changes suggested by IWYU)
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/pkVisitor.h
+- [x] /home/zilliz/milvus/internal/core/src/segcore/pkVisitor.h (added <cstdint> for int64_t)
 - [x] /home/zilliz/milvus/internal/core/src/segcore/plan_c.h (C header, no direct analysis needed)
 - [!] /home/zilliz/milvus/internal/core/src/segcore/Record.h (no direct cpp entry in this batch)
 - [x] /home/zilliz/milvus/internal/core/src/segcore/reduce_c.h (IWYU changes applied: added stdint.h and common/common_type_c.h)
@@ -193,7 +193,7 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/segcore/SegmentChunkReader.h (IWYU changes applied)
 - [!] /home/zilliz/milvus/internal/core/src/segcore/SegmentGrowing.h (no changes suggested by IWYU)
 - [x] /home/zilliz/milvus/internal/core/src/segcore/SegmentGrowingImpl.h
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/SegmentLoadInfo.h
+- [x] /home/zilliz/milvus/internal/core/src/segcore/SegmentLoadInfo.h (analyzed via SegmentLoadInfo.cpp - no changes needed)
 - [!] /home/zilliz/milvus/internal/core/src/segcore/SegmentSealed.h (no changes suggested by IWYU)
 - [x] /home/zilliz/milvus/internal/core/src/segcore/tokenizer_c.h (no changes suggested by IWYU)
 - [!] /home/zilliz/milvus/internal/core/src/segcore/token_stream_c.h (no changes suggested by IWYU)
@@ -211,7 +211,7 @@ Legend:
 
 ### segcore/storagev2translator
 - [!] /home/zilliz/milvus/internal/core/src/segcore/storagev2translator/GroupChunkTranslator.h (no direct cpp entry)
-- [ ] /home/zilliz/milvus/internal/core/src/segcore/storagev2translator/GroupCTMeta.h
+- [x] /home/zilliz/milvus/internal/core/src/segcore/storagev2translator/GroupCTMeta.h (added <algorithm>, <cstdint>, <utility>, <vector>)
 - [x] /home/zilliz/milvus/internal/core/src/segcore/storagev2translator/ManifestGroupTranslator.h (IWYU changes applied)
 
 ### storage
