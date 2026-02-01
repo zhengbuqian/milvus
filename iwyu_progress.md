@@ -98,7 +98,7 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/common/QueryResult.h (analyzed via test_sealed.cpp entry)
 - [!] /home/zilliz/milvus/internal/core/src/common/RangeSearchHelper.h (no changes suggested by IWYU)
 - [!] /home/zilliz/milvus/internal/core/src/common/resource_c.h (C header with only struct definition, no includes needed)
-- [!] /home/zilliz/milvus/internal/core/src/common/ScopedTimer.h (no direct cpp entry in this batch)
+- [x] /home/zilliz/milvus/internal/core/src/common/ScopedTimer.h (analyzed via segment_c.cpp entry - no changes suggested)
 - [x] /home/zilliz/milvus/internal/core/src/common/SimdUtil.h (analyzed via VectorHasher.cpp - no changes needed)
 - [!] /home/zilliz/milvus/internal/core/src/common/Slice.h (not analyzed - no direct cpp entry)
 - [x] /home/zilliz/milvus/internal/core/src/common/type_c.h
@@ -166,7 +166,7 @@ Legend:
 - [!] /home/zilliz/milvus/internal/core/src/rescores/Utils.h (no direct cpp entry)
 
 ### segcore
-- [!] /home/zilliz/milvus/internal/core/src/segcore/AckResponder.h (no direct cpp entry in this batch)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/AckResponder.h (analyzed via UtilsTest.cpp entry - no changes suggested)
 - [!] /home/zilliz/milvus/internal/core/src/segcore/arrow_fs_c.h (ChunkedSegmentSealedImpl.cpp has IWYU analysis errors)
 - [x] /home/zilliz/milvus/internal/core/src/segcore/ChunkedSegmentSealedImpl.h
 - [!] /home/zilliz/milvus/internal/core/src/segcore/collection_c.h (no changes suggested by IWYU)
@@ -183,12 +183,12 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/segcore/phrase_match_c.h (no changes suggested by IWYU)
 - [x] /home/zilliz/milvus/internal/core/src/segcore/pkVisitor.h (added <cstdint> for int64_t)
 - [x] /home/zilliz/milvus/internal/core/src/segcore/plan_c.h (C header, no direct analysis needed)
-- [!] /home/zilliz/milvus/internal/core/src/segcore/Record.h (no direct cpp entry in this batch)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/Record.h (analyzed via UtilsTest.cpp entry - no changes suggested)
 - [x] /home/zilliz/milvus/internal/core/src/segcore/reduce_c.h (IWYU changes applied: added stdint.h and common/common_type_c.h)
 - [x] /home/zilliz/milvus/internal/core/src/segcore/ReduceStructure.h (analyzed via test_search_group_by.cpp entry)
 - [!] /home/zilliz/milvus/internal/core/src/segcore/ReduceUtils.h (no changes suggested by IWYU)
 - [x] /home/zilliz/milvus/internal/core/src/segcore/SegcoreConfig.h
-- [!] /home/zilliz/milvus/internal/core/src/segcore/segcore_init_c.h (no changes suggested by IWYU via SegcoreInitCTest.cpp)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/segcore_init_c.h (analyzed via SegcoreInitCTest.cpp entry - no changes suggested)
 - [x] /home/zilliz/milvus/internal/core/src/segcore/segment_c.h (reorganized includes via IWYU analysis)
 - [x] /home/zilliz/milvus/internal/core/src/segcore/SegmentChunkReader.h (IWYU changes applied)
 - [!] /home/zilliz/milvus/internal/core/src/segcore/SegmentGrowing.h (no changes suggested by IWYU)
@@ -196,14 +196,14 @@ Legend:
 - [x] /home/zilliz/milvus/internal/core/src/segcore/SegmentLoadInfo.h (analyzed via SegmentLoadInfo.cpp - no changes needed)
 - [!] /home/zilliz/milvus/internal/core/src/segcore/SegmentSealed.h (no changes suggested by IWYU)
 - [x] /home/zilliz/milvus/internal/core/src/segcore/tokenizer_c.h (no changes suggested by IWYU)
-- [!] /home/zilliz/milvus/internal/core/src/segcore/token_stream_c.h (no changes suggested by IWYU)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/token_stream_c.h (analyzed via token_stream_c.cpp entry - no changes suggested)
 - [!] /home/zilliz/milvus/internal/core/src/segcore/Types.h (no changes suggested by IWYU)
 - [!] /home/zilliz/milvus/internal/core/src/segcore/Utils.h (no changes suggested by IWYU)
 
 ### segcore/reduce
-- [!] /home/zilliz/milvus/internal/core/src/segcore/reduce/GroupReduce.h (no direct cpp entry in this batch)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/reduce/GroupReduce.h (analyzed via GroupReduce.cpp entry - no changes suggested)
 - [x] /home/zilliz/milvus/internal/core/src/segcore/reduce/Reduce.h
-- [!] /home/zilliz/milvus/internal/core/src/segcore/reduce/StreamReduce.h (no direct cpp entry in this batch)
+- [x] /home/zilliz/milvus/internal/core/src/segcore/reduce/StreamReduce.h (analyzed via StreamReduce.cpp entry - no changes suggested)
 
 ### segcore/storagev1translator
 - [x] /home/zilliz/milvus/internal/core/src/segcore/storagev1translator/ChunkTranslator.h (analyzed via test_sealed.cpp entry)
