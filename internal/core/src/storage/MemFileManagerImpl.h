@@ -17,12 +17,14 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
 #include <memory>
 #include <unordered_map>
 
+#include "common/Pack.h"
 #include "storage/IndexData.h"
 #include "storage/FileManager.h"
 #include "storage/ChunkManager.h"
@@ -53,6 +55,10 @@ class MemFileManagerImpl : public FileManagerImpl {
     virtual std::shared_ptr<InputStream>
     OpenInputStream(const std::string& filename) override;
 
+    // Open input stream by full remote path (for streaming load)
+    std::shared_ptr<InputStream>
+    OpenInputStreamByPath(const std::string& remote_path);
+
     virtual std::shared_ptr<OutputStream>
     OpenOutputStream(const std::string& filename) override;
 
@@ -74,6 +80,43 @@ class MemFileManagerImpl : public FileManagerImpl {
 
     bool
     AddTextLog(const BinarySet& binary_set);
+
+    // Register a file uploaded via streaming (OpenOutputStream)
+    void
+    RegisterStreamingUpload(const std::string& filename, int64_t file_size) {
+        auto remote_file_path = GetRemoteIndexObjectPrefix() + "/" + filename;
+        remote_paths_to_size_[remote_file_path] = file_size;
+        added_total_mem_size_ += file_size;
+    }
+
+    // Open output stream for text log (uses GetRemoteTextLogPrefix)
+    std::shared_ptr<OutputStream>
+    OpenTextLogOutputStream(const std::string& filename);
+
+    // Register a text log file uploaded via streaming
+    void
+    RegisterTextLogStreamingUpload(const std::string& filename,
+                                   int64_t file_size) {
+        auto remote_file_path = GetRemoteTextLogPrefix() + "/" + filename;
+        remote_paths_to_size_[remote_file_path] = file_size;
+        added_total_mem_size_ += file_size;
+    }
+
+    // Stream write index file with automatic encryption support
+    // This method encapsulates the streaming write logic and handles encryption
+    // transparently based on plugin_context.
+    // Returns total bytes written.
+    size_t
+    StreamWriteIndex(const std::string& filename,
+                     const std::vector<SerializeEntry>& entries,
+                     WriteEntryDataFn write_entry_data);
+
+    // Stream write text log index file with automatic encryption support
+    // Uses GetRemoteTextLogPrefix for the path.
+    size_t
+    StreamWriteTextLogIndex(const std::string& filename,
+                            const std::vector<SerializeEntry>& entries,
+                            WriteEntryDataFn write_entry_data);
 
     std::map<std::string, int64_t>
     GetRemotePathsToFileSize() const {

@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <boost/algorithm/string.hpp>
+#include <filesystem>
 #include <optional>
 #include <sys/errno.h>
 #include <unistd.h>
@@ -25,12 +26,16 @@
 
 #include "common/Consts.h"
 #include "common/File.h"
+#include "common/Pack.h"
 #include "common/Slice.h"
 #include "common/Common.h"
+#include "filemanager/OutputStream.h"
 #include "index/Meta.h"
 #include "index/ScalarIndex.h"
 #include "index/Utils.h"
 #include "pb/common.pb.h"
+#include "storage/MemFileManagerImpl.h"
+#include "storage/RemoteInputStream.h"
 #include "storage/ThreadPools.h"
 #include "storage/Util.h"
 #include "query/Utils.h"
@@ -39,6 +44,8 @@
 
 namespace milvus {
 namespace index {
+
+constexpr const char* kPackedIndexTypeToken = "bitmap";
 
 constexpr size_t ALIGNMENT = 32;  // 32-byte alignment
 
@@ -263,6 +270,35 @@ BitmapIndex<std::string>::SerializeIndexData(uint8_t* data_ptr) {
     }
 }
 
+// Streaming version: write index data to OutputStream
+template <typename T>
+void
+SerializeIndexDataToStream(OutputStream* out,
+                           std::map<T, roaring::Roaring>& data) {
+    for (auto& pair : data) {
+        out->Write(&pair.first, sizeof(T));
+        auto roaring_size = pair.second.getSizeInBytes();
+        std::vector<uint8_t> roaring_data(roaring_size);
+        pair.second.write(reinterpret_cast<char*>(roaring_data.data()));
+        out->Write(roaring_data.data(), roaring_size);
+    }
+}
+
+template <>
+void
+SerializeIndexDataToStream<std::string>(
+    OutputStream* out, std::map<std::string, roaring::Roaring>& data) {
+    for (auto& pair : data) {
+        size_t key_size = pair.first.size();
+        out->Write(&key_size, sizeof(size_t));
+        out->Write(pair.first.data(), key_size);
+        auto roaring_size = pair.second.getSizeInBytes();
+        std::vector<uint8_t> roaring_data(roaring_size);
+        pair.second.write(reinterpret_cast<char*>(roaring_data.data()));
+        out->Write(roaring_data.data(), roaring_size);
+    }
+}
+
 template <typename T>
 BinarySet
 BitmapIndex<T>::Serialize(const Config& config) {
@@ -284,16 +320,60 @@ BitmapIndex<T>::Serialize(const Config& config) {
              data_.size(),
              total_num_rows_);
 
-    Disassemble(ret_set);
+    // For unified scalar index version (>=3), skip slicing to store as single file
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(kLastScalarIndexEngineVersionWithoutMeta);
+    if (!IsUnifiedScalarIndexVersion(version)) {
+        Disassemble(ret_set);
+    }
     return ret_set;
 }
 
 template <typename T>
 IndexStatsPtr
 BitmapIndex<T>::Upload(const Config& config) {
-    auto binary_set = Serialize(config);
+    // For unified scalar index version (>=3), use streaming upload
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(kLastScalarIndexEngineVersionWithoutMeta);
+    if (IsUnifiedScalarIndexVersion(version)) {
+        AssertInfo(is_built_, "index has not been built yet");
 
-    file_manager_->AddFile(binary_set);
+        // Phase 1: Collect serialize entries (zero memory overhead - just sizes)
+        auto index_data_size = GetIndexDataSize();
+        auto index_meta = SerializeIndexMeta();
+
+        std::vector<SerializeEntry> entries = {
+            {BITMAP_INDEX_DATA, static_cast<uint64_t>(index_data_size)},
+            {BITMAP_INDEX_META, index_meta.second},
+        };
+
+        // Phase 2: Stream write index file with transparent encryption
+        auto packed_file_name =
+            FormatPackedIndexFileName(kPackedIndexTypeToken, version);
+
+        // Create write callback
+        auto write_entry_data = [this, &index_meta](OutputStream* out,
+                                                    const std::string& name) {
+            if (name == BITMAP_INDEX_DATA) {
+                SerializeIndexDataToStream<T>(out, this->data_);
+            } else if (name == BITMAP_INDEX_META) {
+                out->Write(index_meta.first.get(), index_meta.second);
+            }
+        };
+
+        // Stream write with automatic encryption support
+        file_manager_->StreamWriteIndex(
+            packed_file_name, entries, write_entry_data);
+
+        LOG_INFO("build bitmap index with cardinality = {}, num_rows = {}",
+                 data_.size(),
+                 total_num_rows_);
+    } else {
+        auto binary_set = Serialize(config);
+        file_manager_->AddFile(binary_set);
+    }
 
     auto remote_path_to_size = file_manager_->GetRemotePathsToFileSize();
     return IndexStats::NewFromSizeMap(file_manager_->GetAddedTotalMemSize(),
@@ -303,8 +383,23 @@ BitmapIndex<T>::Upload(const Config& config) {
 template <typename T>
 void
 BitmapIndex<T>::Load(const BinarySet& binary_set, const Config& config) {
-    milvus::Assemble(const_cast<BinarySet&>(binary_set));
-    LoadWithoutAssemble(binary_set, config);
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(kLastScalarIndexEngineVersionWithoutMeta);
+    if (IsUnifiedScalarIndexVersion(version)) {
+        auto packed_name =
+            FormatPackedIndexFileName(kPackedIndexTypeToken, version);
+        auto packed_data = binary_set.GetByName(packed_name);
+        AssertInfo(packed_data != nullptr,
+                   "packed index data not found for unified format");
+        auto unpacked =
+            UnpackBlobToBinarySet(packed_data->data.get(), packed_data->size);
+        LoadWithoutAssemble(unpacked, config);
+    } else {
+        // Legacy format - assemble sliced data first
+        milvus::Assemble(const_cast<BinarySet&>(binary_set));
+        LoadWithoutAssemble(binary_set, config);
+    }
 }
 
 template <typename T>
@@ -581,17 +676,72 @@ BitmapIndex<T>::Load(milvus::tracer::TraceContext ctx, const Config& config) {
         GetValueFromConfig<std::vector<std::string>>(config, "index_files");
     AssertInfo(index_files.has_value(),
                "index file paths is empty when load bitmap index");
-    auto load_priority =
-        GetValueFromConfig<milvus::proto::common::LoadPriority>(
-            config, milvus::LOAD_PRIORITY)
-            .value_or(milvus::proto::common::LoadPriority::HIGH);
-    auto index_datas =
-        file_manager_->LoadIndexToMemory(index_files.value(), load_priority);
-    BinarySet binary_set;
-    AssembleIndexDatas(index_datas, binary_set);
-    // clear index_datas to free memory early
-    index_datas.clear();
-    LoadWithoutAssemble(binary_set, config);
+
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(kLastScalarIndexEngineVersionWithoutMeta);
+
+    if (IsUnifiedScalarIndexVersion(version)) {
+        // Streaming load for unified format (v3+)
+        auto packed_name =
+            FormatPackedIndexFileName(kPackedIndexTypeToken, version);
+        std::string packed_file_path;
+        for (const auto& file : index_files.value()) {
+            if (std::filesystem::path(file).filename().string() ==
+                packed_name) {
+                packed_file_path = file;
+                break;
+            }
+        }
+        AssertInfo(!packed_file_path.empty(),
+                   "packed file not found: {}",
+                   packed_name);
+
+        // Open streaming input
+        auto input = file_manager_->OpenInputStreamByPath(packed_file_path);
+        AssertInfo(input != nullptr, "Failed to open input stream");
+
+        // Read event headers and get payload start offset
+        size_t payload_start = StreamReadEventHeaders(input.get());
+
+        // Read directory table
+        auto dir_table = StreamReadDirectoryTable(input.get());
+
+        // Read entries into BinarySet using streaming random access
+        BinarySet unpacked;
+
+        auto index_data_entry = dir_table.Find(BITMAP_INDEX_DATA);
+        AssertInfo(index_data_entry != nullptr,
+                   "BITMAP_INDEX_DATA not found in packed file");
+        auto [index_data, index_data_size] =
+            StreamReadEntryToMemory(input.get(),
+                                    payload_start + index_data_entry->offset,
+                                    index_data_entry->size);
+        unpacked.Append(BITMAP_INDEX_DATA, index_data, index_data_size);
+
+        auto index_meta_entry = dir_table.Find(BITMAP_INDEX_META);
+        AssertInfo(index_meta_entry != nullptr,
+                   "BITMAP_INDEX_META not found in packed file");
+        auto [meta_data, meta_size] =
+            StreamReadEntryToMemory(input.get(),
+                                    payload_start + index_meta_entry->offset,
+                                    index_meta_entry->size);
+        unpacked.Append(BITMAP_INDEX_META, meta_data, meta_size);
+
+        LoadWithoutAssemble(unpacked, config);
+    } else {
+        // Legacy load path
+        auto load_priority =
+            GetValueFromConfig<milvus::proto::common::LoadPriority>(
+                config, milvus::LOAD_PRIORITY)
+                .value_or(milvus::proto::common::LoadPriority::HIGH);
+        auto index_datas = file_manager_->LoadIndexToMemory(index_files.value(),
+                                                            load_priority);
+        BinarySet binary_set;
+        AssembleIndexDatas(index_datas, binary_set);
+        index_datas.clear();
+        LoadWithoutAssemble(binary_set, config);
+    }
 }
 
 template <typename T>
@@ -1177,65 +1327,38 @@ BitmapIndex<T>::ShouldSkip(const T lower_value,
                            const T upper_value,
                            const OpType op) {
     auto skip = [&](OpType op, T lower_bound, T upper_bound) -> bool {
-        bool should_skip = false;
         switch (op) {
-            case OpType::LessThan: {
-                // lower_value == upper_value
-                should_skip = lower_bound >= lower_value;
-                break;
-            }
-            case OpType::LessEqual: {
-                // lower_value == upper_value
-                should_skip = lower_bound > lower_value;
-                break;
-            }
-            case OpType::GreaterThan: {
-                // lower_value == upper_value
-                should_skip = upper_bound <= lower_value;
-                break;
-            }
-            case OpType::GreaterEqual: {
-                // lower_value == upper_value
-                should_skip = upper_bound < lower_value;
-                break;
-            }
-            case OpType::Range: {
-                // lower_value == upper_value
-                should_skip =
-                    lower_bound > upper_value || upper_bound < lower_value;
-                break;
-            }
+            case OpType::LessThan:
+                return lower_bound >= lower_value;
+            case OpType::LessEqual:
+                return lower_bound > lower_value;
+            case OpType::GreaterThan:
+                return upper_bound <= lower_value;
+            case OpType::GreaterEqual:
+                return upper_bound < lower_value;
+            case OpType::Range:
+                return lower_bound > upper_value || upper_bound < lower_value;
             default:
                 ThrowInfo(OpTypeInvalid,
                           fmt::format("Invalid OperatorType for "
                                       "checking scalar index optimization: {}",
                                       op));
         }
-        return should_skip;
     };
 
     if (is_mmap_) {
         if (!bitmap_info_map_.empty()) {
-            auto lower_bound = bitmap_info_map_.begin()->first;
-            auto upper_bound = bitmap_info_map_.rbegin()->first;
-            bool should_skip = skip(op, lower_bound, upper_bound);
-            return should_skip;
+            return skip(op,
+                        bitmap_info_map_.begin()->first,
+                        bitmap_info_map_.rbegin()->first);
         }
-    }
-
-    if (build_mode_ == BitmapIndexBuildMode::ROARING) {
+    } else if (build_mode_ == BitmapIndexBuildMode::ROARING) {
         if (!data_.empty()) {
-            auto lower_bound = data_.begin()->first;
-            auto upper_bound = data_.rbegin()->first;
-            bool should_skip = skip(op, lower_bound, upper_bound);
-            return should_skip;
+            return skip(op, data_.begin()->first, data_.rbegin()->first);
         }
     } else {
         if (!bitsets_.empty()) {
-            auto lower_bound = bitsets_.begin()->first;
-            auto upper_bound = bitsets_.rbegin()->first;
-            bool should_skip = skip(op, lower_bound, upper_bound);
-            return should_skip;
+            return skip(op, bitsets_.begin()->first, bitsets_.rbegin()->first);
         }
     }
     return true;

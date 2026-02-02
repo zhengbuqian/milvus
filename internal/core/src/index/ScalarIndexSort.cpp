@@ -19,14 +19,10 @@
 #include <stdio.h>
 #include <string.h>
 #include <algorithm>
-#include <cstdint>
-#include <exception>
 #include <filesystem>
-#include <map>
 #include <memory>
 #include <optional>
 #include <string>
-#include <vector>
 
 #include "Meta.h"
 #include "bitset/bitset.h"
@@ -34,26 +30,27 @@
 #include "common/EasyAssert.h"
 #include "common/FieldDataInterface.h"
 #include "common/File.h"
+#include "common/Pack.h"
 #include "common/Slice.h"
 #include "common/Tracer.h"
 #include "common/Types.h"
-#include "fmt/core.h"
-#include "glog/logging.h"
+#include "common/Utils.h"
+#include "filemanager/OutputStream.h"
 #include "index/ScalarIndex.h"
 #include "index/ScalarIndexSort.h"
 #include "index/Utils.h"
-#include "knowhere/binaryset.h"
 #include "log/Log.h"
-#include "nlohmann/json.hpp"
 #include "pb/common.pb.h"
 #include "storage/DiskFileManagerImpl.h"
 #include "storage/FileWriter.h"
 #include "storage/MemFileManagerImpl.h"
+#include "storage/RemoteInputStream.h"
 #include "storage/ThreadPools.h"
-#include "storage/Types.h"
 #include "storage/Util.h"
 
 namespace milvus::index {
+
+constexpr const char* kPackedIndexTypeToken = "scalarsort";
 
 const std::string MMAP_PATH_FOR_TEST = "/tmp/milvus/mmap_test";
 
@@ -248,7 +245,13 @@ ScalarIndexSort<T>::Serialize(const Config& config) {
     res_set.Append("index_num_rows", index_num_rows, sizeof(size_t));
     res_set.Append("is_nested_index", is_nested_data, sizeof(bool));
 
-    milvus::Disassemble(res_set);
+    // For unified scalar index version (>=3), skip slicing to store as single file
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(milvus::kLastScalarIndexEngineVersionWithoutMeta);
+    if (!milvus::IsUnifiedScalarIndexVersion(version)) {
+        milvus::Disassemble(res_set);
+    }
 
     return res_set;
 }
@@ -268,8 +271,49 @@ ScalarIndexSort<T>::Upload(const Config& config) {
         is_nested_index_,
         index_build_duration);
 
-    auto binary_set = Serialize(config);
-    file_manager_->AddFile(binary_set);
+    // For unified scalar index version (>=3), use streaming upload
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(milvus::kLastScalarIndexEngineVersionWithoutMeta);
+    if (milvus::IsUnifiedScalarIndexVersion(version)) {
+        AssertInfo(is_built_, "index has not been built");
+
+        // Phase 1: Collect serialize entries (zero memory overhead - just sizes)
+        auto index_data_size = data_.size() * sizeof(IndexStructure<T>);
+        size_t index_size = data_.size();
+        std::vector<milvus::SerializeEntry> entries = {
+            {"index_data", index_data_size},
+            {"index_length", sizeof(size_t)},
+            {"index_num_rows", sizeof(size_t)},
+            {"is_nested_index", sizeof(bool)},
+        };
+
+        // Phase 2: Stream write index file with transparent encryption
+        auto packed_file_name =
+            milvus::FormatPackedIndexFileName(kPackedIndexTypeToken, version);
+
+        // Create write callback
+        auto write_entry_data = [this, index_data_size, index_size](
+                                    milvus::OutputStream* out,
+                                    const std::string& name) {
+            if (name == "index_data") {
+                out->Write(this->data_.data(), index_data_size);
+            } else if (name == "index_length") {
+                out->Write(&index_size, sizeof(size_t));
+            } else if (name == "index_num_rows") {
+                out->Write(&this->total_num_rows_, sizeof(size_t));
+            } else if (name == "is_nested_index") {
+                out->Write(&this->is_nested_index_, sizeof(bool));
+            }
+        };
+
+        // Stream write with automatic encryption support
+        file_manager_->StreamWriteIndex(
+            packed_file_name, entries, write_entry_data);
+    } else {
+        auto binary_set = Serialize(config);
+        file_manager_->AddFile(binary_set);
+    }
 
     auto remote_paths_to_size = file_manager_->GetRemotePathsToFileSize();
     return IndexStats::NewFromSizeMap(file_manager_->GetAddedTotalMemSize(),
@@ -383,8 +427,23 @@ ScalarIndexSort<T>::LoadWithoutAssemble(const BinarySet& index_binary,
 template <typename T>
 void
 ScalarIndexSort<T>::Load(const BinarySet& index_binary, const Config& config) {
-    milvus::Assemble(const_cast<BinarySet&>(index_binary));
-    LoadWithoutAssemble(index_binary, config);
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(milvus::kLastScalarIndexEngineVersionWithoutMeta);
+    if (milvus::IsUnifiedScalarIndexVersion(version)) {
+        auto packed_name =
+            milvus::FormatPackedIndexFileName(kPackedIndexTypeToken, version);
+        auto packed_data = index_binary.GetByName(packed_name);
+        AssertInfo(packed_data != nullptr,
+                   "packed index data not found for unified format");
+        auto unpacked = milvus::UnpackBlobToBinarySet(packed_data->data.get(),
+                                                      packed_data->size);
+        LoadWithoutAssemble(unpacked, config);
+    } else {
+        // Legacy format - assemble sliced data first
+        milvus::Assemble(const_cast<BinarySet&>(index_binary));
+        LoadWithoutAssemble(index_binary, config);
+    }
 }
 
 template <typename T>
@@ -395,17 +454,90 @@ ScalarIndexSort<T>::Load(milvus::tracer::TraceContext ctx,
         GetValueFromConfig<std::vector<std::string>>(config, "index_files");
     AssertInfo(index_files.has_value(),
                "index file paths is empty when load disk ann index");
-    auto load_priority =
-        GetValueFromConfig<milvus::proto::common::LoadPriority>(
-            config, milvus::LOAD_PRIORITY)
-            .value_or(milvus::proto::common::LoadPriority::HIGH);
-    auto index_datas =
-        file_manager_->LoadIndexToMemory(index_files.value(), load_priority);
-    BinarySet binary_set;
-    AssembleIndexDatas(index_datas, binary_set);
-    // clear index_datas to free memory early
-    index_datas.clear();
-    LoadWithoutAssemble(binary_set, config);
+
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(milvus::kLastScalarIndexEngineVersionWithoutMeta);
+
+    if (milvus::IsUnifiedScalarIndexVersion(version)) {
+        // Streaming load for unified format (v3+)
+        auto packed_name =
+            milvus::FormatPackedIndexFileName(kPackedIndexTypeToken, version);
+        std::string packed_file_path;
+        for (const auto& file : index_files.value()) {
+            if (std::filesystem::path(file).filename().string() ==
+                packed_name) {
+                packed_file_path = file;
+                break;
+            }
+        }
+        AssertInfo(!packed_file_path.empty(),
+                   "packed file not found: {}",
+                   packed_name);
+
+        // Open streaming input
+        auto input = file_manager_->OpenInputStreamByPath(packed_file_path);
+        AssertInfo(input != nullptr, "Failed to open input stream");
+
+        // Read event headers and get payload start offset
+        size_t payload_start = milvus::StreamReadEventHeaders(input.get());
+
+        // Read directory table
+        auto dir_table = milvus::StreamReadDirectoryTable(input.get());
+
+        // Read entries into BinarySet using streaming random access
+        BinarySet unpacked;
+
+        auto index_data_entry = dir_table.Find("index_data");
+        AssertInfo(index_data_entry != nullptr,
+                   "index_data not found in packed file");
+        auto [index_data, index_data_size] = milvus::StreamReadEntryToMemory(
+            input.get(),
+            payload_start + index_data_entry->offset,
+            index_data_entry->size);
+        unpacked.Append("index_data", index_data, index_data_size);
+
+        auto index_length_entry = dir_table.Find("index_length");
+        AssertInfo(index_length_entry != nullptr,
+                   "index_length not found in packed file");
+        auto [len_data, len_size] = milvus::StreamReadEntryToMemory(
+            input.get(),
+            payload_start + index_length_entry->offset,
+            index_length_entry->size);
+        unpacked.Append("index_length", len_data, len_size);
+
+        auto index_num_rows_entry = dir_table.Find("index_num_rows");
+        if (index_num_rows_entry != nullptr) {
+            auto [rows_data, rows_size] = milvus::StreamReadEntryToMemory(
+                input.get(),
+                payload_start + index_num_rows_entry->offset,
+                index_num_rows_entry->size);
+            unpacked.Append("index_num_rows", rows_data, rows_size);
+        }
+
+        auto is_nested_entry = dir_table.Find("is_nested_index");
+        if (is_nested_entry != nullptr) {
+            auto [nested_data, nested_size] = milvus::StreamReadEntryToMemory(
+                input.get(),
+                payload_start + is_nested_entry->offset,
+                is_nested_entry->size);
+            unpacked.Append("is_nested_index", nested_data, nested_size);
+        }
+
+        LoadWithoutAssemble(unpacked, config);
+    } else {
+        // Legacy load path
+        auto load_priority =
+            GetValueFromConfig<milvus::proto::common::LoadPriority>(
+                config, milvus::LOAD_PRIORITY)
+                .value_or(milvus::proto::common::LoadPriority::HIGH);
+        auto index_datas = file_manager_->LoadIndexToMemory(index_files.value(),
+                                                            load_priority);
+        BinarySet binary_set;
+        AssembleIndexDatas(index_datas, binary_set);
+        index_datas.clear();
+        LoadWithoutAssemble(binary_set, config);
+    }
 }
 
 template <typename T>

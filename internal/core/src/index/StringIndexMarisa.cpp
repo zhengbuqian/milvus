@@ -22,8 +22,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
-#include <exception>
-#include <iosfwd>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <type_traits>
@@ -32,29 +31,32 @@
 #include "boost/uuid/random_generator.hpp"
 #include "common/Consts.h"
 #include "common/EasyAssert.h"
+#include "common/Exception.h"
 #include "common/FieldDataInterface.h"
 #include "common/File.h"
+#include "common/Pack.h"
 #include "common/Slice.h"
 #include "common/Tracer.h"
 #include "common/Types.h"
 #include "common/Utils.h"
-#include "fmt/core.h"
+#include "filemanager/OutputStream.h"
 #include "index/Meta.h"
 #include "index/StringIndexMarisa.h"
 #include "index/Utils.h"
-#include "knowhere/binaryset.h"
 #include "marisa/agent.h"
 #include "marisa/base.h"
 #include "marisa/key.h"
 #include "marisa/keyset.h"
-#include "nlohmann/json.hpp"
 #include "pb/common.pb.h"
 #include "storage/FileWriter.h"
 #include "storage/MemFileManagerImpl.h"
+#include "storage/RemoteInputStream.h"
 #include "storage/ThreadPools.h"
 #include "storage/Util.h"
 
 namespace milvus::index {
+
+constexpr const char* kPackedIndexTypeToken = "stringmarisa";
 
 StringIndexMarisa::StringIndexMarisa(
     const storage::FileManagerContext& file_manager_context)
@@ -227,15 +229,72 @@ StringIndexMarisa::Serialize(const Config& config) {
     res_set.Append(MARISA_TRIE_INDEX, index_data, size);
     res_set.Append(MARISA_STR_IDS, str_ids, str_ids_len);
 
-    Disassemble(res_set);
+    // For unified scalar index version (>=3), skip slicing to store as single file
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(kLastScalarIndexEngineVersionWithoutMeta);
+    if (!IsUnifiedScalarIndexVersion(version)) {
+        Disassemble(res_set);
+    }
 
     return res_set;
 }
 
 IndexStatsPtr
 StringIndexMarisa::Upload(const Config& config) {
-    auto binary_set = Serialize(config);
-    file_manager_->AddFile(binary_set);
+    // For unified scalar index version (>=3), use streaming upload
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(kLastScalarIndexEngineVersionWithoutMeta);
+    if (IsUnifiedScalarIndexVersion(version)) {
+        AssertInfo(built_, "index has not been built yet");
+
+        // Phase 1: Write trie to temp file to get size (MARISA limitation)
+        auto uuid = boost::uuids::random_generator()();
+        auto temp_file = std::string("/tmp/") + boost::uuids::to_string(uuid);
+
+        auto fd = open(temp_file.c_str(),
+                       O_RDWR | O_CREAT | O_EXCL,
+                       S_IRUSR | S_IWUSR | S_IXUSR);
+        AssertInfo(fd != -1, "open file failed");
+        trie_.write(fd);
+
+        auto trie_size = get_file_size(fd);
+        auto str_ids_size = str_ids_.size() * sizeof(size_t);
+
+        // Collect entries
+        std::vector<SerializeEntry> entries = {
+            {MARISA_TRIE_INDEX, static_cast<uint64_t>(trie_size)},
+            {MARISA_STR_IDS, str_ids_size},
+        };
+
+        // Phase 2: Stream write index file with transparent encryption
+        auto packed_file_name =
+            FormatPackedIndexFileName(kPackedIndexTypeToken, version);
+
+        // Create write callback
+        auto write_entry_data = [this, fd, trie_size, str_ids_size](
+                                    OutputStream* out,
+                                    const std::string& name) {
+            if (name == MARISA_TRIE_INDEX) {
+                // Stream from temp file using zero-copy
+                lseek(fd, 0, SEEK_SET);
+                out->Write(fd, trie_size);
+            } else if (name == MARISA_STR_IDS) {
+                out->Write(this->str_ids_.data(), str_ids_size);
+            }
+        };
+
+        // Stream write with automatic encryption support
+        file_manager_->StreamWriteIndex(
+            packed_file_name, entries, write_entry_data);
+
+        close(fd);
+        remove(temp_file.c_str());
+    } else {
+        auto binary_set = Serialize(config);
+        file_manager_->AddFile(binary_set);
+    }
 
     auto remote_paths_to_size = file_manager_->GetRemotePathsToFileSize();
     return IndexStats::NewFromSizeMap(file_manager_->GetAddedTotalMemSize(),
@@ -290,8 +349,23 @@ StringIndexMarisa::LoadWithoutAssemble(const BinarySet& set,
 
 void
 StringIndexMarisa::Load(const BinarySet& set, const Config& config) {
-    milvus::Assemble(const_cast<BinarySet&>(set));
-    LoadWithoutAssemble(set, config);
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(kLastScalarIndexEngineVersionWithoutMeta);
+    if (IsUnifiedScalarIndexVersion(version)) {
+        auto packed_name =
+            FormatPackedIndexFileName(kPackedIndexTypeToken, version);
+        auto packed_data = set.GetByName(packed_name);
+        AssertInfo(packed_data != nullptr,
+                   "packed index data not found for unified format");
+        auto unpacked =
+            UnpackBlobToBinarySet(packed_data->data.get(), packed_data->size);
+        LoadWithoutAssemble(unpacked, config);
+    } else {
+        // Legacy format - assemble sliced data first
+        milvus::Assemble(const_cast<BinarySet&>(set));
+        LoadWithoutAssemble(set, config);
+    }
 }
 
 void
@@ -301,17 +375,70 @@ StringIndexMarisa::Load(milvus::tracer::TraceContext ctx,
         GetValueFromConfig<std::vector<std::string>>(config, "index_files");
     AssertInfo(index_files.has_value(),
                "index file paths is empty when load index");
-    auto load_priority =
-        GetValueFromConfig<milvus::proto::common::LoadPriority>(
-            config, milvus::LOAD_PRIORITY)
-            .value_or(milvus::proto::common::LoadPriority::HIGH);
-    auto index_datas =
-        file_manager_->LoadIndexToMemory(index_files.value(), load_priority);
-    BinarySet binary_set;
-    AssembleIndexDatas(index_datas, binary_set);
-    // clear index_datas to free memory early
-    index_datas.clear();
-    LoadWithoutAssemble(binary_set, config);
+
+    auto version =
+        GetValueFromConfig<int32_t>(config, index::SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(kLastScalarIndexEngineVersionWithoutMeta);
+
+    if (IsUnifiedScalarIndexVersion(version)) {
+        // Streaming load for unified format (v3+)
+        auto packed_name =
+            FormatPackedIndexFileName(kPackedIndexTypeToken, version);
+        std::string packed_file_path;
+        for (const auto& file : index_files.value()) {
+            if (std::filesystem::path(file).filename().string() ==
+                packed_name) {
+                packed_file_path = file;
+                break;
+            }
+        }
+        AssertInfo(!packed_file_path.empty(),
+                   "packed file not found: {}",
+                   packed_name);
+
+        // Open streaming input
+        auto input = file_manager_->OpenInputStreamByPath(packed_file_path);
+        AssertInfo(input != nullptr, "Failed to open input stream");
+
+        // Read event headers and get payload start offset
+        size_t payload_start = StreamReadEventHeaders(input.get());
+
+        // Read directory table
+        auto dir_table = StreamReadDirectoryTable(input.get());
+
+        // Read entries into BinarySet using streaming random access
+        BinarySet unpacked;
+
+        auto trie_entry = dir_table.Find(MARISA_TRIE_INDEX);
+        AssertInfo(trie_entry != nullptr,
+                   "MARISA_TRIE_INDEX not found in packed file");
+        auto [trie_data, trie_size] = StreamReadEntryToMemory(
+            input.get(), payload_start + trie_entry->offset, trie_entry->size);
+        unpacked.Append(MARISA_TRIE_INDEX, trie_data, trie_size);
+
+        auto str_ids_entry = dir_table.Find(MARISA_STR_IDS);
+        AssertInfo(str_ids_entry != nullptr,
+                   "MARISA_STR_IDS not found in packed file");
+        auto [ids_data, ids_size] =
+            StreamReadEntryToMemory(input.get(),
+                                    payload_start + str_ids_entry->offset,
+                                    str_ids_entry->size);
+        unpacked.Append(MARISA_STR_IDS, ids_data, ids_size);
+
+        LoadWithoutAssemble(unpacked, config);
+    } else {
+        // Legacy load path
+        auto load_priority =
+            GetValueFromConfig<milvus::proto::common::LoadPriority>(
+                config, milvus::LOAD_PRIORITY)
+                .value_or(milvus::proto::common::LoadPriority::HIGH);
+        auto index_datas = file_manager_->LoadIndexToMemory(index_files.value(),
+                                                            load_priority);
+        BinarySet binary_set;
+        AssembleIndexDatas(index_datas, binary_set);
+        index_datas.clear();
+        LoadWithoutAssemble(binary_set, config);
+    }
 }
 
 const TargetBitmap
@@ -652,10 +779,6 @@ StringIndexMarisa::in_lexicographic_order() {
     // by default, marisa trie uses `MARISA_WEIGHT_ORDER` to build trie
     // so `predictive_search` will not iterate in lexicographic order
     // now we build trie using `MARISA_LABEL_ORDER` and also handle old index in weight order.
-    if (trie_.node_order() == MARISA_LABEL_ORDER) {
-        return true;
-    }
-
-    return false;
+    return trie_.node_order() == MARISA_LABEL_ORDER;
 }
 }  // namespace milvus::index

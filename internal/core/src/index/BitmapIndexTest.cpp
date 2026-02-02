@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "common/Consts.h"
+#include "common/Pack.h"
 #include "common/Tracer.h"
 #include "common/Types.h"
 #include "common/protobuf_utils.h"
@@ -50,10 +51,9 @@
 #include "storage/Types.h"
 #include "storage/Util.h"
 
-using namespace milvus::index;
-using namespace milvus::indexbuilder;
 using namespace milvus;
 using namespace milvus::index;
+using namespace milvus::indexbuilder;
 
 template <typename T>
 static std::vector<T>
@@ -185,6 +185,9 @@ class BitmapIndexTest : public testing::Test {
         config["index_type"] = milvus::index::BITMAP_INDEX_TYPE;
         config[INSERT_FILES_KEY] = std::vector<std::string>{log_path};
         config[INDEX_NUM_ROWS_KEY] = nb_;
+        // Use scalar index version from member variable
+        config[milvus::index::SCALAR_INDEX_ENGINE_VERSION] =
+            scalar_index_version_;
         if (has_lack_binlog_row_) {
             config[INDEX_NUM_ROWS_KEY] = nb_ + lack_binlog_row_;
         }
@@ -231,6 +234,8 @@ class BitmapIndexTest : public testing::Test {
         nullable_ = false;
         index_version_ = 3000;
         index_build_id_ = 3000;
+        // Default to unified scalar index format
+        scalar_index_version_ = milvus::kUnifiedScalarIndexVersion;
     }
     void
     SetUp() override {
@@ -545,6 +550,7 @@ class BitmapIndexTest : public testing::Test {
     milvus_storage::ArrowFileSystemPtr fs_;
     int index_version_;
     int index_build_id_;
+    int32_t scalar_index_version_;
     bool has_default_value_{false};
     bool has_lack_binlog_row_{false};
     size_t lack_binlog_row_{100};
@@ -921,4 +927,62 @@ REGISTER_TYPED_TEST_SUITE_P(BitmapIndexTestV6,
 
 INSTANTIATE_TYPED_TEST_SUITE_P(BitmapIndexE2ECheck_Mmap,
                                BitmapIndexTestV6,
+                               BitmapType);
+
+// Test suite for legacy scalar index format (version 0)
+template <typename T>
+class BitmapIndexTestLegacy : public BitmapIndexTest<T> {
+ public:
+    virtual void
+    SetParam() override {
+        this->nb_ = 10000;
+        this->cardinality_ = 30;
+        this->nullable_ = false;
+        this->index_version_ = 3000;
+        this->index_build_id_ = 3000;
+        // Use legacy scalar index format (version 0)
+        this->scalar_index_version_ = 0;
+    }
+
+    virtual ~BitmapIndexTestLegacy() {
+    }
+};
+
+TYPED_TEST_SUITE_P(BitmapIndexTestLegacy);
+
+TYPED_TEST_P(BitmapIndexTestLegacy, CountFuncTest) {
+    auto count = this->index_->Count();
+    EXPECT_EQ(count, this->nb_);
+}
+
+TYPED_TEST_P(BitmapIndexTestLegacy, INFuncTest) {
+    this->TestInFunc();
+}
+
+TYPED_TEST_P(BitmapIndexTestLegacy, NotINFuncTest) {
+    this->TestNotInFunc();
+}
+
+TYPED_TEST_P(BitmapIndexTestLegacy, CompareValFuncTest) {
+    this->TestCompareValueFunc();
+}
+
+TYPED_TEST_P(BitmapIndexTestLegacy, IsNullFuncTest) {
+    this->TestIsNullFunc();
+}
+
+TYPED_TEST_P(BitmapIndexTestLegacy, IsNotNullFuncTest) {
+    this->TestIsNotNullFunc();
+}
+
+REGISTER_TYPED_TEST_SUITE_P(BitmapIndexTestLegacy,
+                            CountFuncTest,
+                            INFuncTest,
+                            NotINFuncTest,
+                            CompareValFuncTest,
+                            IsNullFuncTest,
+                            IsNotNullFuncTest);
+
+INSTANTIATE_TYPED_TEST_SUITE_P(BitmapIndexE2ECheck_Legacy,
+                               BitmapIndexTestLegacy,
                                BitmapType);

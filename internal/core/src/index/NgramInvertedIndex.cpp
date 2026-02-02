@@ -28,6 +28,7 @@
 #include "common/Json.h"
 #include "common/JsonCastFunction.h"
 #include "common/JsonCastType.h"
+#include "common/Pack.h"
 #include "common/RegexQuery.h"
 #include "exec/expression/Expr.h"
 #include "glog/logging.h"
@@ -218,6 +219,68 @@ NgramInvertedIndex::Upload(const Config& config) {
         index_build_duration,
         avg_row_size_);
 
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(milvus::kLastScalarIndexEngineVersionWithoutMeta);
+
+    if (milvus::IsUnifiedScalarIndexVersion(version)) {
+        // Phase 1: Collect tantivy directory entries (zero memory overhead)
+        auto tantivy_entries = milvus::CollectDirectoryEntries(path_);
+        size_t tantivy_pack_size = milvus::ComputePayloadSize(tantivy_entries);
+
+        // Phase 2: Collect outer pack entries
+        size_t null_offset_size;
+        {
+            std::shared_lock<folly::SharedMutexWritePriority> lock(mutex_);
+            null_offset_size = null_offset_.size() * sizeof(size_t);
+        }
+
+        std::vector<milvus::SerializeEntry> entries = {
+            {"tantivy_index_data", tantivy_pack_size},
+        };
+        if (null_offset_size > 0) {
+            entries.push_back({INDEX_NULL_OFFSET_FILE_NAME, null_offset_size});
+        }
+        // Always add avg_row_size
+        entries.push_back({NGRAM_AVG_ROW_SIZE_FILE_NAME, sizeof(size_t)});
+
+        // Phase 3: Stream write index file with transparent encryption
+        auto packed_file_name =
+            milvus::FormatPackedIndexFileName(PackedIndexFileToken(), version);
+
+        // Create write callback that handles nested packing
+        auto write_entry_data = [this, null_offset_size](
+                                    milvus::OutputStream* out,
+                                    const std::string& name) {
+            if (name == "tantivy_index_data") {
+                // Stream write nested tantivy pack
+                milvus::StreamWritePackedDirectory(out, this->path_);
+            } else if (name == INDEX_NULL_OFFSET_FILE_NAME) {
+                // Write null_offset data
+                std::shared_lock<folly::SharedMutexWritePriority> lock(
+                    this->mutex_);
+                out->Write(this->null_offset_.data(), null_offset_size);
+            } else if (name == NGRAM_AVG_ROW_SIZE_FILE_NAME) {
+                // Write avg_row_size data
+                out->Write(&this->avg_row_size_, sizeof(size_t));
+            }
+        };
+
+        // Stream write with automatic encryption support
+        mem_file_manager_->StreamWriteIndex(
+            packed_file_name, entries, write_entry_data);
+
+        auto remote_mem_path_to_size =
+            mem_file_manager_->GetRemotePathsToFileSize();
+        std::vector<SerializedIndexFileInfo> index_files;
+        for (auto& file : remote_mem_path_to_size) {
+            index_files.emplace_back(file.first, file.second);
+        }
+        return IndexStats::New(mem_file_manager_->GetAddedTotalMemSize(),
+                               std::move(index_files));
+    }
+
+    // Legacy format: call parent's Upload
     return InvertedIndexTantivy<std::string>::Upload(config);
 }
 
@@ -279,25 +342,110 @@ NgramInvertedIndex::Load(milvus::tracer::TraceContext ctx,
                "index file paths is empty when load ngram index");
     auto files_value = index_files.value();
 
-    LoadIndexMetas(files_value, config);
-    RetainTantivyIndexFiles(files_value);
-
     auto load_priority =
         GetValueFromConfig<milvus::proto::common::LoadPriority>(
             config, milvus::LOAD_PRIORITY)
             .value_or(milvus::proto::common::LoadPriority::HIGH);
-    disk_file_manager_->CacheNgramIndexToDisk(files_value, load_priority);
-    AssertInfo(
-        tantivy_index_exist(path_.c_str()), "index not exist: {}", path_);
 
-    auto load_in_mmap =
-        GetValueFromConfig<bool>(config, ENABLE_MMAP).value_or(true);
-    wrapper_ = std::make_shared<TantivyIndexWrapper>(
-        path_.c_str(), load_in_mmap, milvus::index::SetBitsetSealed);
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(milvus::kLastScalarIndexEngineVersionWithoutMeta);
 
-    if (!load_in_mmap) {
-        // the index is loaded in ram, so we can remove files in advance
-        disk_file_manager_->RemoveNgramIndexFiles();
+    if (milvus::IsUnifiedScalarIndexVersion(version)) {
+        // Unified format: streaming load with DirectoryTable for random access
+        auto packed_name =
+            milvus::FormatPackedIndexFileName(PackedIndexFileToken(), version);
+
+        // Find the packed file path
+        std::string packed_file_path;
+        for (const auto& file : files_value) {
+            if (std::filesystem::path(file).filename().string() ==
+                packed_name) {
+                packed_file_path = file;
+                break;
+            }
+        }
+        AssertInfo(!packed_file_path.empty(),
+                   "packed ngram index file not found");
+
+        // Open input stream for streaming read
+        auto input = mem_file_manager_->OpenInputStreamByPath(packed_file_path);
+        AssertInfo(input != nullptr, "Failed to open input stream");
+
+        // Read event headers and get payload start offset
+        size_t payload_start = milvus::StreamReadEventHeaders(input.get());
+
+        // Read directory table
+        auto dir_table = milvus::StreamReadDirectoryTable(input.get());
+
+        // Find tantivy_index_data entry
+        auto tantivy_entry = dir_table.Find("tantivy_index_data");
+        AssertInfo(tantivy_entry != nullptr,
+                   "tantivy_index_data not found in packed ngram index");
+
+        // Unpack tantivy directory to local path
+        auto prefix = disk_file_manager_->GetLocalNgramIndexPrefix();
+        boost::filesystem::create_directories(prefix);
+
+        // Calculate absolute offset: payload_start + entry offset
+        size_t tantivy_abs_offset = payload_start + tantivy_entry->offset;
+        milvus::StreamUnpackEntryToDirectory(
+            input.get(), tantivy_abs_offset, tantivy_entry->size, prefix);
+        path_ = prefix;
+
+        // Load null_offset if present
+        auto null_offset_entry = dir_table.Find(INDEX_NULL_OFFSET_FILE_NAME);
+        if (null_offset_entry != nullptr && null_offset_entry->size > 0) {
+            size_t null_offset_abs_offset =
+                payload_start + null_offset_entry->offset;
+            auto [data, size] = milvus::StreamReadEntryToMemory(
+                input.get(), null_offset_abs_offset, null_offset_entry->size);
+            null_offset_.resize(size / sizeof(size_t));
+            memcpy(null_offset_.data(), data.get(), size);
+        }
+
+        // Load avg_row_size if present
+        auto avg_row_size_entry = dir_table.Find(NGRAM_AVG_ROW_SIZE_FILE_NAME);
+        if (avg_row_size_entry != nullptr && avg_row_size_entry->size > 0) {
+            size_t avg_row_size_abs_offset =
+                payload_start + avg_row_size_entry->offset;
+            auto [data, size] = milvus::StreamReadEntryToMemory(
+                input.get(), avg_row_size_abs_offset, avg_row_size_entry->size);
+            memcpy(&avg_row_size_, data.get(), sizeof(size_t));
+            LOG_INFO("Loaded ngram index avg_row_size: {} bytes",
+                     avg_row_size_);
+        } else {
+            avg_row_size_ = kDefaultAvgRowSize;
+            LOG_INFO("No avg_row_size metadata found, using default: {}",
+                     kDefaultAvgRowSize);
+        }
+
+        auto load_in_mmap =
+            GetValueFromConfig<bool>(config, ENABLE_MMAP).value_or(true);
+        wrapper_ = std::make_shared<TantivyIndexWrapper>(
+            prefix.c_str(), load_in_mmap, milvus::index::SetBitsetSealed);
+
+        if (!load_in_mmap) {
+            boost::filesystem::remove_all(prefix);
+        }
+    } else {
+        // Legacy format: load files individually
+        LoadIndexMetas(files_value, config);
+        RetainTantivyIndexFiles(files_value);
+
+        disk_file_manager_->CacheNgramIndexToDisk(files_value, load_priority);
+        AssertInfo(
+            tantivy_index_exist(path_.c_str()), "index not exist: {}", path_);
+
+        auto load_in_mmap =
+            GetValueFromConfig<bool>(config, ENABLE_MMAP).value_or(true);
+        wrapper_ = std::make_shared<TantivyIndexWrapper>(
+            path_.c_str(), load_in_mmap, milvus::index::SetBitsetSealed);
+
+        if (!load_in_mmap) {
+            // the index is loaded in ram, so we can remove files in advance
+            disk_file_manager_->RemoveNgramIndexFiles();
+        }
     }
 
     LOG_INFO(

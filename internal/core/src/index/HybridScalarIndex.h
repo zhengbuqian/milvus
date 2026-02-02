@@ -23,10 +23,9 @@
 #include <string>
 #include <vector>
 
-#include "common/FieldData.h"
+#include "common/Pack.h"
 #include "common/Tracer.h"
 #include "common/Types.h"
-#include "common/protobuf_utils.h"
 #include "index/IndexStats.h"
 #include "index/ScalarIndex.h"
 #include "pb/plan.pb.h"
@@ -211,6 +210,9 @@ class HybridScalarIndex : public ScalarIndex<T> {
 
     std::string
     GetRemoteIndexTypeFile(const std::vector<std::string>& files);
+
+    std::string
+    GetPackedIndexFile(const std::vector<std::string>& files);
 
  public:
     bool is_built_{false};

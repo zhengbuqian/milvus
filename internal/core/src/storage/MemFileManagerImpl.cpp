@@ -31,8 +31,16 @@
 #include "common/EasyAssert.h"
 #include "common/FieldData.h"
 #include "common/FieldDataInterface.h"
+#include "common/Pack.h"
 #include "common/Types.h"
 #include "glog/logging.h"
+#include "log/Log.h"
+#include "storage/Util.h"
+#include "storage/FileManager.h"
+#include "storage/PluginLoader.h"
+#include "storage/loon_ffi/ffi_reader_c.h"
+#include "storage/RemoteInputStream.h"
+#include "storage/RemoteOutputStream.h"
 #include "index/Utils.h"
 #include "knowhere/binaryset.h"
 #include "log/Log.h"
@@ -109,12 +117,65 @@ MemFileManagerImpl::AddBinarySet(const BinarySet& binary_set,
 
 std::shared_ptr<InputStream>
 MemFileManagerImpl::OpenInputStream(const std::string& filename) {
-    return nullptr;
+    auto remote_file_path = GetRemoteIndexObjectPrefix() + "/" + filename;
+
+    auto fs = fs_;
+    AssertInfo(fs, "fs is nullptr");
+
+    auto remote_file = fs->OpenInputFile(remote_file_path);
+    AssertInfo(remote_file.ok(),
+               "failed to open remote file, reason: {}",
+               remote_file.status().ToString());
+
+    return std::make_shared<milvus::storage::RemoteInputStream>(
+        std::move(remote_file.ValueOrDie()));
+}
+
+std::shared_ptr<InputStream>
+MemFileManagerImpl::OpenInputStreamByPath(const std::string& remote_path) {
+    auto fs = fs_;
+    AssertInfo(fs, "fs is nullptr");
+
+    auto remote_file = fs->OpenInputFile(remote_path);
+    AssertInfo(remote_file.ok(),
+               "failed to open remote file: {}, reason: {}",
+               remote_path,
+               remote_file.status().ToString());
+
+    return std::make_shared<milvus::storage::RemoteInputStream>(
+        std::move(remote_file.ValueOrDie()));
 }
 
 std::shared_ptr<OutputStream>
 MemFileManagerImpl::OpenOutputStream(const std::string& filename) {
-    return nullptr;
+    auto remote_file_path = GetRemoteIndexObjectPrefix() + "/" + filename;
+
+    auto fs = fs_;
+    AssertInfo(fs, "fs is nullptr");
+
+    auto remote_stream = fs->OpenOutputStream(remote_file_path);
+    AssertInfo(remote_stream.ok(),
+               "failed to open remote stream, reason: {}",
+               remote_stream.status().ToString());
+
+    return std::make_shared<milvus::storage::RemoteOutputStream>(
+        std::move(remote_stream.ValueOrDie()));
+}
+
+std::shared_ptr<OutputStream>
+MemFileManagerImpl::OpenTextLogOutputStream(const std::string& filename) {
+    auto remote_file_path = GetRemoteTextLogPrefix() + "/" + filename;
+
+    auto fs = fs_;
+    AssertInfo(fs, "fs is nullptr");
+
+    auto remote_stream = fs->OpenOutputStream(remote_file_path);
+    AssertInfo(remote_stream.ok(),
+               "failed to open remote stream, reason: {}",
+               remote_stream.status().ToString());
+
+    return std::make_shared<milvus::storage::RemoteOutputStream>(
+        std::move(remote_stream.ValueOrDie()));
 }
 
 bool
@@ -457,6 +518,91 @@ bool
 MemFileManagerImpl::RemoveFile(const std::string& filename) noexcept {
     // TODO: implement this interface
     return false;
+}
+
+size_t
+MemFileManagerImpl::StreamWriteIndex(const std::string& filename,
+                                     const std::vector<SerializeEntry>& entries,
+                                     WriteEntryDataFn write_entry_data) {
+    auto output = OpenOutputStream(filename);
+
+    size_t total_written = 0;
+
+    // Check if encryption is needed
+    if (plugin_context_) {
+        auto cipherPlugin = PluginLoader::GetInstance().getCipherPlugin();
+        if (cipherPlugin) {
+            auto [encryptor, edek] = cipherPlugin->GetEncryptor(
+                plugin_context_->ez_id, plugin_context_->collection_id);
+
+            if (encryptor) {
+                total_written = StreamWriteIndexFileEncrypted(
+                    output.get(),
+                    field_meta_,
+                    index_meta_,
+                    entries,
+                    write_entry_data,
+                    encryptor,
+                    edek,
+                    std::to_string(plugin_context_->ez_id));
+
+                output->Close();
+                RegisterStreamingUpload(filename, total_written);
+                return total_written;
+            }
+        }
+    }
+
+    // No encryption - use standard write
+    total_written = StreamWriteIndexFile(
+        output.get(), field_meta_, index_meta_, entries, write_entry_data);
+
+    output->Close();
+    RegisterStreamingUpload(filename, total_written);
+    return total_written;
+}
+
+size_t
+MemFileManagerImpl::StreamWriteTextLogIndex(
+    const std::string& filename,
+    const std::vector<SerializeEntry>& entries,
+    WriteEntryDataFn write_entry_data) {
+    auto output = OpenTextLogOutputStream(filename);
+
+    size_t total_written = 0;
+
+    // Check if encryption is needed
+    if (plugin_context_) {
+        auto cipherPlugin = PluginLoader::GetInstance().getCipherPlugin();
+        if (cipherPlugin) {
+            auto [encryptor, edek] = cipherPlugin->GetEncryptor(
+                plugin_context_->ez_id, plugin_context_->collection_id);
+
+            if (encryptor) {
+                total_written = StreamWriteIndexFileEncrypted(
+                    output.get(),
+                    field_meta_,
+                    index_meta_,
+                    entries,
+                    write_entry_data,
+                    encryptor,
+                    edek,
+                    std::to_string(plugin_context_->ez_id));
+
+                output->Close();
+                RegisterTextLogStreamingUpload(filename, total_written);
+                return total_written;
+            }
+        }
+    }
+
+    // No encryption - use standard write
+    total_written = StreamWriteIndexFile(
+        output.get(), field_meta_, index_meta_, entries, write_entry_data);
+
+    output->Close();
+    RegisterTextLogStreamingUpload(filename, total_written);
+    return total_written;
 }
 
 }  // namespace milvus::storage
