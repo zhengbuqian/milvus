@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "common/Consts.h"
+#include "common/Pack.h"
 #include "common/Tracer.h"
 #include "common/TracerBase.h"
 #include "common/Types.h"
@@ -50,10 +51,9 @@
 #include "storage/Types.h"
 #include "storage/Util.h"
 
-using namespace milvus::index;
-using namespace milvus::indexbuilder;
 using namespace milvus;
 using namespace milvus::index;
+using namespace milvus::indexbuilder;
 
 template <typename T>
 static std::vector<T>
@@ -187,6 +187,8 @@ class HybridIndexTestV1 : public testing::Test {
         config[INSERT_FILES_KEY] = std::vector<std::string>{log_path};
         config["bitmap_cardinality_limit"] = "1000";
         config[INDEX_NUM_ROWS_KEY] = nb_;
+        config[milvus::index::SCALAR_INDEX_ENGINE_VERSION] =
+            scalar_index_version_;
         if (has_lack_binlog_row_) {
             config[INDEX_NUM_ROWS_KEY] = nb_ + lack_binlog_row_;
         }
@@ -541,6 +543,7 @@ class HybridIndexTestV1 : public testing::Test {
     bool has_default_value_{false};
     bool has_lack_binlog_row_{false};
     size_t lack_binlog_row_{100};
+    int32_t scalar_index_version_{0};
 };
 
 TYPED_TEST_SUITE_P(HybridIndexTestV1);
@@ -845,4 +848,66 @@ INSTANTIATE_TYPED_TEST_SUITE_P(HybridIndexE2ECheck_HasLackNullBinlog,
 
 INSTANTIATE_TYPED_TEST_SUITE_P(HybridIndexE2ECheck_HasLackDefaultValueBinlog,
                                HybridIndexTestV4,
+                               BitmapType);
+
+// Test unified scalar index format
+template <typename T>
+class HybridIndexTestUnified : public HybridIndexTestV1<T> {
+ public:
+    virtual void
+    SetParam() override {
+        this->nb_ = 10000;
+        this->cardinality_ = 30;
+        this->nullable_ = false;
+        this->index_version_ = 1005;
+        this->index_build_id_ = 1005;
+        this->scalar_index_version_ = milvus::kUnifiedScalarIndexVersion;
+    }
+
+    virtual ~HybridIndexTestUnified() {
+    }
+};
+
+TYPED_TEST_SUITE_P(HybridIndexTestUnified);
+
+TYPED_TEST_P(HybridIndexTestUnified, CountFuncTest) {
+    auto count = this->index_->Count();
+    EXPECT_EQ(count, this->nb_);
+}
+
+TYPED_TEST_P(HybridIndexTestUnified, INFuncTest) {
+    this->TestInFunc();
+}
+
+TYPED_TEST_P(HybridIndexTestUnified, NotINFuncTest) {
+    this->TestNotInFunc();
+}
+
+TYPED_TEST_P(HybridIndexTestUnified, IsNullFuncTest) {
+    this->TestIsNullFunc();
+}
+
+TYPED_TEST_P(HybridIndexTestUnified, IsNotNullFuncTest) {
+    this->TestIsNotNullFunc();
+}
+
+TYPED_TEST_P(HybridIndexTestUnified, CompareValFuncTest) {
+    this->TestCompareValueFunc();
+}
+
+TYPED_TEST_P(HybridIndexTestUnified, TestRangeCompareFuncTest) {
+    this->TestRangeCompareFunc();
+}
+
+REGISTER_TYPED_TEST_SUITE_P(HybridIndexTestUnified,
+                            CountFuncTest,
+                            INFuncTest,
+                            IsNullFuncTest,
+                            IsNotNullFuncTest,
+                            NotINFuncTest,
+                            CompareValFuncTest,
+                            TestRangeCompareFuncTest);
+
+INSTANTIATE_TYPED_TEST_SUITE_P(HybridIndexE2ECheck_UnifiedFormat,
+                               HybridIndexTestUnified,
                                BitmapType);

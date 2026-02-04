@@ -24,6 +24,7 @@
 #include "common/EasyAssert.h"
 #include "common/FieldData.h"
 #include "common/FieldDataInterface.h"
+#include "common/Pack.h"
 #include "common/RegexQuery.h"
 #include "common/Tracer.h"
 #include "common/Types.h"
@@ -228,6 +229,13 @@ class InvertedIndexTantivy : public ScalarIndex<T> {
         return is_nested_index_;
     }
 
+    // Token used in packed_<type>_v<ver> file names.
+    // Override in derived classes to distinguish index types.
+    virtual std::string
+    PackedIndexFileToken() const {
+        return "inverted";
+    }
+
     virtual const TargetBitmap
     PrefixMatch(const std::string_view prefix);
 
@@ -320,6 +328,23 @@ class InvertedIndexTantivy : public ScalarIndex<T> {
     // Modifying the index_files in place.
     virtual void
     RetainTantivyIndexFiles(std::vector<std::string>& index_files);
+
+    // Loads extra data from unpacked BinarySet in unified format (legacy).
+    // Override this method to load additional data (e.g., non_exist_offsets).
+    virtual void
+    LoadExtraDataFromUnifiedFormat(const BinarySet& unpacked) {
+        // Default implementation: no extra data to load
+    }
+
+    // Loads extra data using streaming read in unified format.
+    // Override this method to load additional data with random access.
+    // payload_start: offset where payload begins in the file
+    virtual void
+    LoadExtraDataFromUnifiedFormatStreaming(InputStream* input,
+                                            const DirectoryTable& dir_table,
+                                            size_t payload_start) {
+        // Default implementation: no extra data to load
+    }
 
  protected:
     std::shared_ptr<TantivyIndexWrapper> wrapper_;

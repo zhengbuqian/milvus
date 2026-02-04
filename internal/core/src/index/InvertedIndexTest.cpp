@@ -34,6 +34,7 @@
 #include "bitset/detail/proxy.h"
 #include "common/Consts.h"
 #include "common/FieldDataInterface.h"
+#include "common/Pack.h"
 #include "common/Tracer.h"
 #include "common/TracerBase.h"
 #include "common/Types.h"
@@ -98,7 +99,7 @@ template <typename T,
           bool has_lack_binlog_row_ = false,
           bool has_default_value_ = false>
 void
-test_run() {
+test_run(int32_t scalar_index_version = 0) {
     int64_t collection_id = 1;
     int64_t partition_id = 2;
     int64_t segment_id = 3;
@@ -210,6 +211,9 @@ test_run() {
         if (has_lack_binlog_row_) {
             config[INDEX_NUM_ROWS_KEY] = nb + lack_binlog_row;
         }
+        // Set scalar index version for unified format testing
+        config[milvus::index::SCALAR_INDEX_ENGINE_VERSION] =
+            scalar_index_version;
 
         auto index = indexbuilder::IndexFactory::GetInstance().CreateIndex(
             dtype, config, ctx);
@@ -232,6 +236,9 @@ test_run() {
         config["index_files"] = index_files;
         config[milvus::LOAD_PRIORITY] =
             milvus::proto::common::LoadPriority::HIGH;
+        // Pass the same version used during Build for correct load path
+        config[milvus::index::SCALAR_INDEX_ENGINE_VERSION] =
+            scalar_index_version;
         ctx.set_for_loading_index(true);
         auto index =
             index::IndexFactory::GetInstance().CreateIndex(index_info, ctx);
@@ -507,7 +514,7 @@ template <bool nullable = false,
           bool has_lack_binlog_row_ = false,
           bool has_default_value_ = false>
 void
-test_string() {
+test_string(int32_t scalar_index_version = 0) {
     using T = std::string;
     DataType dtype = DataType::VARCHAR;
 
@@ -604,6 +611,9 @@ test_string() {
         if (has_lack_binlog_row_) {
             config[INDEX_NUM_ROWS_KEY] = nb + lack_binlog_row;
         }
+        // Set scalar index version for unified format testing
+        config[milvus::index::SCALAR_INDEX_ENGINE_VERSION] =
+            scalar_index_version;
 
         auto index = indexbuilder::IndexFactory::GetInstance().CreateIndex(
             dtype, config, ctx);
@@ -626,6 +636,9 @@ test_string() {
         config["index_files"] = index_files;
         config[milvus::LOAD_PRIORITY] =
             milvus::proto::common::LoadPriority::HIGH;
+        // Pass the same version used during Build for correct load path
+        config[milvus::index::SCALAR_INDEX_ENGINE_VERSION] =
+            scalar_index_version;
         ctx.set_for_loading_index(true);
         auto index =
             index::IndexFactory::GetInstance().CreateIndex(index_info, ctx);
@@ -890,54 +903,69 @@ test_string() {
 }
 
 TEST(InvertedIndex, Naive) {
-    test_run<int8_t, DataType::INT8>();
-    test_run<int16_t, DataType::INT16>();
-    test_run<int32_t, DataType::INT32>();
-    test_run<int64_t, DataType::INT64>();
+    // Test both legacy format (version 1 with tantivy v7) and unified format (version >= 3 with tantivy v7)
+    // Note: version 0 requires tantivy v5 (single segment mode), version >= 1 can use tantivy v7
+    for (int32_t version : {1, milvus::kUnifiedScalarIndexVersion}) {
+        test_run<int8_t, DataType::INT8>(version);
+        test_run<int16_t, DataType::INT16>(version);
+        test_run<int32_t, DataType::INT32>(version);
+        test_run<int64_t, DataType::INT64>(version);
 
-    test_run<bool, DataType::BOOL>();
+        test_run<bool, DataType::BOOL>(version);
 
-    test_run<float, DataType::FLOAT>();
-    test_run<double, DataType::DOUBLE>();
+        test_run<float, DataType::FLOAT>(version);
+        test_run<double, DataType::DOUBLE>(version);
 
-    test_string();
-    test_run<int8_t, DataType::INT8, DataType::NONE, true>();
-    test_run<int16_t, DataType::INT16, DataType::NONE, true>();
-    test_run<int32_t, DataType::INT32, DataType::NONE, true>();
-    test_run<int64_t, DataType::INT64, DataType::NONE, true>();
+        test_string(version);
+        test_run<int8_t, DataType::INT8, DataType::NONE, true>(version);
+        test_run<int16_t, DataType::INT16, DataType::NONE, true>(version);
+        test_run<int32_t, DataType::INT32, DataType::NONE, true>(version);
+        test_run<int64_t, DataType::INT64, DataType::NONE, true>(version);
 
-    test_run<bool, DataType::BOOL, DataType::NONE, true>();
+        test_run<bool, DataType::BOOL, DataType::NONE, true>(version);
 
-    test_run<float, DataType::FLOAT, DataType::NONE, true>();
-    test_run<double, DataType::DOUBLE, DataType::NONE, true>();
+        test_run<float, DataType::FLOAT, DataType::NONE, true>(version);
+        test_run<double, DataType::DOUBLE, DataType::NONE, true>(version);
 
-    test_string<true>();
+        test_string<true>(version);
+    }
 }
 
 TEST(InvertedIndex, HasLackBinlogRows) {
-    // lack binlog is null
-    test_run<int8_t, DataType::INT8, DataType::NONE, true, true>();
-    test_run<int16_t, DataType::INT16, DataType::NONE, true, true>();
-    test_run<int32_t, DataType::INT32, DataType::NONE, true, true>();
-    test_run<int64_t, DataType::INT64, DataType::NONE, true, true>();
+    // Test both legacy format (version 1 with tantivy v7) and unified format (version >= 3 with tantivy v7)
+    // Note: version 0 requires tantivy v5 (single segment mode), version >= 1 can use tantivy v7
+    for (int32_t version : {1, milvus::kUnifiedScalarIndexVersion}) {
+        // lack binlog is null
+        test_run<int8_t, DataType::INT8, DataType::NONE, true, true>(version);
+        test_run<int16_t, DataType::INT16, DataType::NONE, true, true>(version);
+        test_run<int32_t, DataType::INT32, DataType::NONE, true, true>(version);
+        test_run<int64_t, DataType::INT64, DataType::NONE, true, true>(version);
 
-    test_run<bool, DataType::BOOL, DataType::NONE, true, true>();
+        test_run<bool, DataType::BOOL, DataType::NONE, true, true>(version);
 
-    test_run<float, DataType::FLOAT, DataType::NONE, true, true>();
-    test_run<double, DataType::DOUBLE, DataType::NONE, true, true>();
+        test_run<float, DataType::FLOAT, DataType::NONE, true, true>(version);
+        test_run<double, DataType::DOUBLE, DataType::NONE, true, true>(version);
 
-    test_string<true, true>();
+        test_string<true, true>(version);
 
-    // lack binlog is default_value
-    test_run<int8_t, DataType::INT8, DataType::NONE, true, true, true>();
-    test_run<int16_t, DataType::INT16, DataType::NONE, true, true, true>();
-    test_run<int32_t, DataType::INT32, DataType::NONE, true, true, true>();
-    test_run<int64_t, DataType::INT64, DataType::NONE, true, true, true>();
+        // lack binlog is default_value
+        test_run<int8_t, DataType::INT8, DataType::NONE, true, true, true>(
+            version);
+        test_run<int16_t, DataType::INT16, DataType::NONE, true, true, true>(
+            version);
+        test_run<int32_t, DataType::INT32, DataType::NONE, true, true, true>(
+            version);
+        test_run<int64_t, DataType::INT64, DataType::NONE, true, true, true>(
+            version);
 
-    test_run<bool, DataType::BOOL, DataType::NONE, true, true, true>();
+        test_run<bool, DataType::BOOL, DataType::NONE, true, true, true>(
+            version);
 
-    test_run<float, DataType::FLOAT, DataType::NONE, true, true, true>();
-    test_run<double, DataType::DOUBLE, DataType::NONE, true, true, true>();
+        test_run<float, DataType::FLOAT, DataType::NONE, true, true, true>(
+            version);
+        test_run<double, DataType::DOUBLE, DataType::NONE, true, true, true>(
+            version);
 
-    test_string<true, true, true>();
+        test_string<true, true, true>(version);
+    }
 }

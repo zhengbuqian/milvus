@@ -53,6 +53,7 @@
 #include "common/ChunkWriter.h"
 #include "common/Common.h"
 #include "common/Consts.h"
+#include "common/Pack.h"
 #include "common/EasyAssert.h"
 #include "common/FieldMeta.h"
 #include "common/GeometryCache.h"
@@ -1979,6 +1980,13 @@ ChunkedSegmentSealedImpl::LoadTextIndex(
     if (info_proto->warmup_policy() != "") {
         config[milvus::index::WARMUP] = info_proto->warmup_policy();
     }
+    // Pass scalar index engine version for unified format detection
+    auto scalar_index_version = info_proto->current_scalar_index_version();
+    if (scalar_index_version == 0) {
+        // If not set (legacy), use the fallback version
+        scalar_index_version = milvus::kLastScalarIndexEngineVersionWithoutMeta;
+    }
+    config[milvus::index::SCALAR_INDEX_ENGINE_VERSION] = scalar_index_version;
     milvus::storage::FileManagerContext file_ctx(
         field_data_meta, index_meta, remote_chunk_manager, fs);
 

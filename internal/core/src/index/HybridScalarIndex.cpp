@@ -14,20 +14,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <string.h>
-#include <cstdint>
-#include <exception>
-#include <map>
 #include <set>
-#include <utility>
 
 #include "common/Array.h"
 #include "common/Consts.h"
-#include "common/EasyAssert.h"
-#include "common/FieldDataInterface.h"
-#include "common/Tracer.h"
-#include "fmt/core.h"
-#include "glog/logging.h"
+#include "common/Pack.h"
+#include "common/Slice.h"
+#include "filemanager/OutputStream.h"
 #include "index/BitmapIndex.h"
 #include "index/HybridScalarIndex.h"
 #include "index/InvertedIndexTantivy.h"
@@ -37,13 +30,9 @@
 #include "index/StringIndexSort.h"
 #include "index/StringIndexMarisa.h"
 #include "index/Utils.h"
-#include "knowhere/binaryset.h"
 #include "log/Log.h"
-#include "nlohmann/json.hpp"
-#include "pb/common.pb.h"
 #include "storage/MemFileManagerImpl.h"
-#include "storage/ThreadPools.h"
-#include "storage/Types.h"
+#include "storage/RemoteInputStream.h"
 #include "storage/Util.h"
 
 namespace milvus {
@@ -317,6 +306,56 @@ template <typename T>
 IndexStatsPtr
 HybridScalarIndex<T>::Upload(const Config& config) {
     auto internal_index = GetInternalIndex();
+
+    // Check if using unified format
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(milvus::kLastScalarIndexEngineVersionWithoutMeta);
+
+    if (milvus::IsUnifiedScalarIndexVersion(version)) {
+        // Unified format: pack INDEX_TYPE + internal index data into single file
+
+        // Get internal index serialized data
+        auto internal_binary_set = internal_index->Serialize(config);
+
+        // Add INDEX_TYPE to the binary set
+        std::shared_ptr<uint8_t[]> index_type_buf(new uint8_t[sizeof(uint8_t)]);
+        index_type_buf[0] = static_cast<uint8_t>(internal_index_type_);
+        internal_binary_set.Append(INDEX_TYPE, index_type_buf, sizeof(uint8_t));
+
+        // Collect entries for unified pack
+        std::vector<milvus::SerializeEntry> entries;
+        for (const auto& [name, binary] : internal_binary_set.binary_map_) {
+            entries.push_back({name, binary->size});
+        }
+
+        // Phase 2: Stream write index file with transparent encryption
+        auto packed_file_name =
+            milvus::FormatPackedIndexFileName("hybrid", version);
+
+        // Create write callback
+        auto write_entry_data = [&internal_binary_set](
+                                    milvus::OutputStream* out,
+                                    const std::string& name) {
+            auto binary = internal_binary_set.GetByName(name);
+            out->Write(binary->data.get(), binary->size);
+        };
+
+        // Stream write with automatic encryption support
+        mem_file_manager_->StreamWriteIndex(
+            packed_file_name, entries, write_entry_data);
+
+        auto remote_mem_path_to_size =
+            mem_file_manager_->GetRemotePathsToFileSize();
+        std::vector<SerializedIndexFileInfo> index_files;
+        for (auto& file : remote_mem_path_to_size) {
+            index_files.emplace_back(file.first, file.second);
+        }
+        return IndexStats::New(mem_file_manager_->GetAddedTotalMemSize(),
+                               std::move(index_files));
+    }
+
+    // Legacy format: upload internal index and INDEX_TYPE separately
     auto index_ret = internal_index->Upload(config);
 
     auto index_type_ret = SerializeIndexType();
@@ -348,8 +387,24 @@ HybridScalarIndex<T>::GetRemoteIndexTypeFile(
             ret = file;
         }
     }
-    AssertInfo(!ret.empty(), "index type file not found for hybrid index");
+    // In unified format, INDEX_TYPE is inside the packed file, so it's OK to not find it
     return ret;
+}
+
+template <typename T>
+std::string
+HybridScalarIndex<T>::GetPackedIndexFile(
+    const std::vector<std::string>& files) {
+    for (const auto& file : files) {
+        auto file_name = file.substr(file.find_last_of('/') + 1);
+        std::string token;
+        int32_t version;
+        if (milvus::TryParsePackedIndexFileName(file_name, &token, &version) &&
+            token == "hybrid") {
+            return file;
+        }
+    }
+    return "";
 }
 
 template <typename T>
@@ -375,12 +430,52 @@ HybridScalarIndex<T>::Load(milvus::tracer::TraceContext ctx,
     AssertInfo(index_files.has_value(),
                "index file paths is empty when load hybrid index");
 
-    auto index_type_file = GetRemoteIndexTypeFile(index_files.value());
-
     auto load_priority =
         GetValueFromConfig<milvus::proto::common::LoadPriority>(
             config, milvus::LOAD_PRIORITY)
             .value_or(milvus::proto::common::LoadPriority::HIGH);
+
+    // Check for unified format (packed_hybrid_v*)
+    auto packed_file = GetPackedIndexFile(index_files.value());
+    if (!packed_file.empty()) {
+        // Streaming load for unified format
+        auto input = mem_file_manager_->OpenInputStreamByPath(packed_file);
+        AssertInfo(input != nullptr, "Failed to open input stream");
+
+        // Read event headers and get payload start offset
+        size_t payload_start = milvus::StreamReadEventHeaders(input.get());
+
+        // Read directory table
+        auto dir_table = milvus::StreamReadDirectoryTable(input.get());
+
+        // Read all entries into BinarySet using streaming random access
+        BinarySet unpacked;
+        for (const auto& entry : dir_table.entries) {
+            auto [data, size] = milvus::StreamReadEntryToMemory(
+                input.get(), payload_start + entry.offset, entry.size);
+            unpacked.Append(entry.name, data, size);
+        }
+
+        // Deserialize index type from unpacked data
+        DeserializeIndexType(unpacked);
+
+        auto index = GetInternalIndex();
+        LOG_INFO("load hybrid index (unified) with internal index:{}",
+                 ToString(internal_index_type_));
+
+        // Load internal index from unpacked BinarySet
+        index->Load(unpacked, config);
+
+        is_built_ = true;
+        ComputeByteSize();
+        return;
+    }
+
+    // Legacy format: INDEX_TYPE is in a separate file
+    auto index_type_file = GetRemoteIndexTypeFile(index_files.value());
+    AssertInfo(!index_type_file.empty(),
+               "index type file not found for hybrid index (legacy format)");
+
     auto index_datas = mem_file_manager_->LoadIndexToMemory(
         std::vector<std::string>{index_type_file}, load_priority);
     BinarySet binary_set;

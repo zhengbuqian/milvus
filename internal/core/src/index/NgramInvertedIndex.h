@@ -13,6 +13,7 @@
 #include <string>
 #include <boost/filesystem.hpp>
 #include <optional>
+#include "common/Pack.h"
 #include "index/JsonInvertedIndex.h"
 #include "index/InvertedIndexTantivy.h"
 
@@ -92,6 +93,11 @@ class NgramInvertedIndex : public InvertedIndexTantivy<std::string> {
     ScalarIndexType
     GetIndexType() const override {
         return ScalarIndexType::NGRAM;
+    }
+
+    std::string
+    PackedIndexFileToken() const override {
+        return "ngram";
     }
 
     void

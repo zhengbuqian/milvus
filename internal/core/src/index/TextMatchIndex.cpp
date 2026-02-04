@@ -13,7 +13,9 @@
 #include <boost/uuid/uuid_io.hpp>
 #include <memory>
 #include <shared_mutex>
+#include <filesystem>
 
+#include "common/Pack.h"
 #include "index/TextMatchIndex.h"
 #include "index/InvertedIndexUtil.h"
 #include "index/Utils.h"
@@ -97,6 +99,62 @@ IndexStatsPtr
 TextMatchIndex::Upload(const Config& config) {
     finish();
 
+    // Check if using unified format
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(milvus::kLastScalarIndexEngineVersionWithoutMeta);
+
+    if (milvus::IsUnifiedScalarIndexVersion(version)) {
+        // Phase 1: Collect tantivy directory entries (zero memory overhead)
+        auto tantivy_entries = milvus::CollectDirectoryEntries(path_);
+        size_t tantivy_pack_size = milvus::ComputePayloadSize(tantivy_entries);
+
+        // Phase 2: Collect outer pack entries with null_offset
+        size_t null_offset_size;
+        {
+            std::shared_lock<folly::SharedMutexWritePriority> lock(mutex_);
+            null_offset_size = null_offset_.size() * sizeof(size_t);
+        }
+
+        std::vector<milvus::SerializeEntry> entries = {
+            {"tantivy_index_data", tantivy_pack_size},
+        };
+        if (null_offset_size > 0) {
+            entries.push_back({INDEX_NULL_OFFSET_FILE_NAME, null_offset_size});
+        }
+
+        // Phase 3: Stream write text log index file with transparent encryption
+        auto packed_file_name =
+            milvus::FormatPackedIndexFileName("textmatch", version);
+
+        auto write_entry_data = [this, &tantivy_entries, null_offset_size](
+                                    milvus::OutputStream* out,
+                                    const std::string& name) {
+            if (name == "tantivy_index_data") {
+                // Stream write the tantivy directory pack
+                milvus::StreamWritePackedDirectory(out, this->path_);
+            } else if (name == INDEX_NULL_OFFSET_FILE_NAME) {
+                std::shared_lock<folly::SharedMutexWritePriority> lock(
+                    this->mutex_);
+                out->Write(this->null_offset_.data(), null_offset_size);
+            }
+        };
+
+        // Stream write with automatic encryption support
+        mem_file_manager_->StreamWriteTextLogIndex(
+            packed_file_name, entries, write_entry_data);
+
+        auto remote_mem_path_to_size =
+            mem_file_manager_->GetRemotePathsToFileSize();
+        std::vector<SerializedIndexFileInfo> index_files;
+        for (auto& file : remote_mem_path_to_size) {
+            index_files.emplace_back(file.first, file.second);
+        }
+        return IndexStats::New(mem_file_manager_->GetAddedTotalMemSize(),
+                               std::move(index_files));
+    }
+
+    // Legacy format: upload files individually
     boost::filesystem::path p(path_);
     boost::filesystem::directory_iterator end_iter;
 
@@ -140,46 +198,118 @@ TextMatchIndex::Load(const Config& config) {
         GetValueFromConfig<std::vector<std::string>>(config, INDEX_FILES);
     AssertInfo(index_files.has_value(),
                "index file paths is empty when load text log index");
-    auto prefix = disk_file_manager_->GetLocalTextIndexPrefix();
     auto files_value = index_files.value();
-    auto it = std::find_if(
-        files_value.begin(), files_value.end(), [](const std::string& file) {
-            return file.substr(file.find_last_of('/') + 1) ==
-                   "index_null_offset";
-        });
+
     auto load_priority =
         GetValueFromConfig<milvus::proto::common::LoadPriority>(
             config, milvus::LOAD_PRIORITY)
             .value_or(milvus::proto::common::LoadPriority::HIGH);
-    if (it != files_value.end()) {
-        std::vector<std::string> file;
-        file.push_back(*it);
-        files_value.erase(it);
-        auto index_datas =
-            mem_file_manager_->LoadIndexToMemory(file, load_priority);
-        BinarySet binary_set;
-        AssembleIndexDatas(index_datas, binary_set);
-        // clear index_datas to free memory early
-        index_datas.clear();
-        auto index_valid_data = binary_set.GetByName("index_null_offset");
-        null_offset_.resize((size_t)index_valid_data->size / sizeof(size_t));
-        memcpy(null_offset_.data(),
-               index_valid_data->data.get(),
-               (size_t)index_valid_data->size);
-    }
-    disk_file_manager_->CacheTextLogToDisk(files_value, load_priority);
-    AssertInfo(
-        tantivy_index_exist(prefix.c_str()), "index not exist: {}", prefix);
 
-    auto load_in_mmap =
-        GetValueFromConfig<bool>(config, ENABLE_MMAP).value_or(true);
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(milvus::kLastScalarIndexEngineVersionWithoutMeta);
 
-    wrapper_ = std::make_shared<TantivyIndexWrapper>(
-        prefix.c_str(), load_in_mmap, milvus::index::SetBitsetSealed);
+    if (milvus::IsUnifiedScalarIndexVersion(version)) {
+        // Unified format: streaming load with DirectoryTable for random access
+        auto packed_name =
+            milvus::FormatPackedIndexFileName("textmatch", version);
 
-    if (!load_in_mmap) {
-        // the index is loaded in ram, so we can remove files in advance
-        disk_file_manager_->RemoveTextLogFiles();
+        // Find the packed file path
+        std::string packed_file_path;
+        for (const auto& file : files_value) {
+            if (std::filesystem::path(file).filename().string() ==
+                packed_name) {
+                packed_file_path = file;
+                break;
+            }
+        }
+        AssertInfo(!packed_file_path.empty(),
+                   "packed text match index file not found");
+
+        // Open input stream for streaming read
+        auto input = mem_file_manager_->OpenInputStreamByPath(packed_file_path);
+        AssertInfo(input != nullptr, "Failed to open input stream");
+
+        // Read event headers and get payload start offset
+        size_t payload_start = milvus::StreamReadEventHeaders(input.get());
+
+        // Read directory table
+        auto dir_table = milvus::StreamReadDirectoryTable(input.get());
+
+        // Find tantivy_index_data entry
+        auto tantivy_entry = dir_table.Find("tantivy_index_data");
+        AssertInfo(tantivy_entry != nullptr,
+                   "tantivy_index_data not found in packed text match index");
+
+        // Unpack tantivy directory to local path
+        auto prefix = disk_file_manager_->GetLocalTextIndexPrefix();
+        boost::filesystem::create_directories(prefix);
+
+        // Calculate absolute offset: payload_start + entry offset
+        size_t tantivy_abs_offset = payload_start + tantivy_entry->offset;
+        milvus::StreamUnpackEntryToDirectory(
+            input.get(), tantivy_abs_offset, tantivy_entry->size, prefix);
+        path_ = prefix;
+
+        // Load null_offset if present
+        auto null_offset_entry = dir_table.Find(INDEX_NULL_OFFSET_FILE_NAME);
+        if (null_offset_entry != nullptr && null_offset_entry->size > 0) {
+            size_t null_offset_abs_offset =
+                payload_start + null_offset_entry->offset;
+            auto [data, size] = milvus::StreamReadEntryToMemory(
+                input.get(), null_offset_abs_offset, null_offset_entry->size);
+            null_offset_.resize(size / sizeof(size_t));
+            memcpy(null_offset_.data(), data.get(), size);
+        }
+
+        auto load_in_mmap =
+            GetValueFromConfig<bool>(config, ENABLE_MMAP).value_or(true);
+        wrapper_ = std::make_shared<TantivyIndexWrapper>(
+            prefix.c_str(), load_in_mmap, milvus::index::SetBitsetSealed);
+
+        if (!load_in_mmap) {
+            boost::filesystem::remove_all(prefix);
+        }
+    } else {
+        // Legacy format: load files individually
+        auto prefix = disk_file_manager_->GetLocalTextIndexPrefix();
+        auto it = std::find_if(files_value.begin(),
+                               files_value.end(),
+                               [](const std::string& file) {
+                                   return file.substr(file.find_last_of('/') +
+                                                      1) == "index_null_offset";
+                               });
+        if (it != files_value.end()) {
+            std::vector<std::string> file;
+            file.push_back(*it);
+            files_value.erase(it);
+            auto index_datas =
+                mem_file_manager_->LoadIndexToMemory(file, load_priority);
+            BinarySet binary_set;
+            AssembleIndexDatas(index_datas, binary_set);
+            // clear index_datas to free memory early
+            index_datas.clear();
+            auto index_valid_data = binary_set.GetByName("index_null_offset");
+            null_offset_.resize((size_t)index_valid_data->size /
+                                sizeof(size_t));
+            memcpy(null_offset_.data(),
+                   index_valid_data->data.get(),
+                   (size_t)index_valid_data->size);
+        }
+        disk_file_manager_->CacheTextLogToDisk(files_value, load_priority);
+        AssertInfo(
+            tantivy_index_exist(prefix.c_str()), "index not exist: {}", prefix);
+
+        auto load_in_mmap =
+            GetValueFromConfig<bool>(config, ENABLE_MMAP).value_or(true);
+
+        wrapper_ = std::make_shared<TantivyIndexWrapper>(
+            prefix.c_str(), load_in_mmap, milvus::index::SetBitsetSealed);
+
+        if (!load_in_mmap) {
+            // the index is loaded in ram, so we can remove files in advance
+            disk_file_manager_->RemoveTextLogFiles();
+        }
     }
 }
 

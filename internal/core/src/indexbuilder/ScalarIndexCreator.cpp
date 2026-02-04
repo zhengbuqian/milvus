@@ -120,6 +120,6 @@ ScalarIndexCreator::index_type() {
 
 index::IndexStatsPtr
 ScalarIndexCreator::Upload() {
-    return index_->Upload();
+    return index_->Upload(config_);
 }
 }  // namespace milvus::indexbuilder

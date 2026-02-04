@@ -153,7 +153,7 @@ const std::string WARMUP_SCALAR_FIELD_KEY = "warmup.scalarField";
 const std::string WARMUP_VECTOR_FIELD_KEY = "warmup.vectorField";
 
 // Scalar index version constants
-// Version 3 introduces hybrid index configuration support
+// Version 3 introduces hybrid index inner index type configuration support and unified scalar index format.
 constexpr int32_t kHybridIndexConfigVersion = 3;
 // The last version before hybrid index config support was added
 constexpr int32_t kLastVersionWithoutHybridIndexConfig = 2;

@@ -183,6 +183,80 @@ JsonInvertedIndex<T>::RetainTantivyIndexFiles(
     InvertedIndexTantivy<T>::RetainTantivyIndexFiles(index_files);
 }
 
+template <typename T>
+IndexStatsPtr
+JsonInvertedIndex<T>::Upload(const Config& config) {
+    this->finish();
+
+    auto version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(milvus::kLastScalarIndexEngineVersionWithoutMeta);
+
+    if (milvus::IsUnifiedScalarIndexVersion(version)) {
+        // Phase 1: Collect tantivy directory entries (zero memory overhead)
+        auto tantivy_entries = milvus::CollectDirectoryEntries(this->path_);
+        size_t tantivy_pack_size = milvus::ComputePayloadSize(tantivy_entries);
+
+        // Phase 2: Collect outer pack entries
+        size_t null_offset_size;
+        size_t non_exist_size;
+        {
+            std::shared_lock<folly::SharedMutex> lock(this->mutex_);
+            null_offset_size = this->null_offset_.size() * sizeof(size_t);
+            non_exist_size = non_exist_offsets_.size() * sizeof(size_t);
+        }
+
+        std::vector<milvus::SerializeEntry> entries = {
+            {"tantivy_index_data", tantivy_pack_size},
+        };
+        if (null_offset_size > 0) {
+            entries.push_back({INDEX_NULL_OFFSET_FILE_NAME, null_offset_size});
+        }
+        if (non_exist_size > 0) {
+            entries.push_back(
+                {INDEX_NON_EXIST_OFFSET_FILE_NAME, non_exist_size});
+        }
+
+        // Phase 3: Stream write index file with transparent encryption
+        auto packed_file_name = milvus::FormatPackedIndexFileName(
+            this->PackedIndexFileToken(), version);
+
+        // Create write callback that handles nested packing
+        auto write_entry_data = [this, null_offset_size, non_exist_size](
+                                    milvus::OutputStream* out,
+                                    const std::string& name) {
+            if (name == "tantivy_index_data") {
+                // Stream write nested tantivy pack
+                milvus::StreamWritePackedDirectory(out, this->path_);
+            } else if (name == INDEX_NULL_OFFSET_FILE_NAME) {
+                // Write null_offset data
+                std::shared_lock<folly::SharedMutex> lock(this->mutex_);
+                out->Write(this->null_offset_.data(), null_offset_size);
+            } else if (name == INDEX_NON_EXIST_OFFSET_FILE_NAME) {
+                // Write non_exist_offset data
+                std::shared_lock<folly::SharedMutex> lock(this->mutex_);
+                out->Write(this->non_exist_offsets_.data(), non_exist_size);
+            }
+        };
+
+        // Stream write with automatic encryption support
+        this->mem_file_manager_->StreamWriteIndex(
+            packed_file_name, entries, write_entry_data);
+
+        auto remote_mem_path_to_size =
+            this->mem_file_manager_->GetRemotePathsToFileSize();
+        std::vector<SerializedIndexFileInfo> index_files;
+        for (auto& file : remote_mem_path_to_size) {
+            index_files.emplace_back(file.first, file.second);
+        }
+        return IndexStats::New(this->mem_file_manager_->GetAddedTotalMemSize(),
+                               std::move(index_files));
+    }
+
+    // Legacy format: call parent's Upload
+    return InvertedIndexTantivy<T>::Upload(config);
+}
+
 template class JsonInvertedIndex<bool>;
 template class JsonInvertedIndex<int64_t>;
 template class JsonInvertedIndex<double>;
