@@ -68,6 +68,7 @@
 #include "storage/ThreadPool.h"
 #include "storage/Types.h"
 #include "storage/Util.h"
+#include "index/ScalarIndexSort.h"
 #include "test_utils/DataGen.h"
 #include "test_utils/storage_test_utils.h"
 
@@ -265,6 +266,30 @@ TEST_F(DiskAnnFileManagerTest, ReadAndWriteWithStream) {
     lcm->Remove(small_index_file_path_read);
     lcm->Remove(large_index_file_path);
     lcm->Remove(small_index_file_path);
+}
+
+TEST_F(DiskAnnFileManagerTest, V3PackedIndexPathMismatch) {
+    FieldDataMeta filed_data_meta = {1, 2, 3, 100};
+    IndexMeta index_meta = {3, 100, 1000, 1, "index"};
+    storage::FileManagerContext context(filed_data_meta, index_meta, cm_, fs_);
+
+    milvus::index::ScalarIndexSort<int64_t> index(context);
+    std::vector<int64_t> values = {1, 2, 3};
+    index.Build(values.size(), values.data());
+
+    auto stats = index.UploadV3({});
+    auto files = stats->GetIndexFiles();
+    ASSERT_EQ(files.size(), 1);
+
+    storage::MemFileManagerImpl file_manager(context);
+    std::string v2_path =
+        file_manager.GetRemoteIndexObjectPrefixV2() + "/packed_index_v3";
+    std::string v3_path = files[0];
+
+    std::cout << "v2_path=" << v2_path << std::endl;
+    std::cout << "v3_path=" << v3_path << std::endl;
+
+    EXPECT_EQ(v3_path, v2_path);
 }
 
 int

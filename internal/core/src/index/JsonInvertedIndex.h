@@ -12,6 +12,8 @@
 #pragma once
 #include <cstdint>
 #include <shared_mutex>
+#include "nlohmann/json_fwd.hpp"
+
 #include "common/Slice.h"
 #include "common/FieldDataInterface.h"
 #include "common/JsonCastFunction.h"
@@ -88,7 +90,7 @@ class JsonInvertedIndex : public index::InvertedIndexTantivy<T> {
           cast_type_(cast_type),
           cast_function_(cast_function) {
         this->schema_ = ctx.fieldDataMeta.field_schema;
-        this->mem_file_manager_ =
+        this->file_manager_ =
             std::make_shared<storage::MemFileManagerImpl>(ctx);
         this->disk_file_manager_ =
             std::make_shared<storage::DiskFileManagerImpl>(ctx);
@@ -170,6 +172,18 @@ class JsonInvertedIndex : public index::InvertedIndexTantivy<T> {
     // Returns a bitmap indicating which rows have values that are indexed.
     TargetBitmap
     Exists();
+
+ protected:
+    nlohmann::json
+    BuildTantivyMeta(const std::vector<std::string>& file_names,
+                     bool has_null) override;
+
+    void
+    WriteExtraEntries(storage::IndexWriter* writer) override;
+
+    void
+    LoadExtraEntries(storage::EntryReader& reader,
+                     const nlohmann::json& meta) override;
 
  protected:
     void

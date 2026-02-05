@@ -27,6 +27,13 @@
 #include "fmt/format.h"
 #include "index/Meta.h"
 
+namespace milvus::storage {
+class IndexWriter;
+class EntryReader;
+class MemFileManagerImpl;
+using MemFileManagerImplPtr = std::shared_ptr<MemFileManagerImpl>;
+}  // namespace milvus::storage
+
 namespace milvus::index {
 
 enum class ScalarIndexType {
@@ -204,6 +211,35 @@ class ScalarIndex : public IndexBase {
     LoadWithoutAssemble(const BinarySet& binary_set, const Config& config) {
         ThrowInfo(Unsupported, "LoadWithoutAssemble is not supported");
     }
+
+    // V3 streaming upload - non-virtual so subclasses cannot override
+    // Subclasses must implement WriteEntries() instead
+    IndexStatsPtr
+    UploadV3(const Config& config);
+
+    // V3 streaming load - loads index from a packed V3 format file
+    // Opens the file and calls LoadEntries() for subclass-specific loading
+    void
+    LoadV3(const Config& config);
+
+    virtual void
+    WriteEntries(storage::IndexWriter* writer) {
+        ThrowInfo(Unsupported, "WriteEntries is not implemented");
+    }
+
+    virtual void
+    LoadEntries(storage::EntryReader& reader, const Config& config) {
+        ThrowInfo(Unsupported, "LoadEntries is not implemented");
+    }
+
+ protected:
+    // File manager for V3 upload/load operations
+    storage::MemFileManagerImplPtr file_manager_;
+
+    // Controls the remote path prefix for V3 upload/load.
+    // true  → index_files/...  (default, for normal scalar indexes)
+    // false → text_log/...     (for TextMatchIndex)
+    bool is_index_file_ = true;
 };
 
 template <typename T>

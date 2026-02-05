@@ -45,6 +45,8 @@
 #include "storage/ThreadPools.h"
 #include "storage/Types.h"
 #include "storage/Util.h"
+#include "storage/EntryReader.h"
+#include "storage/IndexWriter.h"
 
 namespace milvus {
 namespace index {
@@ -62,9 +64,10 @@ HybridScalarIndex<T>::HybridScalarIndex(
       high_cardinality_index_type_(ScalarIndexType::STLSORT),
       file_manager_context_(file_manager_context) {
     if (file_manager_context.Valid()) {
-        mem_file_manager_ =
+        this->file_manager_ =
             std::make_shared<storage::MemFileManagerImpl>(file_manager_context);
-        AssertInfo(mem_file_manager_ != nullptr, "create file manager failed!");
+        AssertInfo(this->file_manager_ != nullptr,
+                   "create file manager failed!");
     }
     field_type_ = file_manager_context.fieldDataMeta.field_schema.data_type();
     internal_index_type_ = ScalarIndexType::NONE;
@@ -264,8 +267,10 @@ HybridScalarIndex<T>::Build(const Config& config) {
         ToString(low_cardinality_index_type_),
         ToString(high_cardinality_index_type_),
         scalar_index_version);
-    auto field_datas =
-        storage::CacheRawDataAndFillMissing(mem_file_manager_, config);
+    auto field_datas = storage::CacheRawDataAndFillMissing(
+        std::static_pointer_cast<storage::MemFileManagerImpl>(
+            this->file_manager_),
+        config);
 
     SelectIndexBuildType(field_datas);
     BuildInternal(field_datas);
@@ -302,9 +307,9 @@ HybridScalarIndex<T>::SerializeIndexType() {
     std::shared_ptr<uint8_t[]> index_type_buf(new uint8_t[sizeof(uint8_t)]);
     index_type_buf[0] = static_cast<uint8_t>(internal_index_type_);
     index_binary_set.Append(index::INDEX_TYPE, index_type_buf, sizeof(uint8_t));
-    mem_file_manager_->AddFile(index_binary_set);
+    this->file_manager_->AddFile(index_binary_set);
 
-    auto remote_paths_to_size = mem_file_manager_->GetRemotePathsToFileSize();
+    auto remote_paths_to_size = this->file_manager_->GetRemotePathsToFileSize();
     BinarySet ret_set;
     Assert(remote_paths_to_size.size() == 1);
     for (auto& file : remote_paths_to_size) {
@@ -381,7 +386,7 @@ HybridScalarIndex<T>::Load(milvus::tracer::TraceContext ctx,
         GetValueFromConfig<milvus::proto::common::LoadPriority>(
             config, milvus::LOAD_PRIORITY)
             .value_or(milvus::proto::common::LoadPriority::HIGH);
-    auto index_datas = mem_file_manager_->LoadIndexToMemory(
+    auto index_datas = this->file_manager_->LoadIndexToMemory(
         std::vector<std::string>{index_type_file}, load_priority);
     BinarySet binary_set;
     AssembleIndexDatas(index_datas, binary_set);
@@ -393,6 +398,42 @@ HybridScalarIndex<T>::Load(milvus::tracer::TraceContext ctx,
     LOG_INFO("load hybrid index with internal index:{}",
              ToString(internal_index_type_));
     index->Load(ctx, config);
+
+    is_built_ = true;
+    ComputeByteSize();
+}
+
+template <typename T>
+void
+HybridScalarIndex<T>::WriteEntries(storage::IndexWriter* writer) {
+    AssertInfo(is_built_, "index has not been built yet");
+
+    auto meta = nlohmann::json{{"index_type",
+                                static_cast<uint8_t>(internal_index_type_)}}
+                    .dump();
+    writer->WriteEntry("HYBRID_INDEX_META", meta.data(), meta.size());
+
+    internal_index_->WriteEntries(writer);
+
+    LOG_INFO("write hybrid index entries with internal index type: {}",
+             ToString(internal_index_type_));
+}
+
+template <typename T>
+void
+HybridScalarIndex<T>::LoadEntries(storage::EntryReader& reader,
+                                  const Config& config) {
+    auto meta_entry = reader.ReadEntry("HYBRID_INDEX_META");
+    auto mj =
+        nlohmann::json::parse(meta_entry.data.begin(), meta_entry.data.end());
+    internal_index_type_ =
+        static_cast<ScalarIndexType>(mj["index_type"].get<uint8_t>());
+
+    LOG_INFO("LoadEntries hybrid index with internal index type: {}",
+             ToString(internal_index_type_));
+
+    auto index = GetInternalIndex();
+    index->LoadEntries(reader, config);
 
     is_built_ = true;
     ComputeByteSize();

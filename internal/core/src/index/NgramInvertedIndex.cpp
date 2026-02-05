@@ -43,6 +43,8 @@
 #include "simdjson/error.h"
 #include "storage/DataCodec.h"
 #include "storage/DiskFileManagerImpl.h"
+#include "storage/EntryReader.h"
+#include "storage/IndexWriter.h"
 #include "storage/MemFileManagerImpl.h"
 #include "storage/ThreadPools.h"
 #include "storage/Types.h"
@@ -78,7 +80,7 @@ NgramInvertedIndex::NgramInvertedIndex(const storage::FileManagerContext& ctx,
     : min_gram_(params.min_gram), max_gram_(params.max_gram) {
     schema_ = ctx.fieldDataMeta.field_schema;
     field_id_ = ctx.fieldDataMeta.field_id;
-    mem_file_manager_ = std::make_shared<MemFileManager>(ctx);
+    this->file_manager_ = std::make_shared<MemFileManager>(ctx);
     disk_file_manager_ = std::make_shared<DiskFileManager>(ctx);
 
     if (params.loading_index) {
@@ -222,6 +224,29 @@ NgramInvertedIndex::Upload(const Config& config) {
 }
 
 void
+NgramInvertedIndex::WriteEntries(storage::IndexWriter* writer) {
+    // Call parent to write tantivy index files and null_offset
+    InvertedIndexTantivy<std::string>::WriteEntries(writer);
+
+    // Write ngram-specific metadata (avg_row_size)
+    writer->WriteEntry(
+        NGRAM_AVG_ROW_SIZE_FILE_NAME, &avg_row_size_, sizeof(size_t));
+    LOG_INFO("wrote ngram avg_row_size: {} bytes", avg_row_size_);
+}
+
+void
+NgramInvertedIndex::LoadEntries(storage::EntryReader& reader,
+                                const Config& config) {
+    InvertedIndexTantivy<std::string>::LoadEntries(reader, config);
+
+    auto avg_row_entry = reader.ReadEntry(NGRAM_AVG_ROW_SIZE_FILE_NAME);
+    std::memcpy(&avg_row_size_, avg_row_entry.data.data(), sizeof(size_t));
+
+    LOG_INFO("LoadEntries NgramInvertedIndex done, avg_row_size: {} bytes",
+             avg_row_size_);
+}
+
+void
 NgramInvertedIndex::LoadIndexMetas(const std::vector<std::string>& index_files,
                                    const Config& config) {
     // Call parent to load null_offset
@@ -239,7 +264,7 @@ NgramInvertedIndex::LoadIndexMetas(const std::vector<std::string>& index_files,
                 config, milvus::LOAD_PRIORITY)
                 .value_or(milvus::proto::common::LoadPriority::HIGH);
         // avg_row_size is only 8 bytes, never sliced
-        auto index_datas = mem_file_manager_->LoadIndexToMemory(
+        auto index_datas = this->file_manager_->LoadIndexToMemory(
             {*avg_row_size_it}, load_priority);
         auto avg_row_size_data =
             std::move(index_datas.at(NGRAM_AVG_ROW_SIZE_FILE_NAME));

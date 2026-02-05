@@ -22,10 +22,17 @@
 
 #include "common/Types.h"
 #include "fmt/core.h"
+#include "index/IndexStats.h"
 #include "index/Meta.h"
 #include "index/ScalarIndex.h"
+#include "index/Utils.h"
 #include "knowhere/dataset.h"
+#include "log/Log.h"
 #include "pb/schema.pb.h"
+#include "storage/FileManager.h"
+#include "storage/EntryReader.h"
+#include "storage/IndexWriter.h"
+#include "storage/Util.h"
 
 namespace milvus::index {
 template <typename T>
@@ -151,6 +158,85 @@ ScalarIndex<double>::BuildWithRawDataForUT(size_t n,
                                            const Config& config) {
     auto data = reinterpret_cast<double*>(const_cast<void*>(values));
     Build(n, data);
+}
+
+// V3 packed index filename constant
+constexpr const char* kPackedIndexFileName = "packed_index_v3";
+
+template <typename T>
+IndexStatsPtr
+ScalarIndex<T>::UploadV3(const Config& config) {
+    AssertInfo(file_manager_ != nullptr,
+               "file_manager_ is null, UploadV3 requires a valid file manager");
+
+    // Use basename only; FileManager will prepend the remote index prefix.
+    auto filename = std::string(kPackedIndexFileName);
+
+    // Create the IndexWriter
+    auto writer = file_manager_->CreateIndexWriterV3(filename, is_index_file_);
+    AssertInfo(writer != nullptr, "failed to create IndexWriter for V3 format");
+
+    // Call subclass implementation to write all entries
+    WriteEntries(writer.get());
+
+    // Finish writing - this writes Directory Table and Footer
+    writer->Finish();
+
+    // Get actual file size from writer
+    auto file_size = writer->GetTotalBytesWritten();
+
+    LOG_INFO("UploadV3 completed for index type: {}, file size: {}",
+             index_type_,
+             file_size);
+
+    // Return IndexStats with the single packed file (full remote path)
+    std::vector<SerializedIndexFileInfo> index_files;
+    auto remote_prefix = is_index_file_
+                             ? file_manager_->GetRemoteIndexObjectPrefixV2()
+                             : file_manager_->GetRemoteTextLogPrefixV2();
+    auto remote_path = remote_prefix + "/" + filename;
+    index_files.emplace_back(remote_path, file_size);
+
+    return IndexStats::New(file_size, std::move(index_files));
+}
+
+template <typename T>
+void
+ScalarIndex<T>::LoadV3(const Config& config) {
+    AssertInfo(file_manager_ != nullptr,
+               "file_manager_ is null, LoadV3 requires a valid file manager");
+
+    // Get the packed index file path from config
+    auto index_files =
+        GetValueFromConfig<std::vector<std::string>>(config, INDEX_FILES);
+    AssertInfo(index_files.has_value() && !index_files.value().empty(),
+               "index_files is required for LoadV3");
+
+    // For V3 format, there should be exactly one packed file
+    AssertInfo(index_files.value().size() == 1,
+               "LoadV3 expects exactly one packed index file, got: {}",
+               index_files.value().size());
+    const auto& packed_file = index_files.value()[0];
+
+    LOG_INFO("LoadV3: loading packed index file: {}", packed_file);
+
+    // Open the file using the file manager
+    auto input = file_manager_->OpenInputStream(packed_file, is_index_file_);
+    AssertInfo(input != nullptr,
+               "failed to open input stream for packed index file: {}",
+               packed_file);
+
+    size_t file_size = input->Size();
+
+    auto collection_id =
+        GetValueFromConfig<int64_t>(config, COLLECTION_ID).value_or(0);
+
+    auto reader = storage::EntryReader::Open(input, file_size, collection_id);
+    AssertInfo(reader != nullptr, "failed to create EntryReader");
+
+    LoadEntries(*reader, config);
+
+    LOG_INFO("LoadV3 completed for index type: {}", index_type_);
 }
 
 template class ScalarIndex<bool>;
