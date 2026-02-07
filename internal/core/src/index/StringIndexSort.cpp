@@ -281,6 +281,9 @@ StringIndexSort::Serialize(const Config& config) {
 
 IndexStatsPtr
 StringIndexSort::Upload(const Config& config) {
+    if (kDefaultScalarIndexVersion >= 3) {
+        return UploadV3(config);
+    }
     auto index_build_duration =
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now() - index_build_begin_)
@@ -306,6 +309,17 @@ StringIndexSort::Load(const BinarySet& index_binary, const Config& config) {
 
 void
 StringIndexSort::Load(milvus::tracer::TraceContext ctx, const Config& config) {
+    auto scalar_version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(kDefaultScalarIndexVersion);
+    if (scalar_version >= 3) {
+        auto v3_index_files =
+            GetValueFromConfig<std::vector<std::string>>(config, INDEX_FILES);
+        if (v3_index_files.has_value() && v3_index_files.value().size() == 1) {
+            this->LoadV3(config);
+            return;
+        }
+    }
     auto index_files =
         GetValueFromConfig<std::vector<std::string>>(config, "index_files");
     AssertInfo(index_files.has_value() && !index_files.value().empty(),

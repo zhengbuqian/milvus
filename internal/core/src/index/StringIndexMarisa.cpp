@@ -238,6 +238,9 @@ StringIndexMarisa::Serialize(const Config& config) {
 
 IndexStatsPtr
 StringIndexMarisa::Upload(const Config& config) {
+    if (kDefaultScalarIndexVersion >= 3) {
+        return UploadV3(config);
+    }
     auto binary_set = Serialize(config);
     this->file_manager_->AddFile(binary_set);
 
@@ -301,6 +304,17 @@ StringIndexMarisa::Load(const BinarySet& set, const Config& config) {
 void
 StringIndexMarisa::Load(milvus::tracer::TraceContext ctx,
                         const Config& config) {
+    auto scalar_version =
+        GetValueFromConfig<int32_t>(config, SCALAR_INDEX_ENGINE_VERSION)
+            .value_or(kDefaultScalarIndexVersion);
+    if (scalar_version >= 3) {
+        auto v3_index_files =
+            GetValueFromConfig<std::vector<std::string>>(config, INDEX_FILES);
+        if (v3_index_files.has_value() && v3_index_files.value().size() == 1) {
+            this->LoadV3(config);
+            return;
+        }
+    }
     auto index_files =
         GetValueFromConfig<std::vector<std::string>>(config, "index_files");
     AssertInfo(index_files.has_value(),

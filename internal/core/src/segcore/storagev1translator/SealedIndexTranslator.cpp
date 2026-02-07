@@ -157,7 +157,7 @@ SealedIndexTranslator::get_cells(milvus::OpContext* ctx,
     auto scalar_version =
         milvus::index::GetValueFromConfig<int32_t>(
             config_, milvus::index::SCALAR_INDEX_ENGINE_VERSION)
-            .value_or(1);
+            .value_or(milvus::index::kDefaultScalarIndexVersion);
     if (scalar_version >= 3 && !IsVectorDataType(index_info_.field_type)) {
         config_[milvus::index::COLLECTION_ID] =
             file_manager_context_.fieldDataMeta.collection_id;

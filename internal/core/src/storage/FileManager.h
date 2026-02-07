@@ -202,6 +202,20 @@ class FileManagerImpl : public milvus::FileManager {
         auto remote_file_path = is_index_file ? GetRemoteIndexObjectPrefixV2()
                                               : GetRemoteTextLogPrefixV2();
         remote_file_path += "/" + local_file_name;
+        // Ensure parent directory exists before opening the output stream.
+        // Only needed for local filesystems; object stores don't require
+        // explicit directory creation and the call would waste I/O.
+        if (milvus_storage::IsLocalFileSystem(fs_)) {
+            auto dir_path = remote_file_path.substr(
+                0, remote_file_path.find_last_of('/'));
+            if (!dir_path.empty()) {
+                auto status = fs_->CreateDir(dir_path, /*recursive=*/true);
+                AssertInfo(status.ok(),
+                           "failed to create directory {}, reason: {}",
+                           dir_path,
+                           status.ToString());
+            }
+        }
         auto remote_stream = fs_->OpenOutputStream(remote_file_path);
         AssertInfo(remote_stream.ok(),
                    "failed to open remote stream, reason: {}",

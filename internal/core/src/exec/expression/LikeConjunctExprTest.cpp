@@ -104,6 +104,7 @@ TEST(LikeConjunctExpr, TestMultiFieldMultiLikeWithRetrieve) {
     milvus_storage::ArrowFileSystemConfig arrow_conf;
     arrow_conf.storage_type = "local";
     arrow_conf.root_path = storage_config.root_path;
+    milvus_storage::ArrowFileSystemSingleton::GetInstance().Release();
     milvus_storage::ArrowFileSystemSingleton::GetInstance().Init(arrow_conf);
 
     // Test data: 8 rows

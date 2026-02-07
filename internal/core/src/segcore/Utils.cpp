@@ -1381,7 +1381,7 @@ LoadIndexData(milvus::tracer::TraceContext& ctx,
     index_info.scalar_index_engine_version =
         milvus::index::GetValueFromConfig<int32_t>(
             config, milvus::index::SCALAR_INDEX_ENGINE_VERSION)
-            .value_or(1);
+            .value_or(milvus::index::kDefaultScalarIndexVersion);
 
     index_info.tantivy_index_version =
         milvus::index::GetValueFromConfig<int32_t>(

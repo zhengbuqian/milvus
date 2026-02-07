@@ -28,6 +28,7 @@
 #include "NamedType/named_type_impl.hpp"
 #include "bitset/bitset.h"
 #include "bitset/detail/element_vectorized.h"
+#include "milvus-storage/filesystem/fs.h"
 #include "common/Consts.h"
 #include "common/FieldData.h"
 #include "common/FieldDataInterface.h"
@@ -216,6 +217,15 @@ test_ngram_with_data(const boost::container::vector<std::string>& data,
             }
         }
     }
+
+    // Ensure ArrowFileSystemSingleton matches our test's storage root
+    // so that AppendIndexV2 -> Utils.cpp -> ArrowFileSystemSingleton
+    // uses the same root_path as our Upload path.
+    milvus_storage::ArrowFileSystemSingleton::GetInstance().Release();
+    milvus_storage::ArrowFileSystemConfig arrow_conf;
+    arrow_conf.storage_type = "local";
+    arrow_conf.root_path = root_path;
+    milvus_storage::ArrowFileSystemSingleton::GetInstance().Init(arrow_conf);
 
     {
         std::map<std::string, std::string> index_params{
