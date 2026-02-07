@@ -211,14 +211,13 @@ EntryReader::ReadPlainEntry(const EntryMeta& meta) {
         size_t len = std::min(remaining, kRangeSize);
         size_t this_offset = offset;
 
-        futures.push_back(
-            pool.Submit([this, dest, this_offset, len, &pm]() {
-                size_t n = input_->ReadAt(
-                    dest + this_offset,
-                    MILVUS_V3_MAGIC_SIZE + pm.offset + this_offset,
-                    len);
-                AssertInfo(n == len, "Failed to read entry data range");
-            }));
+        futures.push_back(pool.Submit([this, dest, this_offset, len, &pm]() {
+            size_t n =
+                input_->ReadAt(dest + this_offset,
+                               MILVUS_V3_MAGIC_SIZE + pm.offset + this_offset,
+                               len);
+            AssertInfo(n == len, "Failed to read entry data range");
+        }));
 
         remaining -= len;
         offset += len;
