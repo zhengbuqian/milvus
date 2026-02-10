@@ -9,6 +9,8 @@
 // is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
+#include <fcntl.h>
+#include <unistd.h>
 #include <folly/FBVector.h>
 #include <gtest/gtest.h>
 #include <nlohmann/json_fwd.hpp>
@@ -74,6 +76,24 @@ using namespace milvus;
 using namespace milvus::segcore;
 
 namespace {
+
+bool
+SupportsDirectIO() {
+    static const bool supported = [] {
+        auto path = std::string("/tmp/.direct_io_probe_indexing");
+        int fd =
+            ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_DIRECT, 0644);
+        if (fd >= 0) {
+            ::close(fd);
+            ::unlink(path.c_str());
+            return true;
+        }
+        ::unlink(path.c_str());
+        return false;
+    }();
+    return supported;
+}
+
 template <int DIM>
 auto
 generate_data(int N) {
@@ -505,6 +525,11 @@ TEST(Indexing, Iterator) {
 }
 
 TEST_P(IndexTest, BuildAndQuery) {
+    if (index_type == knowhere::IndexEnum::INDEX_DISKANN &&
+        !SupportsDirectIO()) {
+        GTEST_SKIP() << "DiskANN requires O_DIRECT which is not supported on "
+                        "this filesystem";
+    }
     auto dim = is_binary ? BINARY_DIM : DIM;
     milvus::index::CreateIndexInfo create_index_info;
     create_index_info.index_type = index_type;
@@ -637,6 +662,11 @@ TEST_P(IndexTest, Mmap) {
 }
 
 TEST_P(IndexTest, GetVector) {
+    if (index_type == knowhere::IndexEnum::INDEX_DISKANN &&
+        !SupportsDirectIO()) {
+        GTEST_SKIP() << "DiskANN requires O_DIRECT which is not supported on "
+                        "this filesystem";
+    }
     auto dim = is_binary ? BINARY_DIM : DIM;
     milvus::index::CreateIndexInfo create_index_info;
     create_index_info.index_type = index_type;
@@ -798,6 +828,10 @@ TEST_P(IndexTest, GetVector_EmptySparseVector) {
 
 #ifdef BUILD_DISK_ANN
 TEST(Indexing, SearchDiskAnnWithInvalidParam) {
+    if (!SupportsDirectIO()) {
+        GTEST_SKIP() << "DiskANN requires O_DIRECT which is not supported on "
+                        "this filesystem";
+    }
     int64_t NB = 1000;
     IndexType index_type = knowhere::IndexEnum::INDEX_DISKANN;
     MetricType metric_type = knowhere::metric::L2;
@@ -883,6 +917,10 @@ TEST(Indexing, SearchDiskAnnWithInvalidParam) {
 }
 
 TEST(Indexing, SearchDiskAnnWithFloat16) {
+    if (!SupportsDirectIO()) {
+        GTEST_SKIP() << "DiskANN requires O_DIRECT which is not supported on "
+                        "this filesystem";
+    }
     int64_t NB = 1000;
     int64_t NQ = 2;
     int64_t K = 4;
@@ -970,6 +1008,10 @@ TEST(Indexing, SearchDiskAnnWithFloat16) {
 }
 
 TEST(Indexing, SearchDiskAnnWithBFloat16) {
+    if (!SupportsDirectIO()) {
+        GTEST_SKIP() << "DiskANN requires O_DIRECT which is not supported on "
+                        "this filesystem";
+    }
     int64_t NB = 1000;
     int64_t NQ = 2;
     int64_t K = 4;

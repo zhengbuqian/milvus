@@ -9,8 +9,10 @@
 // is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
+#include <fcntl.h>
 #include <gtest/gtest.h>
 #include <stdint.h>
+#include <unistd.h>
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -31,12 +33,28 @@
 using namespace milvus;
 using namespace milvus::storage;
 
+// Check if the filesystem at the given path supports O_DIRECT.
+static bool
+SupportsDirectIO(const std::filesystem::path& dir) {
+    auto test_file = dir / ".direct_io_probe";
+    int fd = ::open(
+        test_file.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_DIRECT, 0644);
+    if (fd >= 0) {
+        ::close(fd);
+        std::filesystem::remove(test_file);
+        return true;
+    }
+    std::filesystem::remove(test_file);
+    return false;
+}
+
 class FileWriterTest : public testing::Test {
  protected:
     void
     SetUp() override {
         test_dir_ = std::filesystem::temp_directory_path() / "file_writer_test";
         std::filesystem::create_directories(test_dir_);
+        direct_io_supported_ = SupportsDirectIO(test_dir_);
     }
 
     void
@@ -54,6 +72,7 @@ class FileWriterTest : public testing::Test {
 
     std::filesystem::path test_dir_;
     const size_t kBufferSize = 4096;  // 4KB buffer size
+    bool direct_io_supported_ = true;
 };
 
 // Test basic file writing functionality with buffered IO
@@ -76,6 +95,8 @@ TEST_F(FileWriterTest, BasicWriteWithBufferedIO) {
 
 // Test basic file writing functionality with direct IO
 TEST_F(FileWriterTest, BasicWriteWithDirectIO) {
+    if (!direct_io_supported_)
+        GTEST_SKIP() << "O_DIRECT not supported on this filesystem";
     FileWriter::SetMode(FileWriter::WriteMode::DIRECT);
     FileWriter::SetBufferSize(kBufferSize);
 
@@ -95,6 +116,8 @@ TEST_F(FileWriterTest, BasicWriteWithDirectIO) {
 
 // Test writing data with size exactly equal to buffer size
 TEST_F(FileWriterTest, ExactBufferSizeWriteWithDirectIO) {
+    if (!direct_io_supported_)
+        GTEST_SKIP() << "O_DIRECT not supported on this filesystem";
     FileWriter::SetMode(FileWriter::WriteMode::DIRECT);
     FileWriter::SetBufferSize(kBufferSize);
 
@@ -116,6 +139,8 @@ TEST_F(FileWriterTest, ExactBufferSizeWriteWithDirectIO) {
 
 // Test writing data size with multiple of buffer size
 TEST_F(FileWriterTest, MultipleOfBufferSizeWriteWithDirectIO) {
+    if (!direct_io_supported_)
+        GTEST_SKIP() << "O_DIRECT not supported on this filesystem";
     FileWriter::SetMode(FileWriter::WriteMode::DIRECT);
     FileWriter::SetBufferSize(kBufferSize);
 
@@ -136,6 +161,8 @@ TEST_F(FileWriterTest, MultipleOfBufferSizeWriteWithDirectIO) {
 
 // Test writing data size with unaligned to buffer size
 TEST_F(FileWriterTest, UnalignedToBufferSizeWriteWithDirectIO) {
+    if (!direct_io_supported_)
+        GTEST_SKIP() << "O_DIRECT not supported on this filesystem";
     FileWriter::SetMode(FileWriter::WriteMode::DIRECT);
     FileWriter::SetBufferSize(kBufferSize);
 
@@ -157,6 +184,8 @@ TEST_F(FileWriterTest, UnalignedToBufferSizeWriteWithDirectIO) {
 
 // Test writing data with direct IO without finishing
 TEST_F(FileWriterTest, WriteWithoutFinishWithDirectIO) {
+    if (!direct_io_supported_)
+        GTEST_SKIP() << "O_DIRECT not supported on this filesystem";
     FileWriter::SetMode(FileWriter::WriteMode::DIRECT);
     FileWriter::SetBufferSize(kBufferSize);
 
@@ -181,6 +210,8 @@ TEST_F(FileWriterTest, WriteWithoutFinishWithDirectIO) {
 
 // Test writing data with size slightly less than buffer size
 TEST_F(FileWriterTest, SlightlyLessThanBufferSizeWriteWithDirectIO) {
+    if (!direct_io_supported_)
+        GTEST_SKIP() << "O_DIRECT not supported on this filesystem";
     FileWriter::SetMode(FileWriter::WriteMode::DIRECT);
     FileWriter::SetBufferSize(kBufferSize);
 
@@ -231,6 +262,8 @@ TEST_F(FileWriterTest, MultipleSmallChunksWriteWithBufferedIO) {
 
 // Test writing data with multiple small chunks with direct IO
 TEST_F(FileWriterTest, MultipleSmallChunksWriteWithDirectIO) {
+    if (!direct_io_supported_)
+        GTEST_SKIP() << "O_DIRECT not supported on this filesystem";
     FileWriter::SetMode(FileWriter::WriteMode::DIRECT);
     FileWriter::SetBufferSize(kBufferSize);
 
@@ -262,6 +295,8 @@ TEST_F(FileWriterTest, MultipleSmallChunksWriteWithDirectIO) {
 
 // Test writing memory address aligned data
 TEST_F(FileWriterTest, MemoryAddressAlignedDataWriteWithDirectIO) {
+    if (!direct_io_supported_)
+        GTEST_SKIP() << "O_DIRECT not supported on this filesystem";
     FileWriter::SetMode(FileWriter::WriteMode::DIRECT);
     FileWriter::SetBufferSize(kBufferSize);
 
@@ -293,6 +328,8 @@ TEST_F(FileWriterTest, MemoryAddressAlignedDataWriteWithDirectIO) {
 
 // Test writing empty data
 TEST_F(FileWriterTest, EmptyDataWriteWithDirectIO) {
+    if (!direct_io_supported_)
+        GTEST_SKIP() << "O_DIRECT not supported on this filesystem";
     FileWriter::SetMode(FileWriter::WriteMode::DIRECT);
     FileWriter::SetBufferSize(kBufferSize);
 
@@ -309,6 +346,8 @@ TEST_F(FileWriterTest, EmptyDataWriteWithDirectIO) {
 
 // Test concurrent writes to different files
 TEST_F(FileWriterTest, ConcurrentWritesWithDirectIO) {
+    if (!direct_io_supported_)
+        GTEST_SKIP() << "O_DIRECT not supported on this filesystem";
     FileWriter::SetMode(FileWriter::WriteMode::DIRECT);
     FileWriter::SetBufferSize(kBufferSize);
 
@@ -348,6 +387,8 @@ TEST_F(FileWriterTest, ConcurrentWritesWithDirectIO) {
 
 // Test error handling for invalid file path
 TEST_F(FileWriterTest, InvalidFilePathWithDirectIO) {
+    if (!direct_io_supported_)
+        GTEST_SKIP() << "O_DIRECT not supported on this filesystem";
     FileWriter::SetMode(FileWriter::WriteMode::DIRECT);
     FileWriter::SetBufferSize(kBufferSize);
 
@@ -357,6 +398,8 @@ TEST_F(FileWriterTest, InvalidFilePathWithDirectIO) {
 
 // Test writing to a file that already exists
 TEST_F(FileWriterTest, ExistingFileWithDirectIO) {
+    if (!direct_io_supported_)
+        GTEST_SKIP() << "O_DIRECT not supported on this filesystem";
     FileWriter::SetMode(FileWriter::WriteMode::DIRECT);
     FileWriter::SetBufferSize(kBufferSize);
 
@@ -504,6 +547,8 @@ TEST_F(FileWriterTest, ZeroBufferSizeWriteWithDirectIO) {
 
 // Test config FileWriterConfig with very large buffer size
 TEST_F(FileWriterTest, LargeBufferSizeWriteWithDirectIO) {
+    if (!direct_io_supported_)
+        GTEST_SKIP() << "O_DIRECT not supported on this filesystem";
     const size_t large_buffer_size = 1024 * 1024;  // 1MB
     FileWriter::SetMode(FileWriter::WriteMode::DIRECT);
     FileWriter::SetBufferSize(large_buffer_size);
@@ -532,6 +577,8 @@ TEST_F(FileWriterTest, UnknownModeWriteWithDirectIO) {
 }
 
 TEST_F(FileWriterTest, HalfAlignedDataWriteWithDirectIO) {
+    if (!direct_io_supported_)
+        GTEST_SKIP() << "O_DIRECT not supported on this filesystem";
     const size_t aligned_buffer_size = 2 * kBufferSize;
     std::string filename = (test_dir_ / "half_aligned_buffer.txt").string();
     FileWriter writer(filename);
@@ -558,6 +605,8 @@ TEST_F(FileWriterTest, HalfAlignedDataWriteWithDirectIO) {
 
 // Test writing data with alternating large and small chunks
 TEST_F(FileWriterTest, AlternatingChunksWriteWithDirectIO) {
+    if (!direct_io_supported_)
+        GTEST_SKIP() << "O_DIRECT not supported on this filesystem";
     std::string filename = (test_dir_ / "alternating_chunks.txt").string();
     FileWriter writer(filename);
 
@@ -586,6 +635,8 @@ TEST_F(FileWriterTest, AlternatingChunksWriteWithDirectIO) {
 
 // Test writing data with very large file size
 TEST_F(FileWriterTest, VeryLargeFileWriteWithDirectIO) {
+    if (!direct_io_supported_)
+        GTEST_SKIP() << "O_DIRECT not supported on this filesystem";
     std::string filename = (test_dir_ / "very_large_file.txt").string();
     FileWriter writer(filename);
 
@@ -610,6 +661,8 @@ TEST_F(FileWriterTest, VeryLargeFileWriteWithDirectIO) {
 
 // Test writing data with different buffer sizes in the same file
 TEST_F(FileWriterTest, MixedBufferSizesWriteWithDirectIO) {
+    if (!direct_io_supported_)
+        GTEST_SKIP() << "O_DIRECT not supported on this filesystem";
     std::string filename = (test_dir_ / "mixed_buffer_sizes.txt").string();
     FileWriter writer(filename);
 
@@ -644,6 +697,8 @@ TEST_F(FileWriterTest, MixedBufferSizesWriteWithDirectIO) {
 
 // Test multi-threaded writing to different files
 TEST_F(FileWriterTest, MultiThreadedWriteWithDirectIO) {
+    if (!direct_io_supported_)
+        GTEST_SKIP() << "O_DIRECT not supported on this filesystem";
     const int num_threads = 4;
     const size_t data_size_per_thread = 50 * 1024 * 1024;  // 50MB per thread
     std::vector<std::thread> threads;
@@ -719,6 +774,8 @@ TEST_F(FileWriterTest, ExecutorBasedAsyncWrites) {
 
 // Test executor-based asynchronous writes with direct IO
 TEST_F(FileWriterTest, ExecutorBasedAsyncWritesWithDirectIO) {
+    if (!direct_io_supported_)
+        GTEST_SKIP() << "O_DIRECT not supported on this filesystem";
     // Set up executor with 2 threads
     FileWriteWorkerPool::GetInstance().Configure(2);
     FileWriter::SetMode(FileWriter::WriteMode::DIRECT);
@@ -831,6 +888,8 @@ TEST_F(FileWriterTest, ExecutorConfigurationChanges) {
 
 // Test mixed buffered and direct IO with executor
 TEST_F(FileWriterTest, MixedIOWithExecutor) {
+    if (!direct_io_supported_)
+        GTEST_SKIP() << "O_DIRECT not supported on this filesystem";
     FileWriteWorkerPool::GetInstance().Configure(2);
 
     // Test buffered IO with executor
@@ -890,6 +949,8 @@ TEST_F(FileWriterTest, LargeDataWritesWithExecutor) {
 
 // Test executor with different buffer sizes
 TEST_F(FileWriterTest, ExecutorWithDifferentBufferSizes) {
+    if (!direct_io_supported_)
+        GTEST_SKIP() << "O_DIRECT not supported on this filesystem";
     FileWriteWorkerPool::GetInstance().Configure(2);
     FileWriter::SetMode(FileWriter::WriteMode::DIRECT);
 
@@ -973,6 +1034,8 @@ TEST_F(FileWriterTest, ConcurrentAccessToFileWriterConfig) {
 }
 // Test that changing FileWriterConfig during FileWriter operations doesn't affect existing instances
 TEST_F(FileWriterTest, ConfigChangeDuringFileWriterOperations) {
+    if (!direct_io_supported_)
+        GTEST_SKIP() << "O_DIRECT not supported on this filesystem";
     // Start with buffered mode
     FileWriter::SetMode(FileWriter::WriteMode::BUFFERED);
     FileWriteWorkerPool::GetInstance().Configure(2);
