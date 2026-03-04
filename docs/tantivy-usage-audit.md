@@ -20,6 +20,7 @@
 16. [关键数据流路径](#16-关键数据流路径)
 17. [替换影响范围评估](#17-替换影响范围评估)
 18. [文件索引](#18-文件索引)
+19. [深入分析：Tantivy 实际被使用的能力](#19-深入分析tantivy-实际被使用的能力)
 
 ---
 
@@ -1069,16 +1070,41 @@ Go: BM25FunctionRunner.BatchRun(texts)
 - `whatlang` / `lingua` (语言检测)
 - `regex` / `fancy-regex` (正则)
 
-### 17.4 推荐替换策略
+### 17.4 推荐替换策略（已更新）
 
-1. **保持 C FFI 接口不变** — 最小化上层修改，只替换 Rust 实现
-2. **保持 `TantivyIndexWrapper` 接口不变** — C++ 层无需修改
-3. **分阶段替换**:
-   - Phase 1: 标量倒排索引 (最常用, 纯数值/string 类型)
-   - Phase 2: 文本搜索 (TextMatch/PhraseMatch)
-   - Phase 3: JSON 路径查询
-   - Phase 4: N-gram 索引
-4. **废弃 V5 支持** — 简化实现，减少维护负担
+经过深入分析，推荐 **用 C++ 重写倒排索引核心**，保留 Tantivy 仅作为 Tokenizer 使用：
+
+**核心发现**: Milvus 对 Tantivy 的使用极其简单，本质上只需要：
+- 标量: `sorted_map<Value, RoaringBitmap>` + 持久化 + range scan
+- TextMatch: tokenize + OR union of posting lists
+- PhraseMatch: tokenize + positional posting list intersection with slop
+- JSON: path-encoded term + 同标量的查询模式
+- Ngram: ngram tokenize + AND intersection
+
+**版本路由策略**:
+- 通过 `CurrentScalarIndexEngineVersion` 控制（`pkg/common/common.go`）
+- version ≤ 3: 使用旧版 Tantivy 实现（保留代码不删除）
+- version = 4: 使用新 C++ 实现
+- 回滚只需改回版本号
+
+**分阶段实施**（依赖 scalar-index-unified-format V3 先合并）:
+1. Phase 1: 核心数据结构 + 标量查询 (`PostingList`, `TermDictionary`, queries)
+2. Phase 2: 磁盘格式 + Mmap (排序数组 + 二分查找，V3 entry 序列化)
+3. Phase 3: 集成标量倒排 (`NativeInvertedIndex<T>`)
+4. Phase 4: TokenizerBridge (精简 Tantivy FFI 到仅 tokenizer)
+5. Phase 5: TextMatch + PhraseMatch (`PositionalPostingList`, `PhraseQuery`)
+6. Phase 6: JSON 倒排 (`JsonTermKey` 编码)
+7. Phase 7: Ngram 倒排
+8. Phase 8: 版本切换 + 端到端测试
+
+**Tokenizer 保留 Tantivy**: 分词器是 pure function，不涉及索引存储，且 Tantivy 已集成
+jieba/lindera/ICU 等多语言分词器，重写无意义。通过 `TokenizerBridge` 封装已有
+`tokenizer_c.h` API。
+
+**Mmap 设计**: 使用排序数组 + 二分查找（O(log n)）替代 `std::map`（无法 mmap），
+连续内存布局天然适配 mmap。
+
+详细设计方案见: `docs/tantivy-cpp-rewrite-design.md`
 
 ---
 
@@ -1155,3 +1181,94 @@ Go: BM25FunctionRunner.BatchRun(texts)
 | `tests/python_client/testcases/test_full_text_search.py` | Python 全文搜索测试 |
 | `tests/python_client/testcases/test_phrase_match.py` | Python 短语匹配测试 |
 | `tests/python_client/testcases/indexes/test_ngram.py` | Python N-gram 测试 |
+
+---
+
+## 19. 深入分析：Tantivy 实际被使用的能力
+
+### 19.1 标量倒排索引的 Tantivy 能力使用
+
+| Tantivy 能力 | 是否使用 | 说明 |
+|---|---|---|
+| Schema / Field 定义 | ✅ | 但只用单 field + doc_id field |
+| IndexWriter 多线程写入 | ✅ | 但 Milvus 端固定 1 thread, 4MB budget |
+| Segment Merge | ✅ | 但仅作为写入副产品 |
+| Term Dictionary (SSTable) | ✅ | 核心：有序 term → posting list |
+| Posting List | ✅ | 核心：但仅用 Basic 级别（无 freq/pos）|
+| Fast Fields | ✅ | 仅用于 doc_id 映射（V7 已改用 user_specified_doc_id）|
+| BM25 / TF-IDF 评分 | ❌ | 完全不使用 |
+| Field Norms | ❌ | 显式关闭 `set_fieldnorms(false)` |
+| Stored Fields | ❌ | 不存储原始数据 |
+| Multi-field Document | ❌ | 每个索引仅一个 field |
+| Facets / Aggregations | ❌ | 不使用 |
+| Snippet / Highlight | ❌ | 不使用 |
+| Complex Boolean Query | ❌ | 仅用简单的 OR/AND |
+
+### 19.2 TextMatch 的具体实现
+
+**Rust 侧实现** (`index_reader_text.rs`):
+
+```rust
+// match_query: 分词 → OR 组合
+pub fn match_query(&self, query: &str, bitset: *mut c_void) -> Result<()> {
+    let tokens = self.tokenize(query);
+    let terms: Vec<Term> = tokens.iter()
+        .map(|t| Term::from_field_text(self.field, &t.text))
+        .collect();
+    // 使用 DirectBitsetCollector: 直接遍历 posting list 设置 bitset
+    // 绕过 Tantivy 的查询引擎，直接读取 inverted index
+}
+```
+
+关键发现：**Milvus 的 `match_query` 实际上绕过了 Tantivy 的查询引擎**，
+使用自定义的 `DirectBitsetCollector` 直接遍历 posting list，
+本质上就是 `for term in terms { for doc in posting_list(term) { bitset.set(doc) } }`。
+
+### 19.3 PhraseMatch 的具体实现
+
+PhraseMatch 是唯一使用 `IndexRecordOption::WithFreqsAndPositions` 的场景：
+
+```rust
+// 索引创建时的配置
+TextFieldIndexing::default()
+    .set_tokenizer(tokenizer_name)
+    .set_fieldnorms(false)  // 不用 field norms
+    .set_index_option(IndexRecordOption::WithFreqsAndPositions)  // 需要位置信息!
+```
+
+PhraseQuery 使用 Tantivy 内置的 `PhraseQuery`:
+```rust
+pub fn phrase_match_query(&self, query: &str, slop: u32, bitset: *mut c_void) -> Result<()> {
+    let tokens = self.tokenize(query);
+    let terms: Vec<(usize, Term)> = tokens.iter()
+        .map(|t| (t.position, Term::from_field_text(self.field, &t.text)))
+        .collect();
+    let query = PhraseQuery::new_with_offset_and_slop(terms, slop);
+    self.search(&query, bitset)
+}
+```
+
+### 19.4 Collector 使用情况
+
+Milvus 定义了 3 种自定义 Collector（均不使用评分）：
+
+| Collector | 使用场景 | 实现方式 |
+|---|---|---|
+| `DirectBitsetCollector` | TextMatch (单 term OR) | 直接遍历 posting list → bitset |
+| `MilvusIdCollector` | PhraseMatch + V7 索引 | query engine → 直接 doc_id 到 bitset |
+| `DocIdCollector` | V5 索引 (旧版) | query engine → fast field doc_id → bitset |
+
+所有 Collector 都设置 `requires_scoring() = false`。
+
+### 19.5 结论
+
+Milvus 使用 Tantivy 的方式相当于：
+1. **一个带持久化的 `BTreeMap<Term, Vec<DocId>>`** — 标量索引
+2. **加上 tokenizer 的 OR union** — TextMatch
+3. **加上 position 信息的交集查询** — PhraseMatch
+4. **加上 path 编码的 term** — JSON 索引
+5. **加上 ngram 分词的 AND 交集** — Ngram 索引
+
+Tantivy 的查询计划、评分、存储字段、快速聚合等高级功能完全未被使用。
+用 C++ 重写仅需实现上述 5 个能力，代码量预计在 3000-5000 行（不含测试），
+远小于 Tantivy binding 的 79 个 Rust 文件。
