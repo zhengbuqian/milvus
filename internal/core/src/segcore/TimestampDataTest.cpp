@@ -29,7 +29,7 @@ namespace {
 // Returns the raw buffer (caller owns) and the chunk pointer.
 struct ChunkAlloc {
     char* buf;
-    FixedWidthChunk* chunk;
+    FixedWidthChunk<Timestamp>* chunk;
 };
 
 ChunkAlloc
@@ -37,13 +37,13 @@ make_ts_chunk(const Timestamp* src, int64_t count) {
     auto byte_size = static_cast<uint64_t>(count * sizeof(Timestamp));
     char* buf = new char[byte_size];
     std::memcpy(buf, src, byte_size);
-    auto* chunk = new FixedWidthChunk(static_cast<int32_t>(count),
-                                      /*dim=*/1,
-                                      buf,
-                                      byte_size,
-                                      /*element_size=*/sizeof(Timestamp),
-                                      /*nullable=*/false,
-                                      /*chunk_mmap_guard=*/nullptr);
+    auto* chunk = new FixedWidthChunk<Timestamp>(
+        static_cast<int32_t>(count),
+        buf,
+        byte_size,
+        /*element_size=*/sizeof(Timestamp),
+        /*nullable=*/false,
+        /*chunk_mmap_guard=*/nullptr);
     return {buf, chunk};
 }
 

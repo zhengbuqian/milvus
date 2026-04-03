@@ -1010,6 +1010,58 @@ class SkipIndexStatsBuilder {
     }
 
     metricsInfo<std::string>
+    ProcessStringFieldMetrics(
+        const ChunkDataView<std::string_view>* view) const {
+        bool has_first_valid = false;
+        int64_t total_rows = view->RowCount();
+        int64_t null_count = 0;
+        std::string_view min;
+        std::string_view max;
+        ankerl::unordered_dense::set<std::string_view> unique_values;
+        ankerl::unordered_dense::set<std::string> ngram_values;
+        const bool* valid_data = view->ValidData();
+        // Use Data() for bulk access — operator[] on VortexDataView
+        // does per-row take() which is O(n) per call.
+        const std::string_view* data = view->Data();
+
+        for (int64_t i = 0; i < total_rows; ++i) {
+            bool is_valid = valid_data ? valid_data[i] : true;
+            if (!is_valid) {
+                null_count++;
+                continue;
+            }
+            auto value = data[i];
+            if (!has_first_valid) {
+                min = value;
+                max = value;
+                has_first_valid = true;
+            } else {
+                if (value < min) {
+                    min = value;
+                }
+                if (value > max) {
+                    max = value;
+                }
+            }
+            if (!enable_bloom_filter_ ||
+                unique_values.find(value) != unique_values.end()) {
+                continue;
+            }
+            unique_values.insert(value);
+            ExtractNgrams(
+                ngram_values, value, DEFAULT_SKIPINDEX_MIN_NGRAM_LENGTH);
+        }
+        return {total_rows,
+                null_count,
+                min,
+                max,
+                false,
+                false,
+                std::move(unique_values),
+                std::move(ngram_values)};
+    }
+
+    metricsInfo<std::string>
     ProcessStringFieldMetrics(const StringChunk* chunk) const {
         // all captured by reference
         bool has_first_valid = false;

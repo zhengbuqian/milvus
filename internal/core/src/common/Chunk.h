@@ -154,6 +154,19 @@ class Chunk {
     virtual bool
     IsValid(int offset) const = 0;
 
+    // Returns owned raw bytes for the given chunk-local offsets, in input order.
+    // Row chunks (StringChunk, ArrayChunk): copies from mmap storage.
+    // VortexChunk: issues a single batched take() and returns decompressed data
+    //   directly — no extra copy beyond what decompression itself requires.
+    // For string/JSON types: each element is the raw string/JSON bytes.
+    // For ARRAY type: each element is the proto-serialized ScalarField bytes.
+    virtual std::vector<std::string>
+    BulkOwnData(const int64_t* local_offsets, int64_t count) const {
+        ThrowInfo(NotImplemented,
+                  "BulkOwnData not supported for this chunk type");
+        return {};
+    }
+
  private:
     virtual const std::type_info&
     GetTypeInfo() const = 0;
@@ -444,6 +457,17 @@ class StringChunk : public RowChunk {
         return offsets_;
     }
 
+    std::vector<std::string>
+    BulkOwnData(const int64_t* local_offsets,
+                int64_t count) const override {
+        std::vector<std::string> result(count);
+        for (int64_t i = 0; i < count; ++i) {
+            auto sv = (*this)[local_offsets[i]];
+            result[i] = std::string(sv.data(), sv.size());
+        }
+        return result;
+    }
+
     // === DataView interface ===
     AnyDataView
     GetAnyDataView() const override;
@@ -563,6 +587,19 @@ class ArrayChunk : public RowChunk {
     ValueAt(int64_t idx) const override {
         ThrowInfo(ErrorCode::Unsupported,
                   "ArrayChunk::ValueAt is not supported");
+    }
+
+    std::vector<std::string>
+    BulkOwnData(const int64_t* local_offsets,
+                int64_t count) const override {
+        std::vector<std::string> result(count);
+        for (int64_t i = 0; i < count; ++i) {
+            auto view = View(local_offsets[i]);
+            ScalarFieldProto proto;
+            view.output_data(proto);
+            result[i] = proto.SerializeAsString();
+        }
+        return result;
     }
 
     // === DataView interface ===

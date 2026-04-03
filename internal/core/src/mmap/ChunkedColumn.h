@@ -536,7 +536,7 @@ class ChunkedVariableColumn : public ChunkedColumnBase {
 
     void
     BulkRawStringAt(milvus::OpContext* op_ctx,
-                    std::function<void(std::string_view, size_t, bool)> fn,
+                    std::function<void(std::string&&, size_t, bool)> fn,
                     const int64_t* offsets,
                     int64_t count) const override {
         if constexpr (!std::is_same_v<T, std::string>) {
@@ -550,8 +550,8 @@ class ChunkedVariableColumn : public ChunkedColumnBase {
                 auto [cid, offset_in_chunk] = GetChunkIDByOffset(i);
                 auto chunk = ca->get_cell_of(cid);
                 auto valid = nullable_ ? chunk->IsValid(offset_in_chunk) : true;
-                fn(static_cast<StringChunk*>(chunk)->operator[](
-                       offset_in_chunk),
+                fn(std::string(static_cast<StringChunk*>(chunk)->operator[](
+                       offset_in_chunk)),
                    i,
                    valid);
             }
@@ -562,8 +562,8 @@ class ChunkedVariableColumn : public ChunkedColumnBase {
                 auto chunk = ca->get_cell_of(cids[i]);
                 auto valid =
                     nullable_ ? chunk->IsValid(offsets_in_chunk[i]) : true;
-                fn(static_cast<StringChunk*>(chunk)->operator[](
-                       offsets_in_chunk[i]),
+                fn(std::string(static_cast<StringChunk*>(chunk)->operator[](
+                       offsets_in_chunk[i])),
                    i,
                    valid);
             }
@@ -572,7 +572,7 @@ class ChunkedVariableColumn : public ChunkedColumnBase {
 
     void
     BulkRawJsonAt(milvus::OpContext* op_ctx,
-                  std::function<void(Json, size_t, bool)> fn,
+                  std::function<void(Json&&, size_t, bool)> fn,
                   const int64_t* offsets,
                   int64_t count) const override {
         if constexpr (!std::is_same_v<T, Json>) {
@@ -590,6 +590,7 @@ class ChunkedVariableColumn : public ChunkedColumnBase {
             auto valid = nullable_ ? chunk->IsValid(offsets_in_chunk[i]) : true;
             auto str_view = static_cast<StringChunk*>(chunk)->operator[](
                 offsets_in_chunk[i]);
+            // Non-owning Json: points into chunk data (valid while chunk is pinned).
             fn(Json(str_view.data(), str_view.size()), i, valid);
         }
     }
@@ -629,7 +630,7 @@ class ChunkedArrayColumn : public ChunkedColumnBase {
 
     void
     BulkArrayAt(milvus::OpContext* op_ctx,
-                std::function<void(const ArrayView&, size_t)> fn,
+                std::function<void(ScalarFieldProto&&, size_t)> fn,
                 const int64_t* offsets,
                 int64_t count) const override {
         auto [cids, offsets_in_chunk] = ToChunkIdAndOffset(offsets, count);
@@ -637,7 +638,9 @@ class ChunkedArrayColumn : public ChunkedColumnBase {
         for (int64_t i = 0; i < count; i++) {
             auto view = static_cast<ArrayChunk*>(ca->get_cell_of(cids[i]))
                             ->View(offsets_in_chunk[i]);
-            fn(view, i);
+            ScalarFieldProto proto;
+            view.output_data(proto);
+            fn(std::move(proto), i);
         }
     }
 };

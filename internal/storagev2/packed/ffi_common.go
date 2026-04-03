@@ -22,6 +22,9 @@ import (
 
 // Property keys - matching milvus-storage/properties.h
 const (
+	// storage format
+	PropertyFormat = "format"
+
 	PropertyFSAddress             = "fs.address"
 	PropertyFSBucketName          = "fs.bucket_name"
 	PropertyFSAccessKeyID         = "fs.access_key_id"
@@ -253,6 +256,12 @@ func MakePropertiesFromStorageConfig(storageConfig *indexpb.StorageConfig, extra
 	// } else {
 	// 	values = append(values, "false")
 	// }
+
+	// Add format property
+	if storageConfig.GetFormat() != "" {
+		keys = append(keys, PropertyFormat)
+		values = append(values, storageConfig.GetFormat())
+	}
 
 	// Add extra kvs
 	for k, v := range extraKVs {

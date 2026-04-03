@@ -392,7 +392,7 @@ class Schema {
     }
 
     const ArrowSchemaPtr
-    ConvertToArrowSchema() const;
+    ConvertToArrowSchema(bool use_field_id = false) const;
 
     /// Convert to Arrow schema with field ID strings as field names,
     /// used by Loon FFI / milvus-storage Reader.

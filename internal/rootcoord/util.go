@@ -447,6 +447,9 @@ func checkFieldSchema(fieldSchemas []*schemapb.FieldSchema) error {
 		if err := checkDupKvPairs(fieldSchema.GetTypeParams(), "type"); err != nil {
 			return err
 		}
+		if err := validateLocalFormat(fieldSchema); err != nil {
+			return err
+		}
 		if err := checkDupKvPairs(fieldSchema.GetIndexParams(), "index"); err != nil {
 			return err
 		}
@@ -495,6 +498,23 @@ func checkDupKvPairs(params []*commonpb.KeyValuePair, paramType string) error {
 			return merr.WrapErrParameterInvalidMsg("duplicated %s param key \"%s\"", paramType, kv.GetKey())
 		}
 		set.Insert(kv.GetKey())
+	}
+	return nil
+}
+
+func validateLocalFormat(fieldSchema *schemapb.FieldSchema) error {
+	for _, kv := range fieldSchema.GetTypeParams() {
+		if kv.GetKey() == common.LocalFormatKey {
+			switch kv.GetValue() {
+			case common.LocalFormatRow, common.LocalFormatVortex:
+				// valid
+			default:
+				return merr.WrapErrParameterInvalidMsg(
+					"invalid local_format '%s' for field '%s', supported: row, vortex",
+					kv.GetValue(), fieldSchema.GetName())
+			}
+			break
+		}
 	}
 	return nil
 }

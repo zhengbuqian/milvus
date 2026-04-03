@@ -66,7 +66,8 @@ get_azure_storage_config() {
                           30000,
                           "",
                           false,
-                          100};
+                          100,
+                          ""};
 }
 
 class StorageTest : public testing::Test {

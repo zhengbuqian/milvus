@@ -132,6 +132,10 @@ FieldMeta::ToProto() const {
         // element_type already populated above
     }
 
+    if (local_format_ != "row") {
+        add_type_param("local_format", local_format_);
+    }
+
     return proto;
 }
 
@@ -165,6 +169,16 @@ FieldMeta::ParseFrom(const milvus::proto::schema::FieldSchema& schema_proto) {
         return schema_proto.default_value();
     }();
 
+    // Parse local_format from type_params (applies to all field types)
+    auto parse_local_format = [&](FieldMeta& meta) -> FieldMeta& {
+        auto type_map = RepeatedKeyValToMap(schema_proto.type_params());
+        if (auto it = type_map.find("local_format");
+            it != type_map.end()) {
+            meta.local_format_ = it->second;
+        }
+        return meta;
+    };
+
     if (data_type == DataType::VECTOR_ARRAY) {
         // todo(SpadeA): revisit the code when index build for vector array is ready
         int64_t dim = 0;
@@ -172,13 +186,14 @@ FieldMeta::ParseFrom(const milvus::proto::schema::FieldSchema& schema_proto) {
         AssertInfo(type_map.count("dim"), "dim not found");
         dim = boost::lexical_cast<int64_t>(type_map.at("dim"));
 
-        return FieldMeta{name,
-                         field_id,
-                         data_type,
-                         element_type,
-                         dim,
-                         std::nullopt,
-                         external_field_mapping};
+        auto result = FieldMeta{name,
+            field_id,
+            data_type,
+            element_type,
+            dim,
+            std::nullopt,
+            external_field_mapping};
+        return parse_local_format(result);
     }
 
     if (IsVectorDataType(data_type)) {
@@ -194,7 +209,7 @@ FieldMeta::ParseFrom(const milvus::proto::schema::FieldSchema& schema_proto) {
         }
 
         if (!index_map.count("metric_type")) {
-            return FieldMeta{name,
+            auto result = FieldMeta{name,
                              field_id,
                              data_type,
                              dim,
@@ -202,9 +217,10 @@ FieldMeta::ParseFrom(const milvus::proto::schema::FieldSchema& schema_proto) {
                              nullable,
                              default_value,
                              external_field_mapping};
+            return parse_local_format(result);
         }
         auto metric_type = index_map.at("metric_type");
-        return FieldMeta{name,
+        auto result = FieldMeta{name,
                          field_id,
                          data_type,
                          dim,
@@ -212,6 +228,7 @@ FieldMeta::ParseFrom(const milvus::proto::schema::FieldSchema& schema_proto) {
                          nullable,
                          default_value,
                          external_field_mapping};
+        return parse_local_format(result);
     }
 
     if (IsStringDataType(data_type)) {
@@ -237,7 +254,7 @@ FieldMeta::ParseFrom(const milvus::proto::schema::FieldSchema& schema_proto) {
         bool enable_analyzer = get_bool_value("enable_analyzer");
         bool enable_match = get_bool_value("enable_match");
 
-        return FieldMeta{name,
+        auto result = FieldMeta{name,
                          field_id,
                          data_type,
                          max_len,
@@ -247,24 +264,27 @@ FieldMeta::ParseFrom(const milvus::proto::schema::FieldSchema& schema_proto) {
                          type_map,
                          default_value,
                          external_field_mapping};
+        return parse_local_format(result);
     }
 
     if (IsArrayDataType(data_type)) {
-        return FieldMeta{name,
+        auto result = FieldMeta{name,
                          field_id,
                          data_type,
                          DataType(schema_proto.element_type()),
                          nullable,
                          default_value,
                          external_field_mapping};
+        return parse_local_format(result);
     }
 
-    return FieldMeta{name,
+    auto result = FieldMeta{name,
                      field_id,
                      data_type,
                      nullable,
                      default_value,
                      external_field_mapping};
+    return parse_local_format(result);
 }
 
 }  // namespace milvus

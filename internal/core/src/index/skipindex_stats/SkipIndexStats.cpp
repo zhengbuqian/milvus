@@ -153,12 +153,13 @@ SkipIndexStatsBuilder::Build(DataType data_type, const Chunk* chunk) const {
     if (chunk == nullptr || chunk->RowNums() == 0) {
         return none_ptr;
     }
+    auto any_view = chunk->GetAnyDataView();
     if (data_type == DataType::VARCHAR) {
-        auto string_chunk = static_cast<const StringChunk*>(chunk);
-        metricsInfo<std::string> info = ProcessStringFieldMetrics(string_chunk);
+        auto data_view = any_view.as<std::string_view>();
+        metricsInfo<std::string> info =
+            ProcessStringFieldMetrics(data_view.get());
         return LoadMetrics<std::string>(info);
     }
-    auto any_view = chunk->GetAnyDataView();
 
     // const void* chunk_data = data_view.data();
     // const bool* valid_data = span.valid_data();

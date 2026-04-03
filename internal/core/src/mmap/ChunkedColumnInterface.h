@@ -18,6 +18,7 @@
 #include "cachinglayer/CacheSlot.h"
 #include "common/Chunk.h"
 #include "common/OffsetMapping.h"
+#include "common/Types.h"
 #include "common/bson_view.h"
 namespace milvus {
 
@@ -178,13 +179,16 @@ class ChunkedColumnInterface {
                       int64_t element_sizeof,
                       int64_t count) = 0;
 
-    // fn: (std::string_view value, size_t offset, bool is_valid) -> void
+    // fn: (std::string&& value, size_t offset, bool is_valid) -> void
+    // Callers receive an owned string and should std::move it into the destination.
+    // Non-Vortex paths copy-construct the string; Vortex paths construct from
+    // owned Arrow buffer data — in both cases fn may move unconditionally.
     // If offsets is nullptr, this function will iterate over all rows.
     // Only BulkRawStringAt and BulkIsValid allow offsets to be nullptr.
     // Other Bulk* methods can also support nullptr offsets, but not added at this moment.
     virtual void
     BulkRawStringAt(milvus::OpContext* op_ctx,
-                    std::function<void(std::string_view, size_t, bool)> fn,
+                    std::function<void(std::string&&, size_t, bool)> fn,
                     const int64_t* offsets = nullptr,
                     int64_t count = 0) const {
         ThrowInfo(ErrorCode::Unsupported,
@@ -192,9 +196,13 @@ class ChunkedColumnInterface {
                   "variable length type");
     }
 
+    // fn: (Json&& value, size_t offset, bool is_valid) -> void
+    // Non-Vortex: fn receives non-owning Json (points into chunk data, valid while
+    // chunk is pinned). Vortex: fn receives owning Json (simdjson::padded_string).
+    // Callers should std::move the Json into the destination.
     virtual void
     BulkRawJsonAt(milvus::OpContext* op_ctx,
-                  std::function<void(Json, size_t, bool)> fn,
+                  std::function<void(Json&&, size_t, bool)> fn,
                   const int64_t* offsets,
                   int64_t count) const {
         ThrowInfo(
@@ -213,9 +221,14 @@ class ChunkedColumnInterface {
                   "Bson type");
     }
 
+    // fn: (ScalarFieldProto&& proto, size_t index) -> void
+    // Callers receive an owned ScalarFieldProto and should std::move it into
+    // the destination. This avoids the ArrayView -> output_data re-serialization
+    // roundtrip; the proto is either parsed from raw bytes (Vortex) or
+    // populated via output_data (non-Vortex).
     virtual void
     BulkArrayAt(milvus::OpContext* op_ctx,
-                std::function<void(const ArrayView&, size_t)> fn,
+                std::function<void(ScalarFieldProto&&, size_t)> fn,
                 const int64_t* offsets,
                 int64_t count) const {
         ThrowInfo(ErrorCode::Unsupported,

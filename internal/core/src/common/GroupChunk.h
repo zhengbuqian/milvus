@@ -18,8 +18,9 @@
 #include <cstdint>
 #include <memory>
 #include <utility>
-#include "common/Types.h"
 #include "common/Chunk.h"
+#include "common/Types.h"
+#include "common/VortexCellGuard.h"
 
 namespace milvus {
 
@@ -94,8 +95,15 @@ class GroupChunk {
         return chunks_.find(field_id) != chunks_.end();
     }
 
+    /// Attach a VortexCellGuard that will PUNCH_HOLE on destruction.
+    void
+    SetVortexGuard(std::unique_ptr<VortexCellGuard> guard) {
+        vortex_guard_ = std::move(guard);
+    }
+
  private:
     std::unordered_map<FieldId, std::shared_ptr<Chunk>> chunks_;
+    std::unique_ptr<VortexCellGuard> vortex_guard_;
 };
 
 enum class GroupChunkType : uint8_t {

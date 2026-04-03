@@ -136,7 +136,7 @@ const FieldMeta FieldMeta::RowIdMeta(
     FieldName("RowID"), RowFieldID, DataType::INT64, false, std::nullopt);
 
 const ArrowSchemaPtr
-Schema::ConvertToArrowSchema() const {
+Schema::ConvertToArrowSchema(bool use_field_id) const {
     arrow::FieldVector arrow_fields;
     arrow_fields.reserve(field_ids_.size());
     for (const auto& field_id : field_ids_) {
@@ -155,8 +155,11 @@ Schema::ConvertToArrowSchema() const {
             arrow_data_type = GetArrowDataType(data_type, dim);
         }
 
+        auto field_name = use_field_id
+                              ? std::to_string(meta.get_id().get())
+                              : meta.get_name().get();
         auto arrow_field = std::make_shared<arrow::Field>(
-            meta.get_name().get(),
+            field_name,
             arrow_data_type,
             meta.is_nullable(),
             arrow::key_value_metadata({milvus_storage::ARROW_FIELD_ID_KEY},

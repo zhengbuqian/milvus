@@ -124,6 +124,7 @@
 #include "segcore/storagev1translator/TextMatchIndexTranslator.h"
 #include "segcore/storagev2translator/GroupChunkTranslator.h"
 #include "segcore/storagev2translator/ManifestGroupTranslator.h"
+#include "segcore/storagev2translator/VortexFieldTranslator.h"
 #include "storage/FileManager.h"
 #include "storage/LocalChunkManager.h"
 #include "storage/LocalChunkManagerSingleton.h"
@@ -642,6 +643,23 @@ ChunkedSegmentSealedImpl::load_column_group_data_internal(
 
         auto field_metas = schema_->get_field_metas(milvus_field_ids);
 
+        // Check if any field in this column group uses vortex local_format
+        bool has_vortex_field = false;
+        for (const auto& field_id : milvus_field_ids) {
+            if (field_metas.at(field_id).get_local_format() == "vortex") {
+                has_vortex_field = true;
+                break;
+            }
+        }
+
+        if (has_vortex_field) {
+            // V2 path does not support vortex; vortex is handled in V3 path
+            ThrowInfo(NotImplemented,
+                      "vortex local_format requires storage v3 "
+                      "for column group {}",
+                      column_group_id.get());
+        }
+
         auto translator =
             std::make_unique<storagev2translator::GroupChunkTranslator>(
                 get_segment_id(),
@@ -770,16 +788,27 @@ ChunkedSegmentSealedImpl::load_field_data_internal(
             storage::SortByPath(file_infos);
 
             auto field_meta = schema_->operator[](field_id);
-            std::unique_ptr<Translator<milvus::Chunk>> translator =
-                std::make_unique<storagev1translator::ChunkTranslator>(
-                    this->get_segment_id(),
-                    field_meta,
-                    field_data_info,
-                    std::move(file_infos),
-                    info.enable_mmap,
-                    mmap_config.GetMmapPopulate(),
-                    load_info.load_priority,
-                    info.warmup_policy);
+            auto local_format = field_meta.get_local_format();
+
+            std::unique_ptr<Translator<milvus::Chunk>> translator;
+            if (local_format == "vortex") {
+                // TODO: implement VortexChunkTranslator
+                ThrowInfo(NotImplemented,
+                          "vortex local_format is not implemented yet "
+                          "for storage v1 field {}",
+                          field_id.get());
+            } else {
+                translator =
+                    std::make_unique<storagev1translator::ChunkTranslator>(
+                        this->get_segment_id(),
+                        field_meta,
+                        field_data_info,
+                        std::move(file_infos),
+                        info.enable_mmap,
+                        mmap_config.GetMmapPopulate(),
+                        load_info.load_priority,
+                        info.warmup_policy);
+            }
 
             auto data_type = field_meta.get_data_type();
             auto slot = cachinglayer::Manager::GetInstance().CreateCacheSlot(
@@ -1896,8 +1925,8 @@ ChunkedSegmentSealedImpl::bulk_subscript(milvus::OpContext* op_ctx,
             auto dst = static_cast<Array*>(data);
             column->BulkArrayAt(
                 op_ctx,
-                [dst](const ArrayView& view, size_t i) {
-                    view.output_data(dst[i]);
+                [dst](ScalarFieldProto&& proto, size_t i) {
+                    dst[i] = Array(proto);
                 },
                 seg_offsets,
                 count);
@@ -1966,8 +1995,9 @@ ChunkedSegmentSealedImpl::bulk_subscript_ptr_impl(
     if constexpr (std::is_same_v<S, Json>) {
         column->BulkRawJsonAt(
             op_ctx,
-            [&](Json json, size_t offset, bool is_valid) {
-                dst->at(offset) = std::string(json.data());
+            [&](Json&& json, size_t offset, bool is_valid) {
+                dst->at(offset) =
+                    std::string(static_cast<std::string_view>(json));
             },
             seg_offsets,
             count);
@@ -1975,8 +2005,8 @@ ChunkedSegmentSealedImpl::bulk_subscript_ptr_impl(
         static_assert(std::is_same_v<S, std::string>);
         column->BulkRawStringAt(
             op_ctx,
-            [dst](std::string_view value, size_t offset, bool is_valid) {
-                dst->at(offset) = std::string(value);
+            [dst](std::string&& value, size_t offset, bool is_valid) {
+                dst->at(offset) = std::move(value);
             },
             seg_offsets,
             count);
@@ -1994,8 +2024,8 @@ ChunkedSegmentSealedImpl::bulk_subscript_ptr_impl(
     if constexpr (std::is_same_v<S, Json>) {
         column->BulkRawJsonAt(
             op_ctx,
-            [&](Json json, size_t offset, bool is_valid) {
-                dst[offset] = std::move(T(json));
+            [&](Json&& json, size_t offset, bool is_valid) {
+                dst[offset] = std::move(T(std::move(json)));
             },
             seg_offsets,
             count);
@@ -2003,8 +2033,8 @@ ChunkedSegmentSealedImpl::bulk_subscript_ptr_impl(
         static_assert(std::is_same_v<S, std::string>);
         column->BulkRawStringAt(
             op_ctx,
-            [&](std::string_view value, size_t offset, bool is_valid) {
-                dst[offset] = std::move(T(value));
+            [&](std::string&& value, size_t offset, bool is_valid) {
+                dst[offset] = std::move(T(std::move(value)));
             },
             seg_offsets,
             count);
@@ -2021,8 +2051,8 @@ ChunkedSegmentSealedImpl::bulk_subscript_array_impl(
     google::protobuf::RepeatedPtrField<T>* dst) {
     column->BulkArrayAt(
         op_ctx,
-        [dst](const ArrayView& view, size_t i) {
-            view.output_data(dst->at(i));
+        [dst](ScalarFieldProto&& proto, size_t i) {
+            dst->at(i) = std::move(proto);
         },
         seg_offsets,
         count);
@@ -2130,8 +2160,8 @@ ChunkedSegmentSealedImpl::CreateTextIndex(FieldId field_id,
                               "ChunkedSegmentSealedImpl::CreateTextIndex()");
             column->BulkRawStringAt(
                 nullptr,
-                [&](std::string_view value, size_t offset, bool is_valid) {
-                    index->AddTextSealed(std::string(value), is_valid, offset);
+                [&](std::string&& value, size_t offset, bool is_valid) {
+                    index->AddTextSealed(std::move(value), is_valid, offset);
                 });
         } else {  // fetch raw data from index.
             auto field_index_iter =
@@ -2598,9 +2628,11 @@ ChunkedSegmentSealedImpl::bulk_subscript(
     auto dst = ret->mutable_scalars()->mutable_json_data()->mutable_data();
     column->BulkRawJsonAt(
         op_ctx,
-        [&](Json json, size_t offset, bool is_valid) {
+        [&](Json&& json, size_t offset, bool is_valid) {
             dst->at(offset) =
-                ExtractSubJson(std::string(json.data()), dynamic_field_names);
+                ExtractSubJson(
+                    std::string(static_cast<std::string_view>(json)),
+                    dynamic_field_names);
         },
         seg_offsets,
         count);
@@ -3639,8 +3671,198 @@ ChunkedSegmentSealedImpl::LoadColumnGroup(
     std::string warmup_policy =
         has_warmup_setting ? aggregated_warmup_policy : "";
 
-    auto translator =
-        std::make_unique<storagev2translator::ManifestGroupTranslator>(
+    std::shared_ptr<ChunkedColumnGroup> chunked_column_group;
+
+    // Check if this column group uses vortex format AND fields have vortex local_format
+    bool is_vortex_format = (column_group->format == "vortex");
+    bool has_vortex_field = false;
+    for (const auto& [fid, fm] : field_metas) {
+        LOG_INFO("[BENCH_DEBUG] segment {} cg {} field {} name={} type={} local_format={}",
+                 this->get_segment_id(), index, fid.get(),
+                 fm.get_name().get(), static_cast<int>(fm.get_data_type()),
+                 fm.get_local_format());
+        if (fm.get_local_format() == "vortex") {
+            has_vortex_field = true;
+            break;
+        }
+    }
+    LOG_INFO("[BENCH_DEBUG] segment {} cg {} is_vortex_format={} has_vortex_field={} "
+             "cg_format={} cg_columns={} cg_files={}",
+             this->get_segment_id(), index, is_vortex_format, has_vortex_field,
+             column_group->format, column_group->columns.size(),
+             column_group->files.size());
+    if (is_vortex_format && has_vortex_field) {
+        LOG_INFO(
+            "[StorageV2] segment {} loads vortex cg index {} (per-field)",
+            this->get_segment_id(),
+            index);
+
+        auto arrow_schema =
+            schema_->ConvertToArrowSchema(/*use_field_id=*/true);
+
+        // 1. Deep copy column_groups and rewrite paths to mem://
+        auto local_cgs =
+            milvus_storage::api::copy_column_groups(*column_groups);
+        auto& cg_copy = local_cgs[index];
+        AssertInfo(cg_copy != nullptr,
+                   "column group at index {} is null",
+                   index);
+        AssertInfo(!cg_copy->files.empty(),
+                   "no files in vortex column group {}",
+                   index);
+
+        auto first_path = cg_copy->files[0].path;
+        auto& fs_cache = milvus_storage::FilesystemCache::getInstance();
+        auto s3_fs_result = fs_cache.get(*properties, first_path);
+        AssertInfo(s3_fs_result.ok(),
+                   "Failed to get S3 filesystem: {}",
+                   s3_fs_result.status().ToString());
+        auto s3_fs = s3_fs_result.ValueOrDie();
+
+        auto uri_result = milvus_storage::StorageUri::Parse(first_path);
+        AssertInfo(uri_result.ok(),
+                   "Failed to parse URI: {}",
+                   first_path);
+        auto& uri = uri_result.ValueOrDie();
+        std::string mem_path = "mem://" + uri.key;
+        cg_copy->files[0].path = mem_path;
+
+        auto rewritten_cgs =
+            std::make_shared<milvus_storage::api::ColumnGroups>(
+                std::move(local_cgs));
+
+        // 2. Create shared VortexFileHandle (downloads file → memfd → mmap)
+        // lazy = !eager_load: eager means full download, non-eager means footer-only
+        bool vortex_lazy = !eager_load;
+        auto file_handle = VortexFileHandle::Create(
+            s3_fs,
+            first_path,
+            mem_path,
+            rewritten_cgs,
+            arrow_schema,
+            properties,
+            index,
+            vortex_lazy);
+
+        // 3. Discover field → column index mapping from a sample batch
+        LOG_INFO("[BENCH_DEBUG] segment {} cg {} vortex per-field path: "
+                 "arrow_schema={}", this->get_segment_id(), index,
+                 arrow_schema->ToString());
+        std::unordered_map<FieldId, int> field_column_indices;
+        {
+            auto cr_result = file_handle->reader()->get_chunk_reader(index);
+            if (cr_result.ok()) {
+                auto cr = std::move(cr_result).ValueOrDie();
+                auto sample_result = cr->get_chunk(0);
+                if (sample_result.ok()) {
+                    auto& batch = sample_result.ValueOrDie();
+                    LOG_INFO("[BENCH_DEBUG] segment {} cg {} sample batch schema={}",
+                             this->get_segment_id(), index,
+                             batch->schema()->ToString());
+                    for (int col = 0; col < batch->num_columns(); ++col) {
+                        try {
+                            auto fid = FieldId(
+                                std::stoll(batch->column_name(col)));
+                            if (field_metas.count(fid) > 0 &&
+                                fid != RowFieldID) {
+                                field_column_indices[fid] = col;
+                            }
+                        } catch (...) {
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. Batch-extract per-field segment ranges (one VortexFile open)
+        std::vector<std::string> field_names;
+        for (const auto& [fid, _] : field_column_indices) {
+            field_names.push_back(std::to_string(fid.get()));
+        }
+        auto all_ranges = file_handle->GetAllFieldsCellSegmentRanges(
+            field_names,
+            storagev2translator::kRowGroupsPerCell);
+
+        // 5. Create per-field VortexFieldTranslator + ChunkedColumnGroup
+        for (const auto& field_id : milvus_field_ids) {
+            if (field_id == RowFieldID) {
+                continue;
+            }
+            auto col_it = field_column_indices.find(field_id);
+            if (col_it == field_column_indices.end()) {
+                continue;
+            }
+
+            const auto& field_meta = field_metas.at(field_id);
+
+            auto fname = std::to_string(field_id.get());
+            auto ranges_it = all_ranges.find(fname);
+            auto cell_ranges = (ranges_it != all_ranges.end())
+                                   ? std::move(ranges_it->second)
+                                   : decltype(ranges_it->second){};
+
+            auto field_translator = std::make_unique<
+                storagev2translator::VortexFieldTranslator>(
+                get_segment_id(),
+                index,
+                field_id,
+                field_meta,
+                col_it->second,
+                file_handle,
+                segment_load_info_.GetPriority(),
+                eager_load,
+                warmup_policy,
+                std::move(cell_ranges));
+
+            auto field_ccg = std::make_shared<ChunkedColumnGroup>(
+                std::move(field_translator));
+
+            auto column = std::make_shared<ProxyChunkColumn>(
+                field_ccg, field_id, field_meta);
+
+            auto data_type = field_meta.get_data_type();
+            load_field_data_common(
+                field_id,
+                column,
+                segment_load_info_.GetNumOfRows(),
+                data_type,
+                use_mmap,
+                true,
+                std::nullopt,
+                op_ctx,
+                is_replace);
+
+            if (field_id == TimestampFieldID) {
+                auto ts_col = get_column(TimestampFieldID);
+                AssertInfo(ts_col != nullptr,
+                           "timestamp proxy column is nullptr");
+                int64_t num_rows = segment_load_info_.GetNumOfRows();
+                init_timestamp_index_from_column(ts_col, num_rows);
+                system_ready_count_++;
+            }
+        }
+        return;
+    } else {
+        // Default parquet/manifest path
+        auto chunk_reader_result = reader_->get_chunk_reader(index);
+        AssertInfo(
+            chunk_reader_result.ok(),
+            "get chunk reader failed, segment {}, column group index {}: {}",
+            get_segment_id(),
+            index,
+            chunk_reader_result.status().ToString());
+        auto chunk_reader = std::move(chunk_reader_result).ValueOrDie();
+
+        LOG_INFO("[StorageV2] segment {} loads manifest cg index {}",
+                 this->get_segment_id(),
+                 index);
+        auto mmap_dir_path =
+            milvus::storage::LocalChunkManagerSingleton::GetInstance()
+                .GetChunkManager()
+                ->GetRootPath();
+
+        auto translator = std::make_unique<
+            storagev2translator::ManifestGroupTranslator>(
             get_segment_id(),
             GroupChunkType::DEFAULT,
             index,
@@ -3653,8 +3875,9 @@ ChunkedSegmentSealedImpl::LoadColumnGroup(
             segment_load_info_.GetPriority(),
             eager_load,
             warmup_policy);
-    auto chunked_column_group =
-        std::make_shared<ChunkedColumnGroup>(std::move(translator));
+        chunked_column_group =
+            std::make_shared<ChunkedColumnGroup>(std::move(translator));
+    }
 
     // Create ProxyChunkColumn for each field
     for (const auto& field_id : milvus_field_ids) {

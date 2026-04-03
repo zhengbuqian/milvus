@@ -98,6 +98,7 @@ CUDA_ARCH="DEFAULT"
 EMBEDDED_MILVUS="OFF"
 BUILD_DISK_ANN="OFF"
 USE_ASAN="OFF"
+ENABLE_FRAME_POINTER="OFF"
 USE_DYNAMIC_SIMD="ON"
 USE_OPENDAL="OFF"
 TANTIVY_FEATURES=""
@@ -105,7 +106,7 @@ INDEX_ENGINE="KNOWHERE"
 ENABLE_AZURE_FS="ON"
 : "${ENABLE_GCP_NATIVE:="OFF"}"
 
-while getopts "p:t:s:n:a:y:x:o:f:ulcgbZh" arg; do
+while getopts "p:t:s:n:a:F:y:x:o:f:ulcgbZh" arg; do
   case $arg in
   p)
     INSTALL_PREFIX=$OPTARG
@@ -140,6 +141,13 @@ while getopts "p:t:s:n:a:y:x:o:f:ulcgbZh" arg; do
     if [[ ${ENV_VAL} == 'ON' ]]; then
         echo "Set USE_ASAN to ON"
         USE_ASAN="ON"
+    fi
+    ;;
+  F)
+    ENV_VAL=$OPTARG
+    if [[ ${ENV_VAL} == 'ON' ]]; then
+        echo "Set ENABLE_FRAME_POINTER to ON"
+        ENABLE_FRAME_POINTER="ON"
     fi
     ;;
   y)
@@ -240,6 +248,7 @@ ${CMAKE_EXTRA_ARGS} \
 -DEMBEDDED_MILVUS=${EMBEDDED_MILVUS} \
 -DBUILD_DISK_ANN=${BUILD_DISK_ANN} \
 -DUSE_ASAN=${USE_ASAN} \
+-DENABLE_FRAME_POINTER=${ENABLE_FRAME_POINTER} \
 -DUSE_DYNAMIC_SIMD=${USE_DYNAMIC_SIMD} \
 -DCPU_ARCH=${CPU_ARCH} \
 -DUSE_OPENDAL=${USE_OPENDAL} \

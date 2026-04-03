@@ -15,6 +15,7 @@
 #pragma once
 #include "common/Array.h"
 #include "common/EasyAssert.h"
+#include "pb/schema.pb.h"
 #include "common/TypeTraits.h"
 #include "common/Types.h"
 #include "common/VectorArray.h"
@@ -62,6 +63,25 @@ class ChunkDataView : public BaseDataView {
 
     virtual const T*
     Data() const = 0;
+
+    /// Batch point query: return pointer to count contiguous values
+    /// gathered from the given sorted offsets.
+    /// Default: falls back to Data() + gather (zero-cost for Row format).
+    /// VortexDataView overrides with single batch take().
+    virtual const T*
+    DataByOffsets(const int64_t* offsets, int64_t count) const {
+        // Default: use bulk Data() and gather into raw buffer
+        auto* data = Data();
+        gathered_buf_.resize(count * sizeof(T));
+        auto* dst = reinterpret_cast<T*>(gathered_buf_.data());
+        for (int64_t i = 0; i < count; i++) {
+            new (&dst[i]) T(data[offsets[i]]);
+        }
+        return dst;
+    }
+
+ protected:
+    mutable std::vector<char> gathered_buf_;
 };
 
 // Specialization for vector types (FloatVector, Float16Vector, etc.)
@@ -435,9 +455,12 @@ class JsonDataView : public ChunkDataView<Json> {
     JsonDataView(std::shared_ptr<ChunkDataView<std::string_view>> sv_view)
         : sv_view_(std::move(sv_view)) {
         auto row_count = sv_view_->RowCount();
+        // Use Data() for bulk access (one decompression) instead of
+        // operator[] per row (one take() per row via VortexDataView).
+        const auto* bulk_data = sv_view_->Data();
         data_.reserve(row_count);
         for (int64_t i = 0; i < row_count; i++) {
-            data_.emplace_back((*sv_view_)[i]);
+            data_.emplace_back(bulk_data[i]);
         }
     }
 
@@ -469,6 +492,99 @@ class JsonDataView : public ChunkDataView<Json> {
  private:
     std::shared_ptr<ChunkDataView<std::string_view>> sv_view_;
     std::vector<Json> data_;
+};
+
+// Adapter: wraps ChunkDataView<string_view> as ChunkDataView<ArrayView>.
+// ARRAY data is stored as proto-serialized binary; this adapter
+// deserializes each binary blob into Array/ArrayView on construction.
+class ArrayViewDataView : public ChunkDataView<ArrayView> {
+ public:
+    ArrayViewDataView(
+        std::shared_ptr<ChunkDataView<std::string_view>> sv_view)
+        : sv_view_(std::move(sv_view)) {
+    }
+
+    const ArrayView&
+    operator[](int64_t idx) const override {
+        EnsureLoaded();
+        return views_[idx];
+    }
+
+    const ArrayView*
+    Data() const override {
+        EnsureLoaded();
+        return views_.data();
+    }
+
+    const ArrayView*
+    DataByOffsets(const int64_t* offsets, int64_t count) const override {
+        // Only deserialize the requested rows, not the entire chunk.
+        const auto* sv_data = sv_view_->DataByOffsets(offsets, count);
+        sparse_arrays_.clear();
+        sparse_views_.clear();
+        sparse_arrays_.reserve(count);
+        sparse_views_.reserve(count);
+        for (int64_t i = 0; i < count; ++i) {
+            proto::schema::ScalarField sf;
+            sf.ParseFromArray(sv_data[i].data(), sv_data[i].size());
+            sparse_arrays_.emplace_back(sf);
+        }
+        for (auto& arr : sparse_arrays_) {
+            sparse_views_.emplace_back(
+                const_cast<char*>(arr.data()),
+                arr.length(),
+                arr.byte_size(),
+                arr.get_element_type(),
+                const_cast<uint32_t*>(arr.get_offsets_data()));
+        }
+        return sparse_views_.data();
+    }
+
+    int64_t
+    RowCount() const override {
+        return sv_view_->RowCount();
+    }
+
+    const bool*
+    ValidData() const override {
+        return sv_view_->ValidData();
+    }
+
+    void
+    SetValidData(const bool* valid) override {
+        sv_view_->SetValidData(valid);
+    }
+
+ private:
+    void
+    EnsureLoaded() const {
+        if (loaded_) return;
+        auto row_count = sv_view_->RowCount();
+        const auto* bulk_data = sv_view_->Data();
+        arrays_.reserve(row_count);
+        views_.reserve(row_count);
+        for (int64_t i = 0; i < row_count; i++) {
+            proto::schema::ScalarField sf;
+            sf.ParseFromArray(bulk_data[i].data(), bulk_data[i].size());
+            arrays_.emplace_back(sf);
+        }
+        for (auto& arr : arrays_) {
+            views_.emplace_back(
+                const_cast<char*>(arr.data()),
+                arr.length(),
+                arr.byte_size(),
+                arr.get_element_type(),
+                const_cast<uint32_t*>(arr.get_offsets_data()));
+        }
+        loaded_ = true;
+    }
+
+    std::shared_ptr<ChunkDataView<std::string_view>> sv_view_;
+    mutable std::vector<Array> arrays_;
+    mutable std::vector<ArrayView> views_;
+    mutable std::vector<Array> sparse_arrays_;
+    mutable std::vector<ArrayView> sparse_views_;
+    mutable bool loaded_ = false;
 };
 
 // Adapter that wraps ChunkDataView<string> as ChunkDataView<string_view>.
@@ -625,6 +741,19 @@ class AnyDataView {
                     shared_.view);
             if (sv_view) {
                 return std::make_shared<JsonDataView>(std::move(sv_view));
+            }
+        }
+
+        // Support string_view -> ArrayView conversion:
+        // ARRAY data is stored as proto-serialized binary.
+        // Deserialize each blob into Array/ArrayView via adapter.
+        if constexpr (std::is_same_v<T, ArrayView>) {
+            auto sv_view =
+                std::dynamic_pointer_cast<ChunkDataView<std::string_view>>(
+                    view_);
+            if (sv_view) {
+                return std::make_shared<ArrayViewDataView>(
+                    std::move(sv_view));
             }
         }
 

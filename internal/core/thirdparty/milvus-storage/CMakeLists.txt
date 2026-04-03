@@ -14,13 +14,13 @@
 # Update milvus-storage_VERSION for the first occurrence
 milvus_add_pkg_config("milvus-storage")
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY INCLUDE_DIRECTORIES "")
-
+set( MILVUS_STORAGE_LOCAL_PATH "/home/zhicheng/SecWorkspace/milvus-storage")
 set( milvus-storage_VERSION 4351a0c)
 set( GIT_REPOSITORY  "https://github.com/milvus-io/milvus-storage.git")
-message(STATUS "milvus-storage repo: ${GIT_REPOSITORY}")
+message(STATUS "milvus-storage repo: local path ${MILVUS_STORAGE_LOCAL_PATH}")
 message(STATUS "milvus-storage version: ${milvus-storage_VERSION}")
 
-message(STATUS "Building milvus-storage-${milvus-storage_SOURCE_VER} from source")
+message(STATUS "Building milvus-storage from local source")
 message(STATUS ${CMAKE_BUILD_TYPE})
 
 if ( ENABLE_AZURE_FS STREQUAL "ON" )
@@ -31,6 +31,8 @@ endif ()
 
 # Disable benchmark for milvus-storage (we don't need it and it may have missing deps)
 set(WITH_BENCHMARK OFF CACHE BOOL "" FORCE)
+
+set(WITH_VORTEX ON CACHE BOOL "" FORCE )
 
 set( CMAKE_PREFIX_PATH ${CONAN_BOOST_ROOT} ${CONAN_PROTOBUF_ROOT} )
 
@@ -54,9 +56,7 @@ if(_PROTOC_PROGRAM)
 endif()
 FetchContent_Declare(
         milvus-storage
-        GIT_REPOSITORY  ${GIT_REPOSITORY}
-        GIT_TAG         ${milvus-storage_VERSION}
-        SOURCE_DIR      ${CMAKE_CURRENT_BINARY_DIR}/milvus-storage-src
+        SOURCE_DIR      ${MILVUS_STORAGE_LOCAL_PATH}
         BINARY_DIR      ${CMAKE_CURRENT_BINARY_DIR}/milvus-storage-build
         SOURCE_SUBDIR   cpp
         DOWNLOAD_DIR    ${THIRDPARTY_DOWNLOAD_PATH} )
