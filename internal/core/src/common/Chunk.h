@@ -458,8 +458,7 @@ class StringChunk : public RowChunk {
     }
 
     std::vector<std::string>
-    BulkOwnData(const int64_t* local_offsets,
-                int64_t count) const override {
+    BulkOwnData(const int64_t* local_offsets, int64_t count) const override {
         std::vector<std::string> result(count);
         for (int64_t i = 0; i < count; ++i) {
             auto sv = (*this)[local_offsets[i]];
@@ -590,8 +589,7 @@ class ArrayChunk : public RowChunk {
     }
 
     std::vector<std::string>
-    BulkOwnData(const int64_t* local_offsets,
-                int64_t count) const override {
+    BulkOwnData(const int64_t* local_offsets, int64_t count) const override {
         std::vector<std::string> result(count);
         for (int64_t i = 0; i < count; ++i) {
             auto view = View(local_offsets[i]);

@@ -499,8 +499,7 @@ class JsonDataView : public ChunkDataView<Json> {
 // deserializes each binary blob into Array/ArrayView on construction.
 class ArrayViewDataView : public ChunkDataView<ArrayView> {
  public:
-    ArrayViewDataView(
-        std::shared_ptr<ChunkDataView<std::string_view>> sv_view)
+    ArrayViewDataView(std::shared_ptr<ChunkDataView<std::string_view>> sv_view)
         : sv_view_(std::move(sv_view)) {
     }
 
@@ -558,7 +557,8 @@ class ArrayViewDataView : public ChunkDataView<ArrayView> {
  private:
     void
     EnsureLoaded() const {
-        if (loaded_) return;
+        if (loaded_)
+            return;
         auto row_count = sv_view_->RowCount();
         const auto* bulk_data = sv_view_->Data();
         arrays_.reserve(row_count);
@@ -569,12 +569,11 @@ class ArrayViewDataView : public ChunkDataView<ArrayView> {
             arrays_.emplace_back(sf);
         }
         for (auto& arr : arrays_) {
-            views_.emplace_back(
-                const_cast<char*>(arr.data()),
-                arr.length(),
-                arr.byte_size(),
-                arr.get_element_type(),
-                const_cast<uint32_t*>(arr.get_offsets_data()));
+            views_.emplace_back(const_cast<char*>(arr.data()),
+                                arr.length(),
+                                arr.byte_size(),
+                                arr.get_element_type(),
+                                const_cast<uint32_t*>(arr.get_offsets_data()));
         }
         loaded_ = true;
     }
@@ -750,10 +749,9 @@ class AnyDataView {
         if constexpr (std::is_same_v<T, ArrayView>) {
             auto sv_view =
                 std::dynamic_pointer_cast<ChunkDataView<std::string_view>>(
-                    view_);
+                    shared_.view);
             if (sv_view) {
-                return std::make_shared<ArrayViewDataView>(
-                    std::move(sv_view));
+                return std::make_shared<ArrayViewDataView>(std::move(sv_view));
             }
         }
 

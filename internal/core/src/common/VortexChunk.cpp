@@ -116,44 +116,45 @@ AnyDataView
 VortexChunk::GetAnyDataView(int64_t offset, int64_t length) const {
     AssertInfo(offset >= 0 && length > 0 && offset + length <= row_nums_,
                "VortexChunk::GetAnyDataView: range [{}, {}) out of bounds ({})",
-               offset, offset + length, row_nums_);
+               offset,
+               offset + length,
+               row_nums_);
 
     auto data_type = field_meta_.get_data_type();
     bool nullable = field_meta_.is_nullable();
 
     // Adjust row_start to skip 'offset' rows within this chunk
-    auto core = MakeCore(reader_, chunk_reader_, chunk_indices_,
-                         column_in_batch_, field_id_,
-                         row_start_ + offset, length, nullable);
+    auto core = MakeCore(reader_,
+                         chunk_reader_,
+                         chunk_indices_,
+                         column_in_batch_,
+                         field_id_,
+                         row_start_ + offset,
+                         length,
+                         nullable);
 
     switch (data_type) {
         case DataType::BOOL:
             return AnyDataView(
                 std::make_shared<VortexBoolDataView>(std::move(core)));
         case DataType::INT8:
-            return AnyDataView(
-                std::make_shared<VortexNumericDataView<int8_t>>(
-                    std::move(core)));
+            return AnyDataView(std::make_shared<VortexNumericDataView<int8_t>>(
+                std::move(core)));
         case DataType::INT16:
-            return AnyDataView(
-                std::make_shared<VortexNumericDataView<int16_t>>(
-                    std::move(core)));
+            return AnyDataView(std::make_shared<VortexNumericDataView<int16_t>>(
+                std::move(core)));
         case DataType::INT32:
-            return AnyDataView(
-                std::make_shared<VortexNumericDataView<int32_t>>(
-                    std::move(core)));
+            return AnyDataView(std::make_shared<VortexNumericDataView<int32_t>>(
+                std::move(core)));
         case DataType::INT64:
-            return AnyDataView(
-                std::make_shared<VortexNumericDataView<int64_t>>(
-                    std::move(core)));
+            return AnyDataView(std::make_shared<VortexNumericDataView<int64_t>>(
+                std::move(core)));
         case DataType::FLOAT:
-            return AnyDataView(
-                std::make_shared<VortexNumericDataView<float>>(
-                    std::move(core)));
+            return AnyDataView(std::make_shared<VortexNumericDataView<float>>(
+                std::move(core)));
         case DataType::DOUBLE:
-            return AnyDataView(
-                std::make_shared<VortexNumericDataView<double>>(
-                    std::move(core)));
+            return AnyDataView(std::make_shared<VortexNumericDataView<double>>(
+                std::move(core)));
         case DataType::VARCHAR:
         case DataType::STRING:
         case DataType::JSON:
@@ -181,8 +182,13 @@ VortexChunk::GetAnyDataView() const {
     auto data_type = field_meta_.get_data_type();
     bool nullable = field_meta_.is_nullable();
 
-    auto core = MakeCore(reader_, chunk_reader_, chunk_indices_,
-                         column_in_batch_, field_id_, row_start_, row_nums_,
+    auto core = MakeCore(reader_,
+                         chunk_reader_,
+                         chunk_indices_,
+                         column_in_batch_,
+                         field_id_,
+                         row_start_,
+                         row_nums_,
                          nullable);
 
     switch (data_type) {
@@ -190,29 +196,23 @@ VortexChunk::GetAnyDataView() const {
             return AnyDataView(
                 std::make_shared<VortexBoolDataView>(std::move(core)));
         case DataType::INT8:
-            return AnyDataView(
-                std::make_shared<VortexNumericDataView<int8_t>>(
-                    std::move(core)));
+            return AnyDataView(std::make_shared<VortexNumericDataView<int8_t>>(
+                std::move(core)));
         case DataType::INT16:
-            return AnyDataView(
-                std::make_shared<VortexNumericDataView<int16_t>>(
-                    std::move(core)));
+            return AnyDataView(std::make_shared<VortexNumericDataView<int16_t>>(
+                std::move(core)));
         case DataType::INT32:
-            return AnyDataView(
-                std::make_shared<VortexNumericDataView<int32_t>>(
-                    std::move(core)));
+            return AnyDataView(std::make_shared<VortexNumericDataView<int32_t>>(
+                std::move(core)));
         case DataType::INT64:
-            return AnyDataView(
-                std::make_shared<VortexNumericDataView<int64_t>>(
-                    std::move(core)));
+            return AnyDataView(std::make_shared<VortexNumericDataView<int64_t>>(
+                std::move(core)));
         case DataType::FLOAT:
-            return AnyDataView(
-                std::make_shared<VortexNumericDataView<float>>(
-                    std::move(core)));
+            return AnyDataView(std::make_shared<VortexNumericDataView<float>>(
+                std::move(core)));
         case DataType::DOUBLE:
-            return AnyDataView(
-                std::make_shared<VortexNumericDataView<double>>(
-                    std::move(core)));
+            return AnyDataView(std::make_shared<VortexNumericDataView<double>>(
+                std::move(core)));
         case DataType::VARCHAR:
         case DataType::STRING:
         case DataType::JSON:
@@ -236,10 +236,9 @@ VortexChunk::GetAnyDataView() const {
                 std::make_shared<VortexVectorDataView<BFloat16Vector>>(
                     std::move(core), field_meta_.get_dim()));
         default:
-            ThrowInfo(
-                NotImplemented,
-                "VortexChunk::GetAnyDataView: unsupported data type {}",
-                static_cast<int>(data_type));
+            ThrowInfo(NotImplemented,
+                      "VortexChunk::GetAnyDataView: unsupported data type {}",
+                      static_cast<int>(data_type));
     }
 }
 

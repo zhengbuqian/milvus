@@ -56,18 +56,17 @@ class VortexFieldTranslator
 
     /// @param cell_segment_ranges  Pre-extracted per-cell (offset, length) pairs
     ///                             for PUNCH_HOLE. Pass empty to disable PUNCH_HOLE.
-    VortexFieldTranslator(
-        int64_t segment_id,
-        int64_t column_group_index,
-        FieldId field_id,
-        const FieldMeta& field_meta,
-        int column_in_batch,
-        std::shared_ptr<VortexFileHandle> file_handle,
-        milvus::proto::common::LoadPriority load_priority,
-        bool eager_load,
-        const std::string& warmup_policy,
-        std::vector<std::vector<std::pair<off_t, size_t>>>
-            cell_segment_ranges = {});
+    VortexFieldTranslator(int64_t segment_id,
+                          int64_t column_group_index,
+                          FieldId field_id,
+                          const FieldMeta& field_meta,
+                          int column_in_batch,
+                          std::shared_ptr<VortexFileHandle> file_handle,
+                          milvus::proto::common::LoadPriority load_priority,
+                          bool eager_load,
+                          const std::string& warmup_policy,
+                          std::vector<std::vector<std::pair<off_t, size_t>>>
+                              cell_segment_ranges = {});
 
     ~VortexFieldTranslator() override = default;
 
@@ -79,8 +78,7 @@ class VortexFieldTranslator
 
     std::pair<milvus::cachinglayer::ResourceUsage,
               milvus::cachinglayer::ResourceUsage>
-    estimated_byte_size_of_cell(
-        milvus::cachinglayer::cid_t cid) const override;
+    estimated_byte_size_of_cell(milvus::cachinglayer::cid_t cid) const override;
 
     const std::string&
     key() const override;
@@ -102,8 +100,7 @@ class VortexFieldTranslator
  private:
     void
     PrecomputeCellMeta(
-        std::vector<std::vector<std::pair<off_t, size_t>>>
-            cell_segment_ranges);
+        std::vector<std::vector<std::pair<off_t, size_t>>> cell_segment_ranges);
 
     int64_t segment_id_;
     int64_t column_group_index_;

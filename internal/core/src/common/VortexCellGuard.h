@@ -62,9 +62,11 @@ class VortexCellGuard {
     }
 
     VortexCellGuard(const VortexCellGuard&) = delete;
-    VortexCellGuard& operator=(const VortexCellGuard&) = delete;
+    VortexCellGuard&
+    operator=(const VortexCellGuard&) = delete;
     VortexCellGuard(VortexCellGuard&&) = default;
-    VortexCellGuard& operator=(VortexCellGuard&&) = default;
+    VortexCellGuard&
+    operator=(VortexCellGuard&&) = default;
 
  private:
     int fd_;

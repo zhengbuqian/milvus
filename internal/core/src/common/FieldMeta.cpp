@@ -172,8 +172,7 @@ FieldMeta::ParseFrom(const milvus::proto::schema::FieldSchema& schema_proto) {
     // Parse local_format from type_params (applies to all field types)
     auto parse_local_format = [&](FieldMeta& meta) -> FieldMeta& {
         auto type_map = RepeatedKeyValToMap(schema_proto.type_params());
-        if (auto it = type_map.find("local_format");
-            it != type_map.end()) {
+        if (auto it = type_map.find("local_format"); it != type_map.end()) {
             meta.local_format_ = it->second;
         }
         return meta;
@@ -187,12 +186,12 @@ FieldMeta::ParseFrom(const milvus::proto::schema::FieldSchema& schema_proto) {
         dim = boost::lexical_cast<int64_t>(type_map.at("dim"));
 
         auto result = FieldMeta{name,
-            field_id,
-            data_type,
-            element_type,
-            dim,
-            std::nullopt,
-            external_field_mapping};
+                                field_id,
+                                data_type,
+                                element_type,
+                                dim,
+                                std::nullopt,
+                                external_field_mapping};
         return parse_local_format(result);
     }
 
@@ -210,24 +209,24 @@ FieldMeta::ParseFrom(const milvus::proto::schema::FieldSchema& schema_proto) {
 
         if (!index_map.count("metric_type")) {
             auto result = FieldMeta{name,
-                             field_id,
-                             data_type,
-                             dim,
-                             std::nullopt,
-                             nullable,
-                             default_value,
-                             external_field_mapping};
+                                    field_id,
+                                    data_type,
+                                    dim,
+                                    std::nullopt,
+                                    nullable,
+                                    default_value,
+                                    external_field_mapping};
             return parse_local_format(result);
         }
         auto metric_type = index_map.at("metric_type");
         auto result = FieldMeta{name,
-                         field_id,
-                         data_type,
-                         dim,
-                         metric_type,
-                         nullable,
-                         default_value,
-                         external_field_mapping};
+                                field_id,
+                                data_type,
+                                dim,
+                                metric_type,
+                                nullable,
+                                default_value,
+                                external_field_mapping};
         return parse_local_format(result);
     }
 
@@ -255,35 +254,35 @@ FieldMeta::ParseFrom(const milvus::proto::schema::FieldSchema& schema_proto) {
         bool enable_match = get_bool_value("enable_match");
 
         auto result = FieldMeta{name,
-                         field_id,
-                         data_type,
-                         max_len,
-                         nullable,
-                         enable_match,
-                         enable_analyzer,
-                         type_map,
-                         default_value,
-                         external_field_mapping};
+                                field_id,
+                                data_type,
+                                max_len,
+                                nullable,
+                                enable_match,
+                                enable_analyzer,
+                                type_map,
+                                default_value,
+                                external_field_mapping};
         return parse_local_format(result);
     }
 
     if (IsArrayDataType(data_type)) {
         auto result = FieldMeta{name,
-                         field_id,
-                         data_type,
-                         DataType(schema_proto.element_type()),
-                         nullable,
-                         default_value,
-                         external_field_mapping};
+                                field_id,
+                                data_type,
+                                DataType(schema_proto.element_type()),
+                                nullable,
+                                default_value,
+                                external_field_mapping};
         return parse_local_format(result);
     }
 
     auto result = FieldMeta{name,
-                     field_id,
-                     data_type,
-                     nullable,
-                     default_value,
-                     external_field_mapping};
+                            field_id,
+                            data_type,
+                            nullable,
+                            default_value,
+                            external_field_mapping};
     return parse_local_format(result);
 }
 

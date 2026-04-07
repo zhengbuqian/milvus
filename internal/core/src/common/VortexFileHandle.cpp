@@ -76,19 +76,16 @@ VortexFileHandle::Create(
                strerror(errno));
 
     int rc = ftruncate(handle->memfd_, handle->file_size_);
-    AssertInfo(rc == 0,
-               "VortexFileHandle: ftruncate failed: {}",
-               strerror(errno));
+    AssertInfo(
+        rc == 0, "VortexFileHandle: ftruncate failed: {}", strerror(errno));
 
     // --- 3. Download and pwrite to memfd ---
     if (lazy) {
         // Lazy mode: only download the footer (tail of the file)
-        size_t footer_size =
-            std::min(static_cast<size_t>(handle->file_size_),
-                     kLazyFooterDownloadSize);
-        int64_t footer_offset =
-            static_cast<int64_t>(handle->file_size_) -
-            static_cast<int64_t>(footer_size);
+        size_t footer_size = std::min(static_cast<size_t>(handle->file_size_),
+                                      kLazyFooterDownloadSize);
+        int64_t footer_offset = static_cast<int64_t>(handle->file_size_) -
+                                static_cast<int64_t>(footer_size);
 
         auto buf_result = input->ReadAt(footer_offset, footer_size);
         AssertInfo(buf_result.ok(),
@@ -125,11 +122,10 @@ VortexFileHandle::Create(
                                download_buf->data() + written,
                                handle->file_size_ - written,
                                written);
-            AssertInfo(
-                n > 0,
-                "VortexFileHandle: pwrite failed at offset {}: {}",
-                written,
-                strerror(errno));
+            AssertInfo(n > 0,
+                       "VortexFileHandle: pwrite failed at offset {}: {}",
+                       written,
+                       strerror(errno));
             written += n;
         }
     }
@@ -148,8 +144,7 @@ VortexFileHandle::Create(
     // --- 5. Register mmap'd buffer in BufferFileSystem ---
     // Non-owning buffer: VortexFileHandle owns the mmap lifetime
     auto mmap_buffer = std::make_shared<arrow::Buffer>(
-        static_cast<const uint8_t*>(handle->mmap_ptr_),
-        handle->file_size_);
+        static_cast<const uint8_t*>(handle->mmap_ptr_), handle->file_size_);
     auto buffer_fs = BufferFileSystem::getInstance();
 
     // FormatReader::create() re-parses the mem:// path and extracts
@@ -205,10 +200,9 @@ namespace {
 
 // Parse FieldChunkOffsets output and resolve byte ranges per cell.
 std::vector<std::vector<std::pair<off_t, size_t>>>
-ExtractCellRanges(
-    milvus_storage::vortex::VortexFile& vxfile,
-    const std::string& field_name,
-    size_t chunks_per_cell) {
+ExtractCellRanges(milvus_storage::vortex::VortexFile& vxfile,
+                  const std::string& field_name,
+                  size_t chunks_per_cell) {
     auto chunk_offsets = vxfile.FieldChunkOffsets(field_name);
     // Format: [num_chunked_layouts, total_chunk_children,
     //   chunk_idx, row_offset, row_count, num_segments,
@@ -242,15 +236,13 @@ ExtractCellRanges(
     }
 
     // Group chunks into cells and resolve byte ranges
-    size_t num_cells =
-        (total_chunks + chunks_per_cell - 1) / chunks_per_cell;
+    size_t num_cells = (total_chunks + chunks_per_cell - 1) / chunks_per_cell;
     std::vector<std::vector<std::pair<off_t, size_t>>> result;
     result.resize(num_cells);
 
     for (size_t cid = 0; cid < num_cells; ++cid) {
         size_t rg_start = cid * chunks_per_cell;
-        size_t rg_end =
-            std::min(rg_start + chunks_per_cell, total_chunks);
+        size_t rg_end = std::min(rg_start + chunks_per_cell, total_chunks);
 
         for (size_t rg = rg_start; rg < rg_end; ++rg) {
             if (rg >= chunk_segs.size())
@@ -258,9 +250,8 @@ ExtractCellRanges(
             for (auto seg_id : chunk_segs[rg].seg_ids) {
                 auto seg_bytes = vxfile.SegmentBytes(seg_id);
                 if (seg_bytes.size() == 2) {
-                    result[cid].emplace_back(
-                        static_cast<off_t>(seg_bytes[0]),
-                        static_cast<size_t>(seg_bytes[1]));
+                    result[cid].emplace_back(static_cast<off_t>(seg_bytes[0]),
+                                             static_cast<size_t>(seg_bytes[1]));
                 }
             }
         }
@@ -274,16 +265,12 @@ ExtractCellRanges(
 std::unordered_map<std::string,
                    std::vector<std::vector<std::pair<off_t, size_t>>>>
 VortexFileHandle::GetAllFieldsCellSegmentRanges(
-    const std::vector<std::string>& field_names,
-    size_t chunks_per_cell) const {
+    const std::vector<std::string>& field_names, size_t chunks_per_cell) const {
     // Open VortexFile once for all fields
     auto buffer_fs = BufferFileSystem::getInstance();
-    auto fs_holder =
-        std::make_shared<FileSystemWrapper>(buffer_fs);
-    auto vxfile =
-        milvus_storage::vortex::VortexFile::OpenUnique(
-            reinterpret_cast<uint8_t*>(fs_holder.get()),
-            buffer_key_);
+    auto fs_holder = std::make_shared<FileSystemWrapper>(buffer_fs);
+    auto vxfile = milvus_storage::vortex::VortexFile::OpenUnique(
+        reinterpret_cast<uint8_t*>(fs_holder.get()), buffer_key_);
 
     std::unordered_map<std::string,
                        std::vector<std::vector<std::pair<off_t, size_t>>>>

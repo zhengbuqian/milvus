@@ -57,12 +57,12 @@ class VortexFileHandle {
     /// @param properties     Storage properties for Reader creation
     /// @param column_group_index  Index of this CG in column_groups
     /// @param lazy        If true, only download footer (lazy load v2)
-    static std::shared_ptr<VortexFileHandle> Create(
+    static std::shared_ptr<VortexFileHandle>
+    Create(
         const std::shared_ptr<arrow::fs::FileSystem>& s3_fs,
         const std::string& s3_path,
         const std::string& mem_path,
-        const std::shared_ptr<milvus_storage::api::ColumnGroups>&
-            column_groups,
+        const std::shared_ptr<milvus_storage::api::ColumnGroups>& column_groups,
         const std::shared_ptr<arrow::Schema>& arrow_schema,
         const std::shared_ptr<milvus_storage::api::Properties>& properties,
         int64_t column_group_index,
@@ -71,7 +71,8 @@ class VortexFileHandle {
     ~VortexFileHandle();
 
     VortexFileHandle(const VortexFileHandle&) = delete;
-    VortexFileHandle& operator=(const VortexFileHandle&) = delete;
+    VortexFileHandle&
+    operator=(const VortexFileHandle&) = delete;
 
     /// Shared Reader for data access (all fields share this).
     std::shared_ptr<milvus_storage::api::Reader>
@@ -121,9 +122,8 @@ class VortexFileHandle {
     /// Returns: field_name → vector-of-cells, each cell = vector of (offset, length).
     std::unordered_map<std::string,
                        std::vector<std::vector<std::pair<off_t, size_t>>>>
-    GetAllFieldsCellSegmentRanges(
-        const std::vector<std::string>& field_names,
-        size_t chunks_per_cell) const;
+    GetAllFieldsCellSegmentRanges(const std::vector<std::string>& field_names,
+                                  size_t chunks_per_cell) const;
 
  private:
     VortexFileHandle() = default;
@@ -132,7 +132,8 @@ class VortexFileHandle {
     void* mmap_ptr_ = MAP_FAILED;
     size_t file_size_ = 0;
     std::string mem_path_;
-    std::string buffer_key_;  // resolved key used for BufferFileSystem registration
+    std::string
+        buffer_key_;  // resolved key used for BufferFileSystem registration
     int64_t column_group_index_ = -1;
     bool lazy_ = false;
 

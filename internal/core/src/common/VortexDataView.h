@@ -43,22 +43,19 @@ GetBinaryView(const std::shared_ptr<arrow::Array>& arr, int64_t idx) {
     switch (arr->type_id()) {
         case arrow::Type::BINARY:
         case arrow::Type::STRING: {
-            auto typed =
-                std::static_pointer_cast<arrow::BinaryArray>(arr);
+            auto typed = std::static_pointer_cast<arrow::BinaryArray>(arr);
             auto sv = typed->GetView(idx);
             return {sv.data(), sv.size()};
         }
         case arrow::Type::LARGE_BINARY:
         case arrow::Type::LARGE_STRING: {
-            auto typed =
-                std::static_pointer_cast<arrow::LargeBinaryArray>(arr);
+            auto typed = std::static_pointer_cast<arrow::LargeBinaryArray>(arr);
             auto sv = typed->GetView(idx);
             return {sv.data(), sv.size()};
         }
         case arrow::Type::BINARY_VIEW:
         case arrow::Type::STRING_VIEW: {
-            auto typed =
-                std::static_pointer_cast<arrow::BinaryViewArray>(arr);
+            auto typed = std::static_pointer_cast<arrow::BinaryViewArray>(arr);
             auto sv = typed->GetView(idx);
             return {sv.data(), sv.size()};
         }
@@ -148,11 +145,11 @@ struct VortexDataViewCore {
 
         // Build reorder map: result[i] in sorted_indices order
         // → should be placed at reorder_map[i] in original order
-        bool needs_reorder = (sorted_indices.size() != static_cast<size_t>(count));
+        bool needs_reorder =
+            (sorted_indices.size() != static_cast<size_t>(count));
         if (!needs_reorder) {
             for (int64_t i = 0; i < count; ++i) {
-                if (sorted_indices[i] !=
-                    row_start + local_offsets[i]) {
+                if (sorted_indices[i] != row_start + local_offsets[i]) {
                     needs_reorder = true;
                     break;
                 }
@@ -172,7 +169,8 @@ struct VortexDataViewCore {
 
         auto t_total1 = Clock::now();
         fprintf(stderr,
-                "[VortexPerf] DoBatchPointQuery n=%ld dedup=%zu sort=%ldus take=%ldus total=%ldus\n",
+                "[VortexPerf] DoBatchPointQuery n=%ld dedup=%zu sort=%ldus "
+                "take=%ldus total=%ldus\n",
                 count,
                 sorted_indices.size(),
                 std::chrono::duration_cast<Us>(t_sort1 - t_sort0).count(),
@@ -233,8 +231,7 @@ struct VortexDataViewCore {
         if (rows_result.ok()) {
             const auto& all_rows = rows_result.ValueOrDie();
             for (auto idx : chunk_indices) {
-                if (idx >= 0 &&
-                    static_cast<size_t>(idx) < all_rows.size()) {
+                if (idx >= 0 && static_cast<size_t>(idx) < all_rows.size()) {
                     cell_rows += all_rows[idx];
                 }
             }
@@ -290,8 +287,7 @@ struct VortexDataViewCore {
 template <typename T>
 class VortexNumericDataView : public ChunkDataView<T> {
  public:
-    VortexNumericDataView(VortexDataViewCore core)
-        : core_(std::move(core)) {
+    VortexNumericDataView(VortexDataViewCore core) : core_(std::move(core)) {
     }
 
     const T&
@@ -303,8 +299,9 @@ class VortexNumericDataView : public ChunkDataView<T> {
         cached_table_ = core_.DoPointQuery(idx);
         auto col_idx = core_.FindFieldColumn(cached_table_);
         auto chunked = cached_table_->column(col_idx);
-        auto arr = std::static_pointer_cast<
-            typename arrow::CTypeTraits<T>::ArrayType>(chunked->chunk(0));
+        auto arr =
+            std::static_pointer_cast<typename arrow::CTypeTraits<T>::ArrayType>(
+                chunked->chunk(0));
         cached_value_ = arr->Value(0);
         return cached_value_;
     }
@@ -319,8 +316,7 @@ class VortexNumericDataView : public ChunkDataView<T> {
     DataByOffsets(const int64_t* offsets, int64_t count) const override {
         // Single batch take() with sort+dedup handling.
         std::vector<int64_t> reorder_map;
-        cached_table_ =
-            core_.DoBatchPointQuery(offsets, count, reorder_map);
+        cached_table_ = core_.DoBatchPointQuery(offsets, count, reorder_map);
         auto col_idx = core_.FindFieldColumn(cached_table_);
         auto chunked = cached_table_->column(col_idx);
 
@@ -329,8 +325,7 @@ class VortexNumericDataView : public ChunkDataView<T> {
         sorted_buf.reserve(chunked->length());
         for (int i = 0; i < chunked->num_chunks(); ++i) {
             auto typed = std::static_pointer_cast<
-                typename arrow::CTypeTraits<T>::ArrayType>(
-                chunked->chunk(i));
+                typename arrow::CTypeTraits<T>::ArrayType>(chunked->chunk(i));
             auto old_size = sorted_buf.size();
             sorted_buf.resize(old_size + typed->length());
             std::memcpy(sorted_buf.data() + old_size,
@@ -381,9 +376,9 @@ class VortexNumericDataView : public ChunkDataView<T> {
             auto len = typed->length();
             auto old_size = data_buf_.size();
             data_buf_.resize(old_size + len);
-            std::memcpy(
-                data_buf_.data() + old_size, typed->raw_values(),
-                len * sizeof(T));
+            std::memcpy(data_buf_.data() + old_size,
+                        typed->raw_values(),
+                        len * sizeof(T));
         }
         core_.ExtractValidity(arrays, valid_data_);
         data_loaded_ = true;
@@ -453,8 +448,7 @@ class VortexBoolDataView : public ChunkDataView<bool> {
         auto arrays = core_.ExtractFieldArrays();
         data_buf_.reserve(core_.total_rows);
         for (const auto& arr : arrays) {
-            auto bool_arr =
-                std::static_pointer_cast<arrow::BooleanArray>(arr);
+            auto bool_arr = std::static_pointer_cast<arrow::BooleanArray>(arr);
             for (int64_t i = 0; i < bool_arr->length(); ++i) {
                 data_buf_.push_back(bool_arr->Value(i));
             }
@@ -504,8 +498,7 @@ class VortexStringDataView : public ChunkDataView<std::string_view> {
     DataByOffsets(const int64_t* offsets, int64_t count) const override {
         // Single batch take() with sort+dedup handling.
         std::vector<int64_t> reorder_map;
-        cached_table_ =
-            core_.DoBatchPointQuery(offsets, count, reorder_map);
+        cached_table_ = core_.DoBatchPointQuery(offsets, count, reorder_map);
         auto col_idx = core_.FindFieldColumn(cached_table_);
         auto chunked = cached_table_->column(col_idx);
 
@@ -635,8 +628,7 @@ class VortexJsonDataView : public ChunkDataView<Json> {
         cached_arrays_ = arrays;
         data_buf_.reserve(core_.total_rows);
         for (const auto& arr : arrays) {
-            auto str_arr =
-                std::static_pointer_cast<arrow::BinaryArray>(arr);
+            auto str_arr = std::static_pointer_cast<arrow::BinaryArray>(arr);
             for (int64_t i = 0; i < str_arr->length(); ++i) {
                 auto sv = str_arr->GetView(i);
                 data_buf_.emplace_back(sv.data(), sv.size());
@@ -684,8 +676,7 @@ class VortexVectorDataView
         auto chunked = cached_table_->column(col_idx);
         auto arr = std::static_pointer_cast<arrow::FixedSizeBinaryArray>(
             chunked->chunk(0));
-        auto* ptr =
-            reinterpret_cast<const ValueType*>(arr->GetValue(0));
+        auto* ptr = reinterpret_cast<const ValueType*>(arr->GetValue(0));
         // Cache the first element (consistent with ContiguousDataView
         // vector specialization which returns data_[idx * dim_])
         cached_value_ = *ptr;
@@ -730,8 +721,8 @@ class VortexVectorDataView
                 std::static_pointer_cast<arrow::FixedSizeBinaryArray>(arr);
             auto len = fixed_arr->length();
             auto byte_width = fixed_arr->byte_width();
-            std::memcpy(dst + offset, fixed_arr->raw_values(),
-                        len * byte_width);
+            std::memcpy(
+                dst + offset, fixed_arr->raw_values(), len * byte_width);
             offset += len * byte_width;
         }
         core_.ExtractValidity(arrays, valid_data_);

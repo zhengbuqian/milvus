@@ -155,9 +155,8 @@ Schema::ConvertToArrowSchema(bool use_field_id) const {
             arrow_data_type = GetArrowDataType(data_type, dim);
         }
 
-        auto field_name = use_field_id
-                              ? std::to_string(meta.get_id().get())
-                              : meta.get_name().get();
+        auto field_name = use_field_id ? std::to_string(meta.get_id().get())
+                                       : meta.get_name().get();
         auto arrow_field = std::make_shared<arrow::Field>(
             field_name,
             arrow_data_type,

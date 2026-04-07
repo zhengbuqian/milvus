@@ -455,7 +455,7 @@ ToCStorageConfig(const milvus::storage::StorageConfig& config) {
                           false,  // this field does not exist in StorageConfig
                           config.max_connections,
                           config.tls_min_version.c_str(),
-                          config.use_crc32c_checksum};
+                          config.use_crc32c_checksum,
                           config.format.c_str()};
 }
 

@@ -417,8 +417,8 @@ class ProxyChunkColumn : public ChunkedColumnInterface {
                 ca->get_cell_of(cids[0])->GetChunk(field_id_).get())) {
             std::vector<int64_t> sorted(offsets, offsets + count);
             std::sort(sorted.begin(), sorted.end());
-            sorted.erase(
-                std::unique(sorted.begin(), sorted.end()), sorted.end());
+            sorted.erase(std::unique(sorted.begin(), sorted.end()),
+                         sorted.end());
 
             auto result = vchunk->GetReader()->take(sorted);
             AssertInfo(result.ok(),
@@ -445,10 +445,9 @@ class ProxyChunkColumn : public ChunkedColumnInterface {
             }
 
             for (int64_t i = 0; i < count; ++i) {
-                auto it = std::lower_bound(
-                    sorted.begin(), sorted.end(), offsets[i]);
-                typed_dst[i] =
-                    static_cast<T>(flat_vals[it - sorted.begin()]);
+                auto it =
+                    std::lower_bound(sorted.begin(), sorted.end(), offsets[i]);
+                typed_dst[i] = static_cast<T>(flat_vals[it - sorted.begin()]);
             }
             return;
         }
@@ -465,8 +464,7 @@ class ProxyChunkColumn : public ChunkedColumnInterface {
 
             auto* group_chunk = ca->get_cell_of(cur_cid);
             auto chunk = group_chunk->GetChunk(field_id_);
-            auto data_view =
-                chunk->GetAnyDataView().template as<S>();
+            auto data_view = chunk->GetAnyDataView().template as<S>();
 
             std::vector<int64_t> local_offsets(seg_count);
             for (int64_t j = 0; j < seg_count; ++j) {
@@ -588,8 +586,8 @@ class ProxyChunkColumn : public ChunkedColumnInterface {
             for (cid_t cid = 0; cid < num_chunks(); ++cid) {
                 auto group_chunk = group_->GetGroupChunk(op_ctx, cid);
                 auto chunk = group_chunk.get()->GetChunk(field_id_);
-                auto dv = chunk->GetAnyDataView()
-                              .template as<std::string_view>();
+                auto dv =
+                    chunk->GetAnyDataView().template as<std::string_view>();
                 auto chunk_rows = chunk->RowNums();
                 const auto* data = dv->Data();
                 for (int64_t i = 0; i < chunk_rows; ++i) {
@@ -628,11 +626,11 @@ class ProxyChunkColumn : public ChunkedColumnInterface {
 
                 std::vector<int64_t> local_offsets(seg_count);
                 for (int64_t j = 0; j < seg_count; ++j) {
-                    local_offsets[j] = static_cast<int64_t>(
-                        offsets_in_chunk[seg_start + j]);
+                    local_offsets[j] =
+                        static_cast<int64_t>(offsets_in_chunk[seg_start + j]);
                 }
-                auto owned = chunk->BulkOwnData(
-                    local_offsets.data(), seg_count);
+                auto owned =
+                    chunk->BulkOwnData(local_offsets.data(), seg_count);
                 for (int64_t j = 0; j < seg_count; ++j) {
                     auto valid =
                         chunk->IsValid(offsets_in_chunk[seg_start + j]);
@@ -666,8 +664,8 @@ class ProxyChunkColumn : public ChunkedColumnInterface {
                 TryVortexStringTake(ca, cids, offsets, count, sorted)) {
             auto& [table, flat_views] = *vortex_result;
             for (int64_t i = 0; i < count; ++i) {
-                auto it = std::lower_bound(
-                    sorted.begin(), sorted.end(), offsets[i]);
+                auto it =
+                    std::lower_bound(sorted.begin(), sorted.end(), offsets[i]);
                 auto sv = flat_views[it - sorted.begin()];
                 fn(Json(simdjson::padded_string(sv.data(), sv.size())),
                    i,
@@ -680,9 +678,7 @@ class ProxyChunkColumn : public ChunkedColumnInterface {
             auto* group_chunk = ca->get_cell_of(cid);
             auto chunk = group_chunk->GetChunk(field_id_);
             return std::make_pair(
-                chunk->GetAnyDataView()
-                    .template as<std::string_view>(),
-                chunk);
+                chunk->GetAnyDataView().template as<std::string_view>(), chunk);
         };
 
         int64_t seg_start = 0;
@@ -697,15 +693,14 @@ class ProxyChunkColumn : public ChunkedColumnInterface {
 
             std::vector<int64_t> local_offsets(seg_count);
             for (int64_t j = 0; j < seg_count; ++j) {
-                local_offsets[j] = static_cast<int64_t>(
-                    offsets_in_chunk[seg_start + j]);
+                local_offsets[j] =
+                    static_cast<int64_t>(offsets_in_chunk[seg_start + j]);
             }
             const auto* batch_data =
-                cached.first->DataByOffsets(
-                    local_offsets.data(), seg_count);
+                cached.first->DataByOffsets(local_offsets.data(), seg_count);
             for (int64_t j = 0; j < seg_count; ++j) {
-                auto valid = cached.second->IsValid(
-                    offsets_in_chunk[seg_start + j]);
+                auto valid =
+                    cached.second->IsValid(offsets_in_chunk[seg_start + j]);
                 auto sv = batch_data[j];
                 // Non-owning Json: points into DataView buffer (valid during call).
                 fn(Json(sv.data(), sv.size()), seg_start + j, valid);
@@ -736,8 +731,7 @@ class ProxyChunkColumn : public ChunkedColumnInterface {
         auto make_dv = [&](cachinglayer::cid_t cid) {
             auto* group_chunk = ca->get_cell_of(cid);
             auto chunk = group_chunk->GetChunk(field_id_);
-            return chunk->GetAnyDataView()
-                .template as<std::string_view>();
+            return chunk->GetAnyDataView().template as<std::string_view>();
         };
 
         int64_t seg_start = 0;
@@ -752,8 +746,8 @@ class ProxyChunkColumn : public ChunkedColumnInterface {
 
             std::vector<int64_t> local_offsets(seg_count);
             for (int64_t j = 0; j < seg_count; ++j) {
-                local_offsets[j] = static_cast<int64_t>(
-                    offsets_in_chunk[seg_start + j]);
+                local_offsets[j] =
+                    static_cast<int64_t>(offsets_in_chunk[seg_start + j]);
             }
             const auto* batch_data =
                 dv->DataByOffsets(local_offsets.data(), seg_count);
@@ -792,8 +786,8 @@ class ProxyChunkColumn : public ChunkedColumnInterface {
                 TryVortexStringTake(ca, cids, offsets, count, sorted)) {
             auto& [table, flat_views] = *vortex_result;
             for (int64_t i = 0; i < count; ++i) {
-                auto it = std::lower_bound(
-                    sorted.begin(), sorted.end(), offsets[i]);
+                auto it =
+                    std::lower_bound(sorted.begin(), sorted.end(), offsets[i]);
                 auto sv = flat_views[it - sorted.begin()];
                 ScalarFieldProto proto;
                 proto.ParseFromArray(sv.data(), sv.size());
@@ -815,8 +809,8 @@ class ProxyChunkColumn : public ChunkedColumnInterface {
 
             std::vector<int64_t> local_offsets(seg_count);
             for (int64_t j = 0; j < seg_count; ++j) {
-                local_offsets[j] = static_cast<int64_t>(
-                    offsets_in_chunk[seg_start + j]);
+                local_offsets[j] =
+                    static_cast<int64_t>(offsets_in_chunk[seg_start + j]);
             }
             auto owned = chunk->BulkOwnData(local_offsets.data(), seg_count);
             for (int64_t j = 0; j < seg_count; ++j) {
@@ -896,14 +890,13 @@ class ProxyChunkColumn : public ChunkedColumnInterface {
     // Returns {table, flat_string_views} if the column is backed by VortexChunk;
     // returns nullopt otherwise.  The caller MUST keep `table` alive while using
     // the string_views (they point into Arrow column buffers).
-    std::optional<std::pair<std::shared_ptr<arrow::Table>,
-                            std::vector<std::string_view>>>
-    TryVortexStringTake(
-        const std::shared_ptr<CellAccessor<GroupChunk>>& ca,
-        const std::vector<cachinglayer::cid_t>& cids,
-        const int64_t* offsets,
-        int64_t count,
-        std::vector<int64_t>& sorted_out) const {
+    std::optional<
+        std::pair<std::shared_ptr<arrow::Table>, std::vector<std::string_view>>>
+    TryVortexStringTake(const std::shared_ptr<CellAccessor<GroupChunk>>& ca,
+                        const std::vector<cachinglayer::cid_t>& cids,
+                        const int64_t* offsets,
+                        int64_t count,
+                        std::vector<int64_t>& sorted_out) const {
         auto* vchunk = dynamic_cast<VortexChunk*>(
             ca->get_cell_of(cids[0])->GetChunk(field_id_).get());
         if (!vchunk) {
@@ -913,8 +906,8 @@ class ProxyChunkColumn : public ChunkedColumnInterface {
         // Build sorted, deduped segment-level offsets for a single take().
         sorted_out.assign(offsets, offsets + count);
         std::sort(sorted_out.begin(), sorted_out.end());
-        sorted_out.erase(
-            std::unique(sorted_out.begin(), sorted_out.end()), sorted_out.end());
+        sorted_out.erase(std::unique(sorted_out.begin(), sorted_out.end()),
+                         sorted_out.end());
 
         auto result = vchunk->GetReader()->take(sorted_out);
         AssertInfo(result.ok(),
@@ -922,8 +915,7 @@ class ProxyChunkColumn : public ChunkedColumnInterface {
                    result.status().ToString());
         auto table = *result;
 
-        int col_idx =
-            table->schema()->GetFieldIndex(vchunk->GetFieldName());
+        int col_idx = table->schema()->GetFieldIndex(vchunk->GetFieldName());
         AssertInfo(col_idx >= 0,
                    "BulkVortex: field '{}' not found in take result",
                    vchunk->GetFieldName());
@@ -933,8 +925,7 @@ class ProxyChunkColumn : public ChunkedColumnInterface {
         flat_views.reserve(col->length());
         for (int i = 0; i < col->num_chunks(); ++i) {
             auto arr = col->chunk(i);
-            if (auto sa =
-                    std::dynamic_pointer_cast<arrow::StringArray>(arr)) {
+            if (auto sa = std::dynamic_pointer_cast<arrow::StringArray>(arr)) {
                 for (int64_t j = 0; j < sa->length(); ++j) {
                     auto sv = sa->GetView(j);
                     flat_views.emplace_back(sv.data(), sv.size());
@@ -954,9 +945,8 @@ class ProxyChunkColumn : public ChunkedColumnInterface {
                         auto sv = ba->GetView(j);
                         flat_views.emplace_back(sv.data(), sv.size());
                     }
-                } else if (auto lba =
-                               std::dynamic_pointer_cast<
-                                   arrow::LargeBinaryArray>(arr)) {
+                } else if (auto lba = std::dynamic_pointer_cast<
+                               arrow::LargeBinaryArray>(arr)) {
                     for (int64_t j = 0; j < lba->length(); ++j) {
                         auto sv = lba->GetView(j);
                         flat_views.emplace_back(sv.data(), sv.size());

@@ -101,14 +101,12 @@ class BufferFileSystem : public arrow::fs::FileSystem {
 
     arrow::Status
     CreateDir(const std::string& /*path*/, bool /*recursive*/) override {
-        return arrow::Status::NotImplemented(
-            "BufferFileSystem::CreateDir");
+        return arrow::Status::NotImplemented("BufferFileSystem::CreateDir");
     }
 
     arrow::Status
     DeleteDir(const std::string& /*path*/) override {
-        return arrow::Status::NotImplemented(
-            "BufferFileSystem::DeleteDir");
+        return arrow::Status::NotImplemented("BufferFileSystem::DeleteDir");
     }
 
     arrow::Status
@@ -132,14 +130,12 @@ class BufferFileSystem : public arrow::fs::FileSystem {
     }
 
     arrow::Status
-    Move(const std::string& /*src*/,
-         const std::string& /*dest*/) override {
+    Move(const std::string& /*src*/, const std::string& /*dest*/) override {
         return arrow::Status::NotImplemented("BufferFileSystem::Move");
     }
 
     arrow::Status
-    CopyFile(const std::string& /*src*/,
-             const std::string& /*dest*/) override {
+    CopyFile(const std::string& /*src*/, const std::string& /*dest*/) override {
         return arrow::Status::NotImplemented("BufferFileSystem::CopyFile");
     }
 
@@ -179,8 +175,8 @@ class BufferFileSystem : public arrow::fs::FileSystem {
         std::lock_guard<std::mutex> lk(mu_);
         auto it = buffers_.find(path);
         if (it == buffers_.end()) {
-            return arrow::Status::IOError(
-                "BufferFileSystem: file not found: ", path);
+            return arrow::Status::IOError("BufferFileSystem: file not found: ",
+                                          path);
         }
         return it->second;
     }
