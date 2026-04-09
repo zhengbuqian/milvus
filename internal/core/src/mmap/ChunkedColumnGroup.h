@@ -571,7 +571,7 @@ class ProxyChunkColumn : public ChunkedColumnInterface {
 
     void
     BulkRawStringAt(milvus::OpContext* op_ctx,
-                    std::function<void(std::string&&, size_t, bool)> fn,
+                    std::function<void(std::string_view, size_t, bool)> fn,
                     const int64_t* offsets = nullptr,
                     int64_t count = 0) const override {
         if (!IsChunkedVariableColumnDataType(data_type_) ||
@@ -608,42 +608,25 @@ class ProxyChunkColumn : public ChunkedColumnInterface {
                 for (int64_t i = 0; i < count; ++i) {
                     auto it = std::lower_bound(
                         sorted.begin(), sorted.end(), offsets[i]);
-                    fn(std::string(flat_views[it - sorted.begin()]), i, true);
+                    fn(flat_views[it - sorted.begin()], i, true);
                 }
                 return;
             }
 
-            int64_t seg_start = 0;
-            while (seg_start < count) {
-                auto cur_cid = cids[seg_start];
-                int64_t seg_end = seg_start + 1;
-                while (seg_end < count && cids[seg_end] == cur_cid) {
-                    ++seg_end;
-                }
-                int64_t seg_count = seg_end - seg_start;
-                auto* group_chunk = ca->get_cell_of(cur_cid);
+            for (int64_t i = 0; i < count; i++) {
+                auto* group_chunk = ca->get_cell_of(cids[i]);
                 auto chunk = group_chunk->GetChunk(field_id_);
-
-                std::vector<int64_t> local_offsets(seg_count);
-                for (int64_t j = 0; j < seg_count; ++j) {
-                    local_offsets[j] =
-                        static_cast<int64_t>(offsets_in_chunk[seg_start + j]);
-                }
-                auto owned =
-                    chunk->BulkOwnData(local_offsets.data(), seg_count);
-                for (int64_t j = 0; j < seg_count; ++j) {
-                    auto valid =
-                        chunk->IsValid(offsets_in_chunk[seg_start + j]);
-                    fn(std::move(owned[j]), seg_start + j, valid);
-                }
-                seg_start = seg_end;
+                auto valid = chunk->IsValid(offsets_in_chunk[i]);
+                auto value = static_cast<StringChunk*>(chunk.get())
+                                 ->operator[](offsets_in_chunk[i]);
+                fn(value, i, valid);
             }
         }
     }
 
     void
     BulkRawJsonAt(milvus::OpContext* op_ctx,
-                  std::function<void(Json&&, size_t, bool)> fn,
+                  std::function<void(Json, size_t, bool)> fn,
                   const int64_t* offsets,
                   int64_t count) const override {
         if (data_type_ != DataType::JSON) {
@@ -674,38 +657,13 @@ class ProxyChunkColumn : public ChunkedColumnInterface {
             return;
         }
 
-        auto make_dv = [&](cachinglayer::cid_t cid) {
-            auto* group_chunk = ca->get_cell_of(cid);
+        for (int64_t i = 0; i < count; i++) {
+            auto* group_chunk = ca->get_cell_of(cids[i]);
             auto chunk = group_chunk->GetChunk(field_id_);
-            return std::make_pair(
-                chunk->GetAnyDataView().template as<std::string_view>(), chunk);
-        };
-
-        int64_t seg_start = 0;
-        while (seg_start < count) {
-            auto cur_cid = cids[seg_start];
-            int64_t seg_end = seg_start + 1;
-            while (seg_end < count && cids[seg_end] == cur_cid) {
-                ++seg_end;
-            }
-            int64_t seg_count = seg_end - seg_start;
-            auto cached = make_dv(cur_cid);
-
-            std::vector<int64_t> local_offsets(seg_count);
-            for (int64_t j = 0; j < seg_count; ++j) {
-                local_offsets[j] =
-                    static_cast<int64_t>(offsets_in_chunk[seg_start + j]);
-            }
-            const auto* batch_data =
-                cached.first->DataByOffsets(local_offsets.data(), seg_count);
-            for (int64_t j = 0; j < seg_count; ++j) {
-                auto valid =
-                    cached.second->IsValid(offsets_in_chunk[seg_start + j]);
-                auto sv = batch_data[j];
-                // Non-owning Json: points into DataView buffer (valid during call).
-                fn(Json(sv.data(), sv.size()), seg_start + j, valid);
-            }
-            seg_start = seg_end;
+            auto valid = chunk->IsValid(offsets_in_chunk[i]);
+            auto str_view = static_cast<StringChunk*>(chunk.get())
+                                ->operator[](offsets_in_chunk[i]);
+            fn(Json(str_view.data(), str_view.size()), i, valid);
         }
     }
 
@@ -764,7 +722,7 @@ class ProxyChunkColumn : public ChunkedColumnInterface {
 
     void
     BulkArrayAt(milvus::OpContext* op_ctx,
-                std::function<void(ScalarFieldProto&&, size_t)> fn,
+                std::function<void(const ArrayView&, size_t)> fn,
                 const int64_t* offsets,
                 int64_t count) const override {
         if (!IsChunkedArrayColumnDataType(data_type_)) {
@@ -779,46 +737,45 @@ class ProxyChunkColumn : public ChunkedColumnInterface {
         auto ca = group_->GetGroupChunks(op_ctx, cids);
 
         // Vortex fast path: single batched take() across all cells.
-        // ARRAY is stored as proto-serialized binary; parse directly to
-        // ScalarFieldProto, bypassing the Array/ArrayView construction entirely.
+        // ARRAY is stored as proto-serialized binary; parse to Array/ArrayView.
         std::vector<int64_t> sorted;
         if (auto vortex_result =
                 TryVortexStringTake(ca, cids, offsets, count, sorted)) {
             auto& [table, flat_views] = *vortex_result;
+            // Keep parsed Array objects alive while ArrayViews reference them.
+            std::vector<Array> arrays;
+            std::vector<ArrayView> views;
+            arrays.reserve(count);
+            views.reserve(count);
             for (int64_t i = 0; i < count; ++i) {
-                auto it =
-                    std::lower_bound(sorted.begin(), sorted.end(), offsets[i]);
+                auto it = std::lower_bound(
+                    sorted.begin(), sorted.end(), offsets[i]);
                 auto sv = flat_views[it - sorted.begin()];
-                ScalarFieldProto proto;
-                proto.ParseFromArray(sv.data(), sv.size());
-                fn(std::move(proto), i);
+                proto::schema::ScalarField sf;
+                sf.ParseFromArray(sv.data(), sv.size());
+                arrays.emplace_back(sf);
+            }
+            for (auto& arr : arrays) {
+                views.emplace_back(
+                    const_cast<char*>(arr.data()),
+                    arr.length(),
+                    arr.byte_size(),
+                    arr.get_element_type(),
+                    const_cast<uint32_t*>(arr.get_offsets_data()));
+            }
+            for (int64_t i = 0; i < count; ++i) {
+                fn(views[i], i);
             }
             return;
         }
 
-        int64_t seg_start = 0;
-        while (seg_start < count) {
-            auto cur_cid = cids[seg_start];
-            int64_t seg_end = seg_start + 1;
-            while (seg_end < count && cids[seg_end] == cur_cid) {
-                ++seg_end;
-            }
-            int64_t seg_count = seg_end - seg_start;
-            auto* group_chunk = ca->get_cell_of(cur_cid);
+        // Row fallback: direct ArrayChunk::View() — same as master.
+        for (int64_t i = 0; i < count; i++) {
+            auto* group_chunk = ca->get_cell_of(cids[i]);
             auto chunk = group_chunk->GetChunk(field_id_);
-
-            std::vector<int64_t> local_offsets(seg_count);
-            for (int64_t j = 0; j < seg_count; ++j) {
-                local_offsets[j] =
-                    static_cast<int64_t>(offsets_in_chunk[seg_start + j]);
-            }
-            auto owned = chunk->BulkOwnData(local_offsets.data(), seg_count);
-            for (int64_t j = 0; j < seg_count; ++j) {
-                ScalarFieldProto proto;
-                proto.ParseFromString(owned[j]);
-                fn(std::move(proto), seg_start + j);
-            }
-            seg_start = seg_end;
+            auto view = static_cast<ArrayChunk*>(chunk.get())
+                            ->View(offsets_in_chunk[i]);
+            fn(view, i);
         }
     }
 

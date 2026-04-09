@@ -1925,8 +1925,8 @@ ChunkedSegmentSealedImpl::bulk_subscript(milvus::OpContext* op_ctx,
             auto dst = static_cast<Array*>(data);
             column->BulkArrayAt(
                 op_ctx,
-                [dst](ScalarFieldProto&& proto, size_t i) {
-                    dst[i] = Array(proto);
+                [dst](const ArrayView& view, size_t i) {
+                    view.output_data(dst[i]);
                 },
                 seg_offsets,
                 count);
@@ -1995,9 +1995,9 @@ ChunkedSegmentSealedImpl::bulk_subscript_ptr_impl(
     if constexpr (std::is_same_v<S, Json>) {
         column->BulkRawJsonAt(
             op_ctx,
-            [&](Json&& json, size_t offset, bool is_valid) {
+            [&](Json json, size_t offset, bool is_valid) {
                 dst->at(offset) =
-                    std::string(static_cast<std::string_view>(json));
+                    std::string(json.data());
             },
             seg_offsets,
             count);
@@ -2005,8 +2005,8 @@ ChunkedSegmentSealedImpl::bulk_subscript_ptr_impl(
         static_assert(std::is_same_v<S, std::string>);
         column->BulkRawStringAt(
             op_ctx,
-            [dst](std::string&& value, size_t offset, bool is_valid) {
-                dst->at(offset) = std::move(value);
+            [dst](std::string_view value, size_t offset, bool is_valid) {
+                dst->at(offset) = std::string(value);
             },
             seg_offsets,
             count);
@@ -2024,8 +2024,8 @@ ChunkedSegmentSealedImpl::bulk_subscript_ptr_impl(
     if constexpr (std::is_same_v<S, Json>) {
         column->BulkRawJsonAt(
             op_ctx,
-            [&](Json&& json, size_t offset, bool is_valid) {
-                dst[offset] = std::move(T(std::move(json)));
+            [&](Json json, size_t offset, bool is_valid) {
+                dst[offset] = std::move(T(json));
             },
             seg_offsets,
             count);
@@ -2033,8 +2033,8 @@ ChunkedSegmentSealedImpl::bulk_subscript_ptr_impl(
         static_assert(std::is_same_v<S, std::string>);
         column->BulkRawStringAt(
             op_ctx,
-            [&](std::string&& value, size_t offset, bool is_valid) {
-                dst[offset] = std::move(T(std::move(value)));
+            [&](std::string_view value, size_t offset, bool is_valid) {
+                dst[offset] = std::move(T(value));
             },
             seg_offsets,
             count);
@@ -2051,8 +2051,8 @@ ChunkedSegmentSealedImpl::bulk_subscript_array_impl(
     google::protobuf::RepeatedPtrField<T>* dst) {
     column->BulkArrayAt(
         op_ctx,
-        [dst](ScalarFieldProto&& proto, size_t i) {
-            dst->at(i) = std::move(proto);
+        [dst](const ArrayView& view, size_t i) {
+            view.output_data(dst->at(i));
         },
         seg_offsets,
         count);
@@ -2160,8 +2160,8 @@ ChunkedSegmentSealedImpl::CreateTextIndex(FieldId field_id,
                               "ChunkedSegmentSealedImpl::CreateTextIndex()");
             column->BulkRawStringAt(
                 nullptr,
-                [&](std::string&& value, size_t offset, bool is_valid) {
-                    index->AddTextSealed(std::move(value), is_valid, offset);
+                [&](std::string_view value, size_t offset, bool is_valid) {
+                    index->AddTextSealed(std::string(value), is_valid, offset);
                 });
         } else {  // fetch raw data from index.
             auto field_index_iter =
@@ -2628,9 +2628,9 @@ ChunkedSegmentSealedImpl::bulk_subscript(
     auto dst = ret->mutable_scalars()->mutable_json_data()->mutable_data();
     column->BulkRawJsonAt(
         op_ctx,
-        [&](Json&& json, size_t offset, bool is_valid) {
+        [&](Json json, size_t offset, bool is_valid) {
             dst->at(offset) =
-                ExtractSubJson(std::string(static_cast<std::string_view>(json)),
+                ExtractSubJson(std::string(json.data()),
                                dynamic_field_names);
         },
         seg_offsets,
