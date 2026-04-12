@@ -28,6 +28,7 @@
 #include "common/Slice.h"
 #include "index/InvertedIndexTantivy.h"
 #include "index/JsonIndexBuilder.h"
+#include "index/Meta.h"
 #include "index/Utils.h"
 #include "log/Log.h"
 #include "nlohmann/json.hpp"
@@ -54,10 +55,6 @@ MakeJsonCastContext(const storage::FileManagerContext& ctx,
     return modified;
 }
 
-// File name for serializing non_exist_offsets in JSON path indexes.
-constexpr const char* kJsonNonExistOffsetFileName =
-    "json_index_non_exist_offsets";
-
 template <typename T, typename BaseIndex>
 class JsonScalarIndexWrapper : public BaseIndex {
     static constexpr bool kIsInverted =
@@ -82,14 +79,15 @@ class JsonScalarIndexWrapper : public BaseIndex {
     }
 
     void
-    BuildWithFieldData(
-        const std::vector<FieldDataPtr>& field_datas) override {
-        auto result = ConvertJsonToTypedFieldData<T>(
-            field_datas, json_schema_, nested_path_, cast_type_,
-            cast_function_);
+    BuildWithFieldData(const std::vector<FieldDataPtr>& field_datas) override {
+        auto result = ConvertJsonToTypedFieldData<T>(field_datas,
+                                                     json_schema_,
+                                                     nested_path_,
+                                                     cast_type_,
+                                                     cast_function_);
         non_exist_offsets_ = std::move(result.non_exist_offsets);
-        auto total_rows = TotalRows(result.field_datas);
-        BaseIndex::BuildWithFieldData(result.field_datas);
+        auto total_rows = result.field_data->get_num_rows();
+        BaseIndex::BuildWithFieldData({result.field_data});
         BuildExistsBitset(total_rows);
     }
 
@@ -105,21 +103,19 @@ class JsonScalarIndexWrapper : public BaseIndex {
                                                      cast_function_);
 
         non_exist_offsets_ = std::move(result.non_exist_offsets);
-        auto total_rows = TotalRows(result.field_datas);
-        BaseIndex::BuildWithFieldData(result.field_datas);
+        auto total_rows = result.field_data->get_num_rows();
+        BaseIndex::BuildWithFieldData({result.field_data});
         BuildExistsBitset(total_rows);
     }
 
-    const TargetBitmap&
+    // Returns a bitmap indicating which rows have the indexed JSON path
+    // present. Returned by value (the copy cost matches the caller-side
+    // clone that would otherwise be required because TargetBitmap has a
+    // deleted copy constructor, and the caller typically wraps the result
+    // in a shared_ptr anyway).
+    TargetBitmap
     Exists() override {
-        if (!exists_bitset_built_) {
-            // Lazy build: the v2 load path can't safely call Count() during
-            // LoadIndexMetas (reader not yet initialized), so we defer the
-            // bitmap construction to the first Exists() call.
-            BuildExistsBitset(this->Count());
-            exists_bitset_built_ = true;
-        }
-        return exists_bitset_;
+        return exists_bitset_.clone();
     }
 
     // JSON brute-force semantics: NotEqual on error (path missing / cast fail)
@@ -143,9 +139,7 @@ class JsonScalarIndexWrapper : public BaseIndex {
             auto null_len = this->null_offset_.size() * sizeof(size_t);
             if (null_len > 0) {
                 std::shared_ptr<uint8_t[]> null_data(new uint8_t[null_len]);
-                memcpy(null_data.get(),
-                       this->null_offset_.data(),
-                       null_len);
+                memcpy(null_data.get(), this->null_offset_.data(), null_len);
                 res_set.Append(
                     INDEX_NULL_OFFSET_FILE_NAME, null_data, null_len);
             }
@@ -153,7 +147,8 @@ class JsonScalarIndexWrapper : public BaseIndex {
             if (ne_len > 0) {
                 std::shared_ptr<uint8_t[]> ne_data(new uint8_t[ne_len]);
                 memcpy(ne_data.get(), non_exist_offsets_.data(), ne_len);
-                res_set.Append(kJsonNonExistOffsetFileName, ne_data, ne_len);
+                res_set.Append(
+                    INDEX_NON_EXIST_OFFSET_FILE_NAME, ne_data, ne_len);
             }
             lock.unlock();
             milvus::Disassemble(res_set);
@@ -163,6 +158,9 @@ class JsonScalarIndexWrapper : public BaseIndex {
         }
     }
 
+    // v3 format: write non_exist_offsets on top of base entries. This is the
+    // sealed-segment entry point, called after the tantivy index is ready —
+    // safe to eagerly compute the exists bitmap.
     void
     WriteEntries(storage::IndexEntryWriter* writer) override {
         BaseIndex::WriteEntries(writer);
@@ -170,7 +168,7 @@ class JsonScalarIndexWrapper : public BaseIndex {
         bool has_non_exist = !non_exist_offsets_.empty();
         writer->PutMeta("has_non_exist", has_non_exist);
         if (has_non_exist) {
-            writer->WriteEntry(kJsonNonExistOffsetFileName,
+            writer->WriteEntry(INDEX_NON_EXIST_OFFSET_FILE_NAME,
                                non_exist_offsets_.data(),
                                non_exist_offsets_.size() * sizeof(size_t));
         }
@@ -183,14 +181,28 @@ class JsonScalarIndexWrapper : public BaseIndex {
 
         bool has_non_exist = reader.GetMeta<bool>("has_non_exist", false);
         if (has_non_exist) {
-            auto e = reader.ReadEntry(kJsonNonExistOffsetFileName);
+            auto e = reader.ReadEntry(INDEX_NON_EXIST_OFFSET_FILE_NAME);
             non_exist_offsets_.resize(e.data.size() / sizeof(size_t));
             std::memcpy(
                 non_exist_offsets_.data(), e.data.data(), e.data.size());
         }
         LOG_INFO("LoadEntries JsonScalarIndexWrapper done, has_non_exist: {}",
                  has_non_exist);
-        // exists_bitset_ built lazily on first Exists() call
+        // BaseIndex::LoadEntries has fully initialized the base index, so
+        // Count() is safe to call and we can eagerly build the exists bitmap.
+        BuildExistsBitset(this->Count());
+    }
+
+    // v2 format: override Load() to defer the eager exists bitmap build
+    // until after the base Load finishes. LoadIndexMetas (called from within
+    // base Load) runs before the tantivy reader is initialized, so we can
+    // only safely compute Count() here, not inside LoadIndexMetas.
+    void
+    Load(milvus::tracer::TraceContext ctx, const Config& config = {}) override {
+        BaseIndex::Load(ctx, config);
+        if constexpr (kIsInverted) {
+            BuildExistsBitset(this->Count());
+        }
     }
 
     JsonCastType
@@ -218,6 +230,8 @@ class JsonScalarIndexWrapper : public BaseIndex {
     }
 
     // v2: load non_exist_offsets from index files, with v2.5.x fallback.
+    // Called by InvertedIndexTantivy::Load() before the tantivy reader is
+    // initialized, so we defer the exists bitmap build to our Load() override.
     void
     LoadIndexMetas(const std::vector<std::string>& index_files,
                    const Config& config) {
@@ -240,23 +254,21 @@ class JsonScalarIndexWrapper : public BaseIndex {
                 index_files.end(),
                 [](const std::string& f) {
                     return boost::filesystem::path(f).filename().string() ==
-                           kJsonNonExistOffsetFileName;
+                           INDEX_NON_EXIST_OFFSET_FILE_NAME;
                 });
             if (it != index_files.end()) {
                 auto datas = this->file_manager_->LoadIndexToMemory(
                     {*it}, load_priority);
-                auto& d = datas.at(kJsonNonExistOffsetFileName);
+                auto& d = datas.at(INDEX_NON_EXIST_OFFSET_FILE_NAME);
                 fill(d->PayloadData(), d->PayloadSize());
-                // exists_bitset_ built lazily on first Exists() call
                 return;
             }
 
             // Try sliced files
             std::vector<std::string> sliced;
             for (auto& f : index_files) {
-                auto name =
-                    boost::filesystem::path(f).filename().string();
-                if (name.find(kJsonNonExistOffsetFileName) !=
+                auto name = boost::filesystem::path(f).filename().string();
+                if (name.find(INDEX_NON_EXIST_OFFSET_FILE_NAME) !=
                     std::string::npos) {
                     sliced.push_back(f);
                 }
@@ -269,17 +281,15 @@ class JsonScalarIndexWrapper : public BaseIndex {
                     sliced, load_priority);
                 auto compact = CompactIndexDatas(datas);
                 auto& codecs =
-                    compact.at(kJsonNonExistOffsetFileName).codecs_;
+                    compact.at(INDEX_NON_EXIST_OFFSET_FILE_NAME).codecs_;
                 for (auto&& c : codecs) {
                     fill(c->PayloadData(), c->PayloadSize());
                 }
-                // exists_bitset_ built lazily on first Exists() call
                 return;
             }
 
             // Fallback: v2.5.x data — use null_offset_ as non_exist_offsets_
             non_exist_offsets_ = this->null_offset_;
-            // exists_bitset_ built lazily on first Exists() call
         }
     }
 
@@ -287,8 +297,8 @@ class JsonScalarIndexWrapper : public BaseIndex {
     BuildTantivyMeta(const std::vector<std::string>& file_names,
                      bool has_null) {
         if constexpr (kIsInverted) {
-            auto meta = InvertedIndexTantivy<T>::BuildTantivyMeta(
-                file_names, has_null);
+            auto meta =
+                InvertedIndexTantivy<T>::BuildTantivyMeta(file_names, has_null);
             std::shared_lock<folly::SharedMutex> lock(this->mutex_);
             meta["has_non_exist"] = !non_exist_offsets_.empty();
             return meta;
@@ -308,7 +318,7 @@ class JsonScalarIndexWrapper : public BaseIndex {
                         return boost::filesystem::path(f)
                                    .filename()
                                    .string()
-                                   .find(kJsonNonExistOffsetFileName) !=
+                                   .find(INDEX_NON_EXIST_OFFSET_FILE_NAME) !=
                                std::string::npos;
                     }),
                 index_files.end());
@@ -317,18 +327,10 @@ class JsonScalarIndexWrapper : public BaseIndex {
     }
 
  protected:
-    static int64_t
-    TotalRows(const std::vector<FieldDataPtr>& field_datas) {
-        int64_t total = 0;
-        for (const auto& d : field_datas) {
-            total += d->get_num_rows();
-        }
-        return total;
-    }
-
-    // Build exists bitmap. Pass total row count explicitly because
-    // InvertedIndexTantivy::Count() requires finish()+create_reader()
-    // which haven't been called yet during Build/BuildWithFieldData.
+    // Build the exists bitmap. The caller must supply the total row count
+    // explicitly at build time because InvertedIndexTantivy::Count() requires
+    // finish()+create_reader() which haven't been called yet during
+    // Build/BuildWithFieldData.
     void
     BuildExistsBitset(int64_t count) {
         exists_bitset_ = TargetBitmap(count, true);
@@ -338,12 +340,10 @@ class JsonScalarIndexWrapper : public BaseIndex {
             }
             exists_bitset_.reset(offset);
         }
-        exists_bitset_built_ = true;
     }
 
     std::vector<size_t> non_exist_offsets_;
     TargetBitmap exists_bitset_;
-    bool exists_bitset_built_{false};
 
  private:
     JsonCastType cast_type_;
@@ -352,5 +352,11 @@ class JsonScalarIndexWrapper : public BaseIndex {
     proto::schema::FieldSchema json_schema_;
     storage::MemFileManagerImplPtr json_file_manager_;
 };
+
+// JsonInvertedIndex<T> is a type alias for the wrapper over
+// InvertedIndexTantivy<T>. It preserves the historical name and can be used
+// interchangeably with the wrapper.
+template <typename T>
+using JsonInvertedIndex = JsonScalarIndexWrapper<T, InvertedIndexTantivy<T>>;
 
 }  // namespace milvus::index

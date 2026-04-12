@@ -39,7 +39,6 @@
 #include "index/TextMatchIndex.h"
 #include "index/JsonFlatIndex.h"
 #include "index/JsonHybridScalarIndex.h"
-#include "index/JsonInvertedIndex.h"
 #include "index/JsonScalarIndexWrapper.h"
 #include "index/Meta.h"
 #include "index/NgramInvertedIndex.h"

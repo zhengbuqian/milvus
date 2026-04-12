@@ -57,31 +57,30 @@ class JsonHybridScalarIndex : public HybridScalarIndex<T> {
     }
 
     void
-    BuildWithFieldData(
-        const std::vector<FieldDataPtr>& field_datas) override {
-        auto result = ConvertJsonToTypedFieldData<T>(
-            field_datas, json_schema_, nested_path_, cast_type_,
-            cast_function_);
+    BuildWithFieldData(const std::vector<FieldDataPtr>& field_datas) override {
+        auto result = ConvertJsonToTypedFieldData<T>(field_datas,
+                                                     json_schema_,
+                                                     nested_path_,
+                                                     cast_type_,
+                                                     cast_function_);
         non_exist_offsets_ = std::move(result.non_exist_offsets);
 
-        int64_t total_rows = 0;
+        auto n = result.field_data->get_num_rows();
+        int64_t total_rows = n;
         std::set<T> distinct_vals;
-        for (const auto& data : result.field_datas) {
-            auto n = data->get_num_rows();
-            total_rows += n;
-            for (size_t i = 0; i < n; ++i) {
-                if (data->is_valid(i)) {
-                    auto val = reinterpret_cast<const T*>(data->RawValue(i));
-                    distinct_vals.insert(*val);
-                    if (distinct_vals.size() >=
-                        this->bitmap_index_cardinality_limit_) {
-                        break;
-                    }
+        for (size_t i = 0; i < n; ++i) {
+            if (result.field_data->is_valid(i)) {
+                auto val =
+                    reinterpret_cast<const T*>(result.field_data->RawValue(i));
+                distinct_vals.insert(*val);
+                if (distinct_vals.size() >=
+                    this->bitmap_index_cardinality_limit_) {
+                    break;
                 }
             }
         }
         this->SelectIndexTypeByCardinality(distinct_vals.size());
-        this->BuildInternal(result.field_datas);
+        this->BuildInternal({result.field_data});
 
         this->is_built_ = true;
         this->ComputeByteSize();
@@ -122,35 +121,33 @@ class JsonHybridScalarIndex : public HybridScalarIndex<T> {
 
         non_exist_offsets_ = std::move(result.non_exist_offsets);
 
-        int64_t total_rows = 0;
+        auto n = result.field_data->get_num_rows();
+        int64_t total_rows = n;
         // Do cardinality counting that respects is_valid(), unlike the base
         // class SelectBuildTypeForPrimitiveType which counts invalid rows too.
         std::set<T> distinct_vals;
-        for (const auto& data : result.field_datas) {
-            auto n = data->get_num_rows();
-            total_rows += n;
-            for (size_t i = 0; i < n; ++i) {
-                if (data->is_valid(i)) {
-                    auto val = reinterpret_cast<const T*>(data->RawValue(i));
-                    distinct_vals.insert(*val);
-                    if (distinct_vals.size() >=
-                        this->bitmap_index_cardinality_limit_) {
-                        break;
-                    }
+        for (size_t i = 0; i < n; ++i) {
+            if (result.field_data->is_valid(i)) {
+                auto val =
+                    reinterpret_cast<const T*>(result.field_data->RawValue(i));
+                distinct_vals.insert(*val);
+                if (distinct_vals.size() >=
+                    this->bitmap_index_cardinality_limit_) {
+                    break;
                 }
             }
         }
         this->SelectIndexTypeByCardinality(distinct_vals.size());
-        this->BuildInternal(result.field_datas);
+        this->BuildInternal({result.field_data});
 
         this->is_built_ = true;
         this->ComputeByteSize();
         BuildExistsBitset(total_rows);
     }
 
-    const TargetBitmap&
+    TargetBitmap
     Exists() override {
-        return exists_bitset_;
+        return exists_bitset_.clone();
     }
 
     const TargetBitmap
@@ -168,7 +165,7 @@ class JsonHybridScalarIndex : public HybridScalarIndex<T> {
         bool has_non_exist = !non_exist_offsets_.empty();
         writer->PutMeta("has_non_exist", has_non_exist);
         if (has_non_exist) {
-            writer->WriteEntry(kJsonNonExistOffsetFileName,
+            writer->WriteEntry(INDEX_NON_EXIST_OFFSET_FILE_NAME,
                                non_exist_offsets_.data(),
                                non_exist_offsets_.size() * sizeof(size_t));
         }
@@ -181,7 +178,7 @@ class JsonHybridScalarIndex : public HybridScalarIndex<T> {
 
         bool has_non_exist = reader.GetMeta<bool>("has_non_exist", false);
         if (has_non_exist) {
-            auto e = reader.ReadEntry(kJsonNonExistOffsetFileName);
+            auto e = reader.ReadEntry(INDEX_NON_EXIST_OFFSET_FILE_NAME);
             non_exist_offsets_.resize(e.data.size() / sizeof(size_t));
             std::memcpy(
                 non_exist_offsets_.data(), e.data.data(), e.data.size());

@@ -223,7 +223,7 @@ ConvertJsonToTypedFieldData(
         data_ptr, valid_data.data(), (ssize_t)total_rows, (ssize_t)0);
 
     return JsonToTypedResult{
-        .field_datas = {field_data},
+        .field_data = field_data,
         .non_exist_offsets = std::move(non_exist_offsets),
     };
 }
@@ -236,6 +236,12 @@ ConvertJsonToTypedFieldData<bool>(
     const JsonCastType& cast_type,
     JsonCastFunction cast_function);
 
+// NOTE: int64_t instantiation is kept solely for ExprJsonIndexTest.cpp which
+// uses JsonIndexTestFixture parameterized over <bool, int64_t, double,
+// std::string>. JSON cast_type does NOT support INT64 — that test uses
+// DOUBLE cast with int64 query values, and static_casts the resulting index
+// to JsonInvertedIndex<int64_t>* which is UB in principle but harmless in
+// practice. Remove this instantiation when that test is cleaned up.
 template JsonToTypedResult
 ConvertJsonToTypedFieldData<int64_t>(
     const std::vector<std::shared_ptr<FieldDataBase>>& json_field_datas,
@@ -259,5 +265,19 @@ ConvertJsonToTypedFieldData<std::string>(
     const std::string& nested_path,
     const JsonCastType& cast_type,
     JsonCastFunction cast_function);
+
+namespace json {
+
+bool
+IsDataTypeSupported(JsonCastType cast_type, DataType data_type, bool is_array) {
+    bool cast_type_is_array =
+        cast_type.data_type() == JsonCastType::DataType::ARRAY;
+    auto type = cast_type.ToMilvusDataType();
+    return is_array == cast_type_is_array &&
+           (type == data_type ||
+            (data_type == DataType::INT64 && type == DataType::DOUBLE));
+}
+
+}  // namespace json
 
 }  // namespace milvus::index

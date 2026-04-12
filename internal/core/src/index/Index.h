@@ -104,7 +104,7 @@ class IndexBase {
     // target type, while Exists() tracks whether the JSON path exists at all.
     // Example: {"price": "hello"} with a DOUBLE path index has Exists()=true
     // (path present) but valid=false (cannot cast "hello" to double).
-    virtual const TargetBitmap&
+    virtual TargetBitmap
     Exists() {
         ThrowInfo(NotImplemented, "Exists() not supported for this index type");
     }

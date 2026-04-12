@@ -25,6 +25,14 @@
 
 namespace milvus::index {
 
+namespace json {
+// Returns true if the JSON cast_type is compatible with the raw JSON value's
+// data_type (e.g., DOUBLE cast can accept INT64 JSON values). Array cast
+// types require is_array=true.
+bool
+IsDataTypeSupported(JsonCastType cast_type, DataType data_type, bool is_array);
+}  // namespace json
+
 template <typename T>
 using JsonDataAdder =
     std::function<void(const T* data, int64_t size, int64_t offset)>;
@@ -40,11 +48,11 @@ using JsonNonExistAdder = std::function<void(int64_t offset)>;
 struct JsonToTypedResult {
     // Typed field data with nullable semantics. Rows where the path doesn't
     // exist or the cast fails are marked as invalid.
-    std::vector<FieldDataPtr> field_datas;
+    FieldDataPtr field_data;
 
     // Offsets of rows where the JSON path does not exist (row is null, path
     // missing, or path value is null). This is a SUBSET of the invalid rows
-    // in field_datas — rows that exist but fail to cast are NOT included.
+    // in field_data — rows that exist but fail to cast are NOT included.
     // Used for EXISTS queries: Exists() should return true for rows where
     // the path exists, even if the value can't be cast to the index type.
     std::vector<size_t> non_exist_offsets;

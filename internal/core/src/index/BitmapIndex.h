@@ -97,7 +97,6 @@ class BitmapIndex : public ScalarIndex<T> {
     TargetBitmap
     IsNotNull() override;
 
-
     const TargetBitmap
     Range(const T& value, OpType op) override;
 

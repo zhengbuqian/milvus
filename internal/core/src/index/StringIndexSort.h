@@ -115,7 +115,6 @@ class StringIndexSort : public StringIndex {
     TargetBitmap
     IsNotNull() override;
 
-
     const TargetBitmap
     Range(const std::string& value, OpType op) override;
 

@@ -87,11 +87,13 @@ TEST(JsonPathIndexTest, ConvertDouble_NormalExtraction) {
     });
     auto schema = MakeJsonSchema();
     auto result = ConvertJsonToTypedFieldData<double>(
-        {json_fd}, schema, "/a", JsonCastType::FromString("DOUBLE"),
+        {json_fd},
+        schema,
+        "/a",
+        JsonCastType::FromString("DOUBLE"),
         JsonCastFunction::FromString("unknown"));
 
-    ASSERT_EQ(result.field_datas.size(), 1);
-    auto& fd = result.field_datas[0];
+    auto& fd = result.field_data;
     EXPECT_EQ(fd->get_num_rows(), 3);
     // All rows valid
     for (int i = 0; i < 3; i++) {
@@ -102,16 +104,19 @@ TEST(JsonPathIndexTest, ConvertDouble_NormalExtraction) {
 
 TEST(JsonPathIndexTest, ConvertDouble_PathNotExist) {
     auto json_fd = MakeJsonFieldData({
-        R"({"b": 1})",   // path /a doesn't exist
-        R"({"a": 2.0})", // exists
+        R"({"b": 1})",    // path /a doesn't exist
+        R"({"a": 2.0})",  // exists
         R"(100)",         // not an object, /a doesn't exist
     });
     auto schema = MakeJsonSchema();
     auto result = ConvertJsonToTypedFieldData<double>(
-        {json_fd}, schema, "/a", JsonCastType::FromString("DOUBLE"),
+        {json_fd},
+        schema,
+        "/a",
+        JsonCastType::FromString("DOUBLE"),
         JsonCastFunction::FromString("unknown"));
 
-    auto& fd = result.field_datas[0];
+    auto& fd = result.field_data;
     EXPECT_EQ(fd->get_num_rows(), 3);
     EXPECT_FALSE(fd->is_valid(0));  // path not exist
     EXPECT_TRUE(fd->is_valid(1));   // valid
@@ -126,16 +131,19 @@ TEST(JsonPathIndexTest, ConvertDouble_PathNotExist) {
 TEST(JsonPathIndexTest, ConvertDouble_PathExistsButCastFails) {
     auto json_fd = MakeJsonFieldData({
         R"({"a": "hello"})",  // path exists, but can't cast to DOUBLE
-        R"({"a": 2.0})",     // valid
-        R"({"a": [1,2,3]})", // path exists, but array can't cast to DOUBLE
-        R"({"a": true})",    // path exists, bool can't cast to DOUBLE
+        R"({"a": 2.0})",      // valid
+        R"({"a": [1,2,3]})",  // path exists, but array can't cast to DOUBLE
+        R"({"a": true})",     // path exists, bool can't cast to DOUBLE
     });
     auto schema = MakeJsonSchema();
     auto result = ConvertJsonToTypedFieldData<double>(
-        {json_fd}, schema, "/a", JsonCastType::FromString("DOUBLE"),
+        {json_fd},
+        schema,
+        "/a",
+        JsonCastType::FromString("DOUBLE"),
         JsonCastFunction::FromString("unknown"));
 
-    auto& fd = result.field_datas[0];
+    auto& fd = result.field_data;
     EXPECT_EQ(fd->get_num_rows(), 4);
     EXPECT_FALSE(fd->is_valid(0));  // cast fail
     EXPECT_TRUE(fd->is_valid(1));   // valid
@@ -148,18 +156,21 @@ TEST(JsonPathIndexTest, ConvertDouble_PathExistsButCastFails) {
 
 TEST(JsonPathIndexTest, ConvertDouble_MixedRows) {
     auto json_fd = MakeJsonFieldData({
-        R"({"a": 1.0})",     // 0: valid
-        R"({"b": 2})",       // 1: path not exist
-        R"({"a": "str"})",   // 2: path exists, cast fail
-        R"({"a": 3.0})",     // 3: valid
-        R"(42)",              // 4: path not exist (not object)
+        R"({"a": 1.0})",    // 0: valid
+        R"({"b": 2})",      // 1: path not exist
+        R"({"a": "str"})",  // 2: path exists, cast fail
+        R"({"a": 3.0})",    // 3: valid
+        R"(42)",            // 4: path not exist (not object)
     });
     auto schema = MakeJsonSchema();
     auto result = ConvertJsonToTypedFieldData<double>(
-        {json_fd}, schema, "/a", JsonCastType::FromString("DOUBLE"),
+        {json_fd},
+        schema,
+        "/a",
+        JsonCastType::FromString("DOUBLE"),
         JsonCastFunction::FromString("unknown"));
 
-    auto& fd = result.field_datas[0];
+    auto& fd = result.field_data;
     EXPECT_EQ(fd->get_num_rows(), 5);
     EXPECT_TRUE(fd->is_valid(0));
     EXPECT_FALSE(fd->is_valid(1));
@@ -182,10 +193,13 @@ TEST(JsonPathIndexTest, ConvertVarchar) {
     });
     auto schema = MakeJsonSchema();
     auto result = ConvertJsonToTypedFieldData<std::string>(
-        {json_fd}, schema, "/a", JsonCastType::FromString("VARCHAR"),
+        {json_fd},
+        schema,
+        "/a",
+        JsonCastType::FromString("VARCHAR"),
         JsonCastFunction::FromString("unknown"));
 
-    auto& fd = result.field_datas[0];
+    auto& fd = result.field_data;
     EXPECT_EQ(fd->get_num_rows(), 3);
     EXPECT_TRUE(fd->is_valid(0));
     EXPECT_TRUE(fd->is_valid(1));
@@ -211,8 +225,11 @@ TEST(JsonPathIndexTest, SortDouble_RangeQuery) {
     auto ctx = MakeTestContext();
 
     JsonScalarIndexWrapper<double, ScalarIndexSort<double>> idx(
-        JsonCastType::FromString("DOUBLE"), "/a",
-        JsonCastFunction::FromString("unknown"), schema, ctx);
+        JsonCastType::FromString("DOUBLE"),
+        "/a",
+        JsonCastFunction::FromString("unknown"),
+        schema,
+        ctx);
 
     idx.BuildWithFieldData({json_fd});
 
@@ -246,8 +263,11 @@ TEST(JsonPathIndexTest, BitmapVarchar_BuildAndCount) {
     auto ctx = MakeTestContext();
 
     JsonScalarIndexWrapper<std::string, BitmapIndex<std::string>> idx(
-        JsonCastType::FromString("VARCHAR"), "/s",
-        JsonCastFunction::FromString("unknown"), schema, ctx);
+        JsonCastType::FromString("VARCHAR"),
+        "/s",
+        JsonCastFunction::FromString("unknown"),
+        schema,
+        ctx);
 
     idx.BuildWithFieldData({json_fd});
     EXPECT_EQ(idx.Count(), 5);
@@ -271,12 +291,15 @@ TEST(JsonPathIndexTest, SortDouble_ExistsSemantics) {
     auto ctx = MakeTestContext();
 
     JsonScalarIndexWrapper<double, ScalarIndexSort<double>> idx(
-        JsonCastType::FromString("DOUBLE"), "/a",
-        JsonCastFunction::FromString("unknown"), schema, ctx);
+        JsonCastType::FromString("DOUBLE"),
+        "/a",
+        JsonCastFunction::FromString("unknown"),
+        schema,
+        ctx);
 
     idx.BuildWithFieldData({json_fd});
 
-    const auto& exists = idx.Exists();
+    auto exists = idx.Exists();
     EXPECT_EQ(exists.size(), 5);
     EXPECT_TRUE(exists[0]);   // path exists + valid
     EXPECT_TRUE(exists[1]);   // path exists + cast fail → still EXISTS
@@ -290,19 +313,22 @@ TEST(JsonPathIndexTest, BitmapBool_ExistsSemantics) {
     auto json_fd = MakeJsonFieldData({
         R"({"f": true})",
         R"({"f": false})",
-        R"({"g": 1})",       // path /f not exist
-        R"({"f": "yes"})",   // path exists, cast fail
+        R"({"g": 1})",      // path /f not exist
+        R"({"f": "yes"})",  // path exists, cast fail
     });
     auto schema = MakeJsonSchema();
     auto ctx = MakeTestContext();
 
     JsonScalarIndexWrapper<bool, BitmapIndex<bool>> idx(
-        JsonCastType::FromString("BOOL"), "/f",
-        JsonCastFunction::FromString("unknown"), schema, ctx);
+        JsonCastType::FromString("BOOL"),
+        "/f",
+        JsonCastFunction::FromString("unknown"),
+        schema,
+        ctx);
 
     idx.BuildWithFieldData({json_fd});
 
-    const auto& exists = idx.Exists();
+    auto exists = idx.Exists();
     EXPECT_TRUE(exists[0]);
     EXPECT_TRUE(exists[1]);
     EXPECT_FALSE(exists[2]);  // path not exist
@@ -325,8 +351,12 @@ TEST(JsonPathIndexTest, Hybrid_LowCardinalitySelectsBitmap) {
     auto ctx = MakeTestContext();
 
     JsonHybridScalarIndex<std::string> idx(
-        JsonCastType::FromString("VARCHAR"), "/x",
-        JsonCastFunction::FromString("unknown"), schema, 0, ctx);
+        JsonCastType::FromString("VARCHAR"),
+        "/x",
+        JsonCastFunction::FromString("unknown"),
+        schema,
+        0,
+        ctx);
 
     idx.BuildWithFieldData({json_fd});
 
@@ -344,9 +374,12 @@ TEST(JsonPathIndexTest, Hybrid_HighCardinalitySelectsSort) {
     auto schema = MakeJsonSchema();
     auto ctx = MakeTestContext();
 
-    JsonHybridScalarIndex<double> idx(
-        JsonCastType::FromString("DOUBLE"), "/n",
-        JsonCastFunction::FromString("unknown"), schema, 0, ctx);
+    JsonHybridScalarIndex<double> idx(JsonCastType::FromString("DOUBLE"),
+                                      "/n",
+                                      JsonCastFunction::FromString("unknown"),
+                                      schema,
+                                      0,
+                                      ctx);
 
     idx.BuildWithFieldData({json_fd});
 
@@ -379,9 +412,12 @@ TEST(JsonPathIndexTest, Hybrid_CardinalityIgnoresInvalidRows) {
     auto schema = MakeJsonSchema();
     auto ctx = MakeTestContext();
 
-    JsonHybridScalarIndex<double> idx(
-        JsonCastType::FromString("DOUBLE"), "/v",
-        JsonCastFunction::FromString("unknown"), schema, 0, ctx);
+    JsonHybridScalarIndex<double> idx(JsonCastType::FromString("DOUBLE"),
+                                      "/v",
+                                      JsonCastFunction::FromString("unknown"),
+                                      schema,
+                                      0,
+                                      ctx);
 
     idx.BuildWithFieldData({json_fd});
 
@@ -399,13 +435,16 @@ TEST(JsonPathIndexTest, Hybrid_ExistsSemantics) {
     auto schema = MakeJsonSchema();
     auto ctx = MakeTestContext();
 
-    JsonHybridScalarIndex<double> idx(
-        JsonCastType::FromString("DOUBLE"), "/a",
-        JsonCastFunction::FromString("unknown"), schema, 0, ctx);
+    JsonHybridScalarIndex<double> idx(JsonCastType::FromString("DOUBLE"),
+                                      "/a",
+                                      JsonCastFunction::FromString("unknown"),
+                                      schema,
+                                      0,
+                                      ctx);
 
     idx.BuildWithFieldData({json_fd});
 
-    const auto& exists = idx.Exists();
+    auto exists = idx.Exists();
     EXPECT_TRUE(exists[0]);   // valid
     EXPECT_TRUE(exists[1]);   // cast fail → still EXISTS
     EXPECT_FALSE(exists[2]);  // path not exist
@@ -426,7 +465,8 @@ TEST(JsonPathIndexTest, Factory_SortDouble) {
 
     auto idx = IndexFactory::GetInstance().CreateJsonIndex(info, ctx);
     ASSERT_NE(idx, nullptr);
-    EXPECT_EQ(idx->GetCastType().ToString(), JsonCastType::FromString("DOUBLE").ToString());
+    EXPECT_EQ(idx->GetCastType().ToString(),
+              JsonCastType::FromString("DOUBLE").ToString());
 }
 
 TEST(JsonPathIndexTest, Factory_BitmapVarchar) {
@@ -439,7 +479,8 @@ TEST(JsonPathIndexTest, Factory_BitmapVarchar) {
 
     auto idx = IndexFactory::GetInstance().CreateJsonIndex(info, ctx);
     ASSERT_NE(idx, nullptr);
-    EXPECT_EQ(idx->GetCastType().ToString(), JsonCastType::FromString("VARCHAR").ToString());
+    EXPECT_EQ(idx->GetCastType().ToString(),
+              JsonCastType::FromString("VARCHAR").ToString());
 }
 
 TEST(JsonPathIndexTest, Factory_HybridDouble) {
@@ -453,7 +494,8 @@ TEST(JsonPathIndexTest, Factory_HybridDouble) {
 
     auto idx = IndexFactory::GetInstance().CreateJsonIndex(info, ctx);
     ASSERT_NE(idx, nullptr);
-    EXPECT_EQ(idx->GetCastType().ToString(), JsonCastType::FromString("DOUBLE").ToString());
+    EXPECT_EQ(idx->GetCastType().ToString(),
+              JsonCastType::FromString("DOUBLE").ToString());
 }
 
 TEST(JsonPathIndexTest, Factory_BitmapDouble_Rejected) {
@@ -464,9 +506,8 @@ TEST(JsonPathIndexTest, Factory_BitmapDouble_Rejected) {
     info.json_cast_type = JsonCastType::FromString("DOUBLE");
     info.json_path = "/num";
 
-    EXPECT_THROW(
-        IndexFactory::GetInstance().CreateJsonIndex(info, ctx),
-        std::exception);
+    EXPECT_THROW(IndexFactory::GetInstance().CreateJsonIndex(info, ctx),
+                 std::exception);
 }
 
 TEST(JsonPathIndexTest, Factory_SortBool_Rejected) {
@@ -477,7 +518,6 @@ TEST(JsonPathIndexTest, Factory_SortBool_Rejected) {
     info.json_cast_type = JsonCastType::FromString("BOOL");
     info.json_path = "/flag";
 
-    EXPECT_THROW(
-        IndexFactory::GetInstance().CreateJsonIndex(info, ctx),
-        std::exception);
+    EXPECT_THROW(IndexFactory::GetInstance().CreateJsonIndex(info, ctx),
+                 std::exception);
 }

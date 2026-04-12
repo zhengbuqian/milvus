@@ -45,13 +45,13 @@ class JsonFlatIndexQueryExecutor : public InvertedIndexTantivy<T> {
         return bitset;
     }
 
-    const TargetBitmap&
+    TargetBitmap
     Exists() override {
         tracer::AutoSpan span("JsonFlatIndexQueryExecutor::Exists",
                               tracer::GetRootSpan());
-        exists_bitset_ = TargetBitmap(this->Count());
-        this->wrapper_->json_exist_query(json_path_, &exists_bitset_);
-        return exists_bitset_;
+        TargetBitmap bitset(this->Count());
+        this->wrapper_->json_exist_query(json_path_, &bitset);
+        return bitset;
     }
 
     const TargetBitmap
@@ -177,7 +177,6 @@ class JsonFlatIndexQueryExecutor : public InvertedIndexTantivy<T> {
 
  private:
     std::string json_path_;
-    TargetBitmap exists_bitset_;
 };
 
 // JsonFlatIndex is not bound to any specific type,

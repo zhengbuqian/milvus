@@ -233,7 +233,7 @@ TEST_F(JsonFlatIndexTest, TestExistsQuery) {
 
     std::string json_path = "/profile/name/preferred_name";
     auto executor = json_flat_index->create_executor<std::string>(json_path);
-    const auto& result = executor->Exists();
+    auto result = executor->Exists();
     ASSERT_EQ(result.size(), json_data_.size());
     ASSERT_TRUE(result[0]);   // Alice
     ASSERT_FALSE(result[1]);  // null

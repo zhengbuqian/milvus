@@ -33,7 +33,7 @@
 #include "monitor/Monitor.h"
 #include "index/Index.h"
 #include "index/JsonFlatIndex.h"
-#include "index/JsonInvertedIndex.h"
+#include "index/JsonScalarIndexWrapper.h"
 #include "index/json_stats/JsonKeyStats.h"
 #include "index/json_stats/utils.h"
 #include "opentelemetry/trace/span.h"
@@ -96,21 +96,17 @@ PhyExistsFilterExpr::EvalJsonExistsForIndex() {
 
         if (index->GetCastType().data_type() == JsonCastType::DataType::JSON) {
             // JsonFlatIndex needs special handling via executor.
-            // The executor is temporary, so we must keep the bitmap alive
-            // by cloning it into our cache.
             auto* json_flat_index = const_cast<index::JsonFlatIndex*>(
                 dynamic_cast<const index::JsonFlatIndex*>(index));
             auto executor = json_flat_index->create_executor<double>(pointer);
-            const auto& bitmap = executor->Exists();
             cached_index_chunk_res_ =
-                std::make_shared<TargetBitmap>(bitmap.clone());
+                std::make_shared<TargetBitmap>(executor->Exists());
         } else {
             // All other JSON path indexes (Inverted, Sort, Bitmap, Hybrid)
-            // return a cached const ref from Exists() — clone into our cache.
+            // return a fresh clone from Exists().
             auto* mutable_index = const_cast<index::IndexBase*>(index);
-            const auto& bitmap = mutable_index->Exists();
             cached_index_chunk_res_ =
-                std::make_shared<TargetBitmap>(bitmap.clone());
+                std::make_shared<TargetBitmap>(mutable_index->Exists());
         }
     }
     auto res = MoveOrSliceBitmap(
