@@ -12,10 +12,12 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	parser "github.com/milvus-io/milvus/internal/parser/planparserv2/generated"
+	"github.com/milvus-io/milvus/pkg/v3/log"
 	"github.com/milvus-io/milvus/pkg/v3/proto/planpb"
 	"github.com/milvus-io/milvus/pkg/v3/util/merr"
 	"github.com/milvus-io/milvus/pkg/v3/util/timestamptz"
 	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
+	"go.uber.org/zap"
 )
 
 type ParserVisitorArgs struct {
@@ -686,6 +688,13 @@ func (v *ParserVisitor) VisitRegexMatch(ctx *parser.RegexMatchContext) interface
 	if optOp, optOperand, ok := tryOptimizeRegexToLike(pattern); ok {
 		op = optOp
 		operand = optOperand
+		log.Debug("[REGEX_FILTER] parser: optimized regex to LIKE",
+			zap.String("pattern", pattern),
+			zap.String("op", optOp.String()),
+			zap.String("operand", optOperand))
+	} else {
+		log.Debug("[REGEX_FILTER] parser: keeping as RegexMatch",
+			zap.String("pattern", pattern))
 	}
 
 	return &ExprWithType{

@@ -1382,6 +1382,9 @@ PhyUnaryRangeFilterExpr::ExecRangeVisitorImpl(EvalCtx& context) {
         }
         return ExecTextMatch();
     } else if (CanUseNgramIndex()) {
+        if (expr_->op_type_ == proto::plan::OpType::RegexMatch) {
+            LOG_DEBUG("[REGEX_FILTER] ExecPath: NgramIndex two-phase");
+        }
         auto res = ExecNgramMatch(context);
         // If nullopt is returned, it means the query cannot be
         // optimized by ngram index. Forward it to the normal path.
@@ -1872,6 +1875,9 @@ PhyUnaryRangeFilterExpr::DetermineExecPath() {
     // JsonStats: use JSON statistics to skip segments when possible.
     if (CanUseJsonStatsAtInit()) {
         exec_path_ = ExprExecPath::JsonStats;
+        if (expr_->op_type_ == proto::plan::OpType::RegexMatch) {
+            LOG_DEBUG("[REGEX_FILTER] DetermineExecPath: JsonStats path");
+        }
         return;
     }
 
@@ -1946,6 +1952,18 @@ PhyUnaryRangeFilterExpr::DetermineExecPath() {
     }
     if (!can_use) {
         exec_path_ = ExprExecPath::RawData;
+    }
+    if (expr_->op_type_ == proto::plan::OpType::RegexMatch) {
+        const char* path_name = "Unknown";
+        switch (exec_path_) {
+            case ExprExecPath::RawData: path_name = "RawData"; break;
+            case ExprExecPath::ScalarIndex: path_name = "ScalarIndex"; break;
+            case ExprExecPath::PkIndex: path_name = "PkIndex"; break;
+            case ExprExecPath::TextIndex: path_name = "TextIndex"; break;
+            case ExprExecPath::JsonStats: path_name = "JsonStats"; break;
+        }
+        LOG_DEBUG("[REGEX_FILTER] DetermineExecPath: {} (ngram_pinned={})",
+                  path_name, pinned_ngram_index_.get() != nullptr);
     }
 }
 

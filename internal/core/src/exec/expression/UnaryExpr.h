@@ -690,6 +690,7 @@ struct UnaryIndexFunc {
                 // Prefer PatternMatch which iterates unique values
                 // (O(unique) vs O(total_rows) for Reverse_Lookup)
                 if (index->SupportPatternMatch()) {
+                    LOG_DEBUG("[REGEX_FILTER] UnaryIndexFunc: PatternMatch (unique-value iteration)");
                     return index->PatternMatch(val, op);
                 }
                 // Fallback to Reverse_Lookup for indexes without

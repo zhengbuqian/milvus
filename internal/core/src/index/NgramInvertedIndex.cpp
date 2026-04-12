@@ -925,6 +925,16 @@ NgramInvertedIndex::ExecutePhase1(const std::string& literal,
                 literals_vec.push_back(l);
             }
         }
+        {
+            std::string debug_lits;
+            for (const auto& l : literals_vec) {
+                if (!debug_lits.empty()) debug_lits += ", ";
+                debug_lits += "\"" + l + "\"";
+            }
+            LOG_DEBUG("[REGEX_FILTER] NgramIndex Phase1: pattern='{}' "
+                      "extracted_literals=[{}]",
+                      literal, debug_lits);
+        }
         AssertInfo(!literals_vec.empty(),
                    "ExecutePhase1: RegexMatch pattern must have non-empty "
                    "literals >= min_gram");

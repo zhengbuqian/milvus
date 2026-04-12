@@ -260,6 +260,9 @@ class InvertedIndexTantivy : public ScalarIndex<T> {
                 //    match \n, but RE2 dot_nl=true does)
                 // 2. Wrap with [\s\S]*(?:...)[\s\S]* for substring semantics
                 auto tantivy_pattern = regex_to_tantivy_pattern(pattern);
+                LOG_DEBUG("[REGEX_FILTER] InvertedIndex: tantivy regex_query, "
+                          "pattern='{}' tantivy_pattern='{}'",
+                          pattern, tantivy_pattern);
                 TargetBitmap bitset(Count());
                 wrapper_->regex_query(tantivy_pattern, &bitset);
                 return bitset;
