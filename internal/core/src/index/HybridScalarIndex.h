@@ -105,6 +105,7 @@ class HybridScalarIndex : public ScalarIndex<T> {
         return internal_index_->IsNotNull();
     }
 
+
     const TargetBitmap
     Query(const DatasetPtr& dataset) override {
         return internal_index_->Query(dataset);
@@ -187,6 +188,16 @@ class HybridScalarIndex : public ScalarIndex<T> {
     LoadEntries(storage::IndexEntryReader& reader,
                 const Config& config) override;
 
+ protected:
+    ScalarIndexType
+    SelectIndexBuildType(const std::vector<FieldDataPtr>& field_datas);
+
+    ScalarIndexType
+    SelectIndexTypeByCardinality(size_t cardinality);
+
+    void
+    BuildInternal(const std::vector<FieldDataPtr>& field_datas);
+
  private:
     ScalarIndexType
     SelectBuildTypeForPrimitiveType(
@@ -196,22 +207,13 @@ class HybridScalarIndex : public ScalarIndex<T> {
     SelectBuildTypeForArrayType(const std::vector<FieldDataPtr>& field_datas);
 
     ScalarIndexType
-    SelectIndexBuildType(const std::vector<FieldDataPtr>& field_datas);
-
-    ScalarIndexType
     SelectIndexBuildType(size_t n, const T* values);
-
-    ScalarIndexType
-    SelectIndexTypeByCardinality(size_t cardinality);
 
     BinarySet
     SerializeIndexType();
 
     void
     DeserializeIndexType(const BinarySet& binary_set);
-
-    void
-    BuildInternal(const std::vector<FieldDataPtr>& field_datas);
 
     std::shared_ptr<ScalarIndex<T>>
     GetInternalIndex();

@@ -11,27 +11,31 @@
 
 #pragma once
 #include <cstdint>
-#include <shared_mutex>
-#include "nlohmann/json_fwd.hpp"
+#include <string>
+#include <unordered_map>
 
-#include "common/Slice.h"
-#include "common/FieldDataInterface.h"
-#include "common/JsonCastFunction.h"
 #include "common/JsonCastType.h"
+#include "common/Types.h"
+#include "index/JsonScalarIndexWrapper.h"
 #include "index/InvertedIndexTantivy.h"
-#include "index/ScalarIndex.h"
-#include "storage/FileManager.h"
-#include "boost/filesystem.hpp"
-#include "tantivy-binding.h"
+#include "log/Log.h"
+#include "simdjson/error.h"
 
 namespace milvus::index {
+
 namespace json {
 bool
 IsDataTypeSupported(JsonCastType cast_type, DataType data_type, bool is_array);
 }  // namespace json
 
-const std::string INDEX_NON_EXIST_OFFSET_FILE_NAME =
-    "json_index_non_exist_offsets";
+// JsonInvertedIndex is now just a type alias for JsonScalarIndexWrapper
+// wrapping InvertedIndexTantivy, the same way it wraps BitmapIndex or
+// ScalarIndexSort. The wrapper handles JSON data extraction, EXISTS
+// semantics, and both v2/v3 serialization formats.
+template <typename T>
+using JsonInvertedIndex = JsonScalarIndexWrapper<T, InvertedIndexTantivy<T>>;
+
+// Error recorder used by NgramInvertedIndex for JSON parse error tracking.
 class JsonInvertedIndexParseErrorRecorder {
  public:
     struct ErrorInstance {
@@ -74,138 +78,6 @@ class JsonInvertedIndexParseErrorRecorder {
 
  private:
     std::unordered_map<simdjson::error_code, ErrorStats> error_map_;
-};
-
-template <typename T>
-class JsonInvertedIndex : public index::InvertedIndexTantivy<T> {
- public:
-    JsonInvertedIndex(
-        const JsonCastType& cast_type,
-        const std::string& nested_path,
-        const storage::FileManagerContext& ctx,
-        const int64_t tantivy_index_version = TANTIVY_INDEX_LATEST_VERSION,
-        const JsonCastFunction& cast_function =
-            JsonCastFunction::FromString("unknown"))
-        : nested_path_(nested_path),
-          cast_type_(cast_type),
-          cast_function_(cast_function) {
-        this->schema_ = ctx.fieldDataMeta.field_schema;
-        this->file_manager_ =
-            std::make_shared<storage::MemFileManagerImpl>(ctx);
-        this->disk_file_manager_ =
-            std::make_shared<storage::DiskFileManagerImpl>(ctx);
-
-        if (ctx.for_loading_index) {
-            return;
-        }
-        this->path_ = this->disk_file_manager_->GetLocalTempIndexObjectPrefix();
-
-        this->d_type_ = cast_type_.ToTantivyType();
-        boost::filesystem::create_directories(this->path_);
-        std::string field_name = std::to_string(
-            this->disk_file_manager_->GetFieldDataMeta().field_id);
-        this->wrapper_ =
-            std::make_shared<index::TantivyIndexWrapper>(field_name.c_str(),
-                                                         this->d_type_,
-                                                         this->path_.c_str(),
-                                                         tantivy_index_version);
-    }
-
-    void
-    build_index_for_json(const std::vector<std::shared_ptr<FieldDataBase>>&
-                             field_datas) override;
-
-    void
-    finish() {
-        this->wrapper_->finish();
-    }
-
-    void
-    create_reader(SetBitsetFn set_bitset) {
-        this->wrapper_->create_reader(set_bitset);
-    }
-
-    JsonInvertedIndexParseErrorRecorder&
-    GetErrorRecorder() {
-        return error_recorder_;
-    }
-
-    JsonCastType
-    GetCastType() const override {
-        return cast_type_;
-    }
-
-    BinarySet
-    Serialize(const Config& config) override {
-        std::shared_lock<folly::SharedMutex> lock(this->mutex_);
-        auto index_valid_data_length =
-            this->null_offset_.size() * sizeof(size_t);
-        std::shared_ptr<uint8_t[]> index_valid_data(
-            new uint8_t[index_valid_data_length]);
-        memcpy(index_valid_data.get(),
-               this->null_offset_.data(),
-               index_valid_data_length);
-
-        auto non_exist_data_length =
-            this->non_exist_offsets_.size() * sizeof(size_t);
-        std::shared_ptr<uint8_t[]> non_exist_data(
-            new uint8_t[non_exist_data_length]);
-        memcpy(non_exist_data.get(),
-               this->non_exist_offsets_.data(),
-               non_exist_data_length);
-        lock.unlock();
-        BinarySet res_set;
-        if (index_valid_data_length > 0) {
-            res_set.Append(INDEX_NULL_OFFSET_FILE_NAME,
-                           index_valid_data,
-                           index_valid_data_length);
-        }
-        if (non_exist_data_length > 0) {
-            res_set.Append(INDEX_NON_EXIST_OFFSET_FILE_NAME,
-                           non_exist_data,
-                           non_exist_data_length);
-        }
-        milvus::Disassemble(res_set);
-        return res_set;
-    }
-
-    // Returns a bitmap indicating which rows have values that are indexed.
-    TargetBitmap
-    Exists();
-
-    void
-    WriteEntries(storage::IndexEntryWriter* writer) override;
-
-    void
-    LoadEntries(storage::IndexEntryReader& reader,
-                const Config& config) override;
-
- protected:
-    nlohmann::json
-    BuildTantivyMeta(const std::vector<std::string>& file_names,
-                     bool has_null) override;
-
-    void
-    LoadIndexMetas(const std::vector<std::string>& index_files,
-                   const Config& config) override final;
-
-    void
-    RetainTantivyIndexFiles(
-        std::vector<std::string>& index_files) override final;
-
- private:
-    std::string nested_path_;
-    JsonInvertedIndexParseErrorRecorder error_recorder_;
-    JsonCastType cast_type_;
-    JsonCastFunction cast_function_;
-
-    // Stores the offsets of rows in which this JSON path does not exist.
-    // This includes rows that are null, does not have this JSON path, or have
-    // null values for this JSON path.
-    //
-    // For example, if the JSON path is "/a", this vector will store rows like
-    // null, {}, {"a": null}, etc.
-    std::vector<size_t> non_exist_offsets_;
 };
 
 }  // namespace milvus::index
