@@ -1261,7 +1261,8 @@ func (sm *snapshotManager) calculateTimeCost(job CopySegmentJob) uint64 {
 }
 
 // checkJsonPathIndexVersion rejects JSON path indexes with STL_SORT, BITMAP,
-// or HYBRID if the cluster's scalar index engine version is below 3.
+// or HYBRID if the cluster's scalar index engine version is below
+// MinScalarIndexVersionForJsonPathMultiType.
 func (sm *snapshotManager) checkJsonPathIndexVersion(index *model.Index) error {
 	indexType := indexparamcheck.IndexType(GetIndexType(index.IndexParams))
 	if indexType != indexparamcheck.IndexSTLSORT &&
@@ -1275,12 +1276,14 @@ func (sm *snapshotManager) checkJsonPathIndexVersion(index *model.Index) error {
 		return nil
 	}
 
-	if sm.indexEngineVersionManager != nil &&
-		sm.indexEngineVersionManager.ResolveScalarIndexVersion() < 3 {
-		return merr.WrapErrParameterInvalidMsg(
-			"JSON path index with %s requires scalar index engine version >= 3, "+
-				"current resolved version: %d; please complete the rolling upgrade first",
-			indexType, sm.indexEngineVersionManager.ResolveScalarIndexVersion())
+	if sm.indexEngineVersionManager != nil {
+		resolved := sm.indexEngineVersionManager.ResolveScalarIndexVersion()
+		if resolved < common.MinScalarIndexVersionForJsonPathMultiType {
+			return merr.WrapErrParameterInvalidMsg(
+				"JSON path index with %s requires scalar index engine version >= %d, "+
+					"current resolved version: %d; please complete the rolling upgrade first",
+				indexType, common.MinScalarIndexVersionForJsonPathMultiType, resolved)
+		}
 	}
 	return nil
 }

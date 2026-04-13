@@ -231,14 +231,16 @@ class ScalarIndex : public IndexBase {
         ThrowInfo(Unsupported, "LoadWithoutAssemble is not supported");
     }
 
-    // V3 streaming upload - subclasses must implement WriteEntries() instead
+    // Unified streaming upload - subclasses must implement WriteEntries() instead.
+    // (The on-disk artifact uses the ".v3" filename suffix for historical reasons;
+    // the format is the current unified scalar index format.)
     IndexStatsPtr
-    UploadV3(const Config& config) override;
+    UploadUnified(const Config& config) override;
 
-    // V3 streaming load - loads index from a packed V3 format file
+    // Unified streaming load - loads index from a packed unified-format file
     // Opens the file and calls LoadEntries() for subclass-specific loading
     void
-    LoadV3(const Config& config) override;
+    LoadUnified(const Config& config) override;
 
     virtual void
     WriteEntries(storage::IndexEntryWriter* writer) {
