@@ -155,14 +155,14 @@ TextMatchIndex::Load(const Config& config) {
     AssertInfo(index_files.has_value(),
                "index file paths is empty when load text log index");
 
-    // Detect unified format: single file ending with ".v3" (historical suffix)
+    // Detect V3 file format: single file ending with ".v3"
     auto& files_value = index_files.value();
     if (files_value.size() == 1) {
         const auto& file = files_value[0];
         auto filename = file.substr(file.find_last_of('/') + 1);
         if (filename.size() > 3 &&
             filename.substr(filename.size() - 3) == ".v3") {
-            LOG_INFO("TextMatchIndex::Load unified format detected: {}", file);
+            LOG_INFO("TextMatchIndex::Load V3 format detected: {}", file);
             InvertedIndexTantivy<std::string>::LoadUnified(config);
             return;
         }

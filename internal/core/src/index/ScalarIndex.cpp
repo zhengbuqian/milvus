@@ -169,8 +169,9 @@ ScalarIndex<T>::UploadUnified(const Config& config) {
         "file_manager_ is null, UploadUnified requires a valid file manager");
 
     // Build filename: milvus_packed_<type>_index.v3
-    // NOTE: the ".v3" suffix is retained for on-disk backward compatibility;
-    // this is the unified scalar index format (see ScalarIndex.h).
+    // The ".v3" suffix encodes the on-disk file format version (matches
+    // MILVUS_V3_FORMAT_VERSION in IndexEntryWriter.h), not the scalar index
+    // engine version. See pkg/common/common.go for the distinction.
     auto type_str = ToString(GetIndexType());
     std::transform(
         type_str.begin(), type_str.end(), type_str.begin(), ::tolower);
@@ -180,7 +181,7 @@ ScalarIndex<T>::UploadUnified(const Config& config) {
     auto writer =
         file_manager_->CreateIndexEntryWriterUnified(filename, is_index_file_);
     AssertInfo(writer != nullptr,
-               "failed to create IndexEntryWriter for unified format");
+               "failed to create IndexEntryWriter for V3 format");
 
     // Call subclass implementation to write all entries.
     // Subclasses use writer->PutMeta() to add their metadata.
@@ -220,7 +221,7 @@ ScalarIndex<T>::LoadUnified(const Config& config) {
     AssertInfo(index_files.has_value() && !index_files.value().empty(),
                "index_files is required for LoadUnified");
 
-    // Unified format: there should be exactly one packed file
+    // V3 format: there should be exactly one packed file
     AssertInfo(index_files.value().size() == 1,
                "LoadUnified expects exactly one packed index file, got: {}",
                index_files.value().size());

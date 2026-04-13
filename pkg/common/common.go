@@ -100,14 +100,27 @@ const (
 )
 
 const (
-	MinimalScalarIndexEngineVersion = int32(0)
-	// Scalar index version 3:
-	// - Unified scalar index file format (single packed file, IndexEntry-based)
-	// - HYBRID/AUTOINDEX high-cardinality scalar indexes switched from INVERTED to STL_SORT
+	// Scalar index engine version tracks the *capability* of a Milvus node
+	// (which index types / features it supports). It is reported by QueryNodes
+	// in their session and aggregated by datacoord so that newly built indexes
+	// are clamped to a version every node in the cluster can load — this is
+	// what makes rolling upgrades safe.
 	//
-	// Scalar index version 4:
-	// - JSON path index supports STL_SORT / BITMAP / HYBRID (in addition to INVERTED / NGRAM)
-	// - On-disk index format is the same as v3 (no format change)
+	// Engine version is distinct from the on-disk file format version
+	// (see MILVUS_V3_FORMAT_VERSION in IndexEntryWriter.h). Multiple engine
+	// versions can share the same file format; bumping the engine version
+	// does not necessarily imply a format change.
+	//
+	// Scalar index engine version 3:
+	// - Packed single-file index layout (file format v3) becomes the default
+	// - HYBRID/AUTOINDEX high-cardinality scalar indexes switched from
+	//   INVERTED to STL_SORT
+	//
+	// Scalar index engine version 4:
+	// - JSON path index supports STL_SORT / BITMAP / HYBRID (in addition to
+	//   the existing INVERTED / NGRAM)
+	// - On-disk file format is unchanged from v3
+	MinimalScalarIndexEngineVersion = int32(0)
 	CurrentScalarIndexEngineVersion = int32(4)
 	MaximumScalarIndexEngineVersion = int32(4)
 

@@ -158,9 +158,9 @@ class JsonScalarIndexWrapper : public BaseIndex {
         }
     }
 
-    // unified format: write non_exist_offsets on top of base entries. This is
-    // the sealed-segment entry point, called after the tantivy index is ready
-    // — safe to eagerly compute the exists bitmap.
+    // V3 format: write non_exist_offsets on top of base entries. This is the
+    // sealed-segment entry point, called after the tantivy index is ready —
+    // safe to eagerly compute the exists bitmap.
     void
     WriteEntries(storage::IndexEntryWriter* writer) override {
         BaseIndex::WriteEntries(writer);

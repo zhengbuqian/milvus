@@ -324,7 +324,7 @@ BitmapIndex<T>::DeserializeIndexMeta(const uint8_t* data_ptr,
                                      size_t data_size) {
     std::string meta_str(reinterpret_cast<const char*>(data_ptr), data_size);
 
-    // Try JSON first (unified format), fall back to YAML (legacy V2 format)
+    // Try JSON first (V3 format), fall back to YAML (legacy V2 format)
     try {
         auto j = nlohmann::json::parse(meta_str);
         auto index_length = j[BITMAP_INDEX_LENGTH].get<size_t>();
@@ -1302,7 +1302,7 @@ void
 BitmapIndex<T>::WriteEntries(storage::IndexEntryWriter* writer) {
     AssertInfo(is_built_, "index has not been built yet");
 
-    // Unified format: meta goes into __meta__ entry
+    // V3 format: meta goes into __meta__ entry
     writer->PutMeta(BITMAP_INDEX_LENGTH, data_.size());
     writer->PutMeta(BITMAP_INDEX_NUM_ROWS, total_num_rows_);
 
@@ -1324,7 +1324,7 @@ BitmapIndex<T>::LoadEntries(storage::IndexEntryReader& reader,
     auto enable_offset_cache =
         GetValueFromConfig<bool>(config, ENABLE_OFFSET_CACHE);
 
-    // Unified format: meta is in __meta__ entry
+    // V3 format: meta is in __meta__ entry
     auto index_length = reader.GetMeta<size_t>(BITMAP_INDEX_LENGTH);
     total_num_rows_ = reader.GetMeta<size_t>(BITMAP_INDEX_NUM_ROWS);
     valid_bitset_ = TargetBitmap(total_num_rows_, false);
