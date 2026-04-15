@@ -27,6 +27,7 @@
 #include "common/GroupChunk.h"
 #include "common/Types.h"
 #include "common/VortexFileHandle.h"
+#include "milvus-storage/format/format_reader.h"
 #include "pb/common.pb.h"
 #include "segcore/storagev2translator/GroupCTMeta.h"
 
@@ -49,7 +50,6 @@ class VortexFieldTranslator
         int64_t row_start;
         int64_t row_end;
         int64_t compressed_bytes;
-        std::vector<int64_t> chunk_indices;  // row group indices
         // Byte ranges for PUNCH_HOLE (populated when segment info available)
         std::vector<std::pair<off_t, size_t>> segment_ranges;
     };
@@ -117,6 +117,11 @@ class VortexFieldTranslator
     // skips download (data from full download is still in memfd);
     // subsequent calls re-download from S3 (data was PUNCH_HOLEd).
     std::vector<bool> cell_was_loaded_;
+
+    // Per-field FormatReader, created once and shared across all cells.
+    std::shared_ptr<milvus_storage::FormatReader> format_reader_;
+    void
+    CreateFormatReader();
 };
 
 }  // namespace milvus::segcore::storagev2translator

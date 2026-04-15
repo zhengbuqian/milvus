@@ -31,18 +31,14 @@ namespace milvus {
 namespace {
 
 VortexDataViewCore
-MakeCore(std::shared_ptr<milvus_storage::api::Reader> reader,
-         std::shared_ptr<milvus_storage::api::ChunkReader> chunk_reader,
-         const std::vector<int64_t>& chunk_indices,
+MakeCore(std::shared_ptr<milvus_storage::FormatReader> format_reader,
          int column_in_batch,
          FieldId field_id,
          int64_t row_start,
          int64_t total_rows,
          bool nullable) {
     return VortexDataViewCore{
-        std::move(reader),
-        std::move(chunk_reader),
-        chunk_indices,
+        std::move(format_reader),
         column_in_batch,
         std::to_string(field_id.get()),
         row_start,
@@ -76,17 +72,29 @@ VortexChunk::BulkOwnData(const int64_t* local_offsets, int64_t count) const {
         }
     }
 
-    auto result = reader_->take(sorted_indices);
+    auto result = format_reader_->take(sorted_indices);
     AssertInfo(result.ok(),
                "VortexChunk::BulkOwnData: take() failed: {}",
                result.status().ToString());
     auto table = *result;
 
     auto field_name = GetFieldName();
+    fprintf(stderr,
+            "[VortexDebug] BulkOwnData: field=%s, table schema=%s, "
+            "num_columns=%d, num_rows=%lld\n",
+            field_name.c_str(),
+            table->schema()->ToString().c_str(),
+            table->num_columns(),
+            (long long)table->num_rows());
     int col_idx = table->schema()->GetFieldIndex(field_name);
+    if (col_idx < 0 && table->num_columns() == 1) {
+        col_idx = 0;  // Fallback: single-column projection
+    }
     AssertInfo(col_idx >= 0,
-               "VortexChunk::BulkOwnData: field '{}' not found in result",
-               field_name);
+               "VortexChunk::BulkOwnData: field '{}' not found in result "
+               "schema: {}",
+               field_name,
+               table->schema()->ToString());
     auto col = table->column(col_idx);
 
     // Flatten Arrow column into owned strings in sorted (deduped) order.
@@ -124,9 +132,7 @@ VortexChunk::GetAnyDataView(int64_t offset, int64_t length) const {
     bool nullable = field_meta_.is_nullable();
 
     // Adjust row_start to skip 'offset' rows within this chunk
-    auto core = MakeCore(reader_,
-                         chunk_reader_,
-                         chunk_indices_,
+    auto core = MakeCore(format_reader_,
                          column_in_batch_,
                          field_id_,
                          row_start_ + offset,
@@ -182,9 +188,7 @@ VortexChunk::GetAnyDataView() const {
     auto data_type = field_meta_.get_data_type();
     bool nullable = field_meta_.is_nullable();
 
-    auto core = MakeCore(reader_,
-                         chunk_reader_,
-                         chunk_indices_,
+    auto core = MakeCore(format_reader_,
                          column_in_batch_,
                          field_id_,
                          row_start_,

@@ -79,6 +79,10 @@ VortexFieldTranslator::VortexFieldTranslator(
 void
 VortexFieldTranslator::PrecomputeCellMeta(
     std::vector<std::vector<std::pair<off_t, size_t>>> cell_segment_ranges) {
+    // Use Reader → ChunkReader for row count metadata.
+    // ChunkReader's logical chunks may differ from physical chunks,
+    // but cell boundaries are determined by cell_segment_ranges
+    // (physical FieldChunkOffsets). We use ChunkReader only for row counts.
     auto reader = file_handle_->reader();
     auto chunk_reader_result =
         reader->get_chunk_reader(file_handle_->column_group_index());
@@ -125,7 +129,6 @@ VortexFieldTranslator::PrecomputeCellMeta(
         for (size_t i = rg_start; i < rg_end; ++i) {
             cumulative_rows += static_cast<int64_t>(row_group_rows[i]);
             cell.compressed_bytes += static_cast<int64_t>(row_group_sizes[i]);
-            cell.chunk_indices.push_back(static_cast<int64_t>(i));
         }
         cell.row_end = cumulative_rows;
 
@@ -146,7 +149,6 @@ VortexFieldTranslator::PrecomputeCellMeta(
         cells_[cid].segment_ranges = std::move(cell_segment_ranges[cid]);
 
         // Update compressed_bytes to per-field actual size
-        // (get_chunk_size() returns column-group-level sizes which overestimate)
         if (!cells_[cid].segment_ranges.empty()) {
             int64_t field_bytes = 0;
             for (const auto& [off, len] : cells_[cid].segment_ranges) {
@@ -156,6 +158,69 @@ VortexFieldTranslator::PrecomputeCellMeta(
             meta_.chunk_memory_size_[cid] = field_bytes;
         }
     }
+}
+
+void
+VortexFieldTranslator::CreateFormatReader() {
+    if (format_reader_) {
+        return;
+    }
+
+    auto cg_index = file_handle_->column_group_index();
+    auto column_groups = file_handle_->column_groups();
+    AssertInfo(column_groups && cg_index >= 0 &&
+                   static_cast<size_t>(cg_index) < column_groups->size(),
+               "VortexFieldTranslator {}: invalid column_group_index {}",
+               key_,
+               cg_index);
+    auto& cg = column_groups->at(cg_index);
+    AssertInfo(!cg->files.empty(),
+               "VortexFieldTranslator {}: no files in column group",
+               key_);
+
+    // Per-field projection: only read this field's column.
+    // Must pass per-field read_schema so VortexFormatReader calls
+    // WithOutputSchema to produce flat (non-struct) RecordBatch output.
+    std::string field_name = std::to_string(field_id_.get());
+    std::vector<std::string> needed_columns = {field_name};
+
+    // Extract per-field schema from the CG's arrow schema (same as
+    // ColumnGroupLazyReader does in Reader::take path).
+    auto cg_schema = file_handle_->arrow_schema();
+    std::shared_ptr<arrow::Schema> field_schema;
+    if (cg_schema) {
+        auto f = cg_schema->GetFieldByName(field_name);
+        if (f) {
+            field_schema = arrow::schema({f});
+        }
+    }
+
+    auto result = milvus_storage::FormatReader::create(
+        field_schema,
+        cg->format,
+        cg->files[0],
+        *file_handle_->properties(),
+        needed_columns,
+        nullptr);
+    AssertInfo(result.ok(),
+               "VortexFieldTranslator {}: FormatReader::create failed: {}",
+               key_,
+               result.status().ToString());
+    format_reader_ = std::move(result).ValueOrDie();
+
+    auto open_status = format_reader_->open();
+    AssertInfo(open_status.ok(),
+               "VortexFieldTranslator {}: FormatReader::open failed: {}",
+               key_,
+               open_status.ToString());
+
+    auto file_schema = format_reader_->get_schema();
+    LOG_INFO(
+        "[StorageV2] VortexFieldTranslator {} FormatReader: "
+        "field={} file_schema={}",
+        key_,
+        field_name,
+        file_schema ? file_schema->ToString() : "null");
 }
 
 size_t
@@ -208,6 +273,9 @@ VortexFieldTranslator::get_cells(
     milvus::OpContext* ctx,
     const std::vector<milvus::cachinglayer::cid_t>& cids) {
     CheckCancellation(ctx, segment_id_, "VortexFieldTranslator::get_cells()");
+
+    // Lazily create per-field FormatReader on first cell access.
+    CreateFormatReader();
 
     std::vector<std::pair<milvus::cachinglayer::cid_t,
                           std::unique_ptr<milvus::GroupChunk>>>
@@ -272,28 +340,15 @@ VortexFieldTranslator::get_cells(
         }
         cell_was_loaded_[cid] = true;
 
-        // Create a ChunkReader for this cell (lightweight metadata handle)
-        auto chunk_reader_result = file_handle_->reader()->get_chunk_reader(
-            file_handle_->column_group_index());
-        AssertInfo(chunk_reader_result.ok(),
-                   "VortexFieldTranslator {}: get_chunk_reader failed in "
-                   "get_cells: {}",
-                   key_,
-                   chunk_reader_result.status().ToString());
-        auto chunk_reader = std::shared_ptr<milvus_storage::api::ChunkReader>(
-            std::move(chunk_reader_result).ValueOrDie().release());
-
         int64_t row_count = cell.row_end - cell.row_start;
 
-        // Create VortexChunk handle for this single field
+        // Create VortexChunk handle with per-field FormatReader
         auto vortex_chunk =
             std::make_shared<VortexChunk>(field_id_,
                                           field_meta_,
                                           row_count,
                                           cell.compressed_bytes,
-                                          file_handle_->reader(),
-                                          chunk_reader,
-                                          cell.chunk_indices,
+                                          format_reader_,
                                           column_in_batch_,
                                           cell.row_start);
 

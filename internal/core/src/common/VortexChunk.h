@@ -26,7 +26,7 @@
 #include "common/FieldMeta.h"
 #include "common/Types.h"
 #include "cachinglayer/Utils.h"
-#include "milvus-storage/reader.h"
+#include "milvus-storage/format/format_reader.h"
 
 namespace milvus {
 
@@ -40,24 +40,20 @@ namespace milvus {
 /// ValueAt() / Data() are not supported — callers must use the DataView path.
 class VortexChunk : public Chunk {
  public:
-    /// @param chunk_reader Shared ChunkReader created at GroupChunk level
-    /// @param row_start    Global row offset for this chunk (used by take())
+    /// @param format_reader Per-field FormatReader (read_with_range / take)
+    /// @param row_start     Global row offset for this chunk
     VortexChunk(FieldId field_id,
                 const FieldMeta& field_meta,
                 int64_t row_nums,
                 int64_t compressed_size,
-                std::shared_ptr<milvus_storage::api::Reader> reader,
-                std::shared_ptr<milvus_storage::api::ChunkReader> chunk_reader,
-                std::vector<int64_t> chunk_indices,
+                std::shared_ptr<milvus_storage::FormatReader> format_reader,
                 int column_in_batch,
                 int64_t row_start)
         : field_id_(field_id),
           field_meta_(field_meta),
           row_nums_(row_nums),
           compressed_size_(compressed_size),
-          reader_(std::move(reader)),
-          chunk_reader_(std::move(chunk_reader)),
-          chunk_indices_(std::move(chunk_indices)),
+          format_reader_(std::move(format_reader)),
           column_in_batch_(column_in_batch),
           row_start_(row_start) {
     }
@@ -97,11 +93,10 @@ class VortexChunk : public Chunk {
                   "VortexChunk::Data is not supported; use GetAnyDataView");
     }
 
-    // Shared reader for cross-cell batched take in BulkPrimitiveValueAtImpl.
-    // All cells in the same CG share one Reader (from VortexFileHandle).
-    std::shared_ptr<milvus_storage::api::Reader>
-    GetReader() const {
-        return reader_;
+    // Per-field FormatReader for all data access.
+    std::shared_ptr<milvus_storage::FormatReader>
+    GetFormatReader() const {
+        return format_reader_;
     }
 
     std::string
@@ -136,9 +131,7 @@ class VortexChunk : public Chunk {
     FieldMeta field_meta_;
     int64_t row_nums_;
     int64_t compressed_size_;
-    std::shared_ptr<milvus_storage::api::Reader> reader_;
-    std::shared_ptr<milvus_storage::api::ChunkReader> chunk_reader_;
-    std::vector<int64_t> chunk_indices_;
+    std::shared_ptr<milvus_storage::FormatReader> format_reader_;
     int column_in_batch_;
     int64_t row_start_;
 };

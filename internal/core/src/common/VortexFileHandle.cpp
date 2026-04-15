@@ -160,7 +160,9 @@ VortexFileHandle::Create(
     auto& fs_cache = milvus_storage::FilesystemCache::getInstance();
     fs_cache.put("mem", buffer_fs);
 
-    // --- 6. Create Reader ---
+    // --- 6. Store properties, schema, and create Reader ---
+    handle->properties_ = properties;
+    handle->arrow_schema_ = arrow_schema;
     handle->reader_ = std::shared_ptr<milvus_storage::api::Reader>(
         milvus_storage::api::Reader::create(
             column_groups, arrow_schema, nullptr, *properties)
@@ -174,6 +176,11 @@ VortexFileHandle::Create(
         lazy ? "lazy" : "full");
 
     return handle;
+}
+
+const milvus_storage::api::Properties*
+VortexFileHandle::properties() const {
+    return properties_.get();
 }
 
 VortexFileHandle::~VortexFileHandle() {

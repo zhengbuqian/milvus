@@ -116,6 +116,22 @@ class VortexFileHandle {
         return lazy_;
     }
 
+    /// Column groups metadata (for FormatReader creation).
+    std::shared_ptr<milvus_storage::api::ColumnGroups>
+    column_groups() const {
+        return column_groups_;
+    }
+
+    /// Storage properties (for FormatReader creation).
+    const milvus_storage::api::Properties*
+    properties() const;
+
+    /// Arrow schema used by Reader (for per-field schema extraction).
+    std::shared_ptr<arrow::Schema>
+    arrow_schema() const {
+        return arrow_schema_;
+    }
+
     /// Get per-cell segment byte ranges for PUNCH_HOLE, for multiple fields.
     /// Uses VortexFile metadata APIs (FieldChunkOffsets + SegmentBytes).
     /// Opens VortexFile once and extracts ranges for all requested fields.
@@ -142,6 +158,8 @@ class VortexFileHandle {
 
     std::shared_ptr<milvus_storage::api::Reader> reader_;
     std::shared_ptr<milvus_storage::api::ColumnGroups> column_groups_;
+    std::shared_ptr<milvus_storage::api::Properties> properties_;
+    std::shared_ptr<arrow::Schema> arrow_schema_;  // full CG arrow schema
 };
 
 }  // namespace milvus

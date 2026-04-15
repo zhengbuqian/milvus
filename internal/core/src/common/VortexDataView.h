@@ -31,7 +31,7 @@
 #include "common/Json.h"
 #include "common/Types.h"
 #include "common/VectorTrait.h"
-#include "milvus-storage/reader.h"
+#include "milvus-storage/format/format_reader.h"
 
 namespace milvus {
 
@@ -69,31 +69,28 @@ GetBinaryView(const std::shared_ptr<arrow::Array>& arr, int64_t idx) {
 
 /// Shared state for all VortexDataView types.
 ///
-/// Provides point query (via Reader::take) and bulk query
-/// (via ChunkReader::get_chunks) primitives.
+/// Uses FormatReader directly for all data access (read_with_range / take).
+/// No dependency on Reader / ChunkReader / chunk_indices.
 struct VortexDataViewCore {
-    std::shared_ptr<milvus_storage::api::Reader> reader;
-    std::shared_ptr<milvus_storage::api::ChunkReader> chunk_reader;
-    std::vector<int64_t> chunk_indices;
+    std::shared_ptr<milvus_storage::FormatReader> format_reader;
     int column_in_batch;
     std::string field_name;
     int64_t row_start;
     int64_t total_rows;
     bool nullable;
 
-    /// Point query: read a single row via Reader::take().
-    /// Returns the Arrow Table (caller extracts the needed column).
+    /// Point query: read a single row via FormatReader::take().
     std::shared_ptr<arrow::Table>
     DoPointQuery(int64_t local_idx) const {
         std::vector<int64_t> indices = {row_start + local_idx};
-        auto result = reader->take(indices);
+        auto result = format_reader->take(indices);
         AssertInfo(result.ok(),
                    "VortexDataView: take() failed: {}",
                    result.status().ToString());
         return result.ValueOrDie();
     }
 
-    /// Batch point query: read multiple rows via a single Reader::take().
+    /// Batch point query: read multiple rows via a single FormatReader::take().
     /// @param local_offsets  Local offsets within this chunk/cell (may be unsorted).
     /// @param count          Number of offsets.
     /// @param reorder_map    Output: maps sorted result index → original index.
@@ -114,7 +111,7 @@ struct VortexDataViewCore {
             idx_pairs.emplace_back(row_start + local_offsets[i], i);
         }
 
-        // Sort by global index (required by Reader::take)
+        // Sort by global index (required by take)
         auto t_sort0 = Clock::now();
         std::sort(idx_pairs.begin(), idx_pairs.end());
         auto t_sort1 = Clock::now();
@@ -122,7 +119,6 @@ struct VortexDataViewCore {
         // Deduplicate and build take indices
         std::vector<int64_t> sorted_indices;
         sorted_indices.reserve(count);
-        // Map from deduped position → list of original positions
         std::vector<std::vector<int64_t>> dedup_to_orig;
         dedup_to_orig.reserve(count);
 
@@ -137,14 +133,12 @@ struct VortexDataViewCore {
         }
 
         auto t_take0 = Clock::now();
-        auto result = reader->take(sorted_indices);
+        auto result = format_reader->take(sorted_indices);
         auto t_take1 = Clock::now();
         AssertInfo(result.ok(),
                    "VortexDataView: batch take() failed: {}",
                    result.status().ToString());
 
-        // Build reorder map: result[i] in sorted_indices order
-        // → should be placed at reorder_map[i] in original order
         bool needs_reorder =
             (sorted_indices.size() != static_cast<size_t>(count));
         if (!needs_reorder) {
@@ -190,77 +184,58 @@ struct VortexDataViewCore {
         return idx;
     }
 
-    /// Range query: read [row_start, row_start+total_rows) via Reader::take().
-    /// More efficient than bulk query when only a subset of the chunk is needed.
-    /// Returns the Arrow Table with only the requested rows.
-    std::shared_ptr<arrow::Table>
-    DoRangeQuery() const {
-        std::vector<int64_t> indices;
-        indices.reserve(total_rows);
-        for (int64_t i = 0; i < total_rows; ++i) {
-            indices.push_back(row_start + i);
+    /// Find the column index for our field in a RecordBatch.
+    int
+    FindFieldColumnInBatch(
+        const std::shared_ptr<arrow::RecordBatch>& batch) const {
+        auto idx = batch->schema()->GetFieldIndex(field_name);
+        if (idx >= 0) {
+            return idx;
         }
-        auto result = reader->take(indices);
-        AssertInfo(result.ok(),
-                   "VortexDataView: take() failed for range [{}, {}): {}",
-                   row_start,
-                   row_start + total_rows,
-                   result.status().ToString());
-        return result.ValueOrDie();
+        // Fallback: FormatReader with single-field projection returns column 0
+        if (batch->num_columns() == 1) {
+            return 0;
+        }
+        // Fallback: use column_in_batch from original CG schema
+        AssertInfo(column_in_batch < batch->num_columns(),
+                   "VortexDataView: column {} out of range ({})",
+                   column_in_batch,
+                   batch->num_columns());
+        return column_in_batch;
     }
 
-    /// Bulk query: read all row groups via ChunkReader::get_chunks().
-    /// Returns RecordBatches (caller extracts column at column_in_batch).
-    std::vector<std::shared_ptr<arrow::RecordBatch>>
-    DoBulkQuery() const {
-        auto result = chunk_reader->get_chunks(chunk_indices);
-        AssertInfo(result.ok(),
-                   "VortexDataView: get_chunks() failed: {}",
-                   result.status().ToString());
-        return result.ValueOrDie();
-    }
-
-    /// Extract field column arrays — uses range query when row range
-    /// is a subset of this cell's row groups, otherwise bulk query.
+    /// Extract field arrays via read_with_range (physical range, no logical chunks).
     std::vector<std::shared_ptr<arrow::Array>>
     ExtractFieldArrays() const {
-        // Compute the expected rows from this cell's chunk_indices,
-        // not from the entire chunk_reader (which covers all cells).
-        auto rows_result = chunk_reader->get_chunk_rows();
-        int64_t cell_rows = 0;
-        if (rows_result.ok()) {
-            const auto& all_rows = rows_result.ValueOrDie();
-            for (auto idx : chunk_indices) {
-                if (idx >= 0 && static_cast<size_t>(idx) < all_rows.size()) {
-                    cell_rows += all_rows[idx];
-                }
-            }
-        }
+        auto reader_result = format_reader->read_with_range(
+            row_start, row_start + total_rows);
+        AssertInfo(reader_result.ok(),
+                   "VortexDataView: read_with_range failed: {}",
+                   reader_result.status().ToString());
+        auto rb_reader = reader_result.ValueOrDie();
 
-        if (cell_rows > 0 && total_rows < cell_rows) {
-            // Sub-range: use take() for partial decompression
-            auto table = DoRangeQuery();
-            auto col_idx = FindFieldColumn(table);
-            auto chunked = table->column(col_idx);
-            std::vector<std::shared_ptr<arrow::Array>> arrays;
-            arrays.reserve(chunked->num_chunks());
-            for (int i = 0; i < chunked->num_chunks(); ++i) {
-                arrays.push_back(chunked->chunk(i));
-            }
-            return arrays;
-        }
-
-        // Full chunk: use get_chunks() for bulk decompression
-        auto batches = DoBulkQuery();
         std::vector<std::shared_ptr<arrow::Array>> arrays;
-        arrays.reserve(batches.size());
-        for (const auto& batch : batches) {
-            AssertInfo(column_in_batch < batch->num_columns(),
-                       "VortexDataView: column {} out of range ({})",
-                       column_in_batch,
-                       batch->num_columns());
-            arrays.push_back(batch->column(column_in_batch));
+        std::shared_ptr<arrow::RecordBatch> batch;
+        int batch_count = 0;
+        while (rb_reader->ReadNext(&batch).ok() && batch) {
+            auto col_idx = FindFieldColumnInBatch(batch);
+            fprintf(stderr,
+                    "[VortexDebug] ExtractFieldArrays: field=%s "
+                    "batch=%d schema=%s col_idx=%d "
+                    "rows=%lld type=%s\n",
+                    field_name.c_str(),
+                    batch_count,
+                    batch->schema()->ToString().c_str(),
+                    col_idx,
+                    (long long)batch->num_rows(),
+                    batch->column(col_idx)->type()->ToString().c_str());
+            arrays.push_back(batch->column(col_idx));
+            batch_count++;
         }
+        fprintf(stderr,
+                "[VortexDebug] ExtractFieldArrays: field=%s "
+                "total_batches=%d total_rows=%lld\n",
+                field_name.c_str(), batch_count, (long long)total_rows);
         return arrays;
     }
 
