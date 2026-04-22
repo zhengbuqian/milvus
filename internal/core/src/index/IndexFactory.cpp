@@ -30,6 +30,7 @@
 
 #include "index/VectorDiskIndex.h"
 #include "index/ScalarIndexSort.h"
+#include "index/StringIndexSort.h"
 #include "index/StringIndexMarisa.h"
 #include "index/BoolIndex.h"
 #include "index/InvertedIndexTantivy.h"
@@ -88,6 +89,12 @@ IndexFactory::CreatePrimitiveScalarIndex<std::string>(
     if (index_type == HYBRID_INDEX_TYPE) {
         return std::make_unique<HybridScalarIndex<std::string>>(
             file_manager_context);
+    }
+    if (index_type == MARISA_TRIE || index_type == MARISA_TRIE_UPPER) {
+        return CreateStringIndexMarisa(file_manager_context);
+    }
+    if (index_type == ASCENDING_SORT) {
+        return CreateStringIndexSort(file_manager_context);
     }
     return CreateStringIndexMarisa(file_manager_context);
 #else

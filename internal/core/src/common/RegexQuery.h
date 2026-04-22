@@ -73,4 +73,7 @@ inline bool
 RegexMatcher::operator()(const std::string_view& operand) {
     return boost::regex_match(operand.begin(), operand.end(), r_);
 }
+std::string
+extract_fixed_prefix_from_pattern(const std::string& pattern);
+
 }  // namespace milvus
