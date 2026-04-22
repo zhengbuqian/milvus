@@ -187,7 +187,7 @@ func (p *AutoIndexConfig) init(base *BaseTable) {
 	p.ScalarAutoIndexParams = ParamItem{
 		Key:          "scalarAutoIndex.params.build",
 		Version:      "2.4.0",
-		DefaultValue: `{"int": "HYBRID","varchar": "HYBRID","bool": "BITMAP", "float": "INVERTED", "json": "INVERTED", "geometry": "RTREE"}`,
+		DefaultValue: `{"int": "HYBRID","varchar": "STL_SORT","bool": "BITMAP", "float": "INVERTED", "json": "INVERTED", "geometry": "RTREE"}`,
 	}
 	p.ScalarAutoIndexParams.Init(base.mgr)
 
