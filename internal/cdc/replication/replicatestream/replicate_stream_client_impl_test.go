@@ -74,7 +74,7 @@ func TestReplicateStreamClient_Replicate(t *testing.T) {
 	defer replicateClient.Close()
 
 	// Test Replicate method
-	const msgCount = pendingMessageQueueLength * 10
+	msgCount := paramtable.Get().StreamingCfg.ReplicationPendingMessagesQueueLength.GetAsInt() * 10
 	go func() {
 		for i := 0; i < msgCount; i++ {
 			mockMsg := mock_message.NewMockImmutableMessage(t)
