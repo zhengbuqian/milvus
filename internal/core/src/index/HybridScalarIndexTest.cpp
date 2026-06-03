@@ -568,6 +568,46 @@ INSTANTIATE_TYPED_TEST_SUITE_P(HybridIndexE2ECheck_LowCardinality,
                                HybridIndexTestV1,
                                BitmapType);
 
+TEST(HybridScalarIndexInternalType, PrimitiveDefaultLowCardinalityUsesBitmap) {
+    std::vector<int64_t> data;
+    data.reserve(1000);
+    for (int64_t i = 0; i < 1000; ++i) {
+        data.push_back(i % 10);
+    }
+
+    index::HybridScalarIndex<int64_t> index(0);
+    index.Build(data.size(), data.data());
+
+    EXPECT_EQ(index.internal_index_type_, ScalarIndexType::BITMAP);
+}
+
+TEST(HybridScalarIndexInternalType,
+     PrimitiveDefaultHighCardinalityUsesStlSort) {
+    std::vector<int64_t> data;
+    data.reserve(1000);
+    for (int64_t i = 0; i < 1000; ++i) {
+        data.push_back(i);
+    }
+
+    index::HybridScalarIndex<int64_t> index(0);
+    index.Build(data.size(), data.data());
+
+    EXPECT_EQ(index.internal_index_type_, ScalarIndexType::STLSORT);
+}
+
+TEST(HybridScalarIndexInternalType, StringDefaultHighCardinalityUsesStlSort) {
+    std::vector<std::string> data;
+    data.reserve(1000);
+    for (int64_t i = 0; i < 1000; ++i) {
+        data.push_back(std::to_string(i));
+    }
+
+    index::HybridScalarIndex<std::string> index(0);
+    index.Build(data.size(), data.data());
+
+    EXPECT_EQ(index.internal_index_type_, ScalarIndexType::STLSORT);
+}
+
 template <typename T>
 class HybridIndexTestV2 : public HybridIndexTestV1<T> {
  public:

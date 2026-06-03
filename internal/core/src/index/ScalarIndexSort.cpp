@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "Meta.h"
+#include "common/Array.h"
 #include "bitset/bitset.h"
 #include "common/EasyAssert.h"
 #include "common/FieldDataInterface.h"
@@ -66,8 +67,12 @@ const uint64_t MMAP_INDEX_PADDING = 1;
 
 template <typename T>
 ScalarIndexSort<T>::ScalarIndexSort(
-    const storage::FileManagerContext& file_manager_context)
-    : ScalarIndex<T>(ASCENDING_SORT), is_built_(false), data_() {
+    const storage::FileManagerContext& file_manager_context,
+    bool is_nested_index)
+    : ScalarIndex<T>(ASCENDING_SORT),
+      is_built_(false),
+      is_nested_index_(is_nested_index),
+      data_() {
     // not valid means we are in unit test
     if (file_manager_context.Valid()) {
         field_id_ = file_manager_context.fieldDataMeta.field_id;
@@ -131,6 +136,11 @@ ScalarIndexSort<T>::BuildWithFieldData(
     const std::vector<milvus::FieldDataPtr>& field_datas) {
     index_build_begin_ = std::chrono::system_clock::now();
 
+    if (is_nested_index_) {
+        BuildWithArrayDataNested(field_datas);
+        return;
+    }
+
     int64_t length = 0;
     for (const auto& data : field_datas) {
         total_num_rows_ += data->get_num_rows();
@@ -161,6 +171,54 @@ ScalarIndexSort<T>::BuildWithFieldData(
         if (data_[i].idx_ < 0 || data_[i].idx_ >= total_num_rows_) {
             continue;
         }
+        idx_to_offsets_[data_[i].idx_] = i;
+    }
+    is_built_ = true;
+
+    setup_data_pointers();
+    ComputeByteSize();
+}
+
+template <typename T>
+void
+ScalarIndexSort<T>::BuildWithArrayDataNested(
+    const std::vector<FieldDataPtr>& datas) {
+    for (const auto& data : datas) {
+        auto n = data->get_num_rows();
+        auto array_column = static_cast<const Array*>(data->Data());
+        for (int64_t i = 0; i < n; i++) {
+            if (data->is_valid(i)) {
+                total_num_rows_ += array_column[i].length();
+            }
+        }
+    }
+
+    if (total_num_rows_ == 0) {
+        ThrowInfo(DataIsEmpty, "ScalarIndexSort cannot build null values!");
+    }
+
+    data_.reserve(total_num_rows_);
+    valid_bitset_ = TargetBitmap(total_num_rows_, true);
+    int64_t offset = 0;
+    for (const auto& data : datas) {
+        auto n = data->get_num_rows();
+        auto array_column = static_cast<const Array*>(data->Data());
+        for (int64_t i = 0; i < n; i++) {
+            if (!data->is_valid(i)) {
+                continue;
+            }
+            auto length = array_column[i].length();
+            for (int64_t j = 0; j < length; j++) {
+                data_.emplace_back(
+                    IndexStructure(array_column[i].template get_data<T>(j),
+                                   offset));
+                offset++;
+            }
+        }
+    }
+    std::sort(data_.begin(), data_.end());
+    idx_to_offsets_.resize(total_num_rows_);
+    for (size_t i = 0; i < total_num_rows_; ++i) {
         idx_to_offsets_[data_[i].idx_] = i;
     }
     is_built_ = true;

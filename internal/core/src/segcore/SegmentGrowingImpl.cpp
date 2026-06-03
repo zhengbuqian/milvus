@@ -214,6 +214,15 @@ SegmentGrowingImpl::InitializeArrayOffsets() {
         if (bracket_pos != std::string::npos && bracket_pos > 0) {
             std::string struct_name = field_name.substr(0, bracket_pos);
             struct_fields[struct_name].push_back(field_id);
+        } else if (field_meta.get_data_type() == DataType::ARRAY ||
+                   field_meta.get_data_type() == DataType::VECTOR_ARRAY) {
+            auto array_offsets = std::make_shared<ArrayOffsetsGrowing>();
+            array_offsets_map_[field_id] = array_offsets;
+            struct_representative_fields_.insert(field_id);
+            LOG_INFO("Created ArrayOffsetsGrowing for array field '{}', "
+                     "field_id={}",
+                     field_name,
+                     field_id.get());
         }
     }
 

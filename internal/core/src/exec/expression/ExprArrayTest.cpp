@@ -15,27 +15,592 @@
 // limitations under the License.
 
 #include <gtest/gtest.h>
+#include <algorithm>
+#include <array>
+#include <chrono>
 #include <cstdint>
+#include <iostream>
+#include <limits>
 #include <memory>
 #include <regex>
+#include <string>
 #include <vector>
 
+#include "common/ArrayOffsets.h"
 #include "common/Types.h"
 #include "expr/ITypeExpr.h"
 #include "index/IndexFactory.h"
+#include "index/ScalarIndexSort.h"
+#include "index/StringIndexSort.h"
 #include "pb/plan.pb.h"
 #include "plan/PlanNode.h"
 #include "query/Plan.h"
 #include "query/PlanNode.h"
 #include "query/ExecPlanNodeVisitor.h"
 #include "segcore/SegmentGrowingImpl.h"
+#include "segcore/SegmentSealed.h"
 #include "simdjson/padded_string.h"
+#include "test_utils/cachinglayer_test_utils.h"
 #include "test_utils/DataGen.h"
 #include "test_utils/GenExprProto.h"
+#include "test_utils/storage_test_utils.h"
 
 using namespace milvus;
 using namespace milvus::query;
 using namespace milvus::segcore;
+
+namespace {
+
+constexpr int64_t kRLSBenchmarkBaseRows = 1'010'000;
+constexpr int kRLSBenchmarkUserCount = 26;
+constexpr std::array<int64_t, 6> kRLSHeavySharedUsersCapacities = {
+    100, 1000, 5000, 10000, 50000, 100000};
+constexpr std::array<int64_t, 6> kRLSSharedUserDocCounts = {
+    100, 1000, 5000, 10000, 50000, 100000};
+
+enum class RLSGrantStyle {
+    Owner,
+    SharedUser,
+    Department,
+    Overlap,
+    None,
+};
+
+struct RLSUserCase {
+    std::string user;
+    std::string category;
+    int64_t base_count;
+    RLSGrantStyle style;
+};
+
+const std::vector<RLSUserCase>&
+RLSBenchmarkCases() {
+    static const std::vector<RLSUserCase> cases = {
+        {"u00", "owner_only", 50000, RLSGrantStyle::Owner},
+        {"u01", "shared_user_only", 50000, RLSGrantStyle::SharedUser},
+        {"u02", "department_only", 50000, RLSGrantStyle::Department},
+        {"u03", "overlap_owner_user_department", 50000, RLSGrantStyle::Overlap},
+        {"u04", "broad_250k", 250000, RLSGrantStyle::Department},
+        {"u05", "medium_100k", 100000, RLSGrantStyle::SharedUser},
+        {"u06", "sparse_10k", 10000, RLSGrantStyle::Owner},
+        {"u07", "ultra_sparse_1k", 1000, RLSGrantStyle::Department},
+        {"u08", "mixed_25k", 25000, RLSGrantStyle::Owner},
+        {"u09", "mixed_25k", 25000, RLSGrantStyle::SharedUser},
+        {"u10", "mixed_25k", 25000, RLSGrantStyle::Department},
+        {"u11", "mixed_25k", 25000, RLSGrantStyle::Overlap},
+        {"u12", "mixed_25k", 25000, RLSGrantStyle::Owner},
+        {"u13", "mixed_25k", 25000, RLSGrantStyle::SharedUser},
+        {"u14", "mixed_25k", 25000, RLSGrantStyle::Department},
+        {"u15", "mixed_25k", 25000, RLSGrantStyle::Overlap},
+        {"u16", "mixed_25k", 25000, RLSGrantStyle::Owner},
+        {"u17", "mixed_25k", 25000, RLSGrantStyle::SharedUser},
+        {"u18", "mixed_25k", 25000, RLSGrantStyle::Department},
+        {"u19", "no_access", 0, RLSGrantStyle::None},
+        {"u20", "shared_user_docs_100", 100, RLSGrantStyle::SharedUser},
+        {"u21", "shared_user_docs_1k", 1000, RLSGrantStyle::SharedUser},
+        {"u22", "shared_user_docs_5k", 5000, RLSGrantStyle::SharedUser},
+        {"u23", "shared_user_docs_10k", 10000, RLSGrantStyle::SharedUser},
+        {"u24", "shared_user_docs_50k", 50000, RLSGrantStyle::SharedUser},
+        {"u25", "shared_user_docs_100k", 100000, RLSGrantStyle::SharedUser},
+    };
+    return cases;
+}
+
+proto::plan::GenericValue
+StringValue(const std::string& value) {
+    proto::plan::GenericValue generic_value;
+    generic_value.set_string_val(value);
+    return generic_value;
+}
+
+proto::plan::GenericValue
+BoolValue(bool value) {
+    proto::plan::GenericValue generic_value;
+    generic_value.set_bool_val(value);
+    return generic_value;
+}
+
+int
+UserIndex(const std::string& user) {
+    return std::stoi(user.substr(1));
+}
+
+std::string
+DepartmentForUser(const std::string& user) {
+    return "d" + user.substr(1);
+}
+
+std::shared_ptr<plan::FilterBitsNode>
+BuildRLSCountPlan(FieldId owner_fid,
+                  FieldId shared_users_fid,
+                  FieldId shared_departments_fid,
+                  const std::string& user) {
+    auto user_value = StringValue(user);
+    auto department_value = StringValue(DepartmentForUser(user));
+
+    auto owner_expr = std::make_shared<expr::UnaryRangeFilterExpr>(
+        expr::ColumnInfo(owner_fid, DataType::VARCHAR),
+        proto::plan::OpType::Equal,
+        user_value);
+    auto shared_users_expr = std::make_shared<expr::JsonContainsExpr>(
+        expr::ColumnInfo(
+            shared_users_fid, DataType::ARRAY, DataType::VARCHAR),
+        proto::plan::JSONContainsExpr_JSONOp_Contains,
+        true,
+        std::vector<proto::plan::GenericValue>{user_value});
+    auto shared_departments_expr = std::make_shared<expr::JsonContainsExpr>(
+        expr::ColumnInfo(
+            shared_departments_fid, DataType::ARRAY, DataType::VARCHAR),
+        proto::plan::JSONContainsExpr_JSONOp_Contains,
+        true,
+        std::vector<proto::plan::GenericValue>{department_value});
+
+    auto array_expr = std::make_shared<expr::LogicalBinaryExpr>(
+        expr::LogicalBinaryExpr::OpType::Or,
+        shared_users_expr,
+        shared_departments_expr);
+    auto rls_expr = std::make_shared<expr::LogicalBinaryExpr>(
+        expr::LogicalBinaryExpr::OpType::Or, owner_expr, array_expr);
+    return std::make_shared<plan::FilterBitsNode>(
+        DEFAULT_PLANNODE_ID, rls_expr);
+}
+
+std::shared_ptr<plan::FilterBitsNode>
+BuildBoolCountPlan(FieldId bool_fid) {
+    auto bool_expr = std::make_shared<expr::UnaryRangeFilterExpr>(
+        expr::ColumnInfo(bool_fid, DataType::BOOL),
+        proto::plan::OpType::Equal,
+        BoolValue(true));
+    return std::make_shared<plan::FilterBitsNode>(
+        DEFAULT_PLANNODE_ID, bool_expr);
+}
+
+double
+MedianMs(std::vector<double> values) {
+    std::sort(values.begin(), values.end());
+    return values[values.size() / 2];
+}
+
+std::pair<size_t, double>
+RunCountPlan(const std::shared_ptr<plan::FilterBitsNode>& plan,
+             const SegmentInternalInterface* segment,
+             int64_t row_count) {
+    auto start = std::chrono::steady_clock::now();
+    auto bitset = ExecuteQueryExpr(plan, segment, row_count, MAX_TIMESTAMP);
+    auto finish = std::chrono::steady_clock::now();
+    auto elapsed_ms =
+        std::chrono::duration<double, std::milli>(finish - start).count();
+    return {bitset.count(), elapsed_ms};
+}
+
+FieldDataPtr
+BuildFieldData(const GeneratedData& raw_data, FieldId field_id) {
+    auto data = raw_data.get_col(field_id);
+    return CreateFieldDataFromDataArray(raw_data.raw_->num_rows(),
+                                        data.get(),
+                                        raw_data.schema_->operator[](field_id));
+}
+
+void
+LoadStringSortIndex(SegmentSealed* segment,
+                    FieldId field_id,
+                    const FieldDataPtr& field_data,
+                    bool nested) {
+    auto index = std::make_unique<index::StringIndexSort>(
+        storage::FileManagerContext(), nested);
+    index->BuildWithFieldData({field_data});
+
+    LoadIndexInfo info{};
+    info.field_id = field_id.get();
+    info.field_type = DataType::VARCHAR;
+    info.index_params = GenIndexParams(index.get());
+    info.cache_index = CreateTestCacheIndex(
+        fmt::format("stl_sort_{}", field_id.get()), std::move(index));
+    segment->LoadIndex(info);
+}
+
+void
+LoadBoolSortIndex(SegmentSealed* segment,
+                  FieldId field_id,
+                  const FieldDataPtr& field_data) {
+    auto index = index::CreateScalarIndexSort<bool>();
+    index->BuildWithFieldData({field_data});
+
+    LoadIndexInfo info{};
+    info.field_id = field_id.get();
+    info.field_type = DataType::BOOL;
+    info.index_params = GenIndexParams(index.get());
+    info.cache_index = CreateTestCacheIndex(
+        fmt::format("stl_sort_{}", field_id.get()), std::move(index));
+    segment->LoadIndex(info);
+}
+
+std::unique_ptr<index::StringIndexSort>
+BuildStringSortIndex(const FieldDataPtr& field_data, bool nested) {
+    auto index = std::make_unique<index::StringIndexSort>(
+        storage::FileManagerContext(), nested);
+    index->BuildWithFieldData({field_data});
+    return index;
+}
+
+struct RLSBenchmarkFixture {
+    RLSBenchmarkFixture() {
+        raw_data.raw_ = nullptr;
+    }
+
+    std::shared_ptr<Schema> schema;
+    FieldId id_fid;
+    FieldId owner_fid;
+    FieldId shared_users_fid;
+    FieldId shared_departments_fid;
+    std::array<FieldId, kRLSBenchmarkUserCount> bool_fids;
+    int64_t row_count = 0;
+    std::array<int64_t, kRLSBenchmarkUserCount> expected_counts{};
+    std::array<int64_t, kRLSBenchmarkUserCount> heavy_shared_users_capacity{};
+    std::array<int64_t, kRLSBenchmarkUserCount> shared_user_doc_count{};
+    GeneratedData raw_data;
+    std::unique_ptr<SegmentSealed> segment;
+    std::unique_ptr<index::StringIndexSort> owner_index;
+    std::unique_ptr<index::StringIndexSort> shared_users_index;
+    std::unique_ptr<index::StringIndexSort> shared_departments_index;
+};
+
+RLSBenchmarkFixture
+BuildRLSBenchmarkFixture() {
+    RLSBenchmarkFixture fixture;
+    fixture.schema = std::make_shared<Schema>();
+    fixture.id_fid = fixture.schema->AddDebugField("id", DataType::INT64);
+    fixture.owner_fid =
+        fixture.schema->AddDebugField("owner", DataType::VARCHAR);
+    fixture.shared_users_fid = fixture.schema->AddDebugField(
+        "shared_users[elements]", DataType::ARRAY, DataType::VARCHAR);
+    fixture.shared_departments_fid = fixture.schema->AddDebugField(
+        "shared_departments[elements]", DataType::ARRAY, DataType::VARCHAR);
+
+    for (int i = 0; i < kRLSBenchmarkUserCount; ++i) {
+        fixture.bool_fids[i] = fixture.schema->AddDebugField(
+            fmt::format("can_access_u{:02d}", i), DataType::BOOL);
+    }
+    fixture.schema->set_primary_field_id(fixture.id_fid);
+
+    const auto& cases = RLSBenchmarkCases();
+    fixture.row_count =
+        kRLSBenchmarkBaseRows +
+        static_cast<int64_t>(kRLSHeavySharedUsersCapacities.size());
+
+    for (const auto& test_case : cases) {
+        fixture.expected_counts[UserIndex(test_case.user)] =
+            test_case.base_count;
+    }
+    for (int i = 0; i < kRLSHeavySharedUsersCapacities.size(); ++i) {
+        auto user_index = 8 + i;
+        fixture.expected_counts[user_index] += 1;
+        fixture.heavy_shared_users_capacity[user_index] =
+            kRLSHeavySharedUsersCapacities[i];
+    }
+    for (int i = 0; i < kRLSSharedUserDocCounts.size(); ++i) {
+        fixture.shared_user_doc_count[20 + i] = kRLSSharedUserDocCounts[i];
+    }
+
+    std::array<int64_t, kRLSBenchmarkUserCount> case_starts{};
+    int64_t cursor = 0;
+    for (int i = 0; i < cases.size(); ++i) {
+        case_starts[i] = cursor;
+        cursor += cases[i].base_count;
+    }
+    EXPECT_LE(cursor, kRLSBenchmarkBaseRows);
+
+    auto grant_access = [](const RLSUserCase& test_case,
+                           std::string& owner,
+                           ScalarFieldProto& shared_users,
+                           ScalarFieldProto& shared_departments) {
+        switch (test_case.style) {
+            case RLSGrantStyle::Owner:
+                owner = test_case.user;
+                break;
+            case RLSGrantStyle::SharedUser:
+                shared_users.mutable_string_data()->add_data(test_case.user);
+                break;
+            case RLSGrantStyle::Department:
+                shared_departments.mutable_string_data()->add_data(
+                    DepartmentForUser(test_case.user));
+                break;
+            case RLSGrantStyle::Overlap:
+                owner = test_case.user;
+                shared_users.mutable_string_data()->add_data(test_case.user);
+                shared_departments.mutable_string_data()->add_data(
+                    DepartmentForUser(test_case.user));
+                break;
+            case RLSGrantStyle::None:
+                break;
+        }
+    };
+
+    auto find_base_case = [&](int64_t row_id) -> const RLSUserCase* {
+        for (int i = 0; i < cases.size(); ++i) {
+            if (row_id >= case_starts[i] &&
+                row_id < case_starts[i] + cases[i].base_count) {
+                return &cases[i];
+            }
+        }
+        return nullptr;
+    };
+
+    std::vector<int64_t> ids(fixture.row_count);
+    std::vector<idx_t> row_ids(fixture.row_count);
+    std::vector<Timestamp> timestamps(fixture.row_count);
+    std::vector<std::string> owners(fixture.row_count, "external_owner");
+    std::vector<ScalarFieldProto> shared_users(fixture.row_count);
+    std::vector<ScalarFieldProto> shared_departments(fixture.row_count);
+    std::array<FixedVector<bool>, kRLSBenchmarkUserCount> can_access;
+    for (auto& access : can_access) {
+        access.resize(fixture.row_count, false);
+    }
+
+    for (int64_t row = 0; row < fixture.row_count; ++row) {
+        ids[row] = row;
+        row_ids[row] = row;
+        timestamps[row] = row;
+
+        if (row < kRLSBenchmarkBaseRows) {
+            auto* test_case = find_base_case(row);
+            if (test_case != nullptr) {
+                grant_access(*test_case,
+                             owners[row],
+                             shared_users[row],
+                             shared_departments[row]);
+                can_access[UserIndex(test_case->user)][row] = true;
+            }
+            continue;
+        }
+
+        auto heavy_index = row - kRLSBenchmarkBaseRows;
+        const auto& test_case = cases[8 + heavy_index];
+        auto capacity = kRLSHeavySharedUsersCapacities[heavy_index];
+        auto* user_data = shared_users[row].mutable_string_data()->mutable_data();
+        user_data->Reserve(capacity);
+        for (int64_t i = 0; i < capacity - 1; ++i) {
+            *user_data->Add() = fmt::format("hu{}_{}", capacity, i);
+        }
+        *user_data->Add() = test_case.user;
+        can_access[UserIndex(test_case.user)][row] = true;
+    }
+
+    auto insert_data = std::make_unique<InsertRecordProto>();
+    auto add_col = [&](FieldId field_id, const auto& data) {
+        auto array = milvus::segcore::CreateDataArrayFrom(
+            data.data(), nullptr, fixture.row_count, fixture.schema->operator[](field_id));
+        insert_data->mutable_fields_data()->AddAllocated(array.release());
+    };
+    add_col(fixture.id_fid, ids);
+    add_col(fixture.owner_fid, owners);
+    add_col(fixture.shared_users_fid, shared_users);
+    add_col(fixture.shared_departments_fid, shared_departments);
+    for (int i = 0; i < kRLSBenchmarkUserCount; ++i) {
+        add_col(fixture.bool_fids[i], can_access[i]);
+    }
+    insert_data->set_num_rows(fixture.row_count);
+
+    fixture.raw_data.row_ids_ = std::move(row_ids);
+    fixture.raw_data.timestamps_ = std::move(timestamps);
+    fixture.raw_data.raw_ = insert_data.release();
+    fixture.raw_data.schema_ = fixture.schema;
+
+    fixture.segment =
+        CreateSealedWithFieldDataLoaded(fixture.schema, fixture.raw_data);
+
+    auto owner_field_data = BuildFieldData(fixture.raw_data, fixture.owner_fid);
+    auto shared_users_field_data =
+        BuildFieldData(fixture.raw_data, fixture.shared_users_fid);
+    auto shared_departments_field_data =
+        BuildFieldData(fixture.raw_data, fixture.shared_departments_fid);
+
+    fixture.owner_index = BuildStringSortIndex(owner_field_data, false);
+    fixture.shared_users_index =
+        BuildStringSortIndex(shared_users_field_data, true);
+    fixture.shared_departments_index =
+        BuildStringSortIndex(shared_departments_field_data, true);
+
+    for (int i = 0; i < kRLSBenchmarkUserCount; ++i) {
+        LoadBoolSortIndex(fixture.segment.get(),
+                          fixture.bool_fids[i],
+                          BuildFieldData(fixture.raw_data, fixture.bool_fids[i]));
+    }
+
+    return fixture;
+}
+
+const std::vector<int32_t>&
+RowStarts(const std::shared_ptr<const IArrayOffsets>& offsets) {
+    auto sealed_offsets =
+        std::dynamic_pointer_cast<const ArrayOffsetsSealed>(offsets);
+    AssertInfo(sealed_offsets != nullptr, "POC benchmark expects sealed offsets");
+    return sealed_offsets->row_to_element_start_;
+}
+
+bool
+BitsetsEqual(const TargetBitmap& left, const TargetBitmap& right) {
+    if (left.size() != right.size()) {
+        return false;
+    }
+    for (size_t i = 0; i < left.size(); ++i) {
+        if (left[i] != right[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+TargetBitmap
+ProjectAnyByRowRangeScan(const TargetBitmap& element_bitset,
+                         const std::vector<int32_t>& row_starts,
+                         int64_t row_count) {
+    TargetBitmap row_bitset(row_count, false);
+    for (int64_t row_id = 0; row_id < row_count; row_id++) {
+        auto elem_start = row_starts[row_id];
+        auto elem_end = row_starts[row_id + 1];
+        for (int32_t elem_id = elem_start; elem_id < elem_end; elem_id++) {
+            if (element_bitset[elem_id]) {
+                row_bitset.set(row_id);
+                break;
+            }
+        }
+    }
+    return row_bitset;
+}
+
+TargetBitmap
+ProjectAnyBySetBitCursor(const TargetBitmap& element_bitset,
+                         const std::vector<int32_t>& row_starts,
+                         int64_t row_count) {
+    TargetBitmap row_bitset(row_count, false);
+    int64_t row_id = 0;
+    auto elem_id_opt = element_bitset.find_first();
+    while (elem_id_opt.has_value()) {
+        auto elem_id = static_cast<int64_t>(elem_id_opt.value());
+        while (row_id < row_count && row_starts[row_id + 1] <= elem_id) {
+            row_id++;
+        }
+        if (row_id >= row_count) {
+            break;
+        }
+        row_bitset.set(row_id);
+        elem_id_opt = element_bitset.find_next(elem_id);
+    }
+    return row_bitset;
+}
+
+void
+SearchAnyDirectToRows(const index::StringIndexSort& sort_index,
+                      const std::string& value,
+                      const std::vector<int32_t>& row_starts,
+                      int64_t row_count,
+                      TargetBitmap& row_bitset) {
+    auto* memory_impl =
+        dynamic_cast<index::StringIndexSortMemoryImpl*>(sort_index.impl_.get());
+    AssertInfo(memory_impl != nullptr,
+               "POC benchmark expects in-memory StringIndexSort");
+
+    auto value_index = memory_impl->FindValueIndex(value);
+    if (value_index == std::numeric_limits<size_t>::max()) {
+        return;
+    }
+
+    int64_t row_id = 0;
+    const auto& posting_list = memory_impl->posting_lists_[value_index];
+    for (auto elem_id_value : posting_list) {
+        auto elem_id = static_cast<int64_t>(elem_id_value);
+        while (row_id < row_count && row_starts[row_id + 1] <= elem_id) {
+            row_id++;
+        }
+        if (row_id >= row_count) {
+            break;
+        }
+        row_bitset.set(row_id);
+    }
+}
+
+TargetBitmap
+RunRLSProjectionCurrent(const RLSBenchmarkFixture& fixture,
+                        const std::string& user) {
+    auto result = fixture.owner_index->In(1, &user);
+    auto shared_user_offsets =
+        RowStarts(fixture.segment->GetArrayOffsets(fixture.shared_users_fid));
+    auto shared_department_offsets = RowStarts(
+        fixture.segment->GetArrayOffsets(fixture.shared_departments_fid));
+    auto department = DepartmentForUser(user);
+
+    auto shared_users_element_bitset =
+        fixture.shared_users_index->In(1, &user);
+    result |= ProjectAnyByRowRangeScan(
+        shared_users_element_bitset, shared_user_offsets, fixture.row_count);
+
+    auto shared_departments_element_bitset =
+        fixture.shared_departments_index->In(1, &department);
+    result |= ProjectAnyByRowRangeScan(shared_departments_element_bitset,
+                                       shared_department_offsets,
+                                       fixture.row_count);
+    return result;
+}
+
+TargetBitmap
+RunRLSProjectionSetBitCursor(const RLSBenchmarkFixture& fixture,
+                             const std::string& user) {
+    auto result = fixture.owner_index->In(1, &user);
+    auto shared_user_offsets =
+        RowStarts(fixture.segment->GetArrayOffsets(fixture.shared_users_fid));
+    auto shared_department_offsets = RowStarts(
+        fixture.segment->GetArrayOffsets(fixture.shared_departments_fid));
+    auto department = DepartmentForUser(user);
+
+    auto shared_users_element_bitset =
+        fixture.shared_users_index->In(1, &user);
+    result |= ProjectAnyBySetBitCursor(
+        shared_users_element_bitset, shared_user_offsets, fixture.row_count);
+
+    auto shared_departments_element_bitset =
+        fixture.shared_departments_index->In(1, &department);
+    result |= ProjectAnyBySetBitCursor(shared_departments_element_bitset,
+                                       shared_department_offsets,
+                                       fixture.row_count);
+    return result;
+}
+
+TargetBitmap
+RunRLSProjectionDirect(const RLSBenchmarkFixture& fixture,
+                       const std::string& user) {
+    auto result = fixture.owner_index->In(1, &user);
+    auto shared_user_offsets =
+        RowStarts(fixture.segment->GetArrayOffsets(fixture.shared_users_fid));
+    auto shared_department_offsets = RowStarts(
+        fixture.segment->GetArrayOffsets(fixture.shared_departments_fid));
+    auto department = DepartmentForUser(user);
+
+    SearchAnyDirectToRows(*fixture.shared_users_index,
+                          user,
+                          shared_user_offsets,
+                          fixture.row_count,
+                          result);
+    SearchAnyDirectToRows(*fixture.shared_departments_index,
+                          department,
+                          shared_department_offsets,
+                          fixture.row_count,
+                          result);
+    return result;
+}
+
+template <typename Func>
+std::pair<TargetBitmap, double>
+TimeProjection(Func&& func) {
+    auto start = std::chrono::steady_clock::now();
+    auto bitset = func();
+    auto finish = std::chrono::steady_clock::now();
+    auto elapsed_ms =
+        std::chrono::duration<double, std::milli>(finish - start).count();
+    return {std::move(bitset), elapsed_ms};
+}
+
+}  // namespace
 
 TEST(Expr, TestArrayRange) {
     std::vector<std::tuple<std::string,
@@ -553,6 +1118,308 @@ TEST(Expr, PraseArrayContainsExpr) {
             expr, "fakevec", 10, "L2", R"({"nprobe": 10})", 3);
         auto plan =
             CreateSearchPlanByExpr(schema, plan_str.data(), plan_str.size());
+    }
+}
+
+TEST(Expr, RLSCountBenchmarkCompareBoolField) {
+    auto schema = std::make_shared<Schema>();
+    auto id_fid = schema->AddDebugField("id", DataType::INT64);
+    auto owner_fid = schema->AddDebugField("owner", DataType::VARCHAR);
+    auto shared_users_fid = schema->AddDebugField(
+        "shared_users[elements]", DataType::ARRAY, DataType::VARCHAR);
+    auto shared_departments_fid = schema->AddDebugField(
+        "shared_departments[elements]", DataType::ARRAY, DataType::VARCHAR);
+
+    std::array<FieldId, kRLSBenchmarkUserCount> bool_fids;
+    for (int i = 0; i < kRLSBenchmarkUserCount; ++i) {
+        bool_fids[i] = schema->AddDebugField(
+            fmt::format("can_access_u{:02d}", i), DataType::BOOL);
+    }
+    schema->set_primary_field_id(id_fid);
+
+    const auto& cases = RLSBenchmarkCases();
+    const auto row_count = kRLSBenchmarkBaseRows +
+                           static_cast<int64_t>(
+                               kRLSHeavySharedUsersCapacities.size());
+
+    std::array<int64_t, kRLSBenchmarkUserCount> expected_counts{};
+    std::array<int64_t, kRLSBenchmarkUserCount> heavy_shared_users_capacity{};
+    std::array<int64_t, kRLSBenchmarkUserCount> shared_user_doc_count{};
+    for (const auto& test_case : cases) {
+        expected_counts[UserIndex(test_case.user)] = test_case.base_count;
+    }
+    for (int i = 0; i < kRLSHeavySharedUsersCapacities.size(); ++i) {
+        auto user_index = 8 + i;
+        expected_counts[user_index] += 1;
+        heavy_shared_users_capacity[user_index] =
+            kRLSHeavySharedUsersCapacities[i];
+    }
+    for (int i = 0; i < kRLSSharedUserDocCounts.size(); ++i) {
+        shared_user_doc_count[20 + i] = kRLSSharedUserDocCounts[i];
+    }
+
+    std::array<int64_t, kRLSBenchmarkUserCount> case_starts{};
+    int64_t cursor = 0;
+    for (int i = 0; i < cases.size(); ++i) {
+        case_starts[i] = cursor;
+        cursor += cases[i].base_count;
+    }
+    ASSERT_LE(cursor, kRLSBenchmarkBaseRows);
+
+    auto grant_access = [](const RLSUserCase& test_case,
+                           std::string& owner,
+                           ScalarFieldProto& shared_users,
+                           ScalarFieldProto& shared_departments) {
+        switch (test_case.style) {
+            case RLSGrantStyle::Owner:
+                owner = test_case.user;
+                break;
+            case RLSGrantStyle::SharedUser:
+                shared_users.mutable_string_data()->add_data(test_case.user);
+                break;
+            case RLSGrantStyle::Department:
+                shared_departments.mutable_string_data()->add_data(
+                    DepartmentForUser(test_case.user));
+                break;
+            case RLSGrantStyle::Overlap:
+                owner = test_case.user;
+                shared_users.mutable_string_data()->add_data(test_case.user);
+                shared_departments.mutable_string_data()->add_data(
+                    DepartmentForUser(test_case.user));
+                break;
+            case RLSGrantStyle::None:
+                break;
+        }
+    };
+
+    auto find_base_case = [&](int64_t row_id) -> const RLSUserCase* {
+        for (int i = 0; i < cases.size(); ++i) {
+            if (row_id >= case_starts[i] &&
+                row_id < case_starts[i] + cases[i].base_count) {
+                return &cases[i];
+            }
+        }
+        return nullptr;
+    };
+
+    std::vector<int64_t> ids(row_count);
+    std::vector<idx_t> row_ids(row_count);
+    std::vector<Timestamp> timestamps(row_count);
+    std::vector<std::string> owners(row_count, "external_owner");
+    std::vector<ScalarFieldProto> shared_users(row_count);
+    std::vector<ScalarFieldProto> shared_departments(row_count);
+    std::array<FixedVector<bool>, kRLSBenchmarkUserCount> can_access;
+    for (auto& access : can_access) {
+        access.resize(row_count, false);
+    }
+
+    for (int64_t row = 0; row < row_count; ++row) {
+        ids[row] = row;
+        row_ids[row] = row;
+        timestamps[row] = row;
+
+        if (row < kRLSBenchmarkBaseRows) {
+            auto* test_case = find_base_case(row);
+            if (test_case != nullptr) {
+                grant_access(*test_case,
+                             owners[row],
+                             shared_users[row],
+                             shared_departments[row]);
+                can_access[UserIndex(test_case->user)][row] = true;
+            }
+            continue;
+        }
+
+        auto heavy_index = row - kRLSBenchmarkBaseRows;
+        const auto& test_case = cases[8 + heavy_index];
+        auto capacity = kRLSHeavySharedUsersCapacities[heavy_index];
+        auto* user_data = shared_users[row].mutable_string_data()->mutable_data();
+        user_data->Reserve(capacity);
+        for (int64_t i = 0; i < capacity - 1; ++i) {
+            *user_data->Add() = fmt::format("hu{}_{}", capacity, i);
+        }
+        *user_data->Add() = test_case.user;
+        can_access[UserIndex(test_case.user)][row] = true;
+    }
+
+    auto insert_data = std::make_unique<InsertRecordProto>();
+    auto add_col = [&](FieldId field_id, const auto& data) {
+        auto array = milvus::segcore::CreateDataArrayFrom(
+            data.data(), nullptr, row_count, schema->operator[](field_id));
+        insert_data->mutable_fields_data()->AddAllocated(array.release());
+    };
+    add_col(id_fid, ids);
+    add_col(owner_fid, owners);
+    add_col(shared_users_fid, shared_users);
+    add_col(shared_departments_fid, shared_departments);
+    for (int i = 0; i < kRLSBenchmarkUserCount; ++i) {
+        add_col(bool_fids[i], can_access[i]);
+    }
+    insert_data->set_num_rows(row_count);
+
+    GeneratedData raw_data;
+    raw_data.row_ids_ = std::move(row_ids);
+    raw_data.timestamps_ = std::move(timestamps);
+    raw_data.raw_ = insert_data.release();
+    raw_data.schema_ = schema;
+
+    auto seg = CreateSealedWithFieldDataLoaded(schema, raw_data);
+    LoadStringSortIndex(seg.get(), owner_fid, BuildFieldData(raw_data, owner_fid), false);
+    LoadStringSortIndex(
+        seg.get(), shared_users_fid, BuildFieldData(raw_data, shared_users_fid), true);
+    LoadStringSortIndex(seg.get(),
+                        shared_departments_fid,
+                        BuildFieldData(raw_data, shared_departments_fid),
+                        true);
+    for (int i = 0; i < kRLSBenchmarkUserCount; ++i) {
+        LoadBoolSortIndex(
+            seg.get(), bool_fids[i], BuildFieldData(raw_data, bool_fids[i]));
+    }
+
+    constexpr int warmup_runs = 1;
+    constexpr int benchmark_runs = 3;
+    std::cout << "RLS count(*) benchmark rows=" << row_count
+              << " base_rows=" << kRLSBenchmarkBaseRows
+              << " warmups=" << warmup_runs << " runs=" << benchmark_runs
+              << std::endl;
+    for (const auto& test_case : cases) {
+        auto user_index = UserIndex(test_case.user);
+        auto rls_plan = BuildRLSCountPlan(
+            owner_fid, shared_users_fid, shared_departments_fid, test_case.user);
+        auto bool_plan = BuildBoolCountPlan(bool_fids[user_index]);
+
+        for (int i = 0; i < warmup_runs; ++i) {
+            auto [rls_count, rls_ms] =
+                RunCountPlan(rls_plan, seg.get(), row_count);
+            auto [bool_count, bool_ms] =
+                RunCountPlan(bool_plan, seg.get(), row_count);
+            ASSERT_EQ(rls_count, expected_counts[user_index]);
+            ASSERT_EQ(bool_count, expected_counts[user_index]);
+        }
+
+        std::vector<double> rls_ms;
+        std::vector<double> bool_ms;
+        for (int i = 0; i < benchmark_runs; ++i) {
+            auto [rls_count, rls_elapsed] =
+                RunCountPlan(rls_plan, seg.get(), row_count);
+            auto [bool_count, bool_elapsed] =
+                RunCountPlan(bool_plan, seg.get(), row_count);
+            ASSERT_EQ(rls_count, expected_counts[user_index]);
+            ASSERT_EQ(bool_count, expected_counts[user_index]);
+            rls_ms.push_back(rls_elapsed);
+            bool_ms.push_back(bool_elapsed);
+        }
+
+        auto rls_p50 = MedianMs(rls_ms);
+        auto bool_p50 = MedianMs(bool_ms);
+        auto ratio = bool_p50 > 0 ? rls_p50 / bool_p50 : 0;
+        std::cout << "RLS_COUNT_RESULT user=" << test_case.user
+                  << " category=" << test_case.category
+                  << " expected=" << expected_counts[user_index]
+                  << " heavy_shared_users_capacity="
+                  << heavy_shared_users_capacity[user_index]
+                  << " shared_user_doc_count="
+                  << shared_user_doc_count[user_index]
+                  << " rls_p50_ms=" << rls_p50
+                  << " bool_p50_ms=" << bool_p50 << " ratio=" << ratio
+                  << std::endl;
+    }
+}
+
+TEST(Expr, RLSCountBenchmarkArrayProjectionPOC) {
+    auto fixture = BuildRLSBenchmarkFixture();
+    const auto& cases = RLSBenchmarkCases();
+
+    constexpr int warmup_runs = 1;
+    constexpr int benchmark_runs = 3;
+    std::cout << "RLS projection POC rows=" << fixture.row_count
+              << " base_rows=" << kRLSBenchmarkBaseRows
+              << " warmups=" << warmup_runs << " runs=" << benchmark_runs
+              << std::endl;
+
+    for (const auto& test_case : cases) {
+        auto user_index = UserIndex(test_case.user);
+        auto bool_plan = BuildBoolCountPlan(fixture.bool_fids[user_index]);
+
+        auto validate = [&](const TargetBitmap& current,
+                            const TargetBitmap& setbit,
+                            const TargetBitmap& direct,
+                            size_t bool_count) {
+            ASSERT_TRUE(BitsetsEqual(current, setbit));
+            ASSERT_TRUE(BitsetsEqual(current, direct));
+            ASSERT_EQ(current.count(), fixture.expected_counts[user_index]);
+            ASSERT_EQ(setbit.count(), fixture.expected_counts[user_index]);
+            ASSERT_EQ(direct.count(), fixture.expected_counts[user_index]);
+            ASSERT_EQ(bool_count, fixture.expected_counts[user_index]);
+        };
+
+        for (int i = 0; i < warmup_runs; ++i) {
+            auto [current_bits, current_ms] = TimeProjection([&] {
+                return RunRLSProjectionCurrent(fixture, test_case.user);
+            });
+            auto [setbit_bits, setbit_ms] = TimeProjection([&] {
+                return RunRLSProjectionSetBitCursor(fixture, test_case.user);
+            });
+            auto [direct_bits, direct_ms] = TimeProjection([&] {
+                return RunRLSProjectionDirect(fixture, test_case.user);
+            });
+            auto [bool_count, bool_ms] =
+                RunCountPlan(bool_plan, fixture.segment.get(), fixture.row_count);
+            validate(current_bits, setbit_bits, direct_bits, bool_count);
+        }
+
+        std::vector<double> current_ms;
+        std::vector<double> setbit_ms;
+        std::vector<double> direct_ms;
+        std::vector<double> bool_ms;
+        size_t current_count = 0;
+        size_t setbit_count = 0;
+        size_t direct_count = 0;
+        size_t bool_count = 0;
+
+        for (int i = 0; i < benchmark_runs; ++i) {
+            auto [current_bits, current_elapsed] = TimeProjection([&] {
+                return RunRLSProjectionCurrent(fixture, test_case.user);
+            });
+            auto [setbit_bits, setbit_elapsed] = TimeProjection([&] {
+                return RunRLSProjectionSetBitCursor(fixture, test_case.user);
+            });
+            auto [direct_bits, direct_elapsed] = TimeProjection([&] {
+                return RunRLSProjectionDirect(fixture, test_case.user);
+            });
+            auto [bool_result_count, bool_elapsed] =
+                RunCountPlan(bool_plan, fixture.segment.get(), fixture.row_count);
+
+            validate(current_bits, setbit_bits, direct_bits, bool_result_count);
+            current_count = current_bits.count();
+            setbit_count = setbit_bits.count();
+            direct_count = direct_bits.count();
+            bool_count = bool_result_count;
+            current_ms.push_back(current_elapsed);
+            setbit_ms.push_back(setbit_elapsed);
+            direct_ms.push_back(direct_elapsed);
+            bool_ms.push_back(bool_elapsed);
+        }
+
+        auto current_p50 = MedianMs(current_ms);
+        auto setbit_p50 = MedianMs(setbit_ms);
+        auto direct_p50 = MedianMs(direct_ms);
+        auto bool_p50 = MedianMs(bool_ms);
+        std::cout << "RLS_PROJECTION_POC_RESULT user=" << test_case.user
+                  << " category=" << test_case.category
+                  << " expected=" << fixture.expected_counts[user_index]
+                  << " heavy_shared_users_capacity="
+                  << fixture.heavy_shared_users_capacity[user_index]
+                  << " shared_user_doc_count="
+                  << fixture.shared_user_doc_count[user_index]
+                  << " current_count=" << current_count
+                  << " setbit_count=" << setbit_count
+                  << " direct_count=" << direct_count
+                  << " bool_count=" << bool_count
+                  << " model_a_current_p50_ms=" << current_p50
+                  << " model_a_setbit_p50_ms=" << setbit_p50
+                  << " model_b_direct_p50_ms=" << direct_p50
+                  << " bool_p50_ms=" << bool_p50 << std::endl;
     }
 }
 

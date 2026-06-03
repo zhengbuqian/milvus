@@ -34,6 +34,10 @@
 #include "storage/FileWriter.h"
 #include "common/File.h"
 
+namespace milvus {
+class IArrayOffsets;
+}
+
 namespace milvus::index {
 
 // Forward declaration
@@ -48,7 +52,8 @@ class StringIndexSort : public StringIndex {
 
     explicit StringIndexSort(
         const storage::FileManagerContext& file_manager_context =
-            storage::FileManagerContext());
+            storage::FileManagerContext(),
+        bool is_nested_index = false);
 
     virtual ~StringIndexSort();
 
@@ -76,6 +81,9 @@ class StringIndexSort : public StringIndex {
     void
     BuildWithFieldData(const std::vector<FieldDataPtr>& datas) override;
 
+    void
+    BuildWithArrayDataNested(const std::vector<FieldDataPtr>& datas);
+
     // See detailed format in StringIndexSortMemoryImpl::SerializeToBinary
     BinarySet
     Serialize(const Config& config) override;
@@ -93,9 +101,21 @@ class StringIndexSort : public StringIndex {
     LoadWithoutAssemble(const BinarySet& binary_set,
                         const Config& config) override;
 
+    bool
+    IsNestedIndex() const override {
+        return is_nested_index_;
+    }
+
     // Query methods - delegated to impl
     const TargetBitmap
     In(size_t n, const std::string* values) override;
+
+    bool
+    TryProjectInToRowBitset(size_t n,
+                            const std::string* values,
+                            const milvus::IArrayOffsets& array_offsets,
+                            size_t row_count,
+                            TargetBitmap& row_bitset) const;
 
     const TargetBitmap
     NotIn(size_t n, const std::string* values) override;
@@ -144,7 +164,7 @@ class StringIndexSort : public StringIndex {
     LoadEntries(storage::IndexEntryReader& reader,
                 const Config& config) override;
 
- protected:
+ public:
     int64_t
     CalculateTotalSize() const;
 
@@ -159,6 +179,8 @@ class StringIndexSort : public StringIndex {
 
     int64_t total_size_{0};
     std::unique_ptr<StringIndexSortImpl> impl_;
+
+    bool is_nested_index_ = false;
 };
 
 // Abstract interface for implementations
@@ -255,6 +277,19 @@ class StringIndexSortMemoryImpl : public StringIndexSortImpl {
                        TargetBitmap& valid_bitset,
                        std::vector<int32_t>& idx_to_offsets);
 
+    void
+    BuildFromArrayDataNested(const std::vector<FieldDataPtr>& field_datas,
+                             size_t total_num_rows,
+                             TargetBitmap& valid_bitset,
+                             std::vector<int32_t>& idx_to_offsets);
+
+    bool
+    TryProjectInToRowBitset(size_t n,
+                            const std::string* values,
+                            const milvus::IArrayOffsets& array_offsets,
+                            size_t row_count,
+                            TargetBitmap& row_bitset) const;
+
     // Serialize to binary format
     // The binary format is : [unique_count][string_offsets][string_data][post_list_offsets][post_list_data][magic_code]
     // string_offsets: array of offsets into string_data section
@@ -325,7 +360,7 @@ class StringIndexSortMemoryImpl : public StringIndexSortImpl {
     int64_t
     ByteSize() const override;
 
- private:
+ public:
     // Helper method for binary search
     size_t
     FindValueIndex(const std::string& value) const;

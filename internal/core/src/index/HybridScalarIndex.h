@@ -66,6 +66,12 @@ class HybridScalarIndex : public ScalarIndex<T> {
         return ScalarIndexType::HYBRID;
     }
 
+    bool
+    IsNestedIndex() const override {
+        return field_type_ == proto::schema::DataType::Array ||
+               (internal_index_ != nullptr && internal_index_->IsNestedIndex());
+    }
+
     void
     Build(size_t n,
           const T* values,

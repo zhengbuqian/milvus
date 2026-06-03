@@ -108,7 +108,7 @@ class ArrayOffsetsSealed : public IArrayOffsets {
     static std::shared_ptr<ArrayOffsetsSealed>
     BuildFromSegment(const void* segment, const FieldMeta& field_meta);
 
- private:
+ public:
     const std::vector<int32_t> row_to_element_start_;
     int64_t resource_size_{0};
 };
@@ -160,7 +160,7 @@ class ArrayOffsetsGrowing : public IArrayOffsets {
     void
     DrainPendingRows();
 
- private:
+ public:
     std::vector<int32_t> row_to_element_start_{0};
     int32_t committed_row_count_ = 0;
     std::map<int64_t, PendingRow> pending_rows_;

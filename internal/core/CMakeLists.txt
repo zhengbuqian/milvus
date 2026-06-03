@@ -99,6 +99,8 @@ set( CMAKE_CXX_STANDARD_REQUIRED on )
 # because nostd::shared_ptr has a completely different memory layout (32-byte
 # PlacementBuffer) compared to std::shared_ptr (16 bytes).
 add_compile_definitions( OPENTELEMETRY_STL_VERSION=2017 )
+set( MILVUS_RLS_ARRAY_ROW_PROJECTION "0" CACHE STRING "RLS array row projection mode: 0 original, 1 setbit, 2 direct" )
+add_compile_definitions( MILVUS_RLS_ARRAY_ROW_PROJECTION=${MILVUS_RLS_ARRAY_ROW_PROJECTION} )
 
 set( MILVUS_SOURCE_DIR      ${PROJECT_SOURCE_DIR} )
 set( MILVUS_BINARY_DIR      ${PROJECT_BINARY_DIR} )

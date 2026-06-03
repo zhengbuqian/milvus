@@ -57,7 +57,8 @@ class ScalarIndexSort : public ScalarIndex<T> {
  public:
     explicit ScalarIndexSort(
         const storage::FileManagerContext& file_manager_context =
-            storage::FileManagerContext());
+            storage::FileManagerContext(),
+        bool is_nested_index = false);
 
     ~ScalarIndexSort() {
         if (is_mmap_ && mmap_data_ != nullptr && mmap_data_ != MAP_FAILED) {
@@ -83,6 +84,11 @@ class ScalarIndexSort : public ScalarIndex<T> {
     ScalarIndexType
     GetIndexType() const override {
         return ScalarIndexType::STLSORT;
+    }
+
+    bool
+    IsNestedIndex() const override {
+        return is_nested_index_;
     }
 
     void
@@ -159,6 +165,9 @@ class ScalarIndexSort : public ScalarIndex<T> {
     BuildWithFieldData(const std::vector<FieldDataPtr>& datas) override;
 
  private:
+    void
+    BuildWithArrayDataNested(const std::vector<FieldDataPtr>& datas);
+
     bool
     ShouldSkip(const T lower_value, const T upper_value, const OpType op);
 
@@ -236,6 +245,7 @@ class ScalarIndexSort : public ScalarIndex<T> {
     int64_t field_id_ = 0;
 
     bool is_built_ = false;
+    bool is_nested_index_ = false;
     Config config_;
     std::vector<int32_t> idx_to_offsets_;  // used to retrieve.
     std::shared_ptr<storage::DiskFileManagerImpl> disk_file_manager_;

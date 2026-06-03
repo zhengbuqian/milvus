@@ -128,13 +128,10 @@ HybridScalarIndex<T>::SelectBuildTypeForArrayType(
             }
         }
     }
-    // For array types, always use BITMAP for low cardinality and INVERTED for high cardinality.
-    // These are hardcoded because STL_SORT doesn't support arrays, and BITMAP is the only
-    // suitable choice for low cardinality arrays. Config parameters don't apply to arrays.
     if (distinct_vals.size() >= bitmap_index_cardinality_limit_) {
-        internal_index_type_ = ScalarIndexType::INVERTED;
+        internal_index_type_ = high_cardinality_index_type_;
     } else {
-        internal_index_type_ = ScalarIndexType::BITMAP;
+        internal_index_type_ = low_cardinality_index_type_;
     }
     return internal_index_type_;
 }
@@ -164,8 +161,8 @@ HybridScalarIndex<T>::GetInternalIndex() {
         internal_index_ =
             std::make_shared<BitmapIndex<T>>(this->file_manager_context_);
     } else if (internal_index_type_ == ScalarIndexType::STLSORT) {
-        internal_index_ =
-            std::make_shared<ScalarIndexSort<T>>(this->file_manager_context_);
+        internal_index_ = std::make_shared<ScalarIndexSort<T>>(
+            this->file_manager_context_, IsArrayType(field_type_));
     } else if (internal_index_type_ == ScalarIndexType::INVERTED) {
         internal_index_ = std::make_shared<InvertedIndexTantivy<T>>(
             tantivy_index_version_, this->file_manager_context_);
@@ -190,8 +187,8 @@ HybridScalarIndex<std::string>::GetInternalIndex() {
         internal_index_ =
             std::make_shared<StringIndexMarisa>(this->file_manager_context_);
     } else if (internal_index_type_ == ScalarIndexType::STLSORT) {
-        internal_index_ =
-            std::make_shared<StringIndexSort>(this->file_manager_context_);
+        internal_index_ = std::make_shared<StringIndexSort>(
+            this->file_manager_context_, IsArrayType(field_type_));
     } else if (internal_index_type_ == ScalarIndexType::INVERTED) {
         internal_index_ = std::make_shared<InvertedIndexTantivy<std::string>>(
             tantivy_index_version_, this->file_manager_context_);

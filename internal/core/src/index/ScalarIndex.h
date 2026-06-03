@@ -164,6 +164,11 @@ class ScalarIndex : public IndexBase {
         return false;
     }
 
+    bool
+    IsNestedIndex() const override {
+        return false;
+    }
+
     virtual const TargetBitmap
     PatternMatch(const std::string& pattern, proto::plan::OpType op) {
         ThrowInfo(Unsupported, "pattern match is not supported");

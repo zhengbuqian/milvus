@@ -2759,9 +2759,10 @@ ChunkedSegmentSealedImpl::load_field_data_common(
             data_type == DataType::VECTOR_ARRAY) {
             auto& field_meta = schema_->operator[](field_id);
             const std::string& field_name = field_meta.get_name().get();
-            if (field_name.find('[') != std::string::npos &&
+            auto bracket_pos = field_name.find('[');
+            if (bracket_pos != std::string::npos &&
                 field_name.find(']') != std::string::npos) {
-                struct_name = field_name.substr(0, field_name.find('['));
+                struct_name = field_name.substr(0, bracket_pos);
 
                 auto it = struct_to_array_offsets_.find(struct_name);
                 if (it != struct_to_array_offsets_.end()) {
@@ -2769,6 +2770,9 @@ ChunkedSegmentSealedImpl::load_field_data_common(
                 } else {
                     field_meta_ptr = &field_meta;
                 }
+            } else {
+                struct_name = field_name;
+                field_meta_ptr = &field_meta;
             }
         }
     }

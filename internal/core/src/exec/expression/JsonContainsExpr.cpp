@@ -16,9 +16,18 @@
 
 #include "JsonContainsExpr.h"
 #include <cmath>
+#include <optional>
+#include <type_traits>
 #include <utility>
 #include "common/ScopedTimer.h"
 #include "common/Types.h"
+#include "index/HybridScalarIndex.h"
+#include "index/ScalarIndexSort.h"
+#include "index/StringIndexSort.h"
+
+#ifndef MILVUS_RLS_ARRAY_ROW_PROJECTION
+#define MILVUS_RLS_ARRAY_ROW_PROJECTION 0
+#endif
 
 namespace milvus {
 namespace exec {
@@ -2091,20 +2100,153 @@ PhyJsonContainsFilterExpr::ExecArrayContainsForIndexSegmentImpl() {
         elements.insert(GetValueWithCastNumber<GetType>(element));
     }
     boost::container::vector<GetType> elems(elements.begin(), elements.end());
+    auto array_offsets = segment_->GetArrayOffsets(field_id_);
+
     auto execute_sub_batch =
-        [this](Index* index_ptr,
-               const boost::container::vector<GetType>& vals) {
+        [this, &array_offsets](
+            Index* index_ptr,
+            const boost::container::vector<GetType>& vals) -> TargetBitmap {
+            auto project_original =
+                [&](const TargetBitmap& element_bitset) -> TargetBitmap {
+                TargetBitmap row_bitset(active_count_, false);
+                for (int64_t row_id = 0; row_id < active_count_; row_id++) {
+                    auto [elem_start, elem_end] =
+                        array_offsets->ElementIDRangeOfRow(row_id);
+                    for (int32_t elem_id = elem_start; elem_id < elem_end;
+                         elem_id++) {
+                        if (element_bitset[elem_id]) {
+                            row_bitset.set(row_id);
+                            break;
+                        }
+                    }
+                }
+                return row_bitset;
+            };
+
+            auto project_setbit =
+                [&](const TargetBitmap& element_bitset) -> TargetBitmap {
+                TargetBitmap row_bitset(active_count_, false);
+                auto elem_id_opt = element_bitset.find_first();
+                int32_t row_id = 0;
+                int32_t elem_end = 0;
+                if (active_count_ > 0) {
+                    elem_end = array_offsets->ElementIDRangeOfRow(row_id).second;
+                }
+                while (elem_id_opt.has_value()) {
+                    auto elem_id = static_cast<int32_t>(elem_id_opt.value());
+                    while (row_id < active_count_ && elem_id >= elem_end) {
+                        row_id++;
+                        if (row_id < active_count_) {
+                            elem_end =
+                                array_offsets->ElementIDRangeOfRow(row_id)
+                                    .second;
+                        }
+                    }
+                    if (row_id >= active_count_) {
+                        break;
+                    }
+                    row_bitset.set(row_id);
+                    elem_id_opt = element_bitset.find_next(elem_id);
+                }
+                return row_bitset;
+            };
+
+            auto query_in = [&](size_t n, const GetType* data) -> TargetBitmap {
+                if (!index_ptr->IsNestedIndex()) {
+                    return index_ptr->In(n, data);
+                }
+
+                auto uses_element_bitset = [&]() -> bool {
+                    if constexpr (std::is_same_v<GetType, std::string>) {
+                        if (dynamic_cast<index::StringIndexSort*>(index_ptr) !=
+                            nullptr) {
+                            return true;
+                        }
+                    } else {
+                        if (dynamic_cast<index::ScalarIndexSort<GetType>*>(
+                                index_ptr) != nullptr) {
+                            return true;
+                        }
+                    }
+
+                    if (auto* hybrid =
+                            dynamic_cast<index::HybridScalarIndex<GetType>*>(
+                                index_ptr);
+                        hybrid != nullptr) {
+                        auto* internal = hybrid->internal_index_.get();
+                        if constexpr (std::is_same_v<GetType, std::string>) {
+                            return dynamic_cast<index::StringIndexSort*>(
+                                       internal) != nullptr;
+                        } else {
+                            return dynamic_cast<index::ScalarIndexSort<GetType>*>(
+                                       internal) != nullptr;
+                        }
+                    }
+
+                    return false;
+                };
+
+                if (!uses_element_bitset()) {
+                    return index_ptr->In(n, data);
+                }
+
+                AssertInfo(array_offsets != nullptr,
+                           "array offsets not found for field {}",
+                           field_id_.get());
+
+#if MILVUS_RLS_ARRAY_ROW_PROJECTION == 2
+                if constexpr (std::is_same_v<GetType, std::string>) {
+                    auto try_project_direct =
+                        [&](index::StringIndexSort* sort_index)
+                        -> std::optional<TargetBitmap> {
+                        if (sort_index == nullptr) {
+                            return std::nullopt;
+                        }
+                        TargetBitmap row_bitset(active_count_, false);
+                        if (!sort_index->TryProjectInToRowBitset(
+                                n, data, *array_offsets, active_count_, row_bitset)) {
+                            return std::nullopt;
+                        }
+                        return row_bitset;
+                    };
+
+                    if (auto direct = try_project_direct(
+                            dynamic_cast<index::StringIndexSort*>(index_ptr));
+                        direct.has_value()) {
+                        return std::move(direct.value());
+                    }
+                    if (auto* hybrid =
+                            dynamic_cast<index::HybridScalarIndex<std::string>*>(
+                                index_ptr);
+                        hybrid != nullptr) {
+                        if (auto direct = try_project_direct(
+                                dynamic_cast<index::StringIndexSort*>(
+                                    hybrid->internal_index_.get()));
+                            direct.has_value()) {
+                            return std::move(direct.value());
+                        }
+                    }
+                }
+#endif
+
+                auto element_bitset = index_ptr->In(n, data);
+#if MILVUS_RLS_ARRAY_ROW_PROJECTION == 1
+                return project_setbit(element_bitset);
+#else
+                return project_original(element_bitset);
+#endif
+            };
+
             switch (expr_->op_) {
                 case proto::plan::JSONContainsExpr_JSONOp_Contains:
                 case proto::plan::JSONContainsExpr_JSONOp_ContainsAny: {
-                    return index_ptr->In(vals.size(), vals.data());
+                    return query_in(vals.size(), vals.data());
                 }
                 case proto::plan::JSONContainsExpr_JSONOp_ContainsAll: {
-                    TargetBitmap result(index_ptr->Count());
+                    TargetBitmap result(active_count_);
                     result.set();
                     for (size_t i = 0; i < vals.size(); i++) {
-                        auto sub = index_ptr->In(1, &vals[i]);
-                        result &= sub;
+                        result &= query_in(1, &vals[i]);
                     }
                     return result;
                 }
@@ -2115,7 +2257,36 @@ PhyJsonContainsFilterExpr::ExecArrayContainsForIndexSegmentImpl() {
                         proto::plan::JSONContainsExpr_JSONOp_Name(expr_->op_));
             }
         };
-    auto res = ProcessIndexChunks<GetType>(execute_sub_batch, elems);
+
+    AssertInfo(num_index_chunk_ == 1,
+               "array stl sort test path expects one scalar index chunk, got {}",
+               num_index_chunk_);
+    if (cached_index_chunk_id_ != 0) {
+        auto index_result = GetIndexPtrForChunk<GetType>(0);
+        auto* index_ptr = index_result.index_ptr;
+        cached_index_chunk_res_ = std::make_shared<TargetBitmap>(
+            std::move(execute_sub_batch(index_ptr, elems)));
+        if (index_ptr->IsNestedIndex()) {
+            cached_index_chunk_valid_res_ =
+                std::make_shared<TargetBitmap>(active_count_, true);
+        } else {
+            cached_index_chunk_valid_res_ =
+                std::make_shared<TargetBitmap>(index_ptr->IsNotNull());
+        }
+        cached_index_chunk_id_ = 0;
+    }
+
+    TargetBitmap result;
+    TargetBitmap valid_result;
+    auto data_pos = current_index_chunk_pos_;
+    auto size = std::min(
+        std::min(active_count_ - data_pos, batch_size_),
+        int64_t(cached_index_chunk_res_->size()) - data_pos);
+    result.append(*cached_index_chunk_res_, data_pos, size);
+    valid_result.append(*cached_index_chunk_valid_res_, data_pos, size);
+    current_index_chunk_pos_ = data_pos + size;
+    auto res = std::make_shared<ColumnVector>(std::move(result),
+                                              std::move(valid_result));
     AssertInfo(res->size() == real_batch_size,
                "internal error: expr processed rows {} not equal "
                "expect batch size {}",

@@ -92,6 +92,11 @@ class IndexBase {
         return JsonCastType::UNKNOWN;
     }
 
+    virtual bool
+    IsNestedIndex() const {
+        return false;
+    }
+
     // TODO: how to get the cell byte size?
     virtual cachinglayer::ResourceUsage
     CellByteSize() const {

@@ -455,10 +455,43 @@ IndexFactory::CreateCompositeScalarIndex(
     const CreateIndexInfo& create_index_info,
     const storage::FileManagerContext& file_manager_context) {
     auto index_type = create_index_info.index_type;
+    auto element_type = static_cast<DataType>(
+        file_manager_context.fieldDataMeta.field_schema.element_type());
+    if (index_type == ASCENDING_SORT) {
+        switch (element_type) {
+            case DataType::BOOL:
+                return std::make_unique<ScalarIndexSort<bool>>(
+                    file_manager_context, true);
+            case DataType::INT8:
+                return std::make_unique<ScalarIndexSort<int8_t>>(
+                    file_manager_context, true);
+            case DataType::INT16:
+                return std::make_unique<ScalarIndexSort<int16_t>>(
+                    file_manager_context, true);
+            case DataType::INT32:
+                return std::make_unique<ScalarIndexSort<int32_t>>(
+                    file_manager_context, true);
+            case DataType::INT64:
+                return std::make_unique<ScalarIndexSort<int64_t>>(
+                    file_manager_context, true);
+            case DataType::FLOAT:
+                return std::make_unique<ScalarIndexSort<float>>(
+                    file_manager_context, true);
+            case DataType::DOUBLE:
+                return std::make_unique<ScalarIndexSort<double>>(
+                    file_manager_context, true);
+            case DataType::STRING:
+            case DataType::VARCHAR:
+                return std::make_unique<StringIndexSort>(file_manager_context,
+                                                         true);
+            default:
+                ThrowInfo(DataTypeInvalid,
+                          "invalid array element type for stl sort: {}",
+                          element_type);
+        }
+    }
     if (index_type == HYBRID_INDEX_TYPE || index_type == BITMAP_INDEX_TYPE ||
         index_type == INVERTED_INDEX_TYPE) {
-        auto element_type = static_cast<DataType>(
-            file_manager_context.fieldDataMeta.field_schema.element_type());
         return CreatePrimitiveScalarIndex(
             element_type, create_index_info, file_manager_context);
     } else {

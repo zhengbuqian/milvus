@@ -31,6 +31,8 @@
 
 #include "bitset/bitset.h"
 #include "bitset/detail/element_vectorized.h"
+#include "common/Array.h"
+#include "common/ArrayOffsets.h"
 #include "common/EasyAssert.h"
 #include "common/FieldDataInterface.h"
 #include "common/RegexQuery.h"
@@ -118,8 +120,11 @@ constexpr size_t ALIGNMENT = 32;  // 32-byte alignment
 const uint64_t MMAP_INDEX_PADDING = 1;
 
 StringIndexSort::StringIndexSort(
-    const storage::FileManagerContext& file_manager_context)
-    : StringIndex(ASCENDING_SORT), is_built_(false) {
+    const storage::FileManagerContext& file_manager_context,
+    bool is_nested_index)
+    : StringIndex(ASCENDING_SORT),
+      is_built_(false),
+      is_nested_index_(is_nested_index) {
     if (file_manager_context.Valid()) {
         field_id_ = file_manager_context.fieldDataMeta.field_id;
         this->file_manager_ =
@@ -183,10 +188,21 @@ StringIndexSort::BuildWithFieldData(
 
     index_build_begin_ = std::chrono::system_clock::now();
 
-    // Calculate total number of rows
     total_num_rows_ = 0;
-    for (const auto& data : field_datas) {
-        total_num_rows_ += data->get_num_rows();
+    if (is_nested_index_) {
+        for (const auto& data : field_datas) {
+            auto n = data->get_num_rows();
+            auto array_column = static_cast<const Array*>(data->Data());
+            for (int64_t i = 0; i < n; i++) {
+                if (data->is_valid(i)) {
+                    total_num_rows_ += array_column[i].length();
+                }
+            }
+        }
+    } else {
+        for (const auto& data : field_datas) {
+            total_num_rows_ += data->get_num_rows();
+        }
     }
 
     if (total_num_rows_ == 0) {
@@ -199,9 +215,15 @@ StringIndexSort::BuildWithFieldData(
 
     // Create MemoryImpl and build directly from field data
     impl_ = std::make_unique<StringIndexSortMemoryImpl>();
-    static_cast<StringIndexSortMemoryImpl*>(impl_.get())
-        ->BuildFromFieldData(
-            field_datas, total_num_rows_, valid_bitset_, idx_to_offsets_);
+    if (is_nested_index_) {
+        static_cast<StringIndexSortMemoryImpl*>(impl_.get())
+            ->BuildFromArrayDataNested(
+                field_datas, total_num_rows_, valid_bitset_, idx_to_offsets_);
+    } else {
+        static_cast<StringIndexSortMemoryImpl*>(impl_.get())
+            ->BuildFromFieldData(
+                field_datas, total_num_rows_, valid_bitset_, idx_to_offsets_);
+    }
 
     is_built_ = true;
     total_size_ = CalculateTotalSize();
@@ -366,6 +388,25 @@ const TargetBitmap
 StringIndexSort::In(size_t n, const std::string* values) {
     assert(impl_ != nullptr);
     return impl_->In(n, values, total_num_rows_);
+}
+
+bool
+StringIndexSort::TryProjectInToRowBitset(
+    size_t n,
+    const std::string* values,
+    const milvus::IArrayOffsets& array_offsets,
+    size_t row_count,
+    TargetBitmap& row_bitset) const {
+    if (!is_nested_index_) {
+        return false;
+    }
+    auto* memory_impl =
+        dynamic_cast<const StringIndexSortMemoryImpl*>(impl_.get());
+    if (memory_impl == nullptr) {
+        return false;
+    }
+    return memory_impl->TryProjectInToRowBitset(
+        n, values, array_offsets, row_count, row_bitset);
 }
 
 const TargetBitmap
@@ -645,6 +686,75 @@ StringIndexSortMemoryImpl::BuildFromFieldData(
     }
 
     BuildFromMap(std::move(map), total_num_rows, idx_to_offsets);
+}
+
+void
+StringIndexSortMemoryImpl::BuildFromArrayDataNested(
+    const std::vector<FieldDataPtr>& field_datas,
+    size_t total_num_rows,
+    TargetBitmap& valid_bitset,
+    std::vector<int32_t>& idx_to_offsets) {
+    std::map<std::string, PostingList> map;
+    size_t element_id = 0;
+    for (const auto& field_data : field_datas) {
+        auto n = field_data->get_num_rows();
+        auto array_column = static_cast<const Array*>(field_data->Data());
+        for (int64_t i = 0; i < n; i++) {
+            if (!field_data->is_valid(i)) {
+                continue;
+            }
+            for (int64_t j = 0; j < array_column[i].length(); j++) {
+                auto value = array_column[i].get_data<std::string>(j);
+                map[value].push_back(static_cast<uint32_t>(element_id));
+                valid_bitset.set(element_id);
+                element_id++;
+            }
+        }
+    }
+
+    BuildFromMap(std::move(map), total_num_rows, idx_to_offsets);
+}
+
+bool
+StringIndexSortMemoryImpl::TryProjectInToRowBitset(
+    size_t n,
+    const std::string* values,
+    const milvus::IArrayOffsets& array_offsets,
+    size_t row_count,
+    TargetBitmap& row_bitset) const {
+    if (row_bitset.size() != row_count) {
+        return false;
+    }
+
+    for (size_t i = 0; i < n; ++i) {
+        auto value_idx = FindValueIndex(values[i]);
+        if (value_idx == std::numeric_limits<size_t>::max()) {
+            continue;
+        }
+
+        int32_t row_id = 0;
+        int32_t elem_end = 0;
+        if (row_count > 0) {
+            elem_end = array_offsets.ElementIDRangeOfRow(row_id).second;
+        }
+
+        const auto& posting_list = posting_lists_[value_idx];
+        for (uint32_t element_id : posting_list) {
+            while (row_id < static_cast<int32_t>(row_count) &&
+                   static_cast<int32_t>(element_id) >= elem_end) {
+                row_id++;
+                if (row_id < static_cast<int32_t>(row_count)) {
+                    elem_end = array_offsets.ElementIDRangeOfRow(row_id).second;
+                }
+            }
+            if (row_id >= static_cast<int32_t>(row_count)) {
+                break;
+            }
+            row_bitset.set(row_id);
+        }
+    }
+
+    return true;
 }
 
 size_t
