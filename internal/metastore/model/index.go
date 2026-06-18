@@ -19,6 +19,8 @@ type Index struct {
 	IndexParams     []*commonpb.KeyValuePair
 	IsAutoIndex     bool
 	UserIndexParams []*commonpb.KeyValuePair
+	GenerationState indexpb.IndexGenerationState
+	Generation      int64
 }
 
 func UnmarshalIndexModel(indexInfo *indexpb.FieldIndex) *Index {
@@ -37,7 +39,16 @@ func UnmarshalIndexModel(indexInfo *indexpb.FieldIndex) *Index {
 		IndexParams:     indexInfo.IndexInfo.GetIndexParams(),
 		IsAutoIndex:     indexInfo.IndexInfo.GetIsAutoIndex(),
 		UserIndexParams: indexInfo.IndexInfo.GetUserIndexParams(),
+		GenerationState: normalizeIndexGenerationState(indexInfo.IndexInfo.GetGenerationState()),
+		Generation:      indexInfo.IndexInfo.GetGeneration(),
 	}
+}
+
+func normalizeIndexGenerationState(state indexpb.IndexGenerationState) indexpb.IndexGenerationState {
+	if state == indexpb.IndexGenerationState_IndexGenerationStateNone {
+		return indexpb.IndexGenerationState_Current
+	}
+	return state
 }
 
 func MarshalIndexModel(index *Index) *indexpb.FieldIndex {
@@ -55,6 +66,8 @@ func MarshalIndexModel(index *Index) *indexpb.FieldIndex {
 			IndexParams:     index.IndexParams,
 			IsAutoIndex:     index.IsAutoIndex,
 			UserIndexParams: index.UserIndexParams,
+			GenerationState: normalizeIndexGenerationState(index.GenerationState),
+			Generation:      index.Generation,
 		},
 		Deleted:    index.IsDeleted,
 		CreateTime: index.CreateTime,
@@ -124,6 +137,8 @@ func CloneIndex(index *Index) *Index {
 		IndexParams:     make([]*commonpb.KeyValuePair, len(index.IndexParams)),
 		IsAutoIndex:     index.IsAutoIndex,
 		UserIndexParams: make([]*commonpb.KeyValuePair, len(index.UserIndexParams)),
+		GenerationState: normalizeIndexGenerationState(index.GenerationState),
+		Generation:      index.Generation,
 	}
 	for i, param := range index.TypeParams {
 		clonedIndex.TypeParams[i] = proto.Clone(param).(*commonpb.KeyValuePair)

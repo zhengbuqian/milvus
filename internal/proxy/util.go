@@ -2935,6 +2935,9 @@ func GetRequestInfo(ctx context.Context, req proto.Message) (int64, map[int64][]
 	case *milvuspb.CreateIndexRequest:
 		dbID, collToPartIDs := getCollectionID(req.(reqCollName))
 		return dbID, collToPartIDs, internalpb.RateType_DDLIndex, 1, nil
+	case *milvuspb.ReplaceIndexRequest:
+		dbID, collToPartIDs := getCollectionID(req.(reqCollName))
+		return dbID, collToPartIDs, internalpb.RateType_DDLIndex, 1, nil
 	case *milvuspb.DropIndexRequest:
 		dbID, collToPartIDs := getCollectionID(req.(reqCollName))
 		return dbID, collToPartIDs, internalpb.RateType_DDLIndex, 1, nil
@@ -3000,7 +3003,7 @@ func GetFailedResponse(req any, err error) any {
 		*milvuspb.LoadCollectionRequest, *milvuspb.ReleaseCollectionRequest,
 		*milvuspb.CreatePartitionRequest, *milvuspb.DropPartitionRequest,
 		*milvuspb.LoadPartitionsRequest, *milvuspb.ReleasePartitionsRequest,
-		*milvuspb.CreateIndexRequest, *milvuspb.DropIndexRequest,
+		*milvuspb.CreateIndexRequest, *milvuspb.ReplaceIndexRequest, *milvuspb.DropIndexRequest,
 		*milvuspb.CreateDatabaseRequest, *milvuspb.DropDatabaseRequest,
 		*milvuspb.AlterDatabaseRequest:
 		return merr.Status(err)

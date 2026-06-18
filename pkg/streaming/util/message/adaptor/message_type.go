@@ -23,6 +23,7 @@ var messageTypeToCommonpbMsgType = map[message.MessageType]commonpb.MsgType{
 	message.MessageTypeTruncateCollection: commonpb.MsgType_TruncateCollection,
 	message.MessageTypeAlterWAL:           commonpb.MsgType_AlterWAL,
 	message.MessageTypeCreateIndex:        commonpb.MsgType_CreateIndex,
+	message.MessageTypeReplaceIndex:       commonpb.MsgType_ReplaceIndex,
 }
 
 // MustGetCommonpbMsgTypeFromMessageType returns the commonpb.MsgType from message.MessageType.

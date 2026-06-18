@@ -112,6 +112,30 @@ func (c *Client) CreateIndex(ctx context.Context, option CreateIndexOption, call
 	return task, err
 }
 
+func (c *Client) ReplaceIndex(ctx context.Context, option ReplaceIndexOption, callOptions ...grpc.CallOption) (*CreateIndexTask, error) {
+	req := option.Request()
+	var task *CreateIndexTask
+
+	err := c.callService(func(milvusService milvuspb.MilvusServiceClient) error {
+		resp, err := milvusService.ReplaceIndex(ctx, req, callOptions...)
+		if err = merr.CheckRPCCall(resp, err); err != nil {
+			return err
+		}
+
+		task = &CreateIndexTask{
+			client:         c,
+			collectionName: req.GetCollectionName(),
+			fieldName:      req.GetFieldName(),
+			indexName:      req.GetNewIndexName(),
+			interval:       time.Millisecond * 100,
+		}
+
+		return nil
+	})
+
+	return task, err
+}
+
 func (c *Client) ListIndexes(ctx context.Context, opt ListIndexOption, callOptions ...grpc.CallOption) ([]string, error) {
 	req := opt.Request()
 

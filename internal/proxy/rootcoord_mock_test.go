@@ -1405,6 +1405,10 @@ func (coord *MixCoordMock) CreateIndex(ctx context.Context, req *indexpb.CreateI
 	return merr.Success(), nil
 }
 
+func (coord *MixCoordMock) ReplaceIndex(ctx context.Context, req *indexpb.ReplaceIndexRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
+	return merr.Success(), nil
+}
+
 func (coord *MixCoordMock) AlterIndex(ctx context.Context, req *indexpb.AlterIndexRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
 	return merr.Success(), nil
 }

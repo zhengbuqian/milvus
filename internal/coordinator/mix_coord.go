@@ -1163,6 +1163,10 @@ func (s *mixCoordImpl) CreateIndex(ctx context.Context, req *indexpb.CreateIndex
 	return s.datacoordServer.CreateIndex(ctx, req)
 }
 
+func (s *mixCoordImpl) ReplaceIndex(ctx context.Context, req *indexpb.ReplaceIndexRequest) (*commonpb.Status, error) {
+	return s.datacoordServer.ReplaceIndex(ctx, req)
+}
+
 func (s *mixCoordImpl) AlterIndex(ctx context.Context, req *indexpb.AlterIndexRequest) (*commonpb.Status, error) {
 	return s.datacoordServer.AlterIndex(ctx, req)
 }

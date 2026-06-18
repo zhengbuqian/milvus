@@ -436,6 +436,49 @@ func checkParams(fieldIndex *model.Index, req *indexpb.CreateIndexRequest) bool 
 	return !notEq
 }
 
+func generationState(index *model.Index) indexpb.IndexGenerationState {
+	if index == nil || index.GenerationState == indexpb.IndexGenerationState_IndexGenerationStateNone {
+		return indexpb.IndexGenerationState_Current
+	}
+	return index.GenerationState
+}
+
+func isCurrentGeneration(index *model.Index) bool {
+	return generationState(index) == indexpb.IndexGenerationState_Current
+}
+
+func indexGeneration(index *model.Index) int64 {
+	if index == nil || index.Generation <= 0 {
+		return 1
+	}
+	return index.Generation
+}
+
+func isSameLogicalIndex(index *model.Index, fieldID UniqueID, indexParams []*commonpb.KeyValuePair, isJSON bool) bool {
+	if index.FieldID != fieldID {
+		return false
+	}
+	if !isJSON {
+		return true
+	}
+	indexPath, _ := getIndexParam(index.IndexParams, common.JSONPathKey)
+	reqPath, _ := getIndexParam(indexParams, common.JSONPathKey)
+	return indexPath == reqPath
+}
+
+func sameIndexPath(index *model.Index, req *indexpb.ReplaceIndexRequest, isJSON bool) bool {
+	return isSameLogicalIndex(index, req.GetFieldID(), req.GetIndexParams(), isJSON)
+}
+
+func checkReplaceParams(oldIndex *model.Index, req *indexpb.ReplaceIndexRequest, isJSON bool) error {
+	if isJSON && !sameIndexPath(oldIndex, req, true) {
+		oldPath, _ := getIndexParam(oldIndex.IndexParams, common.JSONPathKey)
+		newPath, _ := getIndexParam(req.GetIndexParams(), common.JSONPathKey)
+		return merr.WrapErrParameterInvalidMsg("replace index requires the same JSON path, old path: %s, new path: %s", oldPath, newPath)
+	}
+	return nil
+}
+
 // CanCreateIndex currently is used in Unittest
 func (m *indexMeta) CanCreateIndex(req *indexpb.CreateIndexRequest, isJSON bool) (UniqueID, error) {
 	m.fieldIndexLock.RLock()
@@ -454,7 +497,7 @@ func (m *indexMeta) canCreateIndex(req *indexpb.CreateIndexRequest, isJSON bool)
 		return 0, nil
 	}
 	for _, index := range indexes {
-		if index.IsDeleted {
+		if index.IsDeleted || !isCurrentGeneration(index) {
 			continue
 		}
 		if req.IndexName == index.IndexName {
@@ -500,7 +543,7 @@ func (m *indexMeta) HasSameReq(req *indexpb.CreateIndexRequest) (bool, UniqueID)
 	defer m.fieldIndexLock.RUnlock()
 
 	for _, fieldIndex := range m.indexes[req.CollectionID] {
-		if fieldIndex.IsDeleted {
+		if fieldIndex.IsDeleted || !isCurrentGeneration(fieldIndex) {
 			continue
 		}
 		if fieldIndex.FieldID != req.FieldID || fieldIndex.IndexName != req.IndexName {
@@ -516,6 +559,50 @@ func (m *indexMeta) HasSameReq(req *indexpb.CreateIndexRequest) (bool, UniqueID)
 	}
 
 	return false, 0
+}
+
+func (m *indexMeta) CanReplaceIndex(req *indexpb.ReplaceIndexRequest, isJSON bool) (*model.Index, int64, error) {
+	m.fieldIndexLock.RLock()
+	defer m.fieldIndexLock.RUnlock()
+
+	indexes, ok := m.indexes[req.CollectionID]
+	if !ok {
+		return nil, 0, merr.WrapErrIndexNotFound(req.GetNewIndexName())
+	}
+
+	var currentCandidates []*model.Index
+	var maxGeneration int64
+	for _, index := range indexes {
+		if index.IsDeleted || !sameIndexPath(index, req, isJSON) {
+			continue
+		}
+		maxGeneration = max(maxGeneration, indexGeneration(index))
+		if isCurrentGeneration(index) {
+			currentCandidates = append(currentCandidates, index)
+		}
+	}
+	if len(currentCandidates) == 0 {
+		return nil, 0, merr.WrapErrIndexNotFound(req.GetNewIndexName())
+	}
+	if len(currentCandidates) > 1 {
+		return nil, 0, merr.WrapErrIndexDuplicate(req.GetNewIndexName())
+	}
+
+	currentIndex := currentCandidates[0]
+	if err := checkReplaceParams(currentIndex, req, isJSON); err != nil {
+		return nil, 0, err
+	}
+
+	for _, index := range indexes {
+		if index.IsDeleted || index.IndexID == currentIndex.IndexID || !isCurrentGeneration(index) {
+			continue
+		}
+		if req.GetNewIndexName() != "" && index.IndexName == req.GetNewIndexName() {
+			return nil, 0, merr.WrapErrParameterInvalidMsg("index name %s already exists on another index", req.GetNewIndexName())
+		}
+	}
+
+	return model.CloneIndex(currentIndex), maxGeneration + 1, nil
 }
 
 func (m *indexMeta) CreateIndex(ctx context.Context, index *model.Index) error {
@@ -535,6 +622,53 @@ func (m *indexMeta) CreateIndex(ctx context.Context, index *model.Index) error {
 	m.updateCollectionIndex(index)
 	log.Ctx(ctx).Info("meta update: CreateIndex success", zap.Int64("collectionID", index.CollectionID),
 		zap.Int64("fieldID", index.FieldID), zap.Int64("indexID", index.IndexID), zap.String("indexName", index.IndexName))
+	return nil
+}
+
+func (m *indexMeta) ReplaceIndex(ctx context.Context, oldIndex *model.Index, newIndex *model.Index) error {
+	m.fieldIndexLock.Lock()
+	defer m.fieldIndexLock.Unlock()
+
+	if oldIndex == nil || newIndex == nil {
+		return merr.WrapErrParameterInvalidMsg("old index and new index must not be nil")
+	}
+	oldIndex.GenerationState = indexpb.IndexGenerationState_Retired
+	newIndex.GenerationState = indexpb.IndexGenerationState_Current
+	if oldIndex.Generation <= 0 {
+		oldIndex.Generation = 1
+	}
+	if newIndex.Generation <= oldIndex.Generation {
+		newIndex.Generation = oldIndex.Generation + 1
+	}
+
+	log.Ctx(ctx).Info("meta update: ReplaceIndex",
+		zap.Int64("collectionID", newIndex.CollectionID),
+		zap.Int64("fieldID", newIndex.FieldID),
+		zap.Int64("oldIndexID", oldIndex.IndexID),
+		zap.Int64("newIndexID", newIndex.IndexID),
+		zap.Int64("oldGeneration", oldIndex.Generation),
+		zap.Int64("newGeneration", newIndex.Generation),
+		zap.String("oldIndexName", oldIndex.IndexName),
+		zap.String("newIndexName", newIndex.IndexName))
+
+	if err := m.catalog.AlterIndexes(ctx, []*model.Index{oldIndex, newIndex}); err != nil {
+		log.Ctx(ctx).Error("meta update: ReplaceIndex save meta fail",
+			zap.Int64("collectionID", newIndex.CollectionID),
+			zap.Int64("fieldID", newIndex.FieldID),
+			zap.Int64("oldIndexID", oldIndex.IndexID),
+			zap.Int64("newIndexID", newIndex.IndexID),
+			zap.Error(err))
+		return err
+	}
+
+	m.updateCollectionIndex(oldIndex)
+	m.updateCollectionIndex(newIndex)
+	log.Ctx(ctx).Info("meta update: ReplaceIndex success",
+		zap.Int64("collectionID", newIndex.CollectionID),
+		zap.Int64("fieldID", newIndex.FieldID),
+		zap.Int64("oldIndexID", oldIndex.IndexID),
+		zap.Int64("newIndexID", newIndex.IndexID),
+		zap.Int64("newGeneration", newIndex.Generation))
 	return nil
 }
 
@@ -617,7 +751,7 @@ func (m *indexMeta) GetIndexIDByName(collID int64, indexName string) map[int64]u
 	}
 
 	for _, index := range fieldIndexes {
-		if !index.IsDeleted && (indexName == "" || index.IndexName == indexName) {
+		if !index.IsDeleted && isCurrentGeneration(index) && (indexName == "" || index.IndexName == indexName) {
 			indexID2CreateTs[index.IndexID] = index.CreateTime
 		}
 	}
@@ -685,7 +819,7 @@ func (m *indexMeta) GetIndexedSegments(collectionID int64, segmentIDs, fieldIDs 
 	matchedFields := typeutil.NewUniqueSet()
 
 	targetIndices := lo.Filter(lo.Values(fieldIndexes), func(index *model.Index, _ int) bool {
-		return fieldIDSet.Contain(index.FieldID) && !index.IsDeleted
+		return fieldIDSet.Contain(index.FieldID) && !index.IsDeleted && isCurrentGeneration(index)
 	})
 	for _, index := range targetIndices {
 		matchedFields.Insert(index.FieldID)
@@ -726,12 +860,61 @@ func (m *indexMeta) GetIndexesForCollection(collID UniqueID, indexName string) [
 
 	indexInfos := make([]*model.Index, 0)
 	for _, index := range m.indexes[collID] {
-		if index.IsDeleted {
+		if index.IsDeleted || !isCurrentGeneration(index) {
 			continue
 		}
 		if indexName == "" || indexName == index.IndexName {
 			indexInfos = append(indexInfos, model.CloneIndex(index))
 		}
+	}
+	return indexInfos
+}
+
+func (m *indexMeta) GetIndexesForCollectionIncludeRetired(collID UniqueID) []*model.Index {
+	m.fieldIndexLock.RLock()
+	defer m.fieldIndexLock.RUnlock()
+
+	indexInfos := make([]*model.Index, 0)
+	for _, index := range m.indexes[collID] {
+		if index.IsDeleted {
+			continue
+		}
+		indexInfos = append(indexInfos, model.CloneIndex(index))
+	}
+	return indexInfos
+}
+
+func (m *indexMeta) GetIndexesForLogicalKeys(collID UniqueID, currentIndexes []*model.Index) []*model.Index {
+	m.fieldIndexLock.RLock()
+	defer m.fieldIndexLock.RUnlock()
+
+	keys := make(map[indexReplacementGroupKey]struct{}, len(currentIndexes))
+	for _, index := range currentIndexes {
+		keys[replacementGroupKey(index)] = struct{}{}
+	}
+
+	indexInfos := make([]*model.Index, 0)
+	for _, index := range m.indexes[collID] {
+		if index.IsDeleted {
+			continue
+		}
+		if _, ok := keys[replacementGroupKey(index)]; ok {
+			indexInfos = append(indexInfos, model.CloneIndex(index))
+		}
+	}
+	return indexInfos
+}
+
+func (m *indexMeta) GetBuildIndexesForCollection(collID UniqueID) []*model.Index {
+	m.fieldIndexLock.RLock()
+	defer m.fieldIndexLock.RUnlock()
+
+	indexInfos := make([]*model.Index, 0)
+	for _, index := range m.indexes[collID] {
+		if index.IsDeleted || !isCurrentGeneration(index) {
+			continue
+		}
+		indexInfos = append(indexInfos, model.CloneIndex(index))
 	}
 	return indexInfos
 }
@@ -742,7 +925,7 @@ func (m *indexMeta) GetFieldIndexes(collID, fieldID UniqueID, indexName string) 
 
 	indexInfos := make([]*model.Index, 0)
 	for _, index := range m.indexes[collID] {
-		if index.IsDeleted || index.FieldID != fieldID {
+		if index.IsDeleted || !isCurrentGeneration(index) || index.FieldID != fieldID {
 			continue
 		}
 		if indexName == "" || indexName == index.IndexName {
@@ -750,6 +933,18 @@ func (m *indexMeta) GetFieldIndexes(collID, fieldID UniqueID, indexName string) 
 		}
 	}
 	return indexInfos
+}
+
+func (m *indexMeta) GetIndexByID(collID, indexID UniqueID) *model.Index {
+	m.fieldIndexLock.RLock()
+	defer m.fieldIndexLock.RUnlock()
+
+	if fieldIndexes, ok := m.indexes[collID]; ok {
+		if index, ok := fieldIndexes[indexID]; ok && !index.IsDeleted {
+			return model.CloneIndex(index)
+		}
+	}
+	return nil
 }
 
 // MarkIndexAsDeleted marks indexes as deleted. File cleanup is split by path layout:
@@ -843,7 +1038,7 @@ func (m *indexMeta) IsUnIndexedSegment(collectionID UniqueID, segID UniqueID) bo
 	}
 
 	for _, index := range fieldIndexes {
-		if !index.IsDeleted {
+		if !index.IsDeleted && isCurrentGeneration(index) {
 			if _, ok := segIndexInfos.Get(index.IndexID); !ok {
 				// the segment should be unindexed status if the segment index is not found within field indexes
 				return true
@@ -1320,7 +1515,7 @@ func (m *indexMeta) getSegmentsIndexStates(collectionID UniqueID, segmentIDs []U
 }
 
 func (m *indexMeta) GetUnindexedSegments(collectionID int64, segmentIDs []int64) []int64 {
-	indexes := m.GetIndexesForCollection(collectionID, "")
+	indexes := m.GetBuildIndexesForCollection(collectionID)
 	if len(indexes) == 0 {
 		// doesn't have index
 		return nil

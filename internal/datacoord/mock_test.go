@@ -938,6 +938,10 @@ func (s *mockMixCoord) AlterIndex(ctx context.Context, req *indexpb.AlterIndexRe
 	panic("implement me")
 }
 
+func (s *mockMixCoord) ReplaceIndex(ctx context.Context, req *indexpb.ReplaceIndexRequest) (*commonpb.Status, error) {
+	panic("implement me")
+}
+
 func (s *mockMixCoord) GetIndexState(ctx context.Context, req *indexpb.GetIndexStateRequest) (*indexpb.GetIndexStateResponse, error) {
 	panic("implement me")
 }

@@ -818,6 +818,80 @@ func (_c *MockDataCoordClient_CreateIndex_Call) RunAndReturn(run func(context.Co
 	return _c
 }
 
+// ReplaceIndex provides a mock function with given fields: ctx, in, opts
+func (_m *MockDataCoordClient) ReplaceIndex(ctx context.Context, in *indexpb.ReplaceIndexRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
+	_va := make([]interface{}, len(opts))
+	for _i := range opts {
+		_va[_i] = opts[_i]
+	}
+	var _ca []interface{}
+	_ca = append(_ca, ctx, in)
+	_ca = append(_ca, _va...)
+	ret := _m.Called(_ca...)
+
+	if len(ret) == 0 {
+		panic("no return value specified for ReplaceIndex")
+	}
+
+	var r0 *commonpb.Status
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, *indexpb.ReplaceIndexRequest, ...grpc.CallOption) (*commonpb.Status, error)); ok {
+		return rf(ctx, in, opts...)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, *indexpb.ReplaceIndexRequest, ...grpc.CallOption) *commonpb.Status); ok {
+		r0 = rf(ctx, in, opts...)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*commonpb.Status)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, *indexpb.ReplaceIndexRequest, ...grpc.CallOption) error); ok {
+		r1 = rf(ctx, in, opts...)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// MockDataCoordClient_ReplaceIndex_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'ReplaceIndex'
+type MockDataCoordClient_ReplaceIndex_Call struct {
+	*mock.Call
+}
+
+// ReplaceIndex is a helper method to define mock.On call
+//   - ctx context.Context
+//   - in *indexpb.ReplaceIndexRequest
+//   - opts ...grpc.CallOption
+func (_e *MockDataCoordClient_Expecter) ReplaceIndex(ctx interface{}, in interface{}, opts ...interface{}) *MockDataCoordClient_ReplaceIndex_Call {
+	return &MockDataCoordClient_ReplaceIndex_Call{Call: _e.mock.On("ReplaceIndex",
+		append([]interface{}{ctx, in}, opts...)...)}
+}
+
+func (_c *MockDataCoordClient_ReplaceIndex_Call) Run(run func(ctx context.Context, in *indexpb.ReplaceIndexRequest, opts ...grpc.CallOption)) *MockDataCoordClient_ReplaceIndex_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		variadicArgs := make([]grpc.CallOption, len(args)-2)
+		for i, a := range args[2:] {
+			if a != nil {
+				variadicArgs[i] = a.(grpc.CallOption)
+			}
+		}
+		run(args[0].(context.Context), args[1].(*indexpb.ReplaceIndexRequest), variadicArgs...)
+	})
+	return _c
+}
+
+func (_c *MockDataCoordClient_ReplaceIndex_Call) Return(_a0 *commonpb.Status, _a1 error) *MockDataCoordClient_ReplaceIndex_Call {
+	_c.Call.Return(_a0, _a1)
+	return _c
+}
+
+func (_c *MockDataCoordClient_ReplaceIndex_Call) RunAndReturn(run func(context.Context, *indexpb.ReplaceIndexRequest, ...grpc.CallOption) (*commonpb.Status, error)) *MockDataCoordClient_ReplaceIndex_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // CreateSnapshot provides a mock function with given fields: ctx, in, opts
 func (_m *MockDataCoordClient) CreateSnapshot(ctx context.Context, in *datapb.CreateSnapshotRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
 	_va := make([]interface{}, len(opts))

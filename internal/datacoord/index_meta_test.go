@@ -41,6 +41,7 @@ import (
 	"github.com/milvus-io/milvus/pkg/v3/proto/indexpb"
 	"github.com/milvus-io/milvus/pkg/v3/proto/workerpb"
 	"github.com/milvus-io/milvus/pkg/v3/util/lock"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
 	"github.com/milvus-io/milvus/pkg/v3/util/metricsinfo"
 	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
@@ -404,6 +405,94 @@ func TestMeta_CanCreateIndex(t *testing.T) {
 	})
 }
 
+func TestMeta_CanCreateIndexSkipsRetiredGenerations(t *testing.T) {
+	var (
+		collID      = UniqueID(1)
+		fieldID     = UniqueID(100)
+		oldIndexID  = UniqueID(10)
+		newIndexID  = UniqueID(11)
+		oldName     = "old_idx"
+		currentName = "current_idx"
+		typeParams  = []*commonpb.KeyValuePair{
+			{Key: common.DimKey, Value: "128"},
+		}
+		indexParams = []*commonpb.KeyValuePair{
+			{Key: common.IndexTypeKey, Value: "FLAT"},
+			{Key: common.MetricTypeKey, Value: "L2"},
+		}
+	)
+
+	m := newSegmentIndexMeta(catalogmocks.NewDataCoordCatalog(t))
+	m.indexes[collID] = map[UniqueID]*model.Index{
+		oldIndexID: {
+			CollectionID:    collID,
+			FieldID:         fieldID,
+			IndexID:         oldIndexID,
+			IndexName:       oldName,
+			IsDeleted:       false,
+			TypeParams:      typeParams,
+			IndexParams:     indexParams,
+			UserIndexParams: indexParams,
+			GenerationState: indexpb.IndexGenerationState_Retired,
+			Generation:      1,
+		},
+		newIndexID: {
+			CollectionID:    collID,
+			FieldID:         fieldID,
+			IndexID:         newIndexID,
+			IndexName:       currentName,
+			IsDeleted:       false,
+			TypeParams:      typeParams,
+			IndexParams:     indexParams,
+			UserIndexParams: indexParams,
+			GenerationState: indexpb.IndexGenerationState_Current,
+			Generation:      2,
+		},
+	}
+
+	t.Run("retired name can be reused by another field", func(t *testing.T) {
+		req := &indexpb.CreateIndexRequest{
+			CollectionID:    collID,
+			FieldID:         fieldID + 1,
+			IndexName:       oldName,
+			TypeParams:      typeParams,
+			IndexParams:     indexParams,
+			UserIndexParams: indexParams,
+		}
+		indexID, err := m.CanCreateIndex(req, false)
+		assert.NoError(t, err)
+		assert.Zero(t, indexID)
+	})
+
+	t.Run("current generation still blocks same field", func(t *testing.T) {
+		req := &indexpb.CreateIndexRequest{
+			CollectionID:    collID,
+			FieldID:         fieldID,
+			IndexName:       oldName,
+			TypeParams:      typeParams,
+			IndexParams:     indexParams,
+			UserIndexParams: indexParams,
+		}
+		indexID, err := m.CanCreateIndex(req, false)
+		assert.Error(t, err)
+		assert.Zero(t, indexID)
+	})
+
+	t.Run("current generation remains idempotent", func(t *testing.T) {
+		req := &indexpb.CreateIndexRequest{
+			CollectionID:    collID,
+			FieldID:         fieldID,
+			IndexName:       currentName,
+			TypeParams:      typeParams,
+			IndexParams:     indexParams,
+			UserIndexParams: indexParams,
+		}
+		indexID, err := m.CanCreateIndex(req, false)
+		assert.ErrorIs(t, err, errIndexOperationIgnored)
+		assert.Zero(t, indexID)
+	})
+}
+
 func TestMeta_HasSameReq(t *testing.T) {
 	var (
 		collID = UniqueID(1)
@@ -478,6 +567,63 @@ func TestMeta_HasSameReq(t *testing.T) {
 		has, _ := m.HasSameReq(req)
 		assert.False(t, has)
 	})
+}
+
+func TestMeta_HasSameReqSkipsRetiredGenerations(t *testing.T) {
+	var (
+		collID      = UniqueID(1)
+		fieldID     = UniqueID(100)
+		oldIndexID  = UniqueID(10)
+		newIndexID  = UniqueID(11)
+		indexName   = "_default_idx"
+		typeParams  = []*commonpb.KeyValuePair{{Key: common.DimKey, Value: "128"}}
+		indexParams = []*commonpb.KeyValuePair{{Key: common.IndexTypeKey, Value: "FLAT"}}
+	)
+
+	m := newSegmentIndexMeta(catalogmocks.NewDataCoordCatalog(t))
+	m.indexes[collID] = map[UniqueID]*model.Index{
+		oldIndexID: {
+			CollectionID:    collID,
+			FieldID:         fieldID,
+			IndexID:         oldIndexID,
+			IndexName:       indexName,
+			IsDeleted:       false,
+			TypeParams:      typeParams,
+			IndexParams:     indexParams,
+			UserIndexParams: indexParams,
+			GenerationState: indexpb.IndexGenerationState_Retired,
+			Generation:      1,
+		},
+	}
+	req := &indexpb.CreateIndexRequest{
+		CollectionID:    collID,
+		FieldID:         fieldID,
+		IndexName:       indexName,
+		TypeParams:      typeParams,
+		IndexParams:     indexParams,
+		UserIndexParams: indexParams,
+	}
+
+	has, indexID := m.HasSameReq(req)
+	assert.False(t, has)
+	assert.Zero(t, indexID)
+
+	m.indexes[collID][newIndexID] = &model.Index{
+		CollectionID:    collID,
+		FieldID:         fieldID,
+		IndexID:         newIndexID,
+		IndexName:       indexName,
+		IsDeleted:       false,
+		TypeParams:      typeParams,
+		IndexParams:     indexParams,
+		UserIndexParams: indexParams,
+		GenerationState: indexpb.IndexGenerationState_Current,
+		Generation:      2,
+	}
+
+	has, indexID = m.HasSameReq(req)
+	assert.True(t, has)
+	assert.Equal(t, newIndexID, indexID)
 }
 
 func newSegmentIndexMeta(catalog metastore.DataCoordCatalog) *indexMeta {
@@ -652,6 +798,52 @@ func TestMeta_GetIndexIDByName(t *testing.T) {
 
 		indexID2CreateTS := m.GetIndexIDByName(collID, indexName)
 		assert.Contains(t, indexID2CreateTS, indexID)
+	})
+
+	t.Run("skip retired generations", func(t *testing.T) {
+		currentID := UniqueID(11)
+		retiredName := "retired_idx"
+		currentName := "current_idx"
+		m.indexes[collID] = map[UniqueID]*model.Index{
+			indexID: {
+				CollectionID:    collID,
+				FieldID:         fieldID,
+				IndexID:         indexID,
+				IndexName:       retiredName,
+				IsDeleted:       false,
+				CreateTime:      12,
+				TypeParams:      typeParams,
+				IndexParams:     indexParams,
+				IsAutoIndex:     false,
+				UserIndexParams: indexParams,
+				GenerationState: indexpb.IndexGenerationState_Retired,
+				Generation:      1,
+			},
+			currentID: {
+				CollectionID:    collID,
+				FieldID:         fieldID,
+				IndexID:         currentID,
+				IndexName:       currentName,
+				IsDeleted:       false,
+				CreateTime:      13,
+				TypeParams:      typeParams,
+				IndexParams:     indexParams,
+				IsAutoIndex:     false,
+				UserIndexParams: indexParams,
+				GenerationState: indexpb.IndexGenerationState_Current,
+				Generation:      2,
+			},
+		}
+
+		retiredIDs := m.GetIndexIDByName(collID, retiredName)
+		assert.Empty(t, retiredIDs)
+
+		currentIDs := m.GetIndexIDByName(collID, currentName)
+		assert.Contains(t, currentIDs, currentID)
+
+		allIDs := m.GetIndexIDByName(collID, "")
+		assert.NotContains(t, allIDs, indexID)
+		assert.Contains(t, allIDs, currentID)
 	})
 }
 
@@ -1948,6 +2140,183 @@ func TestMeta_GetSegmentIndexStatus(t *testing.T) {
 		assert.False(t, isIndexed)
 		assert.Empty(t, segmentIndexes)
 	})
+}
+
+func TestIndexMeta_CanReplaceIndex(t *testing.T) {
+	const (
+		collID  = UniqueID(1)
+		fieldID = UniqueID(10)
+	)
+
+	baseIndex := func(indexID UniqueID, fieldID UniqueID, indexName string) *model.Index {
+		return &model.Index{
+			CollectionID: collID,
+			FieldID:      fieldID,
+			IndexID:      indexID,
+			IndexName:    indexName,
+			IndexParams: []*commonpb.KeyValuePair{
+				{Key: common.IndexTypeKey, Value: "INVERTED"},
+			},
+		}
+	}
+	baseReq := func() *indexpb.ReplaceIndexRequest {
+		return &indexpb.ReplaceIndexRequest{
+			CollectionID: collID,
+			FieldID:      fieldID,
+			NewIndexName: "new_idx",
+			IndexParams: []*commonpb.KeyValuePair{
+				{Key: common.IndexTypeKey, Value: "BITMAP"},
+			},
+		}
+	}
+
+	t.Run("duplicate current generation", func(t *testing.T) {
+		m := &indexMeta{
+			indexes: map[UniqueID]map[UniqueID]*model.Index{
+				collID: {
+					100: baseIndex(100, fieldID, "old_a"),
+					101: baseIndex(101, fieldID, "old_b"),
+				},
+			},
+		}
+
+		_, _, err := m.CanReplaceIndex(baseReq(), false)
+		assert.ErrorIs(t, err, merr.ErrIndexDuplicate)
+	})
+
+	t.Run("new index name collides with another index", func(t *testing.T) {
+		req := baseReq()
+		req.NewIndexName = "other_idx"
+		m := &indexMeta{
+			indexes: map[UniqueID]map[UniqueID]*model.Index{
+				collID: {
+					100: baseIndex(100, fieldID, "old_a"),
+					101: baseIndex(101, fieldID+1, "other_idx"),
+				},
+			},
+		}
+
+		_, _, err := m.CanReplaceIndex(req, false)
+		assert.ErrorIs(t, err, merr.ErrParameterInvalid)
+	})
+
+	t.Run("second replace advances current generation", func(t *testing.T) {
+		retired := baseIndex(100, fieldID, "gen1")
+		retired.GenerationState = indexpb.IndexGenerationState_Retired
+		retired.Generation = 1
+		current := baseIndex(101, fieldID, "gen2")
+		current.GenerationState = indexpb.IndexGenerationState_Current
+		current.Generation = 2
+		m := &indexMeta{
+			indexes: map[UniqueID]map[UniqueID]*model.Index{
+				collID: {
+					100: retired,
+					101: current,
+				},
+			},
+		}
+
+		oldIndex, generation, err := m.CanReplaceIndex(baseReq(), false)
+		require.NoError(t, err)
+		assert.Equal(t, UniqueID(101), oldIndex.IndexID)
+		assert.Equal(t, int64(3), generation)
+	})
+}
+
+func TestIndexMeta_ReplaceIndexGenerationTransition(t *testing.T) {
+	const (
+		collID     = UniqueID(1)
+		fieldID    = UniqueID(10)
+		oldIndexID = UniqueID(100)
+		newIndexID = UniqueID(101)
+	)
+
+	catalog := catalogmocks.NewDataCoordCatalog(t)
+	catalog.EXPECT().AlterIndexes(mock.Anything, mock.Anything).RunAndReturn(func(ctx context.Context, indexes []*model.Index) error {
+		require.Len(t, indexes, 2)
+		assert.Equal(t, oldIndexID, indexes[0].IndexID)
+		assert.Equal(t, indexpb.IndexGenerationState_Retired, indexes[0].GenerationState)
+		assert.Equal(t, int64(1), indexes[0].Generation)
+		assert.False(t, indexes[0].IsDeleted)
+		assert.Equal(t, newIndexID, indexes[1].IndexID)
+		assert.Equal(t, indexpb.IndexGenerationState_Current, indexes[1].GenerationState)
+		assert.Equal(t, int64(2), indexes[1].Generation)
+		return nil
+	})
+	m := &indexMeta{
+		catalog: catalog,
+		indexes: map[UniqueID]map[UniqueID]*model.Index{
+			collID: {
+				oldIndexID: {
+					CollectionID: collID,
+					FieldID:      fieldID,
+					IndexID:      oldIndexID,
+					IndexName:    "old_idx",
+					Generation:   1,
+				},
+			},
+		},
+	}
+
+	oldIndex := model.CloneIndex(m.indexes[collID][oldIndexID])
+	newIndex := &model.Index{
+		CollectionID: collID,
+		FieldID:      fieldID,
+		IndexID:      newIndexID,
+		IndexName:    "new_idx",
+		Generation:   2,
+	}
+	err := m.ReplaceIndex(context.Background(), oldIndex, newIndex)
+	require.NoError(t, err)
+
+	assert.Equal(t, indexpb.IndexGenerationState_Retired, m.indexes[collID][oldIndexID].GenerationState)
+	assert.False(t, m.indexes[collID][oldIndexID].IsDeleted)
+	assert.Equal(t, indexpb.IndexGenerationState_Current, m.indexes[collID][newIndexID].GenerationState)
+	assert.Equal(t, int64(2), m.indexes[collID][newIndexID].Generation)
+}
+
+func TestIndexMeta_GenerationPublicAndInternalListing(t *testing.T) {
+	const (
+		collID     = UniqueID(1)
+		fieldID    = UniqueID(10)
+		oldIndexID = UniqueID(100)
+		newIndexID = UniqueID(101)
+	)
+
+	m := &indexMeta{
+		indexes: map[UniqueID]map[UniqueID]*model.Index{
+			collID: {
+				oldIndexID: {
+					CollectionID:    collID,
+					FieldID:         fieldID,
+					IndexID:         oldIndexID,
+					IndexName:       "old_idx",
+					GenerationState: indexpb.IndexGenerationState_Retired,
+					Generation:      1,
+				},
+				newIndexID: {
+					CollectionID:    collID,
+					FieldID:         fieldID,
+					IndexID:         newIndexID,
+					IndexName:       "new_idx",
+					GenerationState: indexpb.IndexGenerationState_Current,
+					Generation:      2,
+				},
+			},
+		},
+	}
+
+	publicIndexes := m.GetIndexesForCollection(collID, "")
+	require.Len(t, publicIndexes, 1)
+	assert.Equal(t, newIndexID, publicIndexes[0].IndexID)
+
+	internalIndexes := m.GetIndexesForCollectionIncludeRetired(collID)
+	require.Len(t, internalIndexes, 2)
+	indexIDs := make([]UniqueID, 0, len(internalIndexes))
+	for _, index := range internalIndexes {
+		indexIDs = append(indexIDs, index.IndexID)
+	}
+	assert.ElementsMatch(t, []UniqueID{oldIndexID, newIndexID}, indexIDs)
 }
 
 func TestCheckParams(t *testing.T) {

@@ -28,6 +28,10 @@ type CreateIndexOption interface {
 	Request() *milvuspb.CreateIndexRequest
 }
 
+type ReplaceIndexOption interface {
+	Request() *milvuspb.ReplaceIndexRequest
+}
+
 type createIndexOption struct {
 	collectionName string
 	fieldName      string
@@ -63,6 +67,47 @@ func (opt *createIndexOption) WithIndexName(indexName string) *createIndexOption
 
 func NewCreateIndexOption(collectionName string, fieldName string, index index.Index) *createIndexOption {
 	return &createIndexOption{
+		collectionName: collectionName,
+		fieldName:      fieldName,
+		indexDef:       index,
+		extraParams:    make(map[string]any),
+	}
+}
+
+type replaceIndexOption struct {
+	collectionName string
+	fieldName      string
+	newIndexName   string
+	indexDef       index.Index
+
+	extraParams map[string]any
+}
+
+func (opt *replaceIndexOption) Request() *milvuspb.ReplaceIndexRequest {
+	params := opt.indexDef.Params()
+	for key, value := range opt.extraParams {
+		params[key] = fmt.Sprintf("%v", value)
+	}
+	return &milvuspb.ReplaceIndexRequest{
+		CollectionName: opt.collectionName,
+		FieldName:      opt.fieldName,
+		NewIndexName:   opt.newIndexName,
+		ExtraParams:    entity.MapKvPairs(params),
+	}
+}
+
+func (opt *replaceIndexOption) WithNewIndexName(indexName string) *replaceIndexOption {
+	opt.newIndexName = indexName
+	return opt
+}
+
+func (opt *replaceIndexOption) WithExtraParam(key string, value any) *replaceIndexOption {
+	opt.extraParams[key] = value
+	return opt
+}
+
+func NewReplaceIndexOption(collectionName string, fieldName string, index index.Index) *replaceIndexOption {
+	return &replaceIndexOption{
 		collectionName: collectionName,
 		fieldName:      fieldName,
 		indexDef:       index,

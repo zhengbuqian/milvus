@@ -45,6 +45,7 @@ import (
 
 const (
 	CreateIndexTaskName           = "CreateIndexTask"
+	ReplaceIndexTaskName          = "ReplaceIndexTask"
 	AlterIndexTaskName            = "AlterIndexTask"
 	DescribeIndexTaskName         = "DescribeIndexTask"
 	DropIndexTaskName             = "DropIndexTask"
@@ -801,6 +802,125 @@ func (cit *createIndexTask) Execute(ctx context.Context) error {
 }
 
 func (cit *createIndexTask) PostExecute(ctx context.Context) error {
+	return nil
+}
+
+type replaceIndexTask struct {
+	baseTask
+	Condition
+	req      *milvuspb.ReplaceIndexRequest
+	ctx      context.Context
+	mixCoord types.MixCoordClient
+	result   *commonpb.Status
+
+	isAutoIndex                      bool
+	newIndexParams                   []*commonpb.KeyValuePair
+	newTypeParams                    []*commonpb.KeyValuePair
+	newExtraParams                   []*commonpb.KeyValuePair
+	collectionID                     UniqueID
+	fieldSchema                      *schemapb.FieldSchema
+	userAutoIndexMetricTypeSpecified bool
+}
+
+func (rit *replaceIndexTask) TraceCtx() context.Context {
+	return rit.ctx
+}
+
+func (rit *replaceIndexTask) ID() UniqueID {
+	return rit.req.GetBase().GetMsgID()
+}
+
+func (rit *replaceIndexTask) SetID(uid UniqueID) {
+	rit.req.GetBase().MsgID = uid
+}
+
+func (rit *replaceIndexTask) Name() string {
+	return ReplaceIndexTaskName
+}
+
+func (rit *replaceIndexTask) Type() commonpb.MsgType {
+	return rit.req.GetBase().GetMsgType()
+}
+
+func (rit *replaceIndexTask) BeginTs() Timestamp {
+	return rit.req.GetBase().GetTimestamp()
+}
+
+func (rit *replaceIndexTask) EndTs() Timestamp {
+	return rit.req.GetBase().GetTimestamp()
+}
+
+func (rit *replaceIndexTask) SetTs(ts Timestamp) {
+	rit.req.Base.Timestamp = ts
+}
+
+func (rit *replaceIndexTask) OnEnqueue() error {
+	if rit.req.Base == nil {
+		rit.req.Base = commonpbutil.NewMsgBase()
+	}
+	rit.req.Base.MsgType = commonpb.MsgType_ReplaceIndex
+	rit.req.Base.SourceID = paramtable.GetNodeID()
+	return nil
+}
+
+func (rit *replaceIndexTask) PreExecute(ctx context.Context) error {
+	cit := &createIndexTask{
+		ctx:       rit.ctx,
+		Condition: rit.Condition,
+		req: &milvuspb.CreateIndexRequest{
+			Base:           rit.req.GetBase(),
+			DbName:         rit.req.GetDbName(),
+			CollectionName: rit.req.GetCollectionName(),
+			FieldName:      rit.req.GetFieldName(),
+			ExtraParams:    rit.req.GetExtraParams(),
+			IndexName:      rit.req.GetNewIndexName(),
+		},
+		mixCoord: rit.mixCoord,
+	}
+	if err := cit.PreExecute(ctx); err != nil {
+		return err
+	}
+
+	rit.isAutoIndex = cit.isAutoIndex
+	rit.newIndexParams = cit.newIndexParams
+	rit.newTypeParams = cit.newTypeParams
+	rit.newExtraParams = cit.newExtraParams
+	rit.collectionID = cit.collectionID
+	rit.fieldSchema = cit.fieldSchema
+	rit.userAutoIndexMetricTypeSpecified = cit.userAutoIndexMetricTypeSpecified
+	return nil
+}
+
+func (rit *replaceIndexTask) Execute(ctx context.Context) error {
+	log.Ctx(ctx).Info("proxy replace index",
+		zap.Int64("collectionID", rit.collectionID),
+		zap.Int64("fieldID", rit.fieldSchema.GetFieldID()),
+		zap.String("newIndexName", rit.req.GetNewIndexName()),
+		zap.Any("typeParams", rit.fieldSchema.GetTypeParams()),
+		zap.Any("indexParams", rit.req.GetExtraParams()),
+		zap.Any("newExtraParams", rit.newExtraParams),
+	)
+
+	var err error
+	req := &indexpb.ReplaceIndexRequest{
+		CollectionID:                     rit.collectionID,
+		FieldID:                          rit.fieldSchema.GetFieldID(),
+		NewIndexName:                     rit.req.GetNewIndexName(),
+		TypeParams:                       rit.newTypeParams,
+		IndexParams:                      rit.newIndexParams,
+		Timestamp:                        rit.BeginTs(),
+		IsAutoIndex:                      rit.isAutoIndex,
+		UserIndexParams:                  rit.newExtraParams,
+		UserAutoindexMetricTypeSpecified: rit.userAutoIndexMetricTypeSpecified,
+	}
+	rit.result, err = rit.mixCoord.ReplaceIndex(ctx, req)
+	if err = merr.CheckRPCCall(rit.result, err); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (rit *replaceIndexTask) PostExecute(ctx context.Context) error {
 	return nil
 }
 

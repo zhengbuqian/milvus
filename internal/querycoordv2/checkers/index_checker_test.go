@@ -356,6 +356,168 @@ func (suite *IndexCheckerSuite) TestCreateNewIndex() {
 	suite.Equal(tasks[0].Actions()[0].(*task.SegmentAction).Type(), task.ActionTypeReopen)
 }
 
+func (suite *IndexCheckerSuite) setupReplacementIndexCheck(ctx context.Context, oldIndexID int64) {
+	checker := suite.checker
+	coll := utils.CreateTestCollection(1, 1)
+	coll.Schema = &schemapb.CollectionSchema{
+		Name: "test_replace_index",
+		Fields: []*schemapb.FieldSchema{
+			{FieldID: 101, DataType: schemapb.DataType_Int64, Name: "scalar"},
+		},
+	}
+	checker.meta.PutCollection(ctx, coll)
+	checker.meta.Put(ctx, utils.CreateTestReplica(200, 1, []int64{1, 2}))
+	suite.nodeMgr.Add(session.NewNodeInfo(session.ImmutableNodeInfo{
+		NodeID:   1,
+		Address:  "localhost",
+		Hostname: "localhost",
+	}))
+	suite.nodeMgr.Add(session.NewNodeInfo(session.ImmutableNodeInfo{
+		NodeID:   2,
+		Address:  "localhost",
+		Hostname: "localhost",
+	}))
+	checker.meta.HandleNodeUp(ctx, 1)
+	checker.meta.HandleNodeUp(ctx, 2)
+
+	segment := utils.CreateTestSegment(1, 1, 2, 1, 1, "test-insert-channel")
+	segment.IndexInfo = map[int64]*querypb.FieldIndexInfo{
+		oldIndexID: {
+			FieldID:     101,
+			IndexID:     oldIndexID,
+			EnableIndex: true,
+		},
+	}
+	checker.dist.SegmentDistManager.Update(1, segment)
+}
+
+func (suite *IndexCheckerSuite) TestReplacementWaitsForNewIndexInfo() {
+	checker := suite.checker
+	ctx := context.Background()
+	const (
+		oldIndexID = int64(1000)
+		newIndexID = int64(1001)
+	)
+	suite.setupReplacementIndexCheck(ctx, oldIndexID)
+
+	suite.broker.EXPECT().ListIndexes(mock.Anything, int64(1)).Return([]*indexpb.IndexInfo{
+		{
+			FieldID:         101,
+			IndexID:         oldIndexID,
+			GenerationState: indexpb.IndexGenerationState_Retired,
+			Generation:      1,
+		},
+		{
+			FieldID:         101,
+			IndexID:         newIndexID,
+			GenerationState: indexpb.IndexGenerationState_Current,
+			Generation:      2,
+		},
+	}, nil)
+	suite.broker.EXPECT().GetIndexInfo(mock.Anything, int64(1), int64(2)).
+		Return(map[int64][]*querypb.FieldIndexInfo{2: {
+			{
+				FieldID:        101,
+				IndexID:        oldIndexID,
+				EnableIndex:    true,
+				IndexFilePaths: []string{"old-index"},
+			},
+		}}, nil)
+	suite.broker.EXPECT().GetSegmentInfo(mock.Anything, mock.Anything).
+		Return([]*datapb.SegmentInfo{}, nil).Maybe()
+
+	tasks := checker.Check(ctx)
+	suite.Empty(tasks)
+}
+
+func (suite *IndexCheckerSuite) TestReplacementReopensWhenNewIndexInfoReady() {
+	checker := suite.checker
+	ctx := context.Background()
+	const (
+		oldIndexID = int64(1000)
+		newIndexID = int64(1001)
+	)
+	suite.setupReplacementIndexCheck(ctx, oldIndexID)
+
+	suite.broker.EXPECT().ListIndexes(mock.Anything, int64(1)).Return([]*indexpb.IndexInfo{
+		{
+			FieldID:         101,
+			IndexID:         oldIndexID,
+			GenerationState: indexpb.IndexGenerationState_Retired,
+			Generation:      1,
+		},
+		{
+			FieldID:         101,
+			IndexID:         newIndexID,
+			GenerationState: indexpb.IndexGenerationState_Current,
+			Generation:      2,
+		},
+	}, nil)
+	suite.broker.EXPECT().GetIndexInfo(mock.Anything, int64(1), int64(2)).
+		Return(map[int64][]*querypb.FieldIndexInfo{2: {
+			{
+				FieldID:        101,
+				IndexID:        newIndexID,
+				EnableIndex:    true,
+				IndexFilePaths: []string{"new-index"},
+			},
+		}}, nil)
+	suite.broker.EXPECT().GetSegmentInfo(mock.Anything, mock.Anything).
+		Return([]*datapb.SegmentInfo{}, nil).Maybe()
+
+	tasks := checker.Check(ctx)
+	suite.Require().Len(tasks, 1)
+	suite.Require().Len(tasks[0].Actions(), 1)
+	action, ok := tasks[0].Actions()[0].(*task.SegmentAction)
+	suite.Require().True(ok)
+	suite.Equal(task.ActionTypeReopen, action.Type())
+	suite.EqualValues(2, action.GetSegmentID())
+}
+
+func (suite *IndexCheckerSuite) TestReplacementRetiredIndexRedundantAfterCurrentLoaded() {
+	checker := suite.checker
+	ctx := context.Background()
+	const (
+		oldIndexID = int64(1000)
+		newIndexID = int64(1001)
+	)
+	suite.setupReplacementIndexCheck(ctx, oldIndexID)
+
+	segments := checker.dist.SegmentDistManager.GetByFilter(meta.WithCollectionID(1))
+	suite.Require().Len(segments, 1)
+	segments[0].IndexInfo[newIndexID] = &querypb.FieldIndexInfo{
+		FieldID:     101,
+		IndexID:     newIndexID,
+		EnableIndex: true,
+	}
+	checker.dist.SegmentDistManager.Update(1, segments[0])
+
+	suite.broker.EXPECT().ListIndexes(mock.Anything, int64(1)).Return([]*indexpb.IndexInfo{
+		{
+			FieldID:         101,
+			IndexID:         oldIndexID,
+			GenerationState: indexpb.IndexGenerationState_Retired,
+			Generation:      1,
+		},
+		{
+			FieldID:         101,
+			IndexID:         newIndexID,
+			GenerationState: indexpb.IndexGenerationState_Current,
+			Generation:      2,
+		},
+	}, nil)
+	suite.broker.EXPECT().GetSegmentInfo(mock.Anything, mock.Anything).
+		Return([]*datapb.SegmentInfo{}, nil).Maybe()
+
+	tasks := checker.Check(ctx)
+	suite.Require().Len(tasks, 1)
+	suite.Require().Len(tasks[0].Actions(), 1)
+	action, ok := tasks[0].Actions()[0].(*task.SegmentAction)
+	suite.Require().True(ok)
+	suite.Equal(task.ActionTypeReopen, action.Type())
+	suite.EqualValues(2, action.GetSegmentID())
+}
+
 func TestRemoveRedundantIndex(t *testing.T) {
 	paramtable.Init()
 	ctx := context.Background()

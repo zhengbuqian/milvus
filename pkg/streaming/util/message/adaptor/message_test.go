@@ -106,3 +106,21 @@ func TestNewMsgPackFromCreateIndexMessage(t *testing.T) {
 	assert.Equal(t, tt, pack.BeginTs)
 	assert.Equal(t, tt, pack.EndTs)
 }
+
+func TestNewMsgPackFromReplaceIndexMessage(t *testing.T) {
+	id := rmq.NewRmqID(1)
+
+	tt := uint64(time.Now().UnixNano())
+	mutableMsg, err := message.NewReplaceIndexMessageBuilderV2().
+		WithHeader(&message.ReplaceIndexMessageHeader{}).
+		WithBody(&message.ReplaceIndexMessageBody{}).
+		WithVChannel("v1").
+		BuildMutable()
+	assert.NoError(t, err)
+	immutableReplaceIndexMsg := mutableMsg.WithTimeTick(tt).WithLastConfirmedUseMessageID().IntoImmutableMessage(id)
+	pack, err := NewMsgPackFromMessage(immutableReplaceIndexMsg)
+	assert.NoError(t, err)
+	assert.NotNil(t, pack)
+	assert.Equal(t, tt, pack.BeginTs)
+	assert.Equal(t, tt, pack.EndTs)
+}

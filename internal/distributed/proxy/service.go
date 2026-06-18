@@ -822,6 +822,11 @@ func (s *Server) CreateIndex(ctx context.Context, request *milvuspb.CreateIndexR
 	return s.proxy.CreateIndex(ctx, request)
 }
 
+// ReplaceIndex notifies Proxy to replace index
+func (s *Server) ReplaceIndex(ctx context.Context, request *milvuspb.ReplaceIndexRequest) (*commonpb.Status, error) {
+	return s.proxy.ReplaceIndex(ctx, request)
+}
+
 // AlterIndex notifies Proxy to alter index
 func (s *Server) AlterIndex(ctx context.Context, request *milvuspb.AlterIndexRequest) (*commonpb.Status, error) {
 	return s.proxy.AlterIndex(ctx, request)

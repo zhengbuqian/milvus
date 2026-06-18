@@ -68,6 +68,7 @@ enum MessageType {
     DropSnapshotsByCollection    = 44;
     CommitImport                 = 45;
     RollbackImport               = 46;
+    ReplaceIndex                 = 47;
 
     // AlterWAL is used to alter the wal configuration to the current cluster.
     AlterWAL             = 700;
@@ -554,6 +555,23 @@ message CreateIndexMessageHeader {
 // CreateIndexMessageBody is the body of create index message.
 message CreateIndexMessageBody {
     index.FieldIndex field_index = 1;
+}
+
+// ReplaceIndexMessageHeader is the header of replace index message.
+message ReplaceIndexMessageHeader {
+    int64 db_id = 1;
+    int64 collection_id = 2;
+    int64 field_id = 3;
+    int64 old_index_id = 4;
+    int64 new_index_id = 5;
+    string old_index_name = 6;
+    string new_index_name = 7;
+}
+
+// ReplaceIndexMessageBody is the body of replace index message.
+message ReplaceIndexMessageBody {
+    index.FieldIndex old_field_index = 1;
+    index.FieldIndex new_field_index = 2;
 }
 
 // AlterIndexMessageHeader is the header of alter index message.

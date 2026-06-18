@@ -28,6 +28,7 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 
 	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
@@ -486,6 +487,112 @@ func TestServer_CreateIndex(t *testing.T) {
 		indexes := s.meta.indexMeta.GetFieldIndexes(collID, fieldID, "normal_index")
 		assert.Equal(t, 1, len(indexes))
 		assert.NotEqual(t, int64(0), indexes[0].IndexID)
+	})
+}
+
+func TestServer_ReplaceIndex(t *testing.T) {
+	initStreamingSystem(t)
+
+	var (
+		collID              = UniqueID(1)
+		scalarFieldID       = UniqueID(10)
+		vectorFieldID       = UniqueID(11)
+		oldIndexID          = UniqueID(100)
+		allocatedNewIndexID = UniqueID(1)
+		ctx                 = context.Background()
+	)
+
+	catalog := catalogmocks.NewDataCoordCatalog(t)
+	catalog.EXPECT().AlterIndexes(mock.Anything, mock.Anything).RunAndReturn(func(ctx context.Context, indexes []*model.Index) error {
+		require.Len(t, indexes, 2)
+		assert.Equal(t, oldIndexID, indexes[0].IndexID)
+		assert.Equal(t, indexpb.IndexGenerationState_Retired, indexes[0].GenerationState)
+		assert.Equal(t, int64(1), indexes[0].Generation)
+		assert.False(t, indexes[0].IsDeleted)
+		assert.Equal(t, allocatedNewIndexID, indexes[1].IndexID)
+		assert.Equal(t, indexpb.IndexGenerationState_Current, indexes[1].GenerationState)
+		assert.Equal(t, int64(2), indexes[1].Generation)
+		return nil
+	})
+
+	indexMeta := newSegmentIndexMeta(catalog)
+	indexMeta.indexes[collID] = map[UniqueID]*model.Index{
+		oldIndexID: {
+			CollectionID: collID,
+			FieldID:      scalarFieldID,
+			IndexID:      oldIndexID,
+			IndexName:    "old_scalar_idx",
+			IndexParams: []*commonpb.KeyValuePair{
+				{Key: common.IndexTypeKey, Value: "INVERTED"},
+			},
+		},
+	}
+	collections := typeutil.NewConcurrentMap[UniqueID, *collectionInfo]()
+	collections.Insert(collID, &collectionInfo{ID: collID})
+	s := &Server{
+		meta: &meta{
+			catalog:     catalog,
+			collections: collections,
+			indexMeta:   indexMeta,
+		},
+		allocator:       newMockAllocator(t),
+		notifyIndexChan: make(chan UniqueID, 1),
+	}
+	RegisterDDLCallbacks(s)
+	s.stateCode.Store(commonpb.StateCode_Healthy)
+
+	describeResp := &milvuspb.DescribeCollectionResponse{
+		Status: &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success},
+		Schema: &schemapb.CollectionSchema{
+			Name: "test_replace_index",
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: scalarFieldID, Name: "scalar", DataType: schemapb.DataType_Int64},
+				{FieldID: vectorFieldID, Name: "vector", DataType: schemapb.DataType_FloatVector},
+			},
+		},
+		CollectionID:         collID,
+		DbName:               "default",
+		CollectionName:       "test_replace_index",
+		VirtualChannelNames:  []string{"by-dev-rootcoord-dml_0_1v0"},
+		CreatedTimestamp:     100,
+		CreatedUtcTimestamp:  100,
+		ShardsNum:            1,
+		ConsistencyLevel:     commonpb.ConsistencyLevel_Bounded,
+		NumPartitions:        1,
+		PhysicalChannelNames: []string{"by-dev-rootcoord-dml_0"},
+	}
+	b := mocks.NewMixCoord(t)
+	b.EXPECT().DescribeCollectionInternal(mock.Anything, mock.Anything).Return(describeResp, nil).Maybe()
+	s.broker = broker.NewCoordinatorBroker(b)
+
+	t.Run("rejects vector field", func(t *testing.T) {
+		status, err := s.ReplaceIndex(ctx, &indexpb.ReplaceIndexRequest{
+			CollectionID: collID,
+			FieldID:      vectorFieldID,
+			NewIndexName: "new_vector_idx",
+			IndexParams: []*commonpb.KeyValuePair{
+				{Key: common.IndexTypeKey, Value: "INVERTED"},
+			},
+		})
+		assert.NoError(t, err)
+		assert.ErrorIs(t, merr.Error(status), merr.ErrParameterInvalid)
+	})
+
+	t.Run("replaces scalar index through broadcast callback", func(t *testing.T) {
+		status, err := s.ReplaceIndex(ctx, &indexpb.ReplaceIndexRequest{
+			CollectionID: collID,
+			FieldID:      scalarFieldID,
+			NewIndexName: "new_scalar_idx",
+			IndexParams: []*commonpb.KeyValuePair{
+				{Key: common.IndexTypeKey, Value: "BITMAP"},
+			},
+			Timestamp: 200,
+		})
+		assert.NoError(t, merr.CheckRPCCall(status, err))
+		assert.Equal(t, indexpb.IndexGenerationState_Retired, s.meta.indexMeta.indexes[collID][oldIndexID].GenerationState)
+		assert.False(t, s.meta.indexMeta.indexes[collID][oldIndexID].IsDeleted)
+		assert.Equal(t, indexpb.IndexGenerationState_Current, s.meta.indexMeta.indexes[collID][allocatedNewIndexID].GenerationState)
+		assert.Equal(t, int64(2), s.meta.indexMeta.indexes[collID][allocatedNewIndexID].Generation)
 	})
 }
 
@@ -2738,6 +2845,116 @@ func TestServer_GetIndexInfos(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
 		assert.Equal(t, 1, len(resp.GetSegmentInfo()))
+	})
+}
+
+func TestServer_GetIndexInfosReplacementSwitch(t *testing.T) {
+	var (
+		collID     = UniqueID(1)
+		partID     = UniqueID(2)
+		fieldID    = UniqueID(10)
+		segID      = UniqueID(1000)
+		oldIndexID = UniqueID(100)
+		newIndexID = UniqueID(101)
+		oldBuildID = UniqueID(10000)
+		newBuildID = UniqueID(10001)
+		createTS   = uint64(1000)
+		ctx        = context.Background()
+	)
+
+	chunkManagerFactory := storage.NewChunkManagerFactoryWithParam(Params)
+	cli, err := chunkManagerFactory.NewPersistentStorageChunkManager(ctx)
+	assert.NoError(t, err)
+
+	newServer := func(newState commonpb.IndexState) *Server {
+		segIdxes := typeutil.NewConcurrentMap[UniqueID, *model.SegmentIndex]()
+		segIdxes.Insert(oldIndexID, &model.SegmentIndex{
+			SegmentID:           segID,
+			CollectionID:        collID,
+			PartitionID:         partID,
+			NumRows:             10000,
+			IndexID:             oldIndexID,
+			BuildID:             oldBuildID,
+			IndexVersion:        1,
+			IndexState:          commonpb.IndexState_Finished,
+			CreatedUTCTime:      createTS,
+			IndexSerializedSize: 10,
+		})
+		segIdxes.Insert(newIndexID, &model.SegmentIndex{
+			SegmentID:           segID,
+			CollectionID:        collID,
+			PartitionID:         partID,
+			NumRows:             10000,
+			IndexID:             newIndexID,
+			BuildID:             newBuildID,
+			IndexVersion:        1,
+			IndexState:          newState,
+			CreatedUTCTime:      createTS,
+			IndexSerializedSize: 20,
+		})
+		segmentIndexes := typeutil.NewConcurrentMap[UniqueID, *typeutil.ConcurrentMap[UniqueID, *model.SegmentIndex]]()
+		segmentIndexes.Insert(segID, segIdxes)
+
+		s := &Server{
+			meta: &meta{
+				catalog: &datacoord.Catalog{MetaKv: mockkv.NewMetaKv(t)},
+				indexMeta: &indexMeta{
+					catalog: &datacoord.Catalog{MetaKv: mockkv.NewMetaKv(t)},
+					indexes: map[UniqueID]map[UniqueID]*model.Index{
+						collID: {
+							oldIndexID: {
+								CollectionID:    collID,
+								FieldID:         fieldID,
+								IndexID:         oldIndexID,
+								IndexName:       "old_idx",
+								CreateTime:      createTS,
+								IndexParams:     []*commonpb.KeyValuePair{{Key: common.IndexTypeKey, Value: "INVERTED"}},
+								GenerationState: indexpb.IndexGenerationState_Retired,
+								Generation:      1,
+							},
+							newIndexID: {
+								CollectionID:    collID,
+								FieldID:         fieldID,
+								IndexID:         newIndexID,
+								IndexName:       "new_idx",
+								CreateTime:      createTS,
+								IndexParams:     []*commonpb.KeyValuePair{{Key: common.IndexTypeKey, Value: "BITMAP"}},
+								GenerationState: indexpb.IndexGenerationState_Current,
+								Generation:      2,
+							},
+						},
+					},
+					segmentIndexes: segmentIndexes,
+				},
+				segments:     NewSegmentsInfo(),
+				chunkManager: cli,
+			},
+			allocator:       newMockAllocator(t),
+			notifyIndexChan: make(chan UniqueID, 1),
+		}
+		s.stateCode.Store(commonpb.StateCode_Healthy)
+		return s
+	}
+
+	req := &indexpb.GetIndexInfoRequest{
+		CollectionID: collID,
+		SegmentIDs:   []UniqueID{segID},
+	}
+
+	t.Run("returns retired generation until current segment finishes", func(t *testing.T) {
+		resp, err := newServer(commonpb.IndexState_InProgress).GetIndexInfos(ctx, req)
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
+		require.Len(t, resp.GetSegmentInfo()[segID].GetIndexInfos(), 1)
+		assert.Equal(t, oldIndexID, resp.GetSegmentInfo()[segID].GetIndexInfos()[0].GetIndexID())
+	})
+
+	t.Run("returns current generation after current segment finishes", func(t *testing.T) {
+		resp, err := newServer(commonpb.IndexState_Finished).GetIndexInfos(ctx, req)
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
+		require.Len(t, resp.GetSegmentInfo()[segID].GetIndexInfos(), 1)
+		assert.Equal(t, newIndexID, resp.GetSegmentInfo()[segID].GetIndexInfos()[0].GetIndexID())
 	})
 }
 

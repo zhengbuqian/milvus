@@ -154,7 +154,7 @@ func (i *indexInspector) createIndexesForSegment(ctx context.Context, segment *S
 		return nil
 	}
 
-	indexes := i.meta.indexMeta.GetIndexesForCollection(segment.CollectionID, "")
+	indexes := i.meta.indexMeta.GetBuildIndexesForCollection(segment.CollectionID)
 	indexIDToSegIndexes := i.meta.indexMeta.GetSegmentIndexes(segment.CollectionID, segment.ID)
 	var segmentBinlogFields map[int64]struct{}
 

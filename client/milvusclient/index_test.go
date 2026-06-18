@@ -108,6 +108,79 @@ func (s *IndexSuite) TestCreateIndex() {
 	})
 }
 
+func (s *IndexSuite) TestReplaceIndex() {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.Run("success", func() {
+		collectionName := fmt.Sprintf("coll_%s", s.randString(6))
+		fieldName := fmt.Sprintf("field_%s", s.randString(4))
+		newIndexName := fmt.Sprintf("new_idx_%s", s.randString(6))
+
+		done := atomic.NewBool(false)
+
+		s.mock.EXPECT().ReplaceIndex(mock.Anything, mock.Anything).RunAndReturn(func(ctx context.Context, rir *milvuspb.ReplaceIndexRequest) (*commonpb.Status, error) {
+			s.Equal(collectionName, rir.GetCollectionName())
+			s.Equal(fieldName, rir.GetFieldName())
+			s.Equal(newIndexName, rir.GetNewIndexName())
+			return merr.Success(), nil
+		}).Once()
+		s.mock.EXPECT().DescribeIndex(mock.Anything, mock.Anything).RunAndReturn(func(ctx context.Context, dir *milvuspb.DescribeIndexRequest) (*milvuspb.DescribeIndexResponse, error) {
+			state := commonpb.IndexState_InProgress
+			if done.Load() {
+				state = commonpb.IndexState_Finished
+			}
+			return &milvuspb.DescribeIndexResponse{
+				Status: merr.Success(),
+				IndexDescriptions: []*milvuspb.IndexDescription{
+					{
+						FieldName: fieldName,
+						IndexName: newIndexName,
+						State:     state,
+					},
+				},
+			}, nil
+		})
+		defer s.mock.EXPECT().DescribeIndex(mock.Anything, mock.Anything).Unset()
+
+		task, err := s.client.ReplaceIndex(ctx, NewReplaceIndexOption(collectionName, fieldName, index.NewBitmapIndex()).
+			WithNewIndexName(newIndexName))
+		s.NoError(err)
+
+		ch := make(chan struct{})
+		go func() {
+			defer close(ch)
+			err := task.Await(ctx)
+			s.NoError(err)
+		}()
+
+		select {
+		case <-ch:
+			s.FailNow("task done before index state set to finish")
+		case <-time.After(time.Second):
+		}
+
+		done.Store(true)
+
+		select {
+		case <-ch:
+		case <-time.After(time.Second):
+			s.FailNow("task not done after index set finished")
+		}
+	})
+
+	s.Run("failure", func() {
+		collectionName := fmt.Sprintf("coll_%s", s.randString(6))
+		fieldName := fmt.Sprintf("field_%s", s.randString(4))
+		newIndexName := fmt.Sprintf("new_idx_%s", s.randString(6))
+
+		s.mock.EXPECT().ReplaceIndex(mock.Anything, mock.Anything).Return(nil, merr.WrapErrServiceInternal("mocked")).Once()
+
+		_, err := s.client.ReplaceIndex(ctx, NewReplaceIndexOption(collectionName, fieldName, index.NewBitmapIndex()).
+			WithNewIndexName(newIndexName))
+		s.Error(err)
+	})
+}
+
 func (s *IndexSuite) TestListIndexes() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

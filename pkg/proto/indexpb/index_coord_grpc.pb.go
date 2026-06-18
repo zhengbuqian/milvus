@@ -23,6 +23,7 @@ const _ = grpc.SupportPackageIsVersion7
 
 const (
 	IndexCoord_CreateIndex_FullMethodName           = "/milvus.proto.index.IndexCoord/CreateIndex"
+	IndexCoord_ReplaceIndex_FullMethodName          = "/milvus.proto.index.IndexCoord/ReplaceIndex"
 	IndexCoord_AlterIndex_FullMethodName            = "/milvus.proto.index.IndexCoord/AlterIndex"
 	IndexCoord_GetIndexState_FullMethodName         = "/milvus.proto.index.IndexCoord/GetIndexState"
 	IndexCoord_GetSegmentIndexState_FullMethodName  = "/milvus.proto.index.IndexCoord/GetSegmentIndexState"
@@ -41,6 +42,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type IndexCoordClient interface {
 	CreateIndex(ctx context.Context, in *CreateIndexRequest, opts ...grpc.CallOption) (*commonpb.Status, error)
+	ReplaceIndex(ctx context.Context, in *ReplaceIndexRequest, opts ...grpc.CallOption) (*commonpb.Status, error)
 	AlterIndex(ctx context.Context, in *AlterIndexRequest, opts ...grpc.CallOption) (*commonpb.Status, error)
 	// Deprecated: use DescribeIndex instead
 	GetIndexState(ctx context.Context, in *GetIndexStateRequest, opts ...grpc.CallOption) (*GetIndexStateResponse, error)
@@ -68,6 +70,15 @@ func NewIndexCoordClient(cc grpc.ClientConnInterface) IndexCoordClient {
 func (c *indexCoordClient) CreateIndex(ctx context.Context, in *CreateIndexRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
 	out := new(commonpb.Status)
 	err := c.cc.Invoke(ctx, IndexCoord_CreateIndex_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *indexCoordClient) ReplaceIndex(ctx context.Context, in *ReplaceIndexRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
+	out := new(commonpb.Status)
+	err := c.cc.Invoke(ctx, IndexCoord_ReplaceIndex_FullMethodName, in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -178,6 +189,7 @@ func (c *indexCoordClient) CheckHealth(ctx context.Context, in *milvuspb.CheckHe
 // for forward compatibility
 type IndexCoordServer interface {
 	CreateIndex(context.Context, *CreateIndexRequest) (*commonpb.Status, error)
+	ReplaceIndex(context.Context, *ReplaceIndexRequest) (*commonpb.Status, error)
 	AlterIndex(context.Context, *AlterIndexRequest) (*commonpb.Status, error)
 	// Deprecated: use DescribeIndex instead
 	GetIndexState(context.Context, *GetIndexStateRequest) (*GetIndexStateResponse, error)
@@ -200,6 +212,9 @@ type UnimplementedIndexCoordServer struct {
 
 func (UnimplementedIndexCoordServer) CreateIndex(context.Context, *CreateIndexRequest) (*commonpb.Status, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreateIndex not implemented")
+}
+func (UnimplementedIndexCoordServer) ReplaceIndex(context.Context, *ReplaceIndexRequest) (*commonpb.Status, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReplaceIndex not implemented")
 }
 func (UnimplementedIndexCoordServer) AlterIndex(context.Context, *AlterIndexRequest) (*commonpb.Status, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method AlterIndex not implemented")
@@ -260,6 +275,24 @@ func _IndexCoord_CreateIndex_Handler(srv interface{}, ctx context.Context, dec f
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(IndexCoordServer).CreateIndex(ctx, req.(*CreateIndexRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _IndexCoord_ReplaceIndex_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReplaceIndexRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(IndexCoordServer).ReplaceIndex(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: IndexCoord_ReplaceIndex_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(IndexCoordServer).ReplaceIndex(ctx, req.(*ReplaceIndexRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -472,6 +505,10 @@ var IndexCoord_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CreateIndex",
 			Handler:    _IndexCoord_CreateIndex_Handler,
+		},
+		{
+			MethodName: "ReplaceIndex",
+			Handler:    _IndexCoord_ReplaceIndex_Handler,
 		},
 		{
 			MethodName: "AlterIndex",

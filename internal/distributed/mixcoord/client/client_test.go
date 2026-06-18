@@ -2009,6 +2009,44 @@ func Test_CreateIndex(t *testing.T) {
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
+func Test_ReplaceIndex(t *testing.T) {
+	paramtable.Init()
+
+	ctx := context.Background()
+	client, err := NewClient(ctx)
+	assert.NoError(t, err)
+	assert.NotNil(t, client)
+	defer client.Close()
+
+	mockDC := mocks.NewMockDataCoordClient(t)
+	mockmix := MixCoordClient{
+		DataCoordClient: mockDC,
+	}
+	mockGrpcClient := mocks.NewMockGrpcClient[MixCoordClient](t)
+	mockGrpcClient.EXPECT().Close().Return(nil)
+	mockGrpcClient.EXPECT().ReCall(mock1.Anything, mock1.Anything).RunAndReturn(func(ctx context.Context, f func(MixCoordClient) (interface{}, error)) (interface{}, error) {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return f(mockmix)
+	})
+	client.(*Client).grpcClient = mockGrpcClient
+
+	mockDC.EXPECT().ReplaceIndex(mock1.Anything, mock1.Anything).Return(merr.Success(), nil)
+	_, err = client.ReplaceIndex(ctx, &indexpb.ReplaceIndexRequest{})
+	assert.Nil(t, err)
+
+	mockDC.ExpectedCalls = nil
+	mockDC.EXPECT().ReplaceIndex(mock1.Anything, mock1.Anything).Return(merr.Success(), mockErr)
+	_, err = client.ReplaceIndex(ctx, &indexpb.ReplaceIndexRequest{})
+	assert.NotNil(t, err)
+
+	ctx, cancel := context.WithDeadline(ctx, time.Now().Add(-time.Second))
+	defer cancel()
+	_, err = client.ReplaceIndex(ctx, &indexpb.ReplaceIndexRequest{})
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
 func Test_GetSegmentIndexState(t *testing.T) {
 	paramtable.Init()
 

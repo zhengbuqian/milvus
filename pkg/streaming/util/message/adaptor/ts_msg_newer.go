@@ -278,3 +278,31 @@ func NewCreateIndexMessageBody(msg message.ImmutableMessage) (msgstream.TsMsg, e
 		CreateIndexMessage: createIndexMsg,
 	}, nil
 }
+
+type ReplaceIndexMessageBody struct {
+	*tsMsgImpl
+	ReplaceIndexMessage message.ImmutableReplaceIndexMessageV2
+}
+
+func (r *ReplaceIndexMessageBody) ID() msgstream.UniqueID {
+	return 0
+}
+
+func NewReplaceIndexMessageBody(msg message.ImmutableMessage) (msgstream.TsMsg, error) {
+	replaceIndexMsg, err := message.AsImmutableReplaceIndexMessageV2(msg)
+	if err != nil {
+		return nil, err
+	}
+	return &ReplaceIndexMessageBody{
+		tsMsgImpl: &tsMsgImpl{
+			BaseMsg: msgstream.BaseMsg{
+				BeginTimestamp: msg.TimeTick(),
+				EndTimestamp:   msg.TimeTick(),
+			},
+			ts:      msg.TimeTick(),
+			sz:      msg.EstimateSize(),
+			msgType: MustGetCommonpbMsgTypeFromMessageType(msg.MessageType()),
+		},
+		ReplaceIndexMessage: replaceIndexMsg,
+	}, nil
+}

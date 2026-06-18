@@ -453,6 +453,13 @@ func Test_NewServer(t *testing.T) {
 		assert.NotNil(t, ret)
 	})
 
+	t.Run("ReplaceIndex", func(t *testing.T) {
+		mockMixCoord.EXPECT().ReplaceIndex(mock.Anything, mock.Anything).Return(merr.Success(), nil)
+		ret, err := server.ReplaceIndex(ctx, nil)
+		assert.NoError(t, err)
+		assert.NotNil(t, ret)
+	})
+
 	t.Run("DescribeIndex", func(t *testing.T) {
 		mockMixCoord.EXPECT().DescribeIndex(mock.Anything, mock.Anything).Return(&indexpb.DescribeIndexResponse{}, nil)
 		ret, err := server.DescribeIndex(ctx, nil)

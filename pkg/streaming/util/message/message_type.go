@@ -119,6 +119,7 @@ var messageTypePropertiesMap = map[MessageType]MessageTypeProperties{
 	MessageTypeAlterResourceGroup:  {},
 	MessageTypeDropResourceGroup:   {},
 	MessageTypeCreateIndex:         {},
+	MessageTypeReplaceIndex:        {},
 	MessageTypeAlterIndex:          {},
 	MessageTypeDropIndex:           {},
 	MessageTypeFlushAll: {

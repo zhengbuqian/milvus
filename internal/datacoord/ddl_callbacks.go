@@ -49,6 +49,7 @@ type DDLCallbacks struct {
 
 func (c *DDLCallbacks) registerIndexCallbacks() {
 	registry.RegisterCreateIndexV2AckCallback(c.createIndexV2AckCallback)
+	registry.RegisterReplaceIndexV2AckCallback(c.replaceIndexV2AckCallback)
 	registry.RegisterAlterIndexV2AckCallback(c.alterIndexV2AckCallback)
 	registry.RegisterDropIndexV2AckCallback(c.dropIndexV2Callback)
 }

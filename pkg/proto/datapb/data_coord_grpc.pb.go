@@ -55,6 +55,7 @@ const (
 	DataCoord_BroadcastAlteredCollection_FullMethodName           = "/milvus.proto.data.DataCoord/BroadcastAlteredCollection"
 	DataCoord_CheckHealth_FullMethodName                          = "/milvus.proto.data.DataCoord/CheckHealth"
 	DataCoord_CreateIndex_FullMethodName                          = "/milvus.proto.data.DataCoord/CreateIndex"
+	DataCoord_ReplaceIndex_FullMethodName                         = "/milvus.proto.data.DataCoord/ReplaceIndex"
 	DataCoord_AlterIndex_FullMethodName                           = "/milvus.proto.data.DataCoord/AlterIndex"
 	DataCoord_GetIndexState_FullMethodName                        = "/milvus.proto.data.DataCoord/GetIndexState"
 	DataCoord_GetSegmentIndexState_FullMethodName                 = "/milvus.proto.data.DataCoord/GetSegmentIndexState"
@@ -131,6 +132,7 @@ type DataCoordClient interface {
 	BroadcastAlteredCollection(ctx context.Context, in *AlterCollectionRequest, opts ...grpc.CallOption) (*commonpb.Status, error)
 	CheckHealth(ctx context.Context, in *milvuspb.CheckHealthRequest, opts ...grpc.CallOption) (*milvuspb.CheckHealthResponse, error)
 	CreateIndex(ctx context.Context, in *indexpb.CreateIndexRequest, opts ...grpc.CallOption) (*commonpb.Status, error)
+	ReplaceIndex(ctx context.Context, in *indexpb.ReplaceIndexRequest, opts ...grpc.CallOption) (*commonpb.Status, error)
 	AlterIndex(ctx context.Context, in *indexpb.AlterIndexRequest, opts ...grpc.CallOption) (*commonpb.Status, error)
 	// Deprecated: use DescribeIndex instead
 	GetIndexState(ctx context.Context, in *indexpb.GetIndexStateRequest, opts ...grpc.CallOption) (*indexpb.GetIndexStateResponse, error)
@@ -472,6 +474,15 @@ func (c *dataCoordClient) CreateIndex(ctx context.Context, in *indexpb.CreateInd
 	return out, nil
 }
 
+func (c *dataCoordClient) ReplaceIndex(ctx context.Context, in *indexpb.ReplaceIndexRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
+	out := new(commonpb.Status)
+	err := c.cc.Invoke(ctx, DataCoord_ReplaceIndex_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *dataCoordClient) AlterIndex(ctx context.Context, in *indexpb.AlterIndexRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
 	out := new(commonpb.Status)
 	err := c.cc.Invoke(ctx, DataCoord_AlterIndex_FullMethodName, in, out, opts...)
@@ -802,6 +813,7 @@ type DataCoordServer interface {
 	BroadcastAlteredCollection(context.Context, *AlterCollectionRequest) (*commonpb.Status, error)
 	CheckHealth(context.Context, *milvuspb.CheckHealthRequest) (*milvuspb.CheckHealthResponse, error)
 	CreateIndex(context.Context, *indexpb.CreateIndexRequest) (*commonpb.Status, error)
+	ReplaceIndex(context.Context, *indexpb.ReplaceIndexRequest) (*commonpb.Status, error)
 	AlterIndex(context.Context, *indexpb.AlterIndexRequest) (*commonpb.Status, error)
 	// Deprecated: use DescribeIndex instead
 	GetIndexState(context.Context, *indexpb.GetIndexStateRequest) (*indexpb.GetIndexStateResponse, error)
@@ -944,6 +956,9 @@ func (UnimplementedDataCoordServer) CheckHealth(context.Context, *milvuspb.Check
 }
 func (UnimplementedDataCoordServer) CreateIndex(context.Context, *indexpb.CreateIndexRequest) (*commonpb.Status, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreateIndex not implemented")
+}
+func (UnimplementedDataCoordServer) ReplaceIndex(context.Context, *indexpb.ReplaceIndexRequest) (*commonpb.Status, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReplaceIndex not implemented")
 }
 func (UnimplementedDataCoordServer) AlterIndex(context.Context, *indexpb.AlterIndexRequest) (*commonpb.Status, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method AlterIndex not implemented")
@@ -1625,6 +1640,24 @@ func _DataCoord_CreateIndex_Handler(srv interface{}, ctx context.Context, dec fu
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DataCoordServer).CreateIndex(ctx, req.(*indexpb.CreateIndexRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DataCoord_ReplaceIndex_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(indexpb.ReplaceIndexRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DataCoordServer).ReplaceIndex(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DataCoord_ReplaceIndex_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DataCoordServer).ReplaceIndex(ctx, req.(*indexpb.ReplaceIndexRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2339,6 +2372,10 @@ var DataCoord_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CreateIndex",
 			Handler:    _DataCoord_CreateIndex_Handler,
+		},
+		{
+			MethodName: "ReplaceIndex",
+			Handler:    _DataCoord_ReplaceIndex_Handler,
 		},
 		{
 			MethodName: "AlterIndex",

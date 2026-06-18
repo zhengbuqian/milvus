@@ -11,6 +11,7 @@ import "schema.proto";
 
 service IndexCoord {
     rpc CreateIndex(CreateIndexRequest) returns (common.Status){}
+    rpc ReplaceIndex(ReplaceIndexRequest) returns (common.Status){}
     rpc AlterIndex(AlterIndexRequest) returns (common.Status){}
     // Deprecated: use DescribeIndex instead
     rpc GetIndexState(GetIndexStateRequest) returns (GetIndexStateResponse) {}
@@ -45,6 +46,12 @@ enum IndexStorePathVersion {
     INDEX_STORE_PATH_VERSION_COLLECTION_ROOTED = 1;
 }
 
+enum IndexGenerationState {
+    IndexGenerationStateNone = 0;
+    Current = 1;
+    Retired = 2;
+}
+
 message IndexInfo {
     int64 collectionID = 1;
     int64 fieldID = 2;
@@ -64,6 +71,8 @@ message IndexInfo {
     int64 pending_index_rows = 13;
     int32 min_index_version = 14;
     int32 max_index_version = 15;
+    IndexGenerationState generation_state = 16;
+    int64 generation = 17;
 }
 
 message FieldIndex {
@@ -157,6 +166,18 @@ message CreateIndexRequest {
     // When true, DataCoord will not allocate a new index ID, using the provided index_id directly
     bool preserve_index_id = 10;
     int64 index_id = 11;
+}
+
+message ReplaceIndexRequest {
+    int64 collectionID = 1;
+    int64 fieldID = 2;
+    string new_index_name = 3;
+    repeated common.KeyValuePair type_params = 4;
+    repeated common.KeyValuePair index_params = 5;
+    uint64 timestamp = 6;
+    bool is_auto_index = 7;
+    repeated common.KeyValuePair user_index_params = 8;
+    bool user_autoindex_metric_type_specified = 9;
 }
 
 message AlterIndexRequest {

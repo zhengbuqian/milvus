@@ -35,6 +35,14 @@ func Test_GetPrivilegeExtObjAlterRole(t *testing.T) {
 	assert.True(t, proto.Equal(&createRolePrivilege, &alterRolePrivilege))
 }
 
+func Test_GetPrivilegeExtObjReplaceIndex(t *testing.T) {
+	privilegeExt, err := GetPrivilegeExtObj(&milvuspb.ReplaceIndexRequest{})
+	assert.NoError(t, err)
+	assert.Equal(t, commonpb.ObjectType_Collection, privilegeExt.ObjectType)
+	assert.Equal(t, commonpb.ObjectPrivilege_PrivilegeCreateIndex, privilegeExt.ObjectPrivilege)
+	assert.Equal(t, int32(3), privilegeExt.ObjectNameIndex)
+}
+
 func Test_GetResourceName(t *testing.T) {
 	{
 		request := &milvuspb.HasCollectionRequest{

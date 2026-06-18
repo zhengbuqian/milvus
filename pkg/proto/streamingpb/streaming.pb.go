@@ -7,16 +7,16 @@
 package streamingpb
 
 import (
+	any1 "github.com/golang/protobuf/ptypes/any"
+	empty "github.com/golang/protobuf/ptypes/empty"
 	commonpb "github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
 	milvuspb "github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
 	schemapb "github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	datapb "github.com/milvus-io/milvus/pkg/v3/proto/datapb"
 	messagespb "github.com/milvus-io/milvus/pkg/v3/proto/messagespb"
+	field_mask "google.golang.org/genproto/protobuf/field_mask"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	anypb "google.golang.org/protobuf/types/known/anypb"
-	emptypb "google.golang.org/protobuf/types/known/emptypb"
-	fieldmaskpb "google.golang.org/protobuf/types/known/fieldmaskpb"
 	reflect "reflect"
 	sync "sync"
 )
@@ -1408,7 +1408,7 @@ type UpdateWALBalancePolicyRequest struct {
 
 	Config     *WALBalancePolicyConfig `protobuf:"bytes,1,opt,name=config,proto3" json:"config,omitempty"`
 	Nodes      *WALBalancePolicyNodes  `protobuf:"bytes,2,opt,name=nodes,proto3" json:"nodes,omitempty"`
-	UpdateMask *fieldmaskpb.FieldMask  `protobuf:"bytes,3,opt,name=update_mask,json=updateMask,proto3" json:"update_mask,omitempty"`
+	UpdateMask *field_mask.FieldMask   `protobuf:"bytes,3,opt,name=update_mask,json=updateMask,proto3" json:"update_mask,omitempty"`
 }
 
 func (x *UpdateWALBalancePolicyRequest) Reset() {
@@ -1457,7 +1457,7 @@ func (x *UpdateWALBalancePolicyRequest) GetNodes() *WALBalancePolicyNodes {
 	return nil
 }
 
-func (x *UpdateWALBalancePolicyRequest) GetUpdateMask() *fieldmaskpb.FieldMask {
+func (x *UpdateWALBalancePolicyRequest) GetUpdateMask() *field_mask.FieldMask {
 	if x != nil {
 		return x.UpdateMask
 	}
@@ -2225,14 +2225,14 @@ func (m *DeliverPolicy) GetPolicy() isDeliverPolicy_Policy {
 	return nil
 }
 
-func (x *DeliverPolicy) GetAll() *emptypb.Empty {
+func (x *DeliverPolicy) GetAll() *empty.Empty {
 	if x, ok := x.GetPolicy().(*DeliverPolicy_All); ok {
 		return x.All
 	}
 	return nil
 }
 
-func (x *DeliverPolicy) GetLatest() *emptypb.Empty {
+func (x *DeliverPolicy) GetLatest() *empty.Empty {
 	if x, ok := x.GetPolicy().(*DeliverPolicy_Latest); ok {
 		return x.Latest
 	}
@@ -2258,11 +2258,11 @@ type isDeliverPolicy_Policy interface {
 }
 
 type DeliverPolicy_All struct {
-	All *emptypb.Empty `protobuf:"bytes,1,opt,name=all,proto3,oneof"` // deliver all messages.
+	All *empty.Empty `protobuf:"bytes,1,opt,name=all,proto3,oneof"` // deliver all messages.
 }
 
 type DeliverPolicy_Latest struct {
-	Latest *emptypb.Empty `protobuf:"bytes,2,opt,name=latest,proto3,oneof"` // deliver the latest message.
+	Latest *empty.Empty `protobuf:"bytes,2,opt,name=latest,proto3,oneof"` // deliver the latest message.
 }
 
 type DeliverPolicy_StartFrom struct {
@@ -3324,7 +3324,7 @@ type ProduceMessageResponseResult struct {
 	Id              *commonpb.MessageID    `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`                                                    // the offset of the message in the channel.
 	Timetick        uint64                 `protobuf:"varint,2,opt,name=timetick,proto3" json:"timetick,omitempty"`                                       // the timetick of that message sent.
 	TxnContext      *messagespb.TxnContext `protobuf:"bytes,3,opt,name=txnContext,proto3" json:"txnContext,omitempty"`                                    // the txn context of the message.
-	Extra           *anypb.Any             `protobuf:"bytes,4,opt,name=extra,proto3" json:"extra,omitempty"`                                              // the extra message.
+	Extra           *any1.Any              `protobuf:"bytes,4,opt,name=extra,proto3" json:"extra,omitempty"`                                              // the extra message.
 	LastConfirmedId *commonpb.MessageID    `protobuf:"bytes,5,opt,name=last_confirmed_id,json=lastConfirmedId,proto3" json:"last_confirmed_id,omitempty"` // the last confirmed message id.
 }
 
@@ -3381,7 +3381,7 @@ func (x *ProduceMessageResponseResult) GetTxnContext() *messagespb.TxnContext {
 	return nil
 }
 
-func (x *ProduceMessageResponseResult) GetExtra() *anypb.Any {
+func (x *ProduceMessageResponseResult) GetExtra() *any1.Any {
 	if x != nil {
 		return x.Extra
 	}
@@ -6709,12 +6709,12 @@ var file_streaming_proto_goTypes = []interface{}{
 	(*commonpb.MessageID)(nil),                        // 93: milvus.proto.common.MessageID
 	(*commonpb.ImmutableMessage)(nil),                 // 94: milvus.proto.common.ImmutableMessage
 	(*commonpb.ReplicateConfiguration)(nil),           // 95: milvus.proto.common.ReplicateConfiguration
-	(*fieldmaskpb.FieldMask)(nil),                     // 96: google.protobuf.FieldMask
-	(*emptypb.Empty)(nil),                             // 97: google.protobuf.Empty
+	(*field_mask.FieldMask)(nil),                      // 96: google.protobuf.FieldMask
+	(*empty.Empty)(nil),                               // 97: google.protobuf.Empty
 	(messagespb.MessageType)(0),                       // 98: milvus.proto.messages.MessageType
 	(*commonpb.ReplicateCheckpoint)(nil),              // 99: milvus.proto.common.ReplicateCheckpoint
 	(*messagespb.TxnContext)(nil),                     // 100: milvus.proto.messages.TxnContext
-	(*anypb.Any)(nil),                                 // 101: google.protobuf.Any
+	(*any1.Any)(nil),                                  // 101: google.protobuf.Any
 	(*schemapb.CollectionSchema)(nil),                 // 102: milvus.proto.schema.CollectionSchema
 	(datapb.SegmentLevel)(0),                          // 103: milvus.proto.data.SegmentLevel
 	(commonpb.WALName)(0),                             // 104: milvus.proto.common.WALName

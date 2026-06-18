@@ -898,6 +898,10 @@ func (s *Server) CreateIndex(ctx context.Context, req *indexpb.CreateIndexReques
 	return s.mixCoord.CreateIndex(ctx, req)
 }
 
+func (s *Server) ReplaceIndex(ctx context.Context, req *indexpb.ReplaceIndexRequest) (*commonpb.Status, error) {
+	return s.mixCoord.ReplaceIndex(ctx, req)
+}
+
 func (s *Server) AlterIndex(ctx context.Context, req *indexpb.AlterIndexRequest) (*commonpb.Status, error) {
 	return s.mixCoord.AlterIndex(ctx, req)
 }

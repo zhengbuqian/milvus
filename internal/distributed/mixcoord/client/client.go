@@ -1361,6 +1361,12 @@ func (c *Client) CreateIndex(ctx context.Context, req *indexpb.CreateIndexReques
 	return resp, err
 }
 
+func (c *Client) ReplaceIndex(ctx context.Context, req *indexpb.ReplaceIndexRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
+	return wrapGrpcCall(ctx, c, func(client MixCoordClient) (*commonpb.Status, error) {
+		return client.ReplaceIndex(ctx, req)
+	})
+}
+
 // AlterIndex sends the alter index request to IndexCoord.
 func (c *Client) AlterIndex(ctx context.Context, req *indexpb.AlterIndexRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
 	return wrapGrpcCall(ctx, c, func(client MixCoordClient) (*commonpb.Status, error) {

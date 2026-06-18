@@ -448,6 +448,16 @@
         },
         {
             "MessageSpecializedType": {
+                "HeaderType": "messagespb.ReplaceIndexMessageHeader",
+                "BodyType": "messagespb.ReplaceIndexMessageBody"
+            },
+            "MessageTypeWithVersion": {
+                "MessageType": "MessageTypeReplaceIndex",
+                "Version": 2
+            }
+        },
+        {
+            "MessageSpecializedType": {
                 "HeaderType": "messagespb.AlterIndexMessageHeader",
                 "BodyType": "messagespb.AlterIndexMessageBody"
             },

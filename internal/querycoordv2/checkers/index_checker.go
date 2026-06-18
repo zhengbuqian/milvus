@@ -53,6 +53,16 @@ type IndexChecker struct {
 	targetMgr meta.TargetManagerInterface
 }
 
+type missingIndexTarget struct {
+	fieldID int64
+	indexID int64
+}
+
+type indexGenerationKey struct {
+	fieldID int64
+	path    string
+}
+
 func NewIndexChecker(
 	meta *meta.Meta,
 	dist *meta.DistributionManager,
@@ -124,7 +134,7 @@ func (c *IndexChecker) checkReplica(ctx context.Context, collection *meta.Collec
 	idSegments := make(map[int64]*meta.Segment)
 
 	roNodeSet := typeutil.NewUniqueSet(replica.GetRONodes()...)
-	targets := make(map[int64][]int64) // segmentID => FieldID
+	targets := make(map[int64][]missingIndexTarget) // segmentID => missing index targets
 
 	idSegmentsStats := make(map[int64]*meta.Segment)
 	targetsStats := make(map[int64][]int64) // segmentID => FieldID
@@ -157,10 +167,11 @@ func (c *IndexChecker) checkReplica(ctx context.Context, collection *meta.Collec
 			continue
 		}
 		for segmentID, segmentIndexInfo := range segmentIndexInfos {
-			fields := targets[segmentID]
-			missingFields := typeutil.NewSet(fields...)
+			targetIndexIDs := lo.SliceToMap(targets[segmentID], func(target missingIndexTarget) (int64, struct{}) {
+				return target.indexID, struct{}{}
+			})
 			for _, fieldIndexInfo := range segmentIndexInfo {
-				if missingFields.Contain(fieldIndexInfo.GetFieldID()) &&
+				if _, ok := targetIndexIDs[fieldIndexInfo.GetIndexID()]; ok &&
 					fieldIndexInfo.GetEnableIndex() &&
 					len(fieldIndexInfo.GetIndexFilePaths()) > 0 {
 					segmentsToUpdate[segmentID] = idSegments[segmentID]
@@ -199,17 +210,38 @@ func (c *IndexChecker) checkReplica(ctx context.Context, collection *meta.Collec
 	return tasks
 }
 
-func (c *IndexChecker) checkSegment(segment *meta.Segment, indexInfos []*indexpb.IndexInfo) (fieldIDs []int64) {
-	var result []int64
+func normalizedGenerationState(indexInfo *indexpb.IndexInfo) indexpb.IndexGenerationState {
+	if indexInfo.GetGenerationState() == indexpb.IndexGenerationState_IndexGenerationStateNone {
+		return indexpb.IndexGenerationState_Current
+	}
+	return indexInfo.GetGenerationState()
+}
+
+func indexInfoGenerationKey(indexInfo *indexpb.IndexInfo) indexGenerationKey {
+	key := indexGenerationKey{fieldID: indexInfo.GetFieldID()}
+	for _, param := range indexInfo.GetIndexParams() {
+		if param.GetKey() == common.JSONPathKey {
+			key.path = param.GetValue()
+			break
+		}
+	}
+	return key
+}
+
+func (c *IndexChecker) checkSegment(segment *meta.Segment, indexInfos []*indexpb.IndexInfo) []missingIndexTarget {
+	var result []missingIndexTarget
 	for _, indexInfo := range indexInfos {
-		fieldID, indexID := indexInfo.FieldID, indexInfo.IndexID
+		if normalizedGenerationState(indexInfo) != indexpb.IndexGenerationState_Current {
+			continue
+		}
+		fieldID, indexID := indexInfo.GetFieldID(), indexInfo.GetIndexID()
 		info, ok := segment.IndexInfo[indexID]
 		if !ok {
-			result = append(result, fieldID)
+			result = append(result, missingIndexTarget{fieldID: fieldID, indexID: indexID})
 			continue
 		}
 		if indexID != info.GetIndexID() || !info.GetEnableIndex() {
-			result = append(result, fieldID)
+			result = append(result, missingIndexTarget{fieldID: fieldID, indexID: indexID})
 		}
 	}
 	return result
@@ -218,14 +250,33 @@ func (c *IndexChecker) checkSegment(segment *meta.Segment, indexInfos []*indexpb
 // checkRedundantIndices returns redundant indexIDs for each segment
 func (c *IndexChecker) checkRedundantIndices(segment *meta.Segment, indexInfos []*indexpb.IndexInfo) []int64 {
 	var redundant []int64
-	indexInfoMap := typeutil.NewSet[int64]()
+	indexInfoMap := make(map[int64]*indexpb.IndexInfo, len(indexInfos))
+	currentByKey := make(map[indexGenerationKey]*indexpb.IndexInfo)
 
 	for _, indexInfo := range indexInfos {
-		indexInfoMap.Insert(indexInfo.IndexID)
+		indexInfoMap[indexInfo.GetIndexID()] = indexInfo
+		if normalizedGenerationState(indexInfo) == indexpb.IndexGenerationState_Current {
+			currentByKey[indexInfoGenerationKey(indexInfo)] = indexInfo
+		}
 	}
 
-	for indexID := range segment.IndexInfo {
-		if !indexInfoMap.Contain(indexID) {
+	for indexID, loadedIndex := range segment.IndexInfo {
+		indexInfo, ok := indexInfoMap[indexID]
+		if !ok {
+			redundant = append(redundant, indexID)
+			continue
+		}
+		if normalizedGenerationState(indexInfo) != indexpb.IndexGenerationState_Retired {
+			continue
+		}
+		current, ok := currentByKey[indexInfoGenerationKey(indexInfo)]
+		if !ok {
+			continue
+		}
+		if currentLoaded, ok := segment.IndexInfo[current.GetIndexID()]; ok &&
+			currentLoaded.GetEnableIndex() &&
+			currentLoaded.GetIndexID() == current.GetIndexID() &&
+			loadedIndex.GetIndexID() == indexID {
 			redundant = append(redundant, indexID)
 		}
 	}
