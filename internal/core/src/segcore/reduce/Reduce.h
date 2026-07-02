@@ -138,6 +138,17 @@ class ReduceHelper {
     struct LazyPrimaryKeyCache {
         std::vector<milvus::PkType> primary_keys;
         std::vector<bool> filled;
+        std::vector<int64_t> missing_offsets;
+        SearchResult pk_result;
+        size_t next_batch_size = 0;
+        int64_t last_batch_end = -1;
+    };
+
+    struct LazyTieCandidate {
+        const milvus::PkType* primary_key;
+        SearchResult* search_result;
+        int64_t segment_index;
+        int64_t offset;
     };
 
     void
@@ -145,6 +156,9 @@ class ReduceHelper {
 
     void
     FillEntryData();
+
+    bool
+    ShouldUseLazyPk() const;
 
     const milvus::PkType&
     GetPrimaryKey(SearchResult* search_result, int64_t offset);
@@ -154,10 +168,19 @@ class ReduceHelper {
                                int64_t begin,
                                int64_t end);
 
+    size_t
+    NextLazyPrimaryKeyBatchSize(LazyPrimaryKeyCache& cache,
+                                int64_t begin) const;
+
     void
     SortEqualScoresOneNQLazyPk(size_t nq_begin,
                                size_t nq_end,
                                SearchResult* search_result);
+
+    int64_t
+    ReduceSearchResultForOneNQLazyPk(int64_t qi,
+                                     int64_t topk,
+                                     int64_t& result_offset);
 
     bool
     TryAcceptSearchResult(const SearchResultPair& result);
@@ -183,6 +206,9 @@ class ReduceHelper {
     std::unordered_set<ElementSearchResultKey, ElementSearchResultKeyHash>
         element_result_set_;
     std::unordered_map<SearchResult*, LazyPrimaryKeyCache> lazy_pk_caches_;
+    bool lazy_pk_ = false;
+    std::vector<SearchResultPair*> lazy_tied_pairs_;
+    std::vector<LazyTieCandidate> lazy_tie_candidates_;
     // dim0: num_segments_; dim1: total_nq_; dim2: offset
     std::vector<std::vector<std::vector<int64_t>>> final_search_records_;
     std::vector<int64_t> slice_nqs_;

@@ -26,7 +26,13 @@
 
 namespace milvus::segcore {
 namespace {
-constexpr int64_t kLazyPrimaryKeyBatchSize = 64;
+constexpr int64_t kLazyPrimaryKeyInitialBatchSize = 32;
+constexpr int64_t kLazyPrimaryKeyMaxBatchSize = 64;
+
+bool
+IsSameScore(float left, float right) {
+    return std::fabs(left - right) < EPSILON;
+}
 }  // namespace
 
 void
@@ -39,6 +45,7 @@ ReduceHelper::Initialize() {
     total_nq_ = search_results_[0]->total_nq_;
     num_segments_ = search_results_.size();
     num_slices_ = slice_nqs_.size();
+    lazy_pk_ = ShouldUseLazyPk();
 
     // prefix sum, get slices offsets
     AssertInfo(num_slices_ > 0, "empty slice_nqs is not allowed");
@@ -63,7 +70,9 @@ ReduceHelper::Initialize() {
 void
 ReduceHelper::Reduce() {
     FillPrimaryKey();
-    SortEqualScoresByPks();
+    if (!UseLazyPk()) {
+        SortEqualScoresByPks();
+    }
     ReduceResultData();
     RefreshSearchResults();
     FillEntryData();
@@ -196,6 +205,11 @@ ReduceHelper::FillPrimaryKey() {
 
 bool
 ReduceHelper::UseLazyPk() const {
+    return lazy_pk_;
+}
+
+bool
+ReduceHelper::ShouldUseLazyPk() const {
     auto flag = std::getenv("MILVUS_REDUCE_LAZY_PK");
     if (flag == nullptr || std::string(flag) != "1") {
         return false;
@@ -223,6 +237,20 @@ ReduceHelper::UseLazyPk() const {
     return true;
 }
 
+size_t
+ReduceHelper::NextLazyPrimaryKeyBatchSize(LazyPrimaryKeyCache& cache,
+                                          int64_t begin) const {
+    if (cache.next_batch_size == 0) {
+        cache.next_batch_size = kLazyPrimaryKeyInitialBatchSize;
+    } else if (cache.last_batch_end == begin) {
+        cache.next_batch_size = std::min<size_t>(cache.next_batch_size * 2,
+                                                 kLazyPrimaryKeyMaxBatchSize);
+    } else if (begin > cache.last_batch_end) {
+        cache.next_batch_size = kLazyPrimaryKeyInitialBatchSize;
+    }
+    return cache.next_batch_size;
+}
+
 void
 ReduceHelper::MaterializeLazyPrimaryKeys(SearchResult* search_result,
                                          int64_t begin,
@@ -243,41 +271,47 @@ ReduceHelper::MaterializeLazyPrimaryKeys(SearchResult* search_result,
                cache.primary_keys.size(),
                search_result->seg_offsets_.size());
 
-    std::vector<int64_t> offsets;
-    offsets.reserve(end - begin);
+    cache.missing_offsets.clear();
+    cache.missing_offsets.reserve(end - begin);
     for (auto offset = begin; offset < end; ++offset) {
         if (!cache.filled[offset]) {
-            offsets.push_back(offset);
+            cache.missing_offsets.push_back(offset);
         }
     }
-    if (offsets.empty()) {
+    if (cache.missing_offsets.empty()) {
         return;
     }
 
-    SearchResult pk_result;
+    auto& pk_result = cache.pk_result;
     pk_result.total_nq_ = 1;
-    pk_result.unity_topK_ = offsets.size();
+    pk_result.unity_topK_ = cache.missing_offsets.size();
     pk_result.total_data_cnt_ = search_result->total_data_cnt_;
     pk_result.segment_ = search_result->segment_;
-    pk_result.seg_offsets_.resize(offsets.size());
-    pk_result.distances_.resize(offsets.size());
-    pk_result.topk_per_nq_prefix_sum_ = {0, offsets.size()};
-    for (size_t i = 0; i < offsets.size(); ++i) {
-        pk_result.seg_offsets_[i] = search_result->seg_offsets_[offsets[i]];
+    pk_result.pk_type_ = milvus::DataType::NONE;
+    pk_result.primary_keys_.clear();
+    pk_result.seg_offsets_.resize(cache.missing_offsets.size());
+    pk_result.distances_.resize(cache.missing_offsets.size());
+    pk_result.topk_per_nq_prefix_sum_.resize(2);
+    pk_result.topk_per_nq_prefix_sum_[0] = 0;
+    pk_result.topk_per_nq_prefix_sum_[1] = cache.missing_offsets.size();
+    for (size_t i = 0; i < cache.missing_offsets.size(); ++i) {
+        pk_result.seg_offsets_[i] =
+            search_result->seg_offsets_[cache.missing_offsets[i]];
     }
 
     auto segment = static_cast<SegmentInterface*>(search_result->segment_);
     segment->FillPrimaryKeys(plan_, pk_result);
-    AssertInfo(pk_result.primary_keys_.size() == offsets.size(),
+    AssertInfo(pk_result.primary_keys_.size() == cache.missing_offsets.size(),
                "wrong lazy primary key count {}, expected {}",
                pk_result.primary_keys_.size(),
-               offsets.size());
+               cache.missing_offsets.size());
 
-    for (size_t i = 0; i < offsets.size(); ++i) {
-        auto offset = offsets[i];
+    for (size_t i = 0; i < cache.missing_offsets.size(); ++i) {
+        auto offset = cache.missing_offsets[i];
         cache.primary_keys[offset] = std::move(pk_result.primary_keys_[i]);
         cache.filled[offset] = true;
     }
+    cache.last_batch_end = end;
 }
 
 const milvus::PkType&
@@ -304,7 +338,9 @@ ReduceHelper::GetPrimaryKey(SearchResult* search_result, int64_t offset) {
             range_it == search_result->topk_per_nq_prefix_sum_.end()
                 ? static_cast<int64_t>(search_result->seg_offsets_.size())
                 : static_cast<int64_t>(*range_it);
-        auto batch_end = std::min(nq_end, offset + kLazyPrimaryKeyBatchSize);
+        auto batch_size = NextLazyPrimaryKeyBatchSize(cache, offset);
+        auto batch_end = std::min<int64_t>(
+            nq_end, offset + static_cast<int64_t>(batch_size));
         MaterializeLazyPrimaryKeys(search_result, offset, batch_end);
     }
     return cache.primary_keys[offset];
@@ -343,9 +379,8 @@ ReduceHelper::SortEqualScoresOneNQ(size_t nq_begin,
     while (start < nq_end) {
         // find scope with same scores
         size_t end = start + 1;
-        while (end < nq_end &&
-               std::fabs(search_result->distances_[end] -
-                         search_result->distances_[start]) < EPSILON) {
+        while (end < nq_end && IsSameScore(search_result->distances_[end],
+                                           search_result->distances_[start])) {
             ++end;
         }
 
@@ -448,9 +483,8 @@ ReduceHelper::SortEqualScoresOneNQLazyPk(size_t nq_begin,
     size_t start = nq_begin;
     while (start < nq_end) {
         size_t end = start + 1;
-        while (end < nq_end &&
-               std::fabs(search_result->distances_[end] -
-                         search_result->distances_[start]) < EPSILON) {
+        while (end < nq_end && IsSameScore(search_result->distances_[end],
+                                           search_result->distances_[start])) {
             ++end;
         }
 
@@ -628,6 +662,10 @@ int64_t
 ReduceHelper::ReduceSearchResultForOneNQ(int64_t qi,
                                          int64_t topk,
                                          int64_t& offset) {
+    if (UseLazyPk()) {
+        return ReduceSearchResultForOneNQLazyPk(qi, topk, offset);
+    }
+
     std::priority_queue<SearchResultPair*,
                         std::vector<SearchResultPair*>,
                         SearchResultPairComparator>
@@ -644,7 +682,6 @@ ReduceHelper::ReduceSearchResultForOneNQ(int64_t qi,
         if (offset_beg == offset_end) {
             continue;
         }
-        auto lazy_pk = UseLazyPk();
         auto primary_key = GetPrimaryKey(search_result, offset_beg);
         auto distance = search_result->distances_[offset_beg];
         pairs_.emplace_back(primary_key,
@@ -654,7 +691,7 @@ ReduceHelper::ReduceSearchResultForOneNQ(int64_t qi,
                             offset_beg,
                             offset_end,
                             std::nullopt,
-                            lazy_pk);
+                            false);
         heap.push(&pairs_.back());
     }
 
@@ -687,11 +724,158 @@ ReduceHelper::ReduceSearchResultForOneNQ(int64_t qi,
         }
         pilot->advance();
         if (pilot->primary_key_ != INVALID_PK) {
-            if (UseLazyPk()) {
+            heap.push(pilot);
+        }
+    }
+    return dup_cnt;
+}
+
+int64_t
+ReduceHelper::ReduceSearchResultForOneNQLazyPk(int64_t qi,
+                                               int64_t topk,
+                                               int64_t& offset) {
+    std::priority_queue<SearchResultPair*,
+                        std::vector<SearchResultPair*>,
+                        SearchResultPairComparator>
+        heap;
+    pk_set_.clear();
+    element_result_set_.clear();
+    pairs_.clear();
+    lazy_tied_pairs_.clear();
+    lazy_tie_candidates_.clear();
+
+    pairs_.reserve(num_segments_);
+    for (int i = 0; i < num_segments_; i++) {
+        auto search_result = search_results_[i];
+        auto offset_beg = search_result->topk_per_nq_prefix_sum_[qi];
+        auto offset_end = search_result->topk_per_nq_prefix_sum_[qi + 1];
+        if (offset_beg == offset_end) {
+            continue;
+        }
+        auto primary_key = GetPrimaryKey(search_result, offset_beg);
+        auto distance = search_result->distances_[offset_beg];
+        pairs_.emplace_back(primary_key,
+                            distance,
+                            search_result,
+                            i,
+                            offset_beg,
+                            offset_end,
+                            std::nullopt,
+                            true);
+        heap.push(&pairs_.back());
+    }
+
+    if (heap.empty()) {
+        return 0;
+    }
+
+    int64_t dup_cnt = 0;
+    auto start = offset;
+    while (offset - start < topk && !heap.empty()) {
+        auto pilot = heap.top();
+        heap.pop();
+        if (pilot->primary_key_ == INVALID_PK) {
+            break;
+        }
+
+        auto current_distance = pilot->distance_;
+        auto has_cross_segment_tie =
+            !heap.empty() &&
+            IsSameScore(heap.top()->distance_, current_distance);
+        auto next_offset = pilot->offset_ + 1;
+        auto has_local_tie =
+            next_offset < pilot->offset_rb_ &&
+            IsSameScore(pilot->search_result_->distances_[next_offset],
+                        current_distance);
+
+        if (!has_cross_segment_tie && !has_local_tie) {
+            auto index = pilot->segment_index_;
+            if (TryAcceptSearchResult(*pilot)) {
+                pilot->search_result_->result_offsets_.push_back(offset++);
+                final_search_records_[index][qi].push_back(pilot->offset_);
+            } else {
+                dup_cnt++;
+            }
+
+            pilot->advance();
+            if (pilot->primary_key_ != INVALID_PK) {
                 pilot->primary_key_ =
                     GetPrimaryKey(pilot->search_result_, pilot->offset_);
+                heap.push(pilot);
             }
-            heap.push(pilot);
+            continue;
+        }
+
+        lazy_tied_pairs_.clear();
+        lazy_tie_candidates_.clear();
+        lazy_tied_pairs_.push_back(pilot);
+        while (!heap.empty() &&
+               IsSameScore(heap.top()->distance_, current_distance)) {
+            lazy_tied_pairs_.push_back(heap.top());
+            heap.pop();
+        }
+
+        for (auto pair : lazy_tied_pairs_) {
+            auto search_result = pair->search_result_;
+            auto run_begin = pair->offset_;
+            auto run_end = run_begin + 1;
+            while (run_end < pair->offset_rb_ &&
+                   IsSameScore(search_result->distances_[run_end],
+                               current_distance)) {
+                ++run_end;
+            }
+
+            MaterializeLazyPrimaryKeys(search_result, run_begin, run_end);
+            for (auto candidate_offset = run_begin; candidate_offset < run_end;
+                 ++candidate_offset) {
+                lazy_tie_candidates_.push_back(
+                    {&GetPrimaryKey(search_result, candidate_offset),
+                     search_result,
+                     pair->segment_index_,
+                     candidate_offset});
+            }
+
+            pair->offset_ = run_end;
+            if (pair->offset_ < pair->offset_rb_) {
+                pair->distance_ = search_result->distances_[pair->offset_];
+                pair->primary_key_ =
+                    GetPrimaryKey(search_result, pair->offset_);
+            } else {
+                pair->primary_key_ = INVALID_PK;
+                pair->distance_ = std::numeric_limits<float>::min();
+            }
+        }
+
+        std::sort(
+            lazy_tie_candidates_.begin(),
+            lazy_tie_candidates_.end(),
+            [](const LazyTieCandidate& left, const LazyTieCandidate& right) {
+                if (*left.primary_key == *right.primary_key) {
+                    if (left.segment_index == right.segment_index) {
+                        return left.offset < right.offset;
+                    }
+                    return left.segment_index < right.segment_index;
+                }
+                return *left.primary_key < *right.primary_key;
+            });
+
+        for (const auto& candidate : lazy_tie_candidates_) {
+            if (offset - start >= topk) {
+                break;
+            }
+            if (pk_set_.insert(*candidate.primary_key).second) {
+                candidate.search_result->result_offsets_.push_back(offset++);
+                final_search_records_[candidate.segment_index][qi].push_back(
+                    candidate.offset);
+            } else {
+                dup_cnt++;
+            }
+        }
+
+        for (auto pair : lazy_tied_pairs_) {
+            if (pair->primary_key_ != INVALID_PK) {
+                heap.push(pair);
+            }
         }
     }
     return dup_cnt;

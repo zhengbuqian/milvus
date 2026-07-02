@@ -736,6 +736,88 @@ TEST_P(TestChunkSegmentStorageV2, ReduceStringPkLazyDeduplicatesCandidates) {
               1);
 }
 
+TEST_P(TestChunkSegmentStorageV2, ReduceStringPkLazySortsTieBlock) {
+    if (!GetParam()) {
+        GTEST_SKIP() << "VARCHAR primary key lazy path only";
+    }
+
+    constexpr int64_t nq = 1;
+    constexpr int64_t candidate_topk = 5;
+    constexpr int64_t final_topk = 5;
+    milvus::query::Plan plan(schema);
+    plan.plan_node_ = std::make_unique<milvus::query::VectorPlanNode>();
+    plan.plan_node_->search_info_.topk_ = final_topk;
+    plan.plan_node_->search_info_.metric_type_ = knowhere::metric::L2;
+    plan.target_entries_.push_back(fields.at("pk"));
+
+    auto make_result = [&](const std::vector<int64_t>& offsets,
+                           const std::vector<float>& distances) {
+        SearchResult result;
+        result.total_nq_ = nq;
+        result.unity_topK_ = candidate_topk;
+        result.total_data_cnt_ = RowCount();
+        result.segment_ = segment.get();
+        result.seg_offsets_ = offsets;
+        result.distances_ = distances;
+        return result;
+    };
+
+    auto run_reduce = [&](bool lazy) {
+        ScopedEnvVar env("MILVUS_REDUCE_LAZY_PK");
+        if (lazy) {
+            env.Set("1");
+        } else {
+            env.Unset();
+        }
+
+        std::vector<SearchResult> results;
+        results.push_back(make_result({9, 1, 3, 5, 7}, {1, 1, 1, 2, 3}));
+        results.push_back(make_result({2, 4, 6, 8, 10}, {1, 1, 1, 2, 3}));
+        std::vector<SearchResult*> search_results{&results[0], &results[1]};
+        std::vector<int64_t> slice_nqs{nq};
+        std::vector<int64_t> slice_topks{final_topk};
+        ReduceHelper helper(search_results,
+                            &plan,
+                            slice_nqs.data(),
+                            slice_topks.data(),
+                            slice_nqs.size(),
+                            nullptr);
+        helper.Reduce();
+
+        std::vector<std::tuple<int64_t, int64_t, int64_t, std::string, float>>
+            records;
+        for (size_t segment_index = 0; segment_index < results.size();
+             ++segment_index) {
+            auto& result = results[segment_index];
+            EXPECT_EQ(result.primary_keys_.size(),
+                      result.result_offsets_.size());
+            for (size_t i = 0; i < result.primary_keys_.size(); ++i) {
+                records.emplace_back(
+                    result.result_offsets_[i],
+                    segment_index,
+                    result.seg_offsets_[i],
+                    std::get<std::string>(result.primary_keys_[i]),
+                    result.distances_[i]);
+            }
+        }
+        std::sort(records.begin(), records.end());
+        return records;
+    };
+
+    auto eager_records = run_reduce(false);
+    auto lazy_records = run_reduce(true);
+    ASSERT_EQ(lazy_records, eager_records);
+    ASSERT_EQ(lazy_records.size(), final_topk);
+
+    std::vector<std::string> pks;
+    pks.reserve(lazy_records.size());
+    for (const auto& record : lazy_records) {
+        ASSERT_FLOAT_EQ(std::get<4>(record), 1.0);
+        pks.push_back(std::get<3>(record));
+    }
+    ASSERT_TRUE(std::is_sorted(pks.begin(), pks.end()));
+}
+
 TEST_P(TestChunkSegmentStorageV2, TestTermExpr) {
     bool pk_is_string = GetParam();
     // query int64 expr
