@@ -95,6 +95,9 @@ class ReduceHelper {
     void
     RefreshSearchResults();
 
+    void
+    ReduceAnnOnlyNoReduce();
+
     virtual void
     RefreshSingleSearchResult(SearchResult* search_result,
                               int seg_res_idx,
@@ -183,6 +186,7 @@ class ReduceHelper {
     std::unordered_set<ElementSearchResultKey, ElementSearchResultKeyHash>
         element_result_set_;
     std::unordered_map<SearchResult*, LazyPrimaryKeyCache> lazy_pk_caches_;
+    bool ann_only_no_reduce_ = false;
     // dim0: num_segments_; dim1: total_nq_; dim2: offset
     std::vector<std::vector<std::vector<int64_t>>> final_search_records_;
     std::vector<int64_t> slice_nqs_;

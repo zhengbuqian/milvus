@@ -27,6 +27,28 @@
 namespace milvus::segcore {
 namespace {
 constexpr int64_t kLazyPrimaryKeyBatchSize = 64;
+
+milvus::PkType
+MakeAnnOnlyPrimaryKey(milvus::DataType pk_type, int64_t rank) {
+    auto value = rank + 1;
+    switch (pk_type) {
+        case milvus::DataType::INT64: {
+            return value;
+        }
+        case milvus::DataType::VARCHAR: {
+            auto text = std::to_string(value % 1000);
+            if (text.size() < 3) {
+                text.insert(text.begin(), 3 - text.size(), '0');
+            }
+            return text;
+        }
+        default: {
+            ThrowInfo(DataTypeInvalid,
+                      fmt::format("unsupported primary key type {}", pk_type));
+            return INVALID_PK;
+        }
+    }
+}
 }  // namespace
 
 void
@@ -62,6 +84,10 @@ ReduceHelper::Initialize() {
 
 void
 ReduceHelper::Reduce() {
+    ReduceAnnOnlyNoReduce();
+    GetTotalStorageCost();
+    return;
+
     FillPrimaryKey();
     SortEqualScoresByPks();
     ReduceResultData();
@@ -157,6 +183,98 @@ ReduceHelper::FilterInvalidSearchResult(SearchResult* search_result) {
     std::partial_sum(real_topks.begin(),
                      real_topks.end(),
                      search_result->topk_per_nq_prefix_sum_.begin() + 1);
+}
+
+void
+ReduceHelper::ReduceAnnOnlyNoReduce() {
+    tracer::AutoSpan span("ReduceHelper::ReduceAnnOnlyNoReduce",
+                          tracer::GetRootSpan());
+    ann_only_no_reduce_ = true;
+
+    SearchResult* selected_result = nullptr;
+    for (auto search_result : search_results_) {
+        search_result->primary_keys_.clear();
+        search_result->result_offsets_.clear();
+        search_result->output_fields_data_.clear();
+
+        if (search_result->unity_topK_ == 0) {
+            search_result->seg_offsets_.clear();
+            search_result->distances_.clear();
+            search_result->element_level_ = false;
+            search_result->element_indices_.clear();
+            search_result->group_by_values_.reset();
+            search_result->topk_per_nq_prefix_sum_.assign(total_nq_ + 1, 0);
+            continue;
+        }
+
+        FilterInvalidSearchResult(search_result);
+        if (selected_result == nullptr &&
+            search_result->get_total_result_count() > 0) {
+            selected_result = search_result;
+        }
+    }
+
+    auto primary_field_id =
+        plan_->schema_->get_primary_field_id().value_or(milvus::FieldId(-1));
+    AssertInfo(primary_field_id.get() != INVALID_FIELD_ID, "Primary key is -1");
+    auto pk_type = plan_->schema_->operator[](primary_field_id).get_data_type();
+
+    for (auto search_result : search_results_) {
+        if (search_result != selected_result) {
+            search_result->seg_offsets_.clear();
+            search_result->distances_.clear();
+            search_result->primary_keys_.clear();
+            search_result->result_offsets_.clear();
+            search_result->output_fields_data_.clear();
+            search_result->element_level_ = false;
+            search_result->element_indices_.clear();
+            search_result->group_by_values_.reset();
+            search_result->topk_per_nq_prefix_sum_.assign(total_nq_ + 1, 0);
+            continue;
+        }
+
+        std::vector<int64_t> seg_offsets;
+        std::vector<float> distances;
+        std::vector<milvus::PkType> primary_keys;
+        std::vector<int64_t> result_offsets;
+        std::vector<size_t> topk_per_nq_prefix_sum(total_nq_ + 1, 0);
+        std::vector<int64_t> slice_result_offsets(num_slices_, 0);
+
+        for (int64_t slice_index = 0; slice_index < num_slices_;
+             ++slice_index) {
+            auto nq_begin = slice_nqs_prefix_sum_[slice_index];
+            auto nq_end = slice_nqs_prefix_sum_[slice_index + 1];
+            auto final_topk = slice_topKs_[slice_index];
+            for (int64_t qi = nq_begin; qi < nq_end; ++qi) {
+                auto old_begin = search_result->topk_per_nq_prefix_sum_[qi];
+                auto old_end = search_result->topk_per_nq_prefix_sum_[qi + 1];
+                auto take_count =
+                    std::min<int64_t>(old_end - old_begin, final_topk);
+                for (int64_t rank = 0; rank < take_count; ++rank) {
+                    auto old_offset = old_begin + rank;
+                    seg_offsets.push_back(
+                        search_result->seg_offsets_[old_offset]);
+                    distances.push_back(search_result->distances_[old_offset]);
+                    primary_keys.push_back(
+                        MakeAnnOnlyPrimaryKey(pk_type, rank));
+                    result_offsets.push_back(
+                        slice_result_offsets[slice_index]++);
+                }
+                topk_per_nq_prefix_sum[qi + 1] = seg_offsets.size();
+            }
+        }
+
+        search_result->seg_offsets_.swap(seg_offsets);
+        search_result->distances_.swap(distances);
+        search_result->primary_keys_.swap(primary_keys);
+        search_result->result_offsets_.swap(result_offsets);
+        search_result->topk_per_nq_prefix_sum_.swap(topk_per_nq_prefix_sum);
+        search_result->pk_type_ = pk_type;
+        search_result->output_fields_data_.clear();
+        search_result->element_level_ = false;
+        search_result->element_indices_.clear();
+        search_result->group_by_values_.reset();
+    }
 }
 
 void
@@ -855,22 +973,26 @@ ReduceHelper::GetSearchResultDataSlice(const int slice_index,
                 // set result offset to fill output fields data
                 result_pairs[loc] = {&search_result->output_fields_data_, ki};
 
-                for (auto field_id : plan_->target_entries_) {
-                    auto& field_meta = plan_->schema_->operator[](field_id);
-                    if (field_meta.is_vector() && field_meta.is_nullable()) {
-                        auto it =
-                            search_result->output_fields_data_.find(field_id);
-                        if (it != search_result->output_fields_data_.end()) {
-                            auto& field_data = it->second;
-                            if (field_data->valid_data_size() > 0) {
-                                int64_t valid_idx = 0;
-                                for (int64_t i = 0; i < ki; ++i) {
-                                    if (field_data->valid_data(i)) {
-                                        valid_idx++;
+                if (!ann_only_no_reduce_) {
+                    for (auto field_id : plan_->target_entries_) {
+                        auto& field_meta = plan_->schema_->operator[](field_id);
+                        if (field_meta.is_vector() &&
+                            field_meta.is_nullable()) {
+                            auto it = search_result->output_fields_data_.find(
+                                field_id);
+                            if (it !=
+                                search_result->output_fields_data_.end()) {
+                                auto& field_data = it->second;
+                                if (field_data->valid_data_size() > 0) {
+                                    int64_t valid_idx = 0;
+                                    for (int64_t i = 0; i < ki; ++i) {
+                                        if (field_data->valid_data(i)) {
+                                            valid_idx++;
+                                        }
                                     }
+                                    result_pairs[loc].setValidDataOffset(
+                                        field_id, valid_idx);
                                 }
-                                result_pairs[loc].setValidDataOffset(field_id,
-                                                                     valid_idx);
                             }
                         }
                     }
@@ -890,23 +1012,25 @@ ReduceHelper::GetSearchResultDataSlice(const int slice_index,
     FillOtherData(result_count, nq_begin, nq_end, search_result_data);
 
     // set output fields
-    for (auto field_id : plan_->target_entries_) {
-        auto& field_meta = plan_->schema_->operator[](field_id);
-        auto field_data =
-            milvus::segcore::MergeDataArray(result_pairs, field_meta);
-        if (field_meta.get_data_type() == DataType::ARRAY) {
-            field_data->mutable_scalars()
-                ->mutable_array_data()
-                ->set_element_type(
-                    proto::schema::DataType(field_meta.get_element_type()));
-        } else if (field_meta.get_data_type() == DataType::VECTOR_ARRAY) {
-            field_data->mutable_vectors()
-                ->mutable_vector_array()
-                ->set_element_type(
-                    proto::schema::DataType(field_meta.get_element_type()));
+    if (!ann_only_no_reduce_) {
+        for (auto field_id : plan_->target_entries_) {
+            auto& field_meta = plan_->schema_->operator[](field_id);
+            auto field_data =
+                milvus::segcore::MergeDataArray(result_pairs, field_meta);
+            if (field_meta.get_data_type() == DataType::ARRAY) {
+                field_data->mutable_scalars()
+                    ->mutable_array_data()
+                    ->set_element_type(
+                        proto::schema::DataType(field_meta.get_element_type()));
+            } else if (field_meta.get_data_type() == DataType::VECTOR_ARRAY) {
+                field_data->mutable_vectors()
+                    ->mutable_vector_array()
+                    ->set_element_type(
+                        proto::schema::DataType(field_meta.get_element_type()));
+            }
+            search_result_data->mutable_fields_data()->AddAllocated(
+                field_data.release());
         }
-        search_result_data->mutable_fields_data()->AddAllocated(
-            field_data.release());
     }
     // SearchResultData to blob
     auto size = search_result_data->ByteSizeLong();
