@@ -13,9 +13,7 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <cstdlib>
 #include <numeric>
-#include <string>
 
 #include "common/BitsetView.h"
 #include "common/Consts.h"
@@ -28,12 +26,6 @@
 
 namespace milvus::segcore {
 
-inline bool
-UseMockAnnRandomResults() {
-    auto flag = std::getenv("MILVUS_MOCK_ANN_RANDOM_RESULTS");
-    return flag != nullptr && std::string(flag) == "1";
-}
-
 inline uint64_t
 MixMockAnnSeed(uint64_t value) {
     value += 0x9e3779b97f4a7c15ULL;
@@ -44,21 +36,13 @@ MixMockAnnSeed(uint64_t value) {
 
 inline uint64_t
 GetMockAnnSeed() {
-    auto seed = 0x853c49e6748fea9bULL;
-    auto seed_env = std::getenv("MILVUS_MOCK_ANN_RANDOM_SEED");
-    if (seed_env != nullptr) {
-        seed = std::strtoull(seed_env, nullptr, 10);
-    }
-    return seed;
+    return 0x853c49e6748fea9bULL;
 }
 
 inline bool
 CanUseMockAnnRandomResults(const SearchInfo& search_info,
                            const FieldMeta& field_meta,
                            const size_t* query_offsets) {
-    if (!UseMockAnnRandomResults()) {
-        return false;
-    }
     if (field_meta.is_nullable() ||
         field_meta.get_data_type() == DataType::VECTOR_ARRAY) {
         return false;

@@ -117,6 +117,20 @@ BuildIvfSqVectorIndex(const std::vector<float>& data,
 
 }  // namespace
 
+TEST(test_chunk_segment, TestMockAnnRandomResultsEnabledByDefault) {
+    Schema schema;
+    auto vector_field_id = schema.AddDebugField(
+        "fakevec", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+
+    SearchInfo search_info;
+    search_info.topk_ = 4;
+    search_info.field_id_ = vector_field_id;
+    search_info.metric_type_ = knowhere::metric::L2;
+
+    ASSERT_TRUE(segcore::CanUseMockAnnRandomResults(
+        search_info, schema[vector_field_id], nullptr));
+}
+
 TEST(test_chunk_segment, TestMockAnnRandomResults) {
     SearchInfo search_info;
     search_info.topk_ = 4;
