@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "Utils.h"
+#include "MockVectorSearch.h"
 #include "Types.h"
 #include "cachinglayer/Manager.h"
 #include "common/Array.h"
@@ -892,6 +893,18 @@ ChunkedSegmentSealedImpl::vector_search(SearchInfo& search_info,
 
     AssertInfo(field_meta.is_vector(),
                "The meta type of vector field is not vector type");
+
+    if (CanUseMockAnnRandomResults(search_info, field_meta, query_offsets)) {
+        AssertInfo(num_rows_.has_value(), "Can't get row count value");
+        FillMockAnnRandomResults(search_info,
+                                 query_count,
+                                 num_rows_.value(),
+                                 bitset,
+                                 get_segment_id(),
+                                 output);
+        milvus::tracer::AddEvent("finish_mock_ann_random_results");
+        return;
+    }
 
     if (get_bit(binlog_index_bitset_, field_id)) {
         AssertInfo(

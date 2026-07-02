@@ -31,8 +31,10 @@
 #include "common/Json.h"
 #include "common/Types.h"
 #include "common/Common.h"
+#include "common/Tracer.h"
 #include "fmt/format.h"
 #include "log/Log.h"
+#include "segcore/MockVectorSearch.h"
 #include "nlohmann/json.hpp"
 #include "query/PlanNode.h"
 #include "query/SearchOnSealed.h"
@@ -1111,6 +1113,22 @@ SegmentGrowingImpl::vector_search(SearchInfo& search_info,
                                   const BitsetView& bitset,
                                   milvus::OpContext* op_context,
                                   SearchResult& output) const {
+    auto field_id = search_info.field_id_;
+    auto& field_meta = schema_->operator[](field_id);
+    AssertInfo(field_meta.is_vector(),
+               "The meta type of vector field is not vector type");
+
+    if (CanUseMockAnnRandomResults(search_info, field_meta, query_offsets)) {
+        FillMockAnnRandomResults(search_info,
+                                 query_count,
+                                 get_active_count(timestamp),
+                                 bitset,
+                                 get_segment_id(),
+                                 output);
+        milvus::tracer::AddEvent("finish_mock_ann_random_results");
+        return;
+    }
+
     query::SearchOnGrowing(*this,
                            search_info,
                            query_data,

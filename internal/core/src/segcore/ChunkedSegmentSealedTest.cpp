@@ -43,6 +43,7 @@
 #include "segcore/SegcoreConfig.h"
 #include "segcore/SegmentSealed.h"
 #include "segcore/ChunkedSegmentSealedImpl.h"
+#include "segcore/MockVectorSearch.h"
 #include "storage/RemoteChunkManagerSingleton.h"
 
 #include "segcore/Types.h"
@@ -115,6 +116,43 @@ BuildIvfSqVectorIndex(const std::vector<float>& data,
 }
 
 }  // namespace
+
+TEST(test_chunk_segment, TestMockAnnRandomResults) {
+    SearchInfo search_info;
+    search_info.topk_ = 4;
+    search_info.field_id_ = FieldId(101);
+    search_info.metric_type_ = knowhere::metric::L2;
+
+    BitsetType bitset(8);
+    bitset[1] = true;
+    bitset[6] = true;
+
+    SearchResult result;
+    segcore::FillMockAnnRandomResults(
+        search_info, 2, 8, BitsetView(bitset), 19530, result);
+
+    ASSERT_EQ(result.total_nq_, 2);
+    ASSERT_EQ(result.unity_topK_, 4);
+    ASSERT_EQ(result.seg_offsets_.size(), 8);
+    ASSERT_EQ(result.distances_.size(), 8);
+    ASSERT_FALSE(result.element_level_);
+
+    for (int64_t query_index = 0; query_index < result.total_nq_;
+         ++query_index) {
+        auto start = query_index * result.unity_topK_;
+        for (int64_t rank = 0; rank < result.unity_topK_; ++rank) {
+            auto offset = result.seg_offsets_[start + rank];
+            ASSERT_NE(offset, INVALID_SEG_OFFSET);
+            ASSERT_GE(offset, 0);
+            ASSERT_LT(offset, 8);
+            ASSERT_FALSE(bitset[offset]);
+            if (rank > 0) {
+                ASSERT_LT(result.distances_[start + rank - 1],
+                          result.distances_[start + rank]);
+            }
+        }
+    }
+}
 
 TEST(test_chunk_segment, TestSearchOnSealed) {
     int dim = 16;
