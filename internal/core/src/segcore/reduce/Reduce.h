@@ -18,6 +18,7 @@
 #include <memory>
 #include <vector>
 #include <queue>
+#include <unordered_map>
 #include <unordered_set>
 
 #include "common/type_c.h"
@@ -102,6 +103,14 @@ class ReduceHelper {
     void
     FillPrimaryKey();
 
+    bool
+    UseLazyPk() const;
+
+    void
+    RefreshSingleSearchResultLazyPk(SearchResult* search_result,
+                                    int seg_res_idx,
+                                    std::vector<int64_t>& real_topks);
+
     void
     ReduceResultData();
 
@@ -126,11 +135,29 @@ class ReduceHelper {
                          SearchResult* search_result);
 
  private:
+    struct LazyPrimaryKeyCache {
+        std::vector<milvus::PkType> primary_keys;
+        std::vector<bool> filled;
+    };
+
     void
     Initialize();
 
     void
     FillEntryData();
+
+    const milvus::PkType&
+    GetPrimaryKey(SearchResult* search_result, int64_t offset);
+
+    void
+    MaterializeLazyPrimaryKeys(SearchResult* search_result,
+                               int64_t begin,
+                               int64_t end);
+
+    void
+    SortEqualScoresOneNQLazyPk(size_t nq_begin,
+                               size_t nq_end,
+                               SearchResult* search_result);
 
     bool
     TryAcceptSearchResult(const SearchResultPair& result);
@@ -155,6 +182,7 @@ class ReduceHelper {
     std::unordered_set<milvus::PkType> pk_set_;
     std::unordered_set<ElementSearchResultKey, ElementSearchResultKeyHash>
         element_result_set_;
+    std::unordered_map<SearchResult*, LazyPrimaryKeyCache> lazy_pk_caches_;
     // dim0: num_segments_; dim1: total_nq_; dim2: offset
     std::vector<std::vector<std::vector<int64_t>>> final_search_records_;
     std::vector<int64_t> slice_nqs_;

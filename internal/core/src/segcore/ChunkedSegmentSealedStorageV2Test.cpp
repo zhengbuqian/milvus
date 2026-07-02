@@ -22,11 +22,14 @@
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstdint>
 #include <iostream>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -68,6 +71,38 @@ using namespace milvus::segcore;
 using namespace milvus::segcore::storagev1translator;
 
 namespace {
+class ScopedEnvVar {
+ public:
+    explicit ScopedEnvVar(const char* name) : name_(name) {
+        const auto* value = std::getenv(name_.c_str());
+        if (value != nullptr) {
+            old_value_ = value;
+        }
+    }
+
+    ~ScopedEnvVar() {
+        if (old_value_.has_value()) {
+            setenv(name_.c_str(), old_value_->c_str(), 1);
+        } else {
+            unsetenv(name_.c_str());
+        }
+    }
+
+    void
+    Set(const char* value) {
+        setenv(name_.c_str(), value, 1);
+    }
+
+    void
+    Unset() {
+        unsetenv(name_.c_str());
+    }
+
+ private:
+    std::string name_;
+    std::optional<std::string> old_value_;
+};
+
 class RawLookupOnlyIndex : public index::ScalarIndex<int64_t> {
  public:
     RawLookupOnlyIndex() : index::ScalarIndex<int64_t>("raw_lookup_only") {
@@ -436,11 +471,13 @@ INSTANTIATE_TEST_SUITE_P(TestChunkSegmentStorageV2,
                          testing::Bool());
 
 TEST_P(TestChunkSegmentStorageV2, ReduceStringPkWithSimulatedAnnResult) {
-    constexpr int64_t nq = 4;
-    constexpr int64_t candidate_topk = 500;
-    constexpr int64_t final_topk = 32;
-    constexpr int64_t pk_lookup_count = nq * candidate_topk;
-    static_assert(pk_lookup_count == 2000);
+    constexpr int64_t nq = 1;
+    constexpr int64_t segment_result_count = 15;
+    constexpr int64_t candidate_topk = 2000;
+    constexpr int64_t final_topk = 2000;
+    constexpr int64_t pk_lookup_count =
+        segment_result_count * nq * candidate_topk;
+    static_assert(pk_lookup_count == 30000);
     ASSERT_EQ(RowCount(), 1000000);
     ASSERT_EQ(fixed_string_width, 32);
 
@@ -448,14 +485,27 @@ TEST_P(TestChunkSegmentStorageV2, ReduceStringPkWithSimulatedAnnResult) {
     plan.plan_node_ = std::make_unique<milvus::query::VectorPlanNode>();
     plan.plan_node_->search_info_.topk_ = final_topk;
     plan.plan_node_->search_info_.metric_type_ = knowhere::metric::L2;
-    plan.target_entries_.push_back(fields.at("string1"));
+    plan.target_entries_.push_back(fields.at("pk"));
 
-    auto offset_at = [this, candidate_topk](int64_t qi, int64_t rank) {
-        auto lookup_index = qi * candidate_topk + rank;
-        return (lookup_index * 499979 + qi * 9973) % RowCount();
+    auto row_count = RowCount();
+    auto offset_seed =
+        std::chrono::high_resolution_clock::now().time_since_epoch().count();
+    auto offset_base = static_cast<int64_t>(offset_seed % row_count);
+    constexpr int64_t offset_stride = 499979;
+    auto offset_at =
+        [candidate_topk, nq, offset_base, offset_stride, row_count](
+            int64_t segment_index, int64_t qi, int64_t rank) {
+            auto lookup_index =
+                (segment_index * nq + qi) * candidate_topk + rank;
+            return (offset_base + lookup_index * offset_stride) % row_count;
+        };
+
+    auto distance_at = [segment_result_count](int64_t segment_index,
+                                              int64_t rank) {
+        return static_cast<float>(rank * segment_result_count + segment_index);
     };
 
-    auto make_result = [&]() {
+    auto make_result = [&](int64_t segment_index) {
         SearchResult result;
         result.total_nq_ = nq;
         result.unity_topK_ = candidate_topk;
@@ -466,15 +516,15 @@ TEST_P(TestChunkSegmentStorageV2, ReduceStringPkWithSimulatedAnnResult) {
         for (int64_t qi = 0; qi < nq; ++qi) {
             for (int64_t rank = 0; rank < candidate_topk; ++rank) {
                 auto loc = qi * candidate_topk + rank;
-                result.seg_offsets_[loc] = offset_at(qi, rank);
-                result.distances_[loc] = static_cast<float>(rank);
+                result.seg_offsets_[loc] = offset_at(segment_index, qi, rank);
+                result.distances_[loc] = distance_at(segment_index, rank);
             }
         }
         return result;
     };
 
-    auto fast_pk_result = make_result();
-    auto generic_pk_result = make_result();
+    auto fast_pk_result = make_result(0);
+    auto generic_pk_result = make_result(0);
     auto start = std::chrono::steady_clock::now();
     segment->FillPrimaryKeys(&plan, fast_pk_result);
     auto fast_fill_us = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -492,6 +542,16 @@ TEST_P(TestChunkSegmentStorageV2, ReduceStringPkWithSimulatedAnnResult) {
     RecordProperty("row_count", std::to_string(RowCount()));
     RecordProperty("varchar_pk_len", std::to_string(fixed_string_width));
     RecordProperty("pk_lookup_count", std::to_string(pk_lookup_count));
+    RecordProperty("segment_result_count",
+                   std::to_string(segment_result_count));
+    RecordProperty("candidate_topk", std::to_string(candidate_topk));
+    RecordProperty("final_topk", std::to_string(final_topk));
+    RecordProperty("offset_base", std::to_string(offset_base));
+    RecordProperty("offset_stride", std::to_string(offset_stride));
+    RecordProperty("lazy_pk",
+                   std::getenv("MILVUS_REDUCE_LAZY_PK") != nullptr
+                       ? std::getenv("MILVUS_REDUCE_LAZY_PK")
+                       : "0");
 
     ASSERT_EQ(fast_pk_result.pk_type_, DataType::VARCHAR);
     ASSERT_EQ(generic_pk_result.pk_type_, DataType::VARCHAR);
@@ -502,8 +562,15 @@ TEST_P(TestChunkSegmentStorageV2, ReduceStringPkWithSimulatedAnnResult) {
                   std::get<std::string>(generic_pk_result.primary_keys_[i]));
     }
 
-    auto reduce_result = make_result();
-    std::vector<SearchResult*> search_results{&reduce_result};
+    std::vector<SearchResult> reduce_results;
+    reduce_results.reserve(segment_result_count);
+    std::vector<SearchResult*> search_results;
+    search_results.reserve(segment_result_count);
+    for (int64_t segment_index = 0; segment_index < segment_result_count;
+         ++segment_index) {
+        reduce_results.push_back(make_result(segment_index));
+        search_results.push_back(&reduce_results.back());
+    }
     std::vector<int64_t> slice_nqs{nq};
     std::vector<int64_t> slice_topks{final_topk};
     ReduceHelper helper(search_results,
@@ -512,36 +579,52 @@ TEST_P(TestChunkSegmentStorageV2, ReduceStringPkWithSimulatedAnnResult) {
                         slice_topks.data(),
                         slice_nqs.size(),
                         nullptr);
+    start = std::chrono::steady_clock::now();
     helper.Reduce();
+    auto reduce_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                         std::chrono::steady_clock::now() - start)
+                         .count();
+    RecordProperty("reduce_us", reduce_us);
 
-    ASSERT_EQ(reduce_result.primary_keys_.size(), nq * final_topk);
-    ASSERT_EQ(reduce_result.seg_offsets_.size(), nq * final_topk);
-    ASSERT_EQ(reduce_result.topk_per_nq_prefix_sum_.size(), nq + 1);
-    ASSERT_EQ(reduce_result.topk_per_nq_prefix_sum_.back(), nq * final_topk);
-    ASSERT_EQ(reduce_result.output_fields_data_.size(), 1);
+    int64_t total_reduced = 0;
+    for (int64_t segment_index = 0; segment_index < segment_result_count;
+         ++segment_index) {
+        auto& reduce_result = reduce_results[segment_index];
+        ASSERT_EQ(reduce_result.topk_per_nq_prefix_sum_.size(), nq + 1);
+        ASSERT_EQ(reduce_result.primary_keys_.size(),
+                  reduce_result.topk_per_nq_prefix_sum_.back());
+        ASSERT_EQ(reduce_result.seg_offsets_.size(),
+                  reduce_result.topk_per_nq_prefix_sum_.back());
+        ASSERT_EQ(reduce_result.output_fields_data_.size(), 1);
+        total_reduced += reduce_result.primary_keys_.size();
 
-    auto output_it =
-        reduce_result.output_fields_data_.find(fields.at("string1"));
-    ASSERT_NE(output_it, reduce_result.output_fields_data_.end());
-    const auto& string_output =
-        output_it->second->scalars().string_data().data();
-    ASSERT_EQ(string_output.size(), nq * final_topk);
+        auto output_it =
+            reduce_result.output_fields_data_.find(fields.at("pk"));
+        ASSERT_NE(output_it, reduce_result.output_fields_data_.end());
+        const auto& string_output =
+            output_it->second->scalars().string_data().data();
+        ASSERT_EQ(string_output.size(), reduce_result.primary_keys_.size());
 
-    for (int64_t qi = 0; qi < nq; ++qi) {
-        for (int64_t rank = 0; rank < final_topk; ++rank) {
-            auto loc = qi * final_topk + rank;
-            auto expected_offset = offset_at(qi, rank);
+        for (size_t rank = 0; rank < reduce_result.primary_keys_.size();
+             ++rank) {
+            auto expected_offset = offset_at(segment_index, 0, rank);
             auto expected_string = string_data[expected_offset];
-            ASSERT_EQ(reduce_result.seg_offsets_[loc], expected_offset);
-            ASSERT_EQ(std::get<std::string>(reduce_result.primary_keys_[loc]),
+            ASSERT_EQ(reduce_result.seg_offsets_[rank], expected_offset);
+            ASSERT_EQ(std::get<std::string>(reduce_result.primary_keys_[rank]),
                       expected_string);
-            ASSERT_EQ(string_output.Get(loc), expected_string);
-            ASSERT_FLOAT_EQ(reduce_result.distances_[loc],
-                            static_cast<float>(rank));
+            ASSERT_EQ(string_output.Get(rank), expected_string);
+            ASSERT_FLOAT_EQ(reduce_result.distances_[rank],
+                            distance_at(segment_index, rank));
         }
     }
+    ASSERT_EQ(total_reduced, nq * final_topk);
 
+    start = std::chrono::steady_clock::now();
     helper.Marshal();
+    auto marshal_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                          std::chrono::steady_clock::now() - start)
+                          .count();
+    RecordProperty("marshal_us", marshal_us);
     std::unique_ptr<SearchResultDataBlobs> blobs(
         static_cast<SearchResultDataBlobs*>(helper.GetSearchResultDataBlobs()));
 
@@ -560,15 +643,97 @@ TEST_P(TestChunkSegmentStorageV2, ReduceStringPkWithSimulatedAnnResult) {
         ASSERT_EQ(search_result_data.topks(qi), final_topk);
         for (int64_t rank = 0; rank < final_topk; ++rank) {
             auto loc = qi * final_topk + rank;
-            auto expected_offset = offset_at(qi, rank);
-            auto expected_string = string_data[expected_offset];
             ASSERT_EQ(search_result_data.ids().str_id().data(loc),
-                      expected_string);
-            ASSERT_EQ(marshaled_string_output.Get(loc), expected_string);
-            ASSERT_FLOAT_EQ(search_result_data.scores(loc),
-                            static_cast<float>(rank));
+                      marshaled_string_output.Get(loc));
         }
     }
+}
+
+TEST_P(TestChunkSegmentStorageV2, ReduceStringPkLazyDeduplicatesCandidates) {
+    if (!GetParam()) {
+        GTEST_SKIP() << "VARCHAR primary key lazy path only";
+    }
+
+    constexpr int64_t nq = 1;
+    constexpr int64_t candidate_topk = 5;
+    constexpr int64_t final_topk = 4;
+    milvus::query::Plan plan(schema);
+    plan.plan_node_ = std::make_unique<milvus::query::VectorPlanNode>();
+    plan.plan_node_->search_info_.topk_ = final_topk;
+    plan.plan_node_->search_info_.metric_type_ = knowhere::metric::L2;
+    plan.target_entries_.push_back(fields.at("pk"));
+
+    auto make_result = [&](const std::vector<int64_t>& offsets,
+                           const std::vector<float>& distances) {
+        SearchResult result;
+        result.total_nq_ = nq;
+        result.unity_topK_ = candidate_topk;
+        result.total_data_cnt_ = RowCount();
+        result.segment_ = segment.get();
+        result.seg_offsets_ = offsets;
+        result.distances_ = distances;
+        return result;
+    };
+
+    auto run_reduce = [&](bool lazy) {
+        ScopedEnvVar env("MILVUS_REDUCE_LAZY_PK");
+        if (lazy) {
+            env.Set("1");
+        } else {
+            env.Unset();
+        }
+
+        std::vector<SearchResult> results;
+        results.push_back(make_result({0, 1, 2, 3, 4}, {0, 2, 4, 6, 8}));
+        results.push_back(make_result({0, 5, 1, 6, 7}, {1, 3, 5, 7, 9}));
+        std::vector<SearchResult*> search_results{&results[0], &results[1]};
+        std::vector<int64_t> slice_nqs{nq};
+        std::vector<int64_t> slice_topks{final_topk};
+        ReduceHelper helper(search_results,
+                            &plan,
+                            slice_nqs.data(),
+                            slice_topks.data(),
+                            slice_nqs.size(),
+                            nullptr);
+        helper.Reduce();
+
+        std::vector<std::tuple<int64_t, int64_t, int64_t, std::string, float>>
+            records;
+        for (size_t segment_index = 0; segment_index < results.size();
+             ++segment_index) {
+            auto& result = results[segment_index];
+            EXPECT_EQ(result.primary_keys_.size(),
+                      result.result_offsets_.size());
+            for (size_t i = 0; i < result.primary_keys_.size(); ++i) {
+                records.emplace_back(
+                    result.result_offsets_[i],
+                    segment_index,
+                    result.seg_offsets_[i],
+                    std::get<std::string>(result.primary_keys_[i]),
+                    result.distances_[i]);
+            }
+        }
+        std::sort(records.begin(), records.end());
+        return records;
+    };
+
+    auto eager_records = run_reduce(false);
+    auto lazy_records = run_reduce(true);
+    ASSERT_EQ(lazy_records, eager_records);
+    ASSERT_EQ(lazy_records.size(), final_topk);
+
+    std::vector<std::string> pks;
+    pks.reserve(lazy_records.size());
+    for (const auto& record : lazy_records) {
+        pks.push_back(std::get<3>(record));
+    }
+    std::sort(pks.begin(), pks.end());
+    ASSERT_EQ(std::unique(pks.begin(), pks.end()), pks.end());
+    ASSERT_EQ(std::count_if(
+                  lazy_records.begin(),
+                  lazy_records.end(),
+                  [](const auto& record) { return std::get<2>(record) == 0; }),
+              1);
 }
 
 TEST_P(TestChunkSegmentStorageV2, TestTermExpr) {

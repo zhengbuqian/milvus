@@ -28,6 +28,7 @@ struct SearchResultPair {
     int64_t offset_;
     int64_t offset_rb_;                                       // right bound
     std::optional<milvus::GroupByValueType> group_by_value_;  //for group_by
+    bool lazy_pk_ = false;
 
     SearchResultPair(milvus::PkType primary_key,
                      float distance,
@@ -35,8 +36,14 @@ struct SearchResultPair {
                      int64_t index,
                      int64_t lb,
                      int64_t rb)
-        : SearchResultPair(
-              primary_key, distance, result, index, lb, rb, std::nullopt) {
+        : SearchResultPair(primary_key,
+                           distance,
+                           result,
+                           index,
+                           lb,
+                           rb,
+                           std::nullopt,
+                           false) {
     }
 
     SearchResultPair(milvus::PkType primary_key,
@@ -45,14 +52,16 @@ struct SearchResultPair {
                      int64_t index,
                      int64_t lb,
                      int64_t rb,
-                     std::optional<milvus::GroupByValueType> group_by_value)
+                     std::optional<milvus::GroupByValueType> group_by_value,
+                     bool lazy_pk = false)
         : primary_key_(std::move(primary_key)),
           distance_(distance),
           search_result_(result),
           segment_index_(index),
           offset_(lb),
           offset_rb_(rb),
-          group_by_value_(group_by_value) {
+          group_by_value_(group_by_value),
+          lazy_pk_(lazy_pk) {
     }
 
     bool
@@ -67,7 +76,9 @@ struct SearchResultPair {
     advance() {
         offset_++;
         if (offset_ < offset_rb_) {
-            primary_key_ = search_result_->primary_keys_.at(offset_);
+            if (!lazy_pk_) {
+                primary_key_ = search_result_->primary_keys_.at(offset_);
+            }
             distance_ = search_result_->distances_.at(offset_);
             if (search_result_->group_by_values_.has_value() &&
                 offset_ < search_result_->group_by_values_.value().size()) {

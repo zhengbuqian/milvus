@@ -12,7 +12,9 @@
 #include "Reduce.h"
 
 #include "log/Log.h"
+#include <cstdlib>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "common/EasyAssert.h"
@@ -23,6 +25,9 @@
 #include "segcore/ReduceUtils.h"
 
 namespace milvus::segcore {
+namespace {
+constexpr int64_t kLazyPrimaryKeyBatchSize = 64;
+}  // namespace
 
 void
 ReduceHelper::Initialize() {
@@ -160,6 +165,8 @@ ReduceHelper::FillPrimaryKey() {
                           tracer::GetRootSpan());
     // get primary keys for duplicates removal
     uint32_t valid_index = 0;
+    auto lazy_pk = UseLazyPk();
+    lazy_pk_caches_.clear();
     for (auto& search_result : search_results_) {
         // skip when results num is 0
         if (search_result->unity_topK_ == 0) {
@@ -169,13 +176,138 @@ ReduceHelper::FillPrimaryKey() {
         LOG_DEBUG("the size of search result: {}",
                   search_result->seg_offsets_.size());
         auto segment = static_cast<SegmentInterface*>(search_result->segment_);
-        if (search_result->get_total_result_count() > 0) {
-            segment->FillPrimaryKeys(plan_, *search_result);
+        auto result_count = search_result->get_total_result_count();
+        if (result_count > 0) {
+            if (lazy_pk) {
+                search_result->pk_type_ = milvus::DataType::VARCHAR;
+                search_result->primary_keys_.clear();
+                auto& cache = lazy_pk_caches_[search_result];
+                cache.primary_keys.resize(result_count);
+                cache.filled.assign(result_count, false);
+            } else {
+                segment->FillPrimaryKeys(plan_, *search_result);
+            }
             search_results_[valid_index++] = search_result;
         }
     }
     search_results_.resize(valid_index);
     num_segments_ = search_results_.size();
+}
+
+bool
+ReduceHelper::UseLazyPk() const {
+    auto flag = std::getenv("MILVUS_REDUCE_LAZY_PK");
+    if (flag == nullptr || std::string(flag) != "1") {
+        return false;
+    }
+
+    auto primary_field_id =
+        plan_->schema_->get_primary_field_id().value_or(milvus::FieldId(-1));
+    if (primary_field_id.get() == INVALID_FIELD_ID) {
+        return false;
+    }
+    if (plan_->schema_->operator[](primary_field_id).get_data_type() !=
+        milvus::DataType::VARCHAR) {
+        return false;
+    }
+
+    for (auto search_result : search_results_) {
+        if (search_result == nullptr) {
+            continue;
+        }
+        if (search_result->element_level_ ||
+            search_result->group_by_values_.has_value()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void
+ReduceHelper::MaterializeLazyPrimaryKeys(SearchResult* search_result,
+                                         int64_t begin,
+                                         int64_t end) {
+    auto cache_it = lazy_pk_caches_.find(search_result);
+    AssertInfo(cache_it != lazy_pk_caches_.end(),
+               "missing lazy primary key cache");
+    auto& cache = cache_it->second;
+    AssertInfo(
+        begin >= 0 && end >= begin &&
+            static_cast<size_t>(end) <= search_result->seg_offsets_.size(),
+        "invalid lazy primary key range [{}, {}), size {}",
+        begin,
+        end,
+        search_result->seg_offsets_.size());
+    AssertInfo(cache.primary_keys.size() == search_result->seg_offsets_.size(),
+               "lazy primary key cache size {}, expected {}",
+               cache.primary_keys.size(),
+               search_result->seg_offsets_.size());
+
+    std::vector<int64_t> offsets;
+    offsets.reserve(end - begin);
+    for (auto offset = begin; offset < end; ++offset) {
+        if (!cache.filled[offset]) {
+            offsets.push_back(offset);
+        }
+    }
+    if (offsets.empty()) {
+        return;
+    }
+
+    SearchResult pk_result;
+    pk_result.total_nq_ = 1;
+    pk_result.unity_topK_ = offsets.size();
+    pk_result.total_data_cnt_ = search_result->total_data_cnt_;
+    pk_result.segment_ = search_result->segment_;
+    pk_result.seg_offsets_.resize(offsets.size());
+    pk_result.distances_.resize(offsets.size());
+    pk_result.topk_per_nq_prefix_sum_ = {0, offsets.size()};
+    for (size_t i = 0; i < offsets.size(); ++i) {
+        pk_result.seg_offsets_[i] = search_result->seg_offsets_[offsets[i]];
+    }
+
+    auto segment = static_cast<SegmentInterface*>(search_result->segment_);
+    segment->FillPrimaryKeys(plan_, pk_result);
+    AssertInfo(pk_result.primary_keys_.size() == offsets.size(),
+               "wrong lazy primary key count {}, expected {}",
+               pk_result.primary_keys_.size(),
+               offsets.size());
+
+    for (size_t i = 0; i < offsets.size(); ++i) {
+        auto offset = offsets[i];
+        cache.primary_keys[offset] = std::move(pk_result.primary_keys_[i]);
+        cache.filled[offset] = true;
+    }
+}
+
+const milvus::PkType&
+ReduceHelper::GetPrimaryKey(SearchResult* search_result, int64_t offset) {
+    if (!UseLazyPk()) {
+        return search_result->primary_keys_.at(offset);
+    }
+
+    auto cache_it = lazy_pk_caches_.find(search_result);
+    AssertInfo(cache_it != lazy_pk_caches_.end(),
+               "missing lazy primary key cache");
+    auto& cache = cache_it->second;
+    AssertInfo(offset >= 0 && static_cast<size_t>(offset) < cache.filled.size(),
+               "invalid lazy primary key offset {}, cache size {}",
+               offset,
+               cache.filled.size());
+
+    if (!cache.filled[offset]) {
+        auto range_it =
+            std::upper_bound(search_result->topk_per_nq_prefix_sum_.begin(),
+                             search_result->topk_per_nq_prefix_sum_.end(),
+                             static_cast<size_t>(offset));
+        auto nq_end =
+            range_it == search_result->topk_per_nq_prefix_sum_.end()
+                ? static_cast<int64_t>(search_result->seg_offsets_.size())
+                : static_cast<int64_t>(*range_it);
+        auto batch_end = std::min(nq_end, offset + kLazyPrimaryKeyBatchSize);
+        MaterializeLazyPrimaryKeys(search_result, offset, batch_end);
+    }
+    return cache.primary_keys[offset];
 }
 
 void
@@ -198,6 +330,11 @@ void
 ReduceHelper::SortEqualScoresOneNQ(size_t nq_begin,
                                    size_t nq_end,
                                    SearchResult* search_result) {
+    if (UseLazyPk()) {
+        SortEqualScoresOneNQLazyPk(nq_begin, nq_end, search_result);
+        return;
+    }
+
     if (nq_end - nq_begin <= 1)
         return;
 
@@ -291,6 +428,65 @@ ReduceHelper::SortEqualScoresOneNQ(size_t nq_begin,
 }
 
 void
+ReduceHelper::SortEqualScoresOneNQLazyPk(size_t nq_begin,
+                                         size_t nq_end,
+                                         SearchResult* search_result) {
+    AssertInfo(!search_result->element_level_ &&
+                   !search_result->group_by_values_.has_value(),
+               "lazy primary key reduce only supports row-level non-group-by "
+               "search results");
+    if (nq_end - nq_begin <= 1) {
+        return;
+    }
+
+    auto cache_it = lazy_pk_caches_.find(search_result);
+    AssertInfo(cache_it != lazy_pk_caches_.end(),
+               "missing lazy primary key cache");
+    auto& cache = cache_it->second;
+
+    std::vector<size_t> indices;
+    size_t start = nq_begin;
+    while (start < nq_end) {
+        size_t end = start + 1;
+        while (end < nq_end &&
+               std::fabs(search_result->distances_[end] -
+                         search_result->distances_[start]) < EPSILON) {
+            ++end;
+        }
+
+        if (end - start > 1) {
+            MaterializeLazyPrimaryKeys(search_result, start, end);
+            indices.resize(end - start);
+            std::iota(indices.begin(), indices.end(), 0);
+            std::sort(indices.begin(),
+                      indices.end(),
+                      [&cache, start](size_t i, size_t j) {
+                          return cache.primary_keys[start + i] <
+                                 cache.primary_keys[start + j];
+                      });
+
+            std::vector<float> distances(indices.size());
+            std::vector<int64_t> seg_offsets(indices.size());
+            std::vector<PkType> primary_keys(indices.size());
+            for (size_t i = 0; i < indices.size(); ++i) {
+                auto src = start + indices[i];
+                distances[i] = search_result->distances_[src];
+                seg_offsets[i] = search_result->seg_offsets_[src];
+                primary_keys[i] = std::move(cache.primary_keys[src]);
+            }
+            for (size_t i = 0; i < indices.size(); ++i) {
+                auto dst = start + i;
+                search_result->distances_[dst] = distances[i];
+                search_result->seg_offsets_[dst] = seg_offsets[i];
+                cache.primary_keys[dst] = std::move(primary_keys[i]);
+                cache.filled[dst] = true;
+            }
+        }
+        start = end;
+    }
+}
+
+void
 ReduceHelper::RefreshSearchResults() {
     tracer::AutoSpan span("ReduceHelper::RefreshSearchResults",
                           tracer::GetRootSpan());
@@ -308,6 +504,11 @@ void
 ReduceHelper::RefreshSingleSearchResult(SearchResult* search_result,
                                         int seg_res_idx,
                                         std::vector<int64_t>& real_topks) {
+    if (UseLazyPk()) {
+        RefreshSingleSearchResultLazyPk(search_result, seg_res_idx, real_topks);
+        return;
+    }
+
     CheckElementIndicesSize(search_result,
                             search_result->primary_keys_.size(),
                             "refresh search result");
@@ -334,6 +535,52 @@ ReduceHelper::RefreshSingleSearchResult(SearchResult* search_result,
     if (search_result->element_level_) {
         search_result->element_indices_.resize(index);
     }
+}
+
+void
+ReduceHelper::RefreshSingleSearchResultLazyPk(
+    SearchResult* search_result,
+    int seg_res_idx,
+    std::vector<int64_t>& real_topks) {
+    CheckElementIndicesSize(search_result,
+                            search_result->seg_offsets_.size(),
+                            "lazy refresh search result");
+
+    uint32_t final_size = 0;
+    for (int j = 0; j < total_nq_; j++) {
+        final_size += final_search_records_[seg_res_idx][j].size();
+    }
+
+    std::vector<milvus::PkType> primary_keys(final_size);
+    std::vector<float> distances(final_size);
+    std::vector<int64_t> seg_offsets(final_size);
+    std::vector<int32_t> element_indices;
+    if (search_result->element_level_) {
+        element_indices.resize(final_size);
+    }
+
+    uint32_t index = 0;
+    for (int j = 0; j < total_nq_; j++) {
+        for (auto offset : final_search_records_[seg_res_idx][j]) {
+            primary_keys[index] = GetPrimaryKey(search_result, offset);
+            distances[index] = search_result->distances_[offset];
+            seg_offsets[index] = search_result->seg_offsets_[offset];
+            if (search_result->element_level_) {
+                element_indices[index] =
+                    search_result->element_indices_[offset];
+            }
+            index++;
+            real_topks[j]++;
+        }
+    }
+
+    search_result->primary_keys_.swap(primary_keys);
+    search_result->distances_.swap(distances);
+    search_result->seg_offsets_.swap(seg_offsets);
+    if (search_result->element_level_) {
+        search_result->element_indices_.swap(element_indices);
+    }
+    lazy_pk_caches_.erase(search_result);
 }
 
 void
@@ -397,10 +644,17 @@ ReduceHelper::ReduceSearchResultForOneNQ(int64_t qi,
         if (offset_beg == offset_end) {
             continue;
         }
-        auto primary_key = search_result->primary_keys_[offset_beg];
+        auto lazy_pk = UseLazyPk();
+        auto primary_key = GetPrimaryKey(search_result, offset_beg);
         auto distance = search_result->distances_[offset_beg];
-        pairs_.emplace_back(
-            primary_key, distance, search_result, i, offset_beg, offset_end);
+        pairs_.emplace_back(primary_key,
+                            distance,
+                            search_result,
+                            i,
+                            offset_beg,
+                            offset_end,
+                            std::nullopt,
+                            lazy_pk);
         heap.push(&pairs_.back());
     }
 
@@ -433,6 +687,10 @@ ReduceHelper::ReduceSearchResultForOneNQ(int64_t qi,
         }
         pilot->advance();
         if (pilot->primary_key_ != INVALID_PK) {
+            if (UseLazyPk()) {
+                pilot->primary_key_ =
+                    GetPrimaryKey(pilot->search_result_, pilot->offset_);
+            }
             heap.push(pilot);
         }
     }
@@ -452,8 +710,10 @@ ReduceHelper::ReduceResultData() {
                    "incorrect search result distance size");
         AssertInfo(search_result->seg_offsets_.size() == result_count,
                    "incorrect search result seg offset size");
-        AssertInfo(search_result->primary_keys_.size() == result_count,
-                   "incorrect search result primary key size");
+        if (!UseLazyPk()) {
+            AssertInfo(search_result->primary_keys_.size() == result_count,
+                       "incorrect search result primary key size");
+        }
         CheckElementIndicesSize(
             search_result, result_count, "reduce search result");
     }
