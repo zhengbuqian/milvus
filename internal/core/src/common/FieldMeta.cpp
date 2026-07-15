@@ -151,6 +151,13 @@ FieldMeta::ParseFrom(const milvus::proto::schema::FieldSchema& schema_proto) {
     }
 
     auto data_type = DataType(schema_proto.data_type());
+    auto element_type = DataType(schema_proto.element_type());
+    auto external_field_mapping = schema_proto.external_field();
+
+    if (data_type == DataType::VECTOR_ARRAY) {
+        AssertInfo(element_type != DataType::NONE,
+                   "element_type must be specified for VECTOR_ARRAY");
+    }
 
     auto default_value = [&]() -> std::optional<DefaultValueType> {
         if (!schema_proto.has_default_value()) {
@@ -158,6 +165,23 @@ FieldMeta::ParseFrom(const milvus::proto::schema::FieldSchema& schema_proto) {
         }
         return schema_proto.default_value();
     }();
+
+    if (data_type == DataType::VECTOR_ARRAY) {
+        // todo(SpadeA): revisit the code when index build for vector array is ready
+        int64_t dim = 0;
+        auto type_map = RepeatedKeyValToMap(schema_proto.type_params());
+        AssertInfo(type_map.count("dim"), "dim not found");
+        dim = boost::lexical_cast<int64_t>(type_map.at("dim"));
+
+        return FieldMeta{name,
+                         field_id,
+                         data_type,
+                         element_type,
+                         dim,
+                         std::nullopt,
+                         nullable,
+                         external_field_mapping};
+    }
 
     if (IsVectorDataType(data_type)) {
         AssertInfo(!default_value.has_value(),

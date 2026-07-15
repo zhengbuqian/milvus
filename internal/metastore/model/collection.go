@@ -39,6 +39,7 @@ type Collection struct {
 	Description          string
 	AutoID               bool
 	Fields               []*Field
+	StructArrayFields    []*StructArrayField
 	Functions            []*Function
 	VirtualChannelNames  []string
 	PhysicalChannelNames []string
@@ -79,6 +80,7 @@ func (c *Collection) ShallowClone() *Collection {
 		Description:          c.Description,
 		AutoID:               c.AutoID,
 		Fields:               c.Fields,
+		StructArrayFields:    c.StructArrayFields,
 		Partitions:           c.Partitions,
 		VirtualChannelNames:  c.VirtualChannelNames,
 		PhysicalChannelNames: c.PhysicalChannelNames,
@@ -119,6 +121,7 @@ func (c *Collection) Clone() *Collection {
 		Description:          c.Description,
 		AutoID:               c.AutoID,
 		Fields:               CloneFields(c.Fields),
+		StructArrayFields:    CloneStructArrayFields(c.StructArrayFields),
 		Partitions:           ClonePartitions(c.Partitions),
 		VirtualChannelNames:  common.CloneStringList(c.VirtualChannelNames),
 		PhysicalChannelNames: common.CloneStringList(c.PhysicalChannelNames),
@@ -182,6 +185,7 @@ func (c *Collection) Equal(other Collection) bool {
 		c.Description == other.Description &&
 		c.AutoID == other.AutoID &&
 		CheckFieldsEqual(c.Fields, other.Fields) &&
+		CheckStructArrayFieldsEqual(c.StructArrayFields, other.StructArrayFields) &&
 		c.ShardsNum == other.ShardsNum &&
 		c.ConsistencyLevel == other.ConsistencyLevel &&
 		checkParamsEqual(c.Properties, other.Properties) &&
@@ -271,6 +275,7 @@ func UnmarshalCollectionModel(coll *pb.CollectionInfo) *Collection {
 		Description:          coll.Schema.Description,
 		AutoID:               coll.Schema.AutoID,
 		Fields:               UnmarshalFieldModels(coll.GetSchema().GetFields()),
+		StructArrayFields:    UnmarshalStructArrayFieldModels(coll.GetSchema().GetStructArrayFields()),
 		Partitions:           partitions,
 		VirtualChannelNames:  coll.VirtualChannelNames,
 		PhysicalChannelNames: coll.PhysicalChannelNames,
@@ -298,14 +303,15 @@ func MarshalCollectionModel(coll *Collection) *pb.CollectionInfo {
 }
 
 type config struct {
-	withFields     bool
-	withPartitions bool
+	withFields            bool
+	withPartitions        bool
+	withStructArrayFields bool
 }
 
 type Option func(c *config)
 
 func newDefaultConfig() *config {
-	return &config{withFields: false, withPartitions: false}
+	return &config{withFields: false, withPartitions: false, withStructArrayFields: false}
 }
 
 func WithFields() Option {
@@ -317,6 +323,12 @@ func WithFields() Option {
 func WithPartitions() Option {
 	return func(c *config) {
 		c.withPartitions = true
+	}
+}
+
+func WithStructArrayFields() Option {
+	return func(c *config) {
+		c.withStructArrayFields = true
 	}
 }
 
@@ -343,6 +355,23 @@ func marshalCollectionModelWithConfig(coll *Collection, c *config) *pb.Collectio
 		collSchema.Fields = fields
 	}
 
+	if c.withStructArrayFields {
+		structArrayFields := MarshalStructArrayFieldModels(coll.StructArrayFields)
+		collSchema.StructArrayFields = structArrayFields
+	}
+
+	shardInfos := make([]*pb.CollectionShardInfo, len(coll.ShardInfos))
+	for idx, channelName := range coll.VirtualChannelNames {
+		if shard, ok := coll.ShardInfos[channelName]; ok {
+			shardInfos[idx] = &pb.CollectionShardInfo{
+				LastTruncateTimeTick: shard.LastTruncateTimeTick,
+			}
+		} else {
+			shardInfos[idx] = &pb.CollectionShardInfo{
+				LastTruncateTimeTick: 0,
+			}
+		}
+	}
 	collectionPb := &pb.CollectionInfo{
 		ID:                   coll.CollectionID,
 		DbId:                 coll.DBID,

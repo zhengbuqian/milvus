@@ -36,6 +36,9 @@ const milvus::FieldId TimestampFieldID = milvus::FieldId(1);
 // Virtual field ID for two-project mode: carries segment offsets through
 // the pipeline so that deferred fields can be fetched after TopK.
 const milvus::FieldId SegmentOffsetFieldID = milvus::FieldId(-100);
+// Virtual field ID for element-level ORDER BY: carries the matched element
+// index alongside SegmentOffsetFieldID after TopK.
+const milvus::FieldId ElementIndexFieldID = milvus::FieldId(-101);
 
 // fill followed extra info to binlog file
 const char ORIGIN_SIZE_KEY[] = "original_size";
@@ -128,6 +131,7 @@ const std::string PARTITION_KEY_ISOLATION_KEY = "partition_key_isolation";
 const std::string STORAGE_VERSION_KEY = "storage_version";
 const std::string DIM_KEY = "dim";
 const std::string DATA_TYPE_KEY = "data_type";
+const std::string ELEMENT_TYPE_KEY = "element_type";
 const std::string INDEX_NUM_ROWS_KEY = "index_num_rows";
 const std::string SEGMENT_MANIFEST_KEY = "segment_manifest";
 const std::string EXTERNAL_SPEC_KEY = "external_spec";
@@ -143,3 +147,26 @@ const int64_t STORAGE_V3 = 3;
 const std::string UNKNOW_CAST_FUNCTION_NAME = "unknown";
 
 const int64_t DEFAULT_SHORT_COLUMN_GROUP_ID = 0;
+
+// VectorArray related, used for fetch metadata from Arrow schema
+const std::string ELEMENT_TYPE_KEY_FOR_ARROW = "elementType";
+// EPSILON value for comparing float numbers
+const float EPSILON = 0.0000000119;
+const std::string NAMESPACE_FIELD_NAME = "$namespace_id";
+const std::string MMAP_ENABLED_KEY = "mmap.enabled";
+
+const int64_t LOGICAL_BITS = 18;
+// Warmup policy keys
+// Field-level key (in field type_params)
+const std::string WARMUP_KEY = "warmup";
+// Collection-level keys (in collection properties)
+const std::string WARMUP_VECTOR_INDEX_KEY = "warmup.vectorIndex";
+const std::string WARMUP_SCALAR_INDEX_KEY = "warmup.scalarIndex";
+const std::string WARMUP_SCALAR_FIELD_KEY = "warmup.scalarField";
+const std::string WARMUP_VECTOR_FIELD_KEY = "warmup.vectorField";
+
+// Scalar index version constants
+// Version 3 introduces hybrid index configuration support
+constexpr int32_t kHybridIndexConfigVersion = 3;
+// The last version before hybrid index config support was added
+constexpr int32_t kLastVersionWithoutHybridIndexConfig = 2;

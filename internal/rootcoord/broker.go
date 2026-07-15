@@ -250,14 +250,8 @@ func (b *ServerBroker) BroadcastAlteredCollection(ctx context.Context, collectio
 		partitionIDs = append(partitionIDs, p.PartitionID)
 	}
 	dcReq := &datapb.AlterCollectionRequest{
-		CollectionID: req.GetCollectionID(),
-		Schema: &schemapb.CollectionSchema{
-			Name:        colMeta.Name,
-			Description: colMeta.Description,
-			AutoID:      colMeta.AutoID,
-			Fields:      model.MarshalFieldModels(colMeta.Fields),
-			Functions:   model.MarshalFunctionModels(colMeta.Functions),
-		},
+		CollectionID:   collectionID,
+		Schema:         colMeta.ToCollectionSchemaPB(),
 		PartitionIDs:   partitionIDs,
 		StartPositions: colMeta.StartPositions,
 		Properties:     colMeta.Properties,

@@ -162,7 +162,8 @@ func CheckRowsEqual(schema *schemapb.CollectionSchema, data *storage.InsertData)
 	if len(data.Data) == 0 {
 		return nil
 	}
-	idToField := lo.KeyBy(schema.GetFields(), func(field *schemapb.FieldSchema) int64 {
+	allFields := typeutil.GetAllFieldSchemas(schema)
+	idToField := lo.KeyBy(allFields, func(field *schemapb.FieldSchema) int64 {
 		return field.GetFieldID()
 	})
 
@@ -259,7 +260,8 @@ func IsFillableField(field *schemapb.FieldSchema) bool {
 }
 
 func AppendNullableDefaultFieldsData(schema *schemapb.CollectionSchema, data *storage.InsertData, rowNum int) error {
-	for _, field := range schema.GetFields() {
+	allFields := typeutil.GetAllFieldSchemas(schema)
+	for _, field := range allFields {
 		if !IsFillableField(field) {
 			continue
 		}
@@ -379,7 +381,8 @@ func AppendNullableDefaultFieldsData(schema *schemapb.CollectionSchema, data *st
 			schemapb.DataType_BFloat16Vector,
 			schemapb.DataType_BinaryVector,
 			schemapb.DataType_SparseFloatVector,
-			schemapb.DataType_Int8Vector:
+			schemapb.DataType_Int8Vector,
+			schemapb.DataType_ArrayOfVector:
 			if nullable {
 				for i := 0; i < rowNum; i++ {
 					if err = fieldData.AppendRow(nil); err != nil {
@@ -470,6 +473,12 @@ func GetInsertDataRowCount(data *storage.InsertData, schema *schemapb.Collection
 	fields := lo.KeyBy(schema.GetFields(), func(field *schemapb.FieldSchema) int64 {
 		return field.GetFieldID()
 	})
+	for _, structField := range schema.GetStructArrayFields() {
+		for _, subField := range structField.GetFields() {
+			fields[subField.GetFieldID()] = subField
+		}
+	}
+
 	for fieldID, fd := range data.Data {
 		if fd == nil {
 			// normally is impossible, just to avoid potential crash here

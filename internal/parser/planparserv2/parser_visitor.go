@@ -43,6 +43,8 @@ type ParserVisitor struct {
 	parser.BasePlanVisitor
 	schema *typeutil.SchemaHelper
 	args   *ParserVisitorArgs
+	// currentStructArrayField stores the struct array field name when processing ElementFilter
+	currentStructArrayField string
 }
 
 func NewParserVisitor(schema *typeutil.SchemaHelper, args *ParserVisitorArgs) *ParserVisitor {
@@ -298,8 +300,8 @@ func (v *ParserVisitor) parseRegexPatternOrTemplate(ctx parser.IExprContext, arg
 }
 
 func checkDirectComparisonBinaryField(columnInfo *planpb.ColumnInfo) error {
-	if typeutil.IsArrayType(columnInfo.GetDataType()) && len(columnInfo.GetNestedPath()) == 0 {
-		return errors.New("can not comparisons array fields directly")
+	if typeutil.IsArrayType(columnInfo.GetDataType()) && len(columnInfo.GetNestedPath()) == 0 && !columnInfo.GetIsElementLevel() {
+		return merr.WrapErrQueryPlanMsg("can not comparisons array fields directly")
 	}
 	return nil
 }
@@ -1078,6 +1080,10 @@ func isRandomSampleExpr(expr *ExprWithType) bool {
 	return expr.expr.GetRandomSampleExpr() != nil
 }
 
+func isElementFilterExpr(expr *ExprWithType) bool {
+	return expr.expr.GetElementFilterExpr() != nil
+}
+
 const EPSILON = 1e-10
 
 func (v *ParserVisitor) VisitRandomSample(ctx *parser.RandomSampleContext) interface{} {
@@ -1129,7 +1135,10 @@ func (v *ParserVisitor) VisitTerm(ctx *parser.TermContext) interface{} {
 	}
 
 	dataType := columnInfo.GetDataType()
-	if typeutil.IsArrayType(dataType) && len(columnInfo.GetNestedPath()) != 0 {
+	// Use element type for IN operation in two cases:
+	// 1. Array with nested path (e.g., arr[0] IN [1, 2, 3])
+	// 2. Array with element level flag (e.g., $[intField] IN [1, 2] in MATCH_ALL/ElementFilter)
+	if typeutil.IsArrayType(dataType) && (len(columnInfo.GetNestedPath()) != 0 || columnInfo.GetIsElementLevel()) {
 		dataType = columnInfo.GetElementType()
 	}
 
@@ -1215,7 +1224,83 @@ func (v *ParserVisitor) VisitTerm(ctx *parser.TermContext) interface{} {
 	}
 }
 
-func (v *ParserVisitor) getChildColumnInfo(identifier, child antlr.TerminalNode) (*planpb.ColumnInfo, error) {
+func isValidStructSubField(tokenText string) bool {
+	return len(tokenText) >= 4 && tokenText[:2] == "$[" && tokenText[len(tokenText)-1] == ']'
+}
+
+func (v *ParserVisitor) getColumnInfoFromStructSubField(tokenText string) (*planpb.ColumnInfo, error) {
+	if !isValidStructSubField(tokenText) {
+		return nil, merr.WrapErrParameterInvalidMsg("invalid struct sub-field syntax: %s", tokenText)
+	}
+	// Remove "$[" prefix and "]" suffix
+	fieldName := tokenText[2 : len(tokenText)-1]
+
+	// Check if we're inside an ElementFilter context
+	if v.currentStructArrayField == "" {
+		return nil, merr.WrapErrParameterInvalidMsg("$[%s] syntax can only be used inside ElementFilter", fieldName)
+	}
+
+	// Construct full field name for struct array field
+	fullFieldName := typeutil.ConcatStructFieldName(v.currentStructArrayField, fieldName)
+	// Get the struct array field info
+	field, err := v.schema.GetFieldFromName(fullFieldName)
+	if err != nil {
+		return nil, merr.WrapErrParameterInvalidMsg("array field not found: %s, error: %s", fullFieldName, err)
+	}
+
+	// In element-level context, data_type should be the element type
+	elementType := field.GetElementType()
+
+	nullable := field.GetNullable()
+	if structField := v.schema.GetStructArrayFieldFromName(v.currentStructArrayField); structField != nil {
+		nullable = nullable || structField.GetNullable()
+	}
+
+	return &planpb.ColumnInfo{
+		FieldId:         field.FieldID,
+		DataType:        elementType, // Use element type, not storage type
+		IsPrimaryKey:    field.IsPrimaryKey,
+		IsAutoID:        field.AutoID,
+		IsPartitionKey:  field.IsPartitionKey,
+		IsClusteringKey: field.IsClusteringKey,
+		ElementType:     elementType,
+		Nullable:        nullable,
+		IsElementLevel:  true, // Mark as element-level access
+	}, nil
+}
+
+func (v *ParserVisitor) getColumnInfoFromStructIndexField(identifier string) (*planpb.ColumnInfo, error) {
+	// Parse "struct_arr[0][sub_field]" -> fieldName="struct_arr", index="0", subField="sub_field"
+	parts := strings.SplitN(identifier, "[", 3)
+	if len(parts) != 3 {
+		return nil, merr.WrapErrParameterInvalidMsg("invalid struct index field identifier: %s", identifier)
+	}
+
+	fieldName := parts[0]
+	index := strings.TrimSuffix(parts[1], "]")
+	subField := strings.TrimSuffix(parts[2], "]")
+
+	structFieldName := fieldName + "[" + subField + "]"
+	field, err := v.schema.GetFieldFromName(structFieldName)
+	if err != nil {
+		return nil, merr.WrapErrParameterInvalidMsg("struct field not found: %s, error: %s", structFieldName, err)
+	}
+
+	nullable := field.GetNullable()
+	if structField := v.schema.GetStructArrayFieldFromName(fieldName); structField != nil {
+		nullable = nullable || structField.GetNullable()
+	}
+
+	return &planpb.ColumnInfo{
+		FieldId:     field.FieldID,
+		DataType:    field.DataType,
+		NestedPath:  []string{index},
+		ElementType: field.GetElementType(),
+		Nullable:    nullable,
+	}, nil
+}
+
+func (v *ParserVisitor) getChildColumnInfo(identifier, child, structSubField, structIndexField antlr.TerminalNode) (*planpb.ColumnInfo, error) {
 	if identifier != nil {
 		childExpr, err := v.translateIdentifier(identifier.GetText())
 		if err != nil {
@@ -1224,7 +1309,54 @@ func (v *ParserVisitor) getChildColumnInfo(identifier, child antlr.TerminalNode)
 		return toColumnInfo(childExpr), nil
 	}
 
+	if structSubField != nil {
+		return v.getColumnInfoFromStructSubField(structSubField.GetText())
+	}
+
+	if structIndexField != nil {
+		return v.getColumnInfoFromStructIndexField(structIndexField.GetText())
+	}
+
 	return v.getColumnInfoFromJSONIdentifier(child.GetText())
+}
+
+func (v *ParserVisitor) getStructArrayParentColumnInfo(fieldName string) (*planpb.ColumnInfo, bool, error) {
+	fieldName = decodeUnicode(fieldName)
+	if _, err := v.schema.GetFieldFromName(fieldName); err == nil {
+		return nil, false, nil
+	}
+
+	structField := v.schema.GetStructArrayFieldFromName(fieldName)
+	if structField == nil {
+		return nil, false, nil
+	}
+	subFields := structField.GetFields()
+	if len(subFields) == 0 {
+		return nil, true, merr.WrapErrParameterInvalidMsg(
+			"struct array field %s has no sub-fields", fieldName)
+	}
+
+	subField := subFields[0]
+	return &planpb.ColumnInfo{
+		FieldId:     subField.GetFieldID(),
+		DataType:    subField.GetDataType(),
+		ElementType: subField.GetElementType(),
+		Nullable:    structField.GetNullable() || subField.GetNullable(),
+	}, true, nil
+}
+
+func (v *ParserVisitor) getNullExprColumnInfo(identifier, child antlr.TerminalNode) (*planpb.ColumnInfo, error) {
+	if identifier != nil {
+		// try struct first
+		if columnInfo, ok, err := v.getStructArrayParentColumnInfo(identifier.GetText()); ok || err != nil {
+			return columnInfo, err
+		}
+	}
+	return v.getChildColumnInfo(identifier, child, nil, nil)
+}
+
+func isUnsupportedNullExprVectorType(dataType schemapb.DataType) bool {
+	return typeutil.IsVectorType(dataType) && !typeutil.IsVectorArrayType(dataType)
 }
 
 // VisitCall parses the expr to call plan.
@@ -1254,7 +1386,12 @@ func (v *ParserVisitor) VisitCall(ctx *parser.CallContext) interface{} {
 
 // VisitRange translates expr to range plan.
 func (v *ParserVisitor) VisitRange(ctx *parser.RangeContext) interface{} {
-	columnInfo, err := v.getChildColumnInfo(ctx.Identifier(), ctx.JSONIdentifier())
+	columnInfo, err := v.getChildColumnInfo(
+		ctx.Identifier(),
+		ctx.JSONIdentifier(),
+		ctx.StructSubFieldIdentifier(),
+		ctx.StructIndexFieldIdentifier(),
+	)
 	if err != nil {
 		return err
 	}
@@ -1335,7 +1472,12 @@ func (v *ParserVisitor) VisitRange(ctx *parser.RangeContext) interface{} {
 
 // VisitReverseRange parses the expression like "1 > a > 0".
 func (v *ParserVisitor) VisitReverseRange(ctx *parser.ReverseRangeContext) interface{} {
-	columnInfo, err := v.getChildColumnInfo(ctx.Identifier(), ctx.JSONIdentifier())
+	columnInfo, err := v.getChildColumnInfo(
+		ctx.Identifier(),
+		ctx.JSONIdentifier(),
+		ctx.StructSubFieldIdentifier(),
+		ctx.StructIndexFieldIdentifier(),
+	)
 	if err != nil {
 		return err
 	}
@@ -1464,6 +1606,9 @@ func (v *ParserVisitor) VisitUnary(ctx *parser.UnaryContext) interface{} {
 	if isRandomSampleExpr(childExpr) {
 		return merr.WrapErrQueryPlanMsg("random sample expression cannot be used in unary expression")
 	}
+	if isElementFilterExpr(childExpr) {
+		return merr.WrapErrQueryPlanMsg("element filter expression cannot be used in unary expression")
+	}
 
 	if err := checkDirectComparisonBinaryField(toColumnInfo(childExpr)); err != nil {
 		return err
@@ -1546,6 +1691,10 @@ func (v *ParserVisitor) VisitLogicalOr(ctx *parser.LogicalOrContext) interface{}
 		return merr.WrapErrQueryPlanMsg("random sample expression cannot be used in logical and expression")
 	}
 
+	if isElementFilterExpr(leftExpr) {
+		return merr.WrapErrQueryPlanMsg("element filter expression can only be the last expression in the logical or expression")
+	}
+
 	if !canBeExecuted(leftExpr) || !canBeExecuted(rightExpr) {
 		return merr.WrapErrQueryPlanMsg("'or' can only be used between boolean expressions")
 	}
@@ -1620,6 +1769,10 @@ func (v *ParserVisitor) VisitLogicalAnd(ctx *parser.LogicalAndContext) interface
 		return merr.WrapErrQueryPlanMsg("random sample expression can only be the last expression in the logical and expression")
 	}
 
+	if isElementFilterExpr(leftExpr) {
+		return merr.WrapErrQueryPlanMsg("element filter expression can only be the last expression in the logical and expression")
+	}
+
 	if !canBeExecuted(leftExpr) || !canBeExecuted(rightExpr) {
 		return merr.WrapErrQueryPlanMsg("'and' can only be used between boolean expressions")
 	}
@@ -1631,6 +1784,15 @@ func (v *ParserVisitor) VisitLogicalAnd(ctx *parser.LogicalAndContext) interface
 		expr = &planpb.Expr{
 			Expr: &planpb.Expr_RandomSampleExpr{
 				RandomSampleExpr: randomSampleExpr,
+			},
+		}
+	} else if isElementFilterExpr(rightExpr) {
+		// Similar to RandomSampleExpr, extract doc-level predicate
+		elementFilterExpr := rightExpr.expr.GetElementFilterExpr()
+		elementFilterExpr.Predicate = leftExpr.expr
+		expr = &planpb.Expr{
+			Expr: &planpb.Expr_ElementFilterExpr{
+				ElementFilterExpr: elementFilterExpr,
 			},
 		}
 	} else {
@@ -1908,6 +2070,56 @@ func (v *ParserVisitor) VisitJSONIdentifier(ctx *parser.JSONIdentifierContext) i
 	}
 }
 
+// VisitStructField handles struct_array[sub_field] syntax for struct sub-field access.
+func (v *ParserVisitor) VisitStructField(ctx *parser.StructFieldContext) interface{} {
+	// Get the full identifier text, e.g., "struct_array[sub_int]"
+	identifier := ctx.StructFieldIdentifier().GetText()
+
+	// Look up the field directly by its full name
+	field, err := v.schema.GetFieldFromName(identifier)
+	if err != nil {
+		return merr.WrapErrParameterInvalidMsg("struct field not found: %s, error: %s", identifier, err)
+	}
+
+	return &ExprWithType{
+		expr: &planpb.Expr{
+			Expr: &planpb.Expr_ColumnExpr{
+				ColumnExpr: &planpb.ColumnExpr{
+					Info: &planpb.ColumnInfo{
+						FieldId:     field.FieldID,
+						DataType:    field.DataType,
+						ElementType: field.GetElementType(),
+					},
+				},
+			},
+		},
+		dataType:      field.DataType,
+		nodeDependent: true,
+	}
+}
+
+// VisitStructIndexField handles struct_arr[index][sub_field] syntax for accessing
+// a specific element's sub-field in a struct array.
+func (v *ParserVisitor) VisitStructIndexField(ctx *parser.StructIndexFieldContext) interface{} {
+	identifier := ctx.StructIndexFieldIdentifier().GetText()
+	columnInfo, err := v.getColumnInfoFromStructIndexField(identifier)
+	if err != nil {
+		return err
+	}
+
+	return &ExprWithType{
+		expr: &planpb.Expr{
+			Expr: &planpb.Expr_ColumnExpr{
+				ColumnExpr: &planpb.ColumnExpr{
+					Info: columnInfo,
+				},
+			},
+		},
+		dataType:      columnInfo.GetDataType(),
+		nodeDependent: true,
+	}
+}
+
 func (v *ParserVisitor) VisitExists(ctx *parser.ExistsContext) interface{} {
 	child := ctx.Expr().Accept(v)
 	if err := getError(child); err != nil {
@@ -2015,12 +2227,12 @@ func (v *ParserVisitor) VisitEmptyArray(ctx *parser.EmptyArrayContext) interface
 }
 
 func (v *ParserVisitor) VisitIsNotNull(ctx *parser.IsNotNullContext) interface{} {
-	column, err := v.getChildColumnInfo(ctx.Identifier(), ctx.JSONIdentifier())
+	column, err := v.getNullExprColumnInfo(ctx.Identifier(), ctx.JSONIdentifier())
 	if err != nil {
 		return err
 	}
 
-	if typeutil.IsVectorType(column.DataType) {
+	if isUnsupportedNullExprVectorType(column.DataType) {
 		return merr.WrapErrParameterInvalidMsg("IsNull/IsNotNull operations are not supported on vector fields")
 	}
 
@@ -2062,12 +2274,12 @@ func (v *ParserVisitor) VisitIsNotNull(ctx *parser.IsNotNullContext) interface{}
 }
 
 func (v *ParserVisitor) VisitIsNull(ctx *parser.IsNullContext) interface{} {
-	column, err := v.getChildColumnInfo(ctx.Identifier(), ctx.JSONIdentifier())
+	column, err := v.getNullExprColumnInfo(ctx.Identifier(), ctx.JSONIdentifier())
 	if err != nil {
 		return err
 	}
 
-	if typeutil.IsVectorType(column.DataType) {
+	if isUnsupportedNullExprVectorType(column.DataType) {
 		return merr.WrapErrParameterInvalidMsg("IsNull/IsNotNull operations are not supported on vector fields")
 	}
 
@@ -2272,14 +2484,41 @@ func (v *ParserVisitor) VisitJSONContainsAny(ctx *parser.JSONContainsAnyContext)
 }
 
 func (v *ParserVisitor) VisitArrayLength(ctx *parser.ArrayLengthContext) interface{} {
-	columnInfo, err := v.getChildColumnInfo(ctx.Identifier(), ctx.JSONIdentifier())
-	if err != nil {
-		return err
+	var columnInfo *planpb.ColumnInfo
+	var err error
+	if ctx.StructFieldIdentifier() != nil {
+		// Handle struct_arr[sub_field] syntax: look up the full field name directly
+		identifier := ctx.StructFieldIdentifier().GetText()
+		field, fieldErr := v.schema.GetFieldFromName(identifier)
+		if fieldErr != nil {
+			return merr.WrapErrParameterInvalidMsg("struct field not found: %s, error: %s", identifier, fieldErr)
+		}
+		columnInfo = &planpb.ColumnInfo{
+			FieldId:     field.FieldID,
+			DataType:    field.DataType,
+			ElementType: field.GetElementType(),
+			Nullable:    field.GetNullable(),
+		}
+	} else {
+		if ctx.Identifier() != nil {
+			if parentColumnInfo, ok, parentErr := v.getStructArrayParentColumnInfo(ctx.Identifier().GetText()); ok || parentErr != nil {
+				columnInfo = parentColumnInfo
+				err = parentErr
+			}
+		}
+		if columnInfo == nil && err == nil {
+			columnInfo, err = v.getChildColumnInfo(ctx.Identifier(), ctx.JSONIdentifier(), nil, nil)
+		}
+		if err != nil {
+			return err
+		}
 	}
 	if columnInfo == nil ||
-		(!typeutil.IsJSONType(columnInfo.GetDataType()) && !typeutil.IsArrayType(columnInfo.GetDataType())) {
+		(!typeutil.IsJSONType(columnInfo.GetDataType()) &&
+			!typeutil.IsArrayType(columnInfo.GetDataType()) &&
+			!typeutil.IsVectorArrayType(columnInfo.GetDataType())) {
 		return merr.WrapErrParameterInvalidMsg(
-			"array_length operation are only supported on json or array fields now, got: %s", ctx.GetText())
+			"array_length operation are only supported on json, array or array-of-vector fields now, got: %s", ctx.GetText())
 	}
 
 	expr := &planpb.Expr{
@@ -2670,4 +2909,193 @@ func validateAndExtractMinShouldMatch(minShouldMatchExpr interface{}) ([]*planpb
 		return []*planpb.GenericValue{NewInt(minShouldMatch)}, nil
 	}
 	return nil, nil
+}
+
+// VisitElementFilter handles ElementFilter(structArrayField, elementExpr) syntax.
+func (v *ParserVisitor) VisitElementFilter(ctx *parser.ElementFilterContext) interface{} {
+	// Check for nested ElementFilter - not allowed
+	if v.currentStructArrayField != "" {
+		return merr.WrapErrParameterInvalidMsg("nested ElementFilter is not supported, already inside ElementFilter for field: %s", v.currentStructArrayField)
+	}
+
+	// Get struct array field name (first parameter)
+	arrayFieldName := ctx.Identifier().GetText()
+
+	// Set current context for element expression parsing
+	v.currentStructArrayField = arrayFieldName
+	defer func() { v.currentStructArrayField = "" }()
+
+	elementExpr := ctx.Expr().Accept(v)
+	if err := getError(elementExpr); err != nil {
+		return merr.WrapErrParameterInvalidMsg("cannot parse element expression: %s, error: %s", ctx.Expr().GetText(), err)
+	}
+
+	exprWithType := getExpr(elementExpr)
+	if exprWithType == nil {
+		return merr.WrapErrParameterInvalidMsg("invalid element expression: %s", ctx.Expr().GetText())
+	}
+
+	// Build ElementFilterExpr proto
+	return &ExprWithType{
+		expr: &planpb.Expr{
+			Expr: &planpb.Expr_ElementFilterExpr{
+				ElementFilterExpr: &planpb.ElementFilterExpr{
+					ElementExpr: exprWithType.expr,
+					StructName:  arrayFieldName,
+				},
+			},
+		},
+		dataType: schemapb.DataType_Bool,
+	}
+}
+
+// VisitStructSubField handles $[fieldName] syntax within ElementFilter.
+func (v *ParserVisitor) VisitStructSubField(ctx *parser.StructSubFieldContext) interface{} {
+	// Extract the field name from $[fieldName]
+	tokenText := ctx.StructSubFieldIdentifier().GetText()
+	if !isValidStructSubField(tokenText) {
+		return merr.WrapErrParameterInvalidMsg("invalid struct sub-field syntax: %s", tokenText)
+	}
+	// Remove "$[" prefix and "]" suffix
+	fieldName := tokenText[2 : len(tokenText)-1]
+
+	// Check if we're inside an ElementFilter or MATCH_* context
+	if v.currentStructArrayField == "" {
+		return merr.WrapErrParameterInvalidMsg("$[%s] syntax can only be used inside ElementFilter or MATCH_*", fieldName)
+	}
+
+	// Construct full field name for struct array field
+	fullFieldName := typeutil.ConcatStructFieldName(v.currentStructArrayField, fieldName)
+	// Get the struct array field info
+	field, err := v.schema.GetFieldFromName(fullFieldName)
+	if err != nil {
+		return merr.WrapErrParameterInvalidMsg("array field not found: %s, error: %s", fullFieldName, err)
+	}
+
+	// In element-level context, use Array as storage type, element type for operations
+	elementType := field.GetElementType()
+	nullable := field.GetNullable()
+	if structField := v.schema.GetStructArrayFieldFromName(v.currentStructArrayField); structField != nil {
+		nullable = nullable || structField.GetNullable()
+	}
+
+	return &ExprWithType{
+		expr: &planpb.Expr{
+			Expr: &planpb.Expr_ColumnExpr{
+				ColumnExpr: &planpb.ColumnExpr{
+					Info: &planpb.ColumnInfo{
+						FieldId:         field.FieldID,
+						DataType:        schemapb.DataType_Array, // Storage type is Array
+						IsPrimaryKey:    field.IsPrimaryKey,
+						IsAutoID:        field.AutoID,
+						IsPartitionKey:  field.IsPartitionKey,
+						IsClusteringKey: field.IsClusteringKey,
+						ElementType:     elementType, // Element type for operations
+						Nullable:        nullable,
+						IsElementLevel:  true, // Mark as element-level access
+					},
+				},
+			},
+		},
+		dataType:      elementType, // Expression evaluates to element type
+		nodeDependent: true,
+	}
+}
+
+// parseMatchExpr is a helper function for parsing match expressions
+// matchType: the type of match operation (MatchAll, MatchAny, MatchLeast, MatchMost)
+// count: for MatchLeast/MatchMost, the count parameter (N); for MatchAll/MatchAny, this is ignored (0)
+func (v *ParserVisitor) parseMatchExpr(structArrayFieldName string, exprCtx parser.IExprContext, matchType planpb.MatchType, count int64, funcName string) interface{} {
+	// Check for nested match expression - not allowed
+	if v.currentStructArrayField != "" {
+		return merr.WrapErrParameterInvalidMsg("nested %s is not supported, already inside match expression for field: %s", funcName, v.currentStructArrayField)
+	}
+
+	// Set current context for element expression parsing
+	v.currentStructArrayField = structArrayFieldName
+	defer func() { v.currentStructArrayField = "" }()
+
+	// Parse the predicate expression
+	predicate := exprCtx.Accept(v)
+	if err := getError(predicate); err != nil {
+		return merr.WrapErrParameterInvalidMsg("cannot parse predicate expression: %s, error: %s", exprCtx.GetText(), err)
+	}
+
+	predicateExpr := getExpr(predicate)
+	if predicateExpr == nil {
+		return merr.WrapErrParameterInvalidMsg("invalid predicate expression in %s: %s", funcName, exprCtx.GetText())
+	}
+
+	// Build MatchExpr proto
+	return &ExprWithType{
+		expr: &planpb.Expr{
+			Expr: &planpb.Expr_MatchExpr{
+				MatchExpr: &planpb.MatchExpr{
+					StructName: structArrayFieldName,
+					Predicate:  predicateExpr.expr,
+					MatchType:  matchType,
+					Count:      count,
+				},
+			},
+		},
+		dataType: schemapb.DataType_Bool,
+	}
+}
+
+// VisitMatchSimple handles MATCH_ALL and MATCH_ANY expressions
+// Syntax: MATCH_ALL/MATCH_ANY(structArrayField, $[intField] == 1 && $[strField] == "aaa")
+func (v *ParserVisitor) VisitMatchSimple(ctx *parser.MatchSimpleContext) interface{} {
+	structArrayFieldName := ctx.Identifier().GetText()
+	var matchType planpb.MatchType
+	var opName string
+	switch ctx.GetOp().GetTokenType() {
+	case parser.PlanParserMATCH_ALL:
+		matchType = planpb.MatchType_MatchAll
+		opName = "MATCH_ALL"
+	case parser.PlanParserMATCH_ANY:
+		matchType = planpb.MatchType_MatchAny
+		opName = "MATCH_ANY"
+	default:
+		return merr.WrapErrParameterInvalidMsg("unhandled match operator: %s", ctx.GetOp().GetText())
+	}
+	return v.parseMatchExpr(structArrayFieldName, ctx.Expr(), matchType, 0, opName)
+}
+
+// VisitMatchThreshold handles MATCH_LEAST, MATCH_MOST, and MATCH_EXACT expressions
+// Syntax: MATCH_LEAST/MATCH_MOST/MATCH_EXACT(structArrayField, $[intField] == 1, threshold=N)
+func (v *ParserVisitor) VisitMatchThreshold(ctx *parser.MatchThresholdContext) interface{} {
+	structArrayFieldName := ctx.Identifier().GetText()
+
+	countStr := ctx.IntegerConstant().GetText()
+	count, err := strconv.ParseInt(countStr, 10, 64)
+	if err != nil {
+		return merr.WrapErrParameterInvalidMsg("invalid count: %s", countStr)
+	}
+
+	var matchType planpb.MatchType
+	var opName string
+	switch ctx.GetOp().GetTokenType() {
+	case parser.PlanParserMATCH_LEAST:
+		matchType = planpb.MatchType_MatchLeast
+		opName = "MATCH_LEAST"
+		if count <= 0 {
+			return merr.WrapErrParameterInvalidMsg("count in MATCH_LEAST must be positive, got: %d", count)
+		}
+	case parser.PlanParserMATCH_MOST:
+		matchType = planpb.MatchType_MatchMost
+		opName = "MATCH_MOST"
+		if count < 0 {
+			return merr.WrapErrParameterInvalidMsg("count in MATCH_MOST cannot be negative, got: %d", count)
+		}
+	case parser.PlanParserMATCH_EXACT:
+		matchType = planpb.MatchType_MatchExact
+		opName = "MATCH_EXACT"
+		if count < 0 {
+			return merr.WrapErrParameterInvalidMsg("count in MATCH_EXACT cannot be negative, got: %d", count)
+		}
+	default:
+		return merr.WrapErrParameterInvalidMsg("unhandled match threshold operator: %s", ctx.GetOp().GetText())
+	}
+
+	return v.parseMatchExpr(structArrayFieldName, ctx.Expr(), matchType, count, opName)
 }

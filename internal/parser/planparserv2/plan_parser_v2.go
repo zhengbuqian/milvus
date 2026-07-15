@@ -288,6 +288,7 @@ func CreateSearchPlanArgs(schema *typeutil.SchemaHelper, exprStr string, vectorF
 	// plan ok with schema, check ann field
 	fieldID := vectorField.FieldID
 	dataType := vectorField.DataType
+	elementType := vectorField.ElementType
 
 	var vectorType planpb.VectorType
 	if !typeutil.IsVectorType(dataType) {
@@ -306,9 +307,26 @@ func CreateSearchPlanArgs(schema *typeutil.SchemaHelper, exprStr string, vectorF
 		vectorType = planpb.VectorType_SparseFloatVector
 	case schemapb.DataType_Int8Vector:
 		vectorType = planpb.VectorType_Int8Vector
+	case schemapb.DataType_ArrayOfVector:
+		switch elementType {
+		case schemapb.DataType_FloatVector:
+			vectorType = planpb.VectorType_EmbListFloatVector
+		case schemapb.DataType_BinaryVector:
+			vectorType = planpb.VectorType_EmbListBinaryVector
+		case schemapb.DataType_Float16Vector:
+			vectorType = planpb.VectorType_EmbListFloat16Vector
+		case schemapb.DataType_BFloat16Vector:
+			vectorType = planpb.VectorType_EmbListBFloat16Vector
+		case schemapb.DataType_Int8Vector:
+			vectorType = planpb.VectorType_EmbListInt8Vector
+		default:
+			mlog.Error(context.TODO(), "Invalid elementType for ArrayOfVector", mlog.Any("elementType", elementType))
+			return nil, merr.WrapErrQueryPlanMsg("unsupported element type for ArrayOfVector: %v", elementType)
+		}
+
 	default:
-		log.Error("Invalid dataType", zap.Any("dataType", dataType))
-		return nil, err
+		mlog.Error(context.TODO(), "Invalid dataType", mlog.Any("dataType", dataType))
+		return nil, merr.WrapErrQueryPlanMsg("unsupported vector data type: %v", dataType)
 	}
 
 	scorers, options, err := CreateSearchScorers(schema, functionScorer, exprTemplateValues)

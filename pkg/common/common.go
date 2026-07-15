@@ -494,6 +494,28 @@ func FieldHasMmapKey(schema *schemapb.CollectionSchema, fieldID int64) bool {
 			return false
 		}
 	}
+	// Check struct array fields
+	for _, structField := range schema.GetStructArrayFields() {
+		if structField.GetFieldID() == fieldID {
+			for _, kv := range structField.GetTypeParams() {
+				if kv.Key == MmapEnabledKey {
+					return true
+				}
+			}
+			return false
+		}
+		// Check fields inside struct
+		for _, field := range structField.GetFields() {
+			if field.GetFieldID() == fieldID {
+				for _, kv := range field.GetTypeParams() {
+					if kv.Key == MmapEnabledKey {
+						return true
+					}
+				}
+				return false
+			}
+		}
+	}
 	return false
 }
 
@@ -770,7 +792,7 @@ func CollectionLevelResourceGroups(kvs []*commonpb.KeyValuePair) ([]string, erro
 
 // GetCollectionLoadFields returns the load field ids according to the type params.
 func GetCollectionLoadFields(schema *schemapb.CollectionSchema, skipDynamicField bool) []int64 {
-	fields := lo.FilterMap(schema.GetFields(), func(field *schemapb.FieldSchema, _ int) (int64, bool) {
+	filter := func(field *schemapb.FieldSchema, _ int) (int64, bool) {
 		// skip system field
 		if IsSystemField(field.GetFieldID()) {
 			return field.GetFieldID(), false
@@ -786,9 +808,17 @@ func GetCollectionLoadFields(schema *schemapb.CollectionSchema, skipDynamicField
 			return field.GetFieldID(), true
 		}
 		return field.GetFieldID(), v
-	})
+	}
+	fields := lo.FilterMap(schema.GetFields(), filter)
+
+	fieldsNum := len(schema.GetFields())
+	for _, structField := range schema.GetStructArrayFields() {
+		fields = append(fields, lo.FilterMap(structField.GetFields(), filter)...)
+		fieldsNum += len(structField.GetFields())
+	}
+
 	// empty fields list means all fields will be loaded
-	if len(fields) == len(schema.GetFields())-int(SystemFieldsNum) {
+	if len(fields) == fieldsNum-int(SystemFieldsNum) {
 		return []int64{}
 	}
 	return fields

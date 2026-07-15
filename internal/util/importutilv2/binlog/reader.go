@@ -151,7 +151,7 @@ func (r *reader) init(paths []string, tsStart, tsEnd uint64) error {
 	}
 
 	r.dr = storage.NewDeserializeReader(rr, func(record storage.Record, v []*storage.Value) error {
-		return storage.ValueDeserializer(record, v, r.schema.Fields, true)
+		return storage.ValueDeserializerWithSchema(record, v, r.schema, true)
 	})
 
 	if len(paths) < 2 {
@@ -317,8 +317,9 @@ func (r *reader) Read() (*storage.InsertData, error) {
 		if err != nil {
 			return nil, err
 		}
+		allFields := typeutil.GetAllFieldSchemas(r.schema)
 		// convert record to fieldData
-		for _, field := range r.schema.Fields {
+		for _, field := range allFields {
 			fieldData := insertData.Data[field.GetFieldID()]
 			if fieldData == nil {
 				fieldData, err = storage.NewFieldData(field.GetDataType(), field, 1024)

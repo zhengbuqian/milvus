@@ -78,11 +78,9 @@ func randomString(length int) string {
 }
 
 func writeParquet(w io.Writer, schema *schemapb.CollectionSchema, numRows int, nullPercent int) (*storage.InsertData, error) {
-	useNullType := false
-	if nullPercent == 100 {
-		useNullType = true
-	}
-	pqSchema, err := ConvertToArrowSchema(schema, useNullType)
+	useNullType := nullPercent == 100
+
+	pqSchema, err := ConvertToArrowSchemaForUT(schema, useNullType)
 	if err != nil {
 		return nil, err
 	}
@@ -617,6 +615,249 @@ func TestParquetReader(t *testing.T) {
 	suite.Run(t, new(ReaderSuite))
 }
 
+func TestParquetReaderWithStructArray(t *testing.T) {
+	ctx := context.Background()
+
+	vectorTypeTests := []struct {
+		name        string
+		elementType schemapb.DataType
+		dim         string
+	}{
+		{"FloatVector", schemapb.DataType_FloatVector, "4"},
+		{"Float16Vector", schemapb.DataType_Float16Vector, "4"},
+		{"BFloat16Vector", schemapb.DataType_BFloat16Vector, "4"},
+		{"Int8Vector", schemapb.DataType_Int8Vector, "4"},
+		{"BinaryVector", schemapb.DataType_BinaryVector, "32"},
+	}
+
+	for _, vt := range vectorTypeTests {
+		t.Run("test struct array with "+vt.name, func(t *testing.T) {
+			// Create schema with StructArrayField
+			schema := &schemapb.CollectionSchema{
+				Name: "test_struct_array_" + vt.name,
+				Fields: []*schemapb.FieldSchema{
+					{
+						FieldID:      100,
+						Name:         "id",
+						IsPrimaryKey: true,
+						DataType:     schemapb.DataType_Int64,
+					},
+					{
+						FieldID:  101,
+						Name:     "varchar_field",
+						DataType: schemapb.DataType_VarChar,
+						TypeParams: []*commonpb.KeyValuePair{
+							{Key: common.MaxLengthKey, Value: "100"},
+						},
+					},
+				},
+				StructArrayFields: []*schemapb.StructArrayFieldSchema{
+					{
+						FieldID: 200,
+						Name:    "struct_array",
+						Fields: []*schemapb.FieldSchema{
+							{
+								FieldID:     201,
+								Name:        "struct_array[int_array]",
+								DataType:    schemapb.DataType_Array,
+								ElementType: schemapb.DataType_Int32,
+								TypeParams: []*commonpb.KeyValuePair{
+									{Key: common.MaxCapacityKey, Value: "20"},
+								},
+							},
+							{
+								FieldID:     202,
+								Name:        "struct_array[float_array]",
+								DataType:    schemapb.DataType_Array,
+								ElementType: schemapb.DataType_Float,
+								TypeParams: []*commonpb.KeyValuePair{
+									{Key: common.MaxCapacityKey, Value: "20"},
+								},
+							},
+							{
+								FieldID:     203,
+								Name:        "struct_array[vector_array]",
+								DataType:    schemapb.DataType_ArrayOfVector,
+								ElementType: vt.elementType,
+								TypeParams: []*commonpb.KeyValuePair{
+									{Key: common.DimKey, Value: vt.dim},
+									{Key: common.MaxCapacityKey, Value: "20"},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			// Create test data file
+			filePath := fmt.Sprintf("/tmp/test_struct_array_%s_%d.parquet", vt.name, rand.Int())
+			defer os.Remove(filePath)
+
+			numRows := 50
+			f, err := os.Create(filePath)
+			assert.NoError(t, err)
+
+			// Use writeParquet to create test file
+			insertData, err := writeParquet(f, schema, numRows, 0)
+			assert.NoError(t, err)
+			f.Close()
+
+			// Verify the insert data contains struct fields
+			assert.Contains(t, insertData.Data, int64(201)) // int_array field
+			assert.Contains(t, insertData.Data, int64(202)) // float_array field
+			assert.Contains(t, insertData.Data, int64(203)) // vector_array field
+
+			// Now test reading the file using ChunkManager
+			factory := storage.NewChunkManagerFactory("local", objectstorage.RootPath("/tmp"))
+			cm, err := factory.NewPersistentStorageChunkManager(ctx)
+			assert.NoError(t, err)
+
+			reader, err := NewReader(ctx, cm, schema, filePath, 64*1024*1024)
+			assert.NoError(t, err)
+			defer reader.Close()
+
+			// Read data
+			readData, err := reader.Read()
+			assert.NoError(t, err)
+			assert.NotNil(t, readData)
+
+			// Verify the data includes struct fields
+			assert.Contains(t, readData.Data, int64(201)) // int_array field ID
+			assert.Contains(t, readData.Data, int64(202)) // float_array field ID
+			assert.Contains(t, readData.Data, int64(203)) // vector_array field ID
+
+			// Check row count matches
+			assert.Equal(t, numRows, readData.Data[100].RowNum()) // id field
+			assert.Equal(t, numRows, readData.Data[101].RowNum()) // varchar_field
+			assert.Equal(t, numRows, readData.Data[201].RowNum()) // int_array
+			assert.Equal(t, numRows, readData.Data[202].RowNum()) // float_array
+			assert.Equal(t, numRows, readData.Data[203].RowNum()) // vector_array
+
+			// Verify data content matches
+			for fieldID, originalData := range insertData.Data {
+				readFieldData, ok := readData.Data[fieldID]
+				assert.True(t, ok, "field %d not found in read data", fieldID)
+				assert.Equal(t, originalData.RowNum(), readFieldData.RowNum(), "row count mismatch for field %d", fieldID)
+			}
+		})
+	}
+}
+
+func TestParquetReaderMissingNullableStructArray(t *testing.T) {
+	ctx := context.Background()
+	schema := &schemapb.CollectionSchema{
+		Name: "test_missing_nullable_struct_array",
+		Fields: []*schemapb.FieldSchema{
+			{
+				FieldID:      100,
+				Name:         "id",
+				IsPrimaryKey: true,
+				DataType:     schemapb.DataType_Int64,
+			},
+		},
+		StructArrayFields: []*schemapb.StructArrayFieldSchema{
+			{
+				FieldID:  200,
+				Name:     "struct_array",
+				Nullable: true,
+				Fields: []*schemapb.FieldSchema{
+					{
+						FieldID:     201,
+						Name:        "struct_array[int_array]",
+						DataType:    schemapb.DataType_Array,
+						ElementType: schemapb.DataType_Int32,
+						Nullable:    true,
+						TypeParams: []*commonpb.KeyValuePair{
+							{Key: common.MaxCapacityKey, Value: "20"},
+						},
+					},
+					{
+						FieldID:     202,
+						Name:        "struct_array[vector_array]",
+						DataType:    schemapb.DataType_ArrayOfVector,
+						ElementType: schemapb.DataType_FloatVector,
+						Nullable:    true,
+						TypeParams: []*commonpb.KeyValuePair{
+							{Key: common.DimKey, Value: "4"},
+							{Key: common.MaxCapacityKey, Value: "20"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	pqSchema := arrow.NewSchema([]arrow.Field{
+		{Name: "id", Type: arrow.PrimitiveTypes.Int64},
+	}, nil)
+
+	mem := memory.NewGoAllocator()
+	idBuilder := array.NewInt64Builder(mem)
+	idBuilder.AppendValues([]int64{1, 2, 3}, nil)
+	idArray := idBuilder.NewArray()
+	idBuilder.Release()
+	defer idArray.Release()
+
+	filePath := fmt.Sprintf("%s/test_missing_nullable_struct_array_%d.parquet", t.TempDir(), rand.Int())
+	wf, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0o666)
+	assert.NoError(t, err)
+
+	fw, err := pqarrow.NewFileWriter(pqSchema, wf, parquet.NewWriterProperties(parquet.WithMaxRowGroupLength(3)), pqarrow.DefaultWriterProps())
+	assert.NoError(t, err)
+	recordBatch := array.NewRecord(pqSchema, []arrow.Array{idArray}, 3)
+	err = fw.Write(recordBatch)
+	assert.NoError(t, err)
+	recordBatch.Release()
+	assert.NoError(t, fw.Close())
+
+	factory := storage.NewChunkManagerFactory("local", objectstorage.RootPath(testOutputPath))
+	cm, err := factory.NewPersistentStorageChunkManager(ctx)
+	assert.NoError(t, err)
+
+	reader, err := NewReader(ctx, cm, schema, filePath, 64*1024*1024)
+	assert.NoError(t, err)
+	defer reader.Close()
+
+	readData, err := reader.Read()
+	assert.NoError(t, err)
+	assert.Equal(t, 3, readData.Data[100].RowNum())
+	assert.Equal(t, 0, readData.Data[201].RowNum())
+	assert.Equal(t, 0, readData.Data[202].RowNum())
+
+	flatSubFieldBuilder := array.NewListBuilder(mem, arrow.PrimitiveTypes.Int32)
+	flatSubFieldValueBuilder := flatSubFieldBuilder.ValueBuilder().(*array.Int32Builder)
+	for i := 0; i < 3; i++ {
+		flatSubFieldBuilder.Append(true)
+		flatSubFieldValueBuilder.AppendValues([]int32{int32(i)}, nil)
+	}
+	flatSubFieldArray := flatSubFieldBuilder.NewArray()
+	flatSubFieldBuilder.Release()
+	defer flatSubFieldArray.Release()
+
+	flatSchema := arrow.NewSchema([]arrow.Field{
+		{Name: "id", Type: arrow.PrimitiveTypes.Int64},
+		{Name: "struct_array[int_array]", Type: arrow.ListOf(arrow.PrimitiveTypes.Int32)},
+	}, nil)
+	flatFilePath := fmt.Sprintf("%s/test_flat_struct_sub_field_%d.parquet", t.TempDir(), rand.Int())
+	flatWf, err := os.OpenFile(flatFilePath, os.O_RDWR|os.O_CREATE, 0o666)
+	assert.NoError(t, err)
+	flatFw, err := pqarrow.NewFileWriter(flatSchema, flatWf, parquet.NewWriterProperties(parquet.WithMaxRowGroupLength(3)), pqarrow.DefaultWriterProps())
+	assert.NoError(t, err)
+	flatRecordBatch := array.NewRecord(flatSchema, []arrow.Array{idArray, flatSubFieldArray}, 3)
+	err = flatFw.Write(flatRecordBatch)
+	assert.NoError(t, err)
+	flatRecordBatch.Release()
+	assert.NoError(t, flatFw.Close())
+
+	_, err = NewReader(ctx, cm, schema, flatFilePath, 64*1024*1024)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "flat sub-field column")
+
+	schema.StructArrayFields[0].Nullable = false
+	_, err = NewReader(ctx, cm, schema, filePath, 64*1024*1024)
+	assert.Error(t, err)
+}
+
 func TestParquetReaderError(t *testing.T) {
 	ctx := context.Background()
 	cm := mocks.NewChunkManager(t)
@@ -649,7 +890,7 @@ func TestParquetReaderError(t *testing.T) {
 		wf, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0o666)
 		assert.NoError(t, err)
 
-		pqSchema, err := ConvertToArrowSchema(colSchema, false)
+		pqSchema, err := ConvertToArrowSchemaForUT(colSchema, false)
 		assert.NoError(t, err)
 
 		fw, err := pqarrow.NewFileWriter(pqSchema, wf, parquet.NewWriterProperties(parquet.WithMaxRowGroupLength(int64(numRows))), pqarrow.DefaultWriterProps())

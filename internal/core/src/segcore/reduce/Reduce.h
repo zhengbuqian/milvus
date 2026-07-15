@@ -13,11 +13,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <memory>
-#include <string>
-#include <unordered_set>
-#include <utility>
-#include <variant>
 #include <vector>
 
 #include "common/OpContext.h"
@@ -29,12 +24,6 @@
 #include "query/PlanImpl.h"
 
 namespace milvus::segcore {
-
-// SearchResultDataBlobs contains the marshal blobs of many `milvus::proto::schema::SearchResultData`
-struct SearchResultDataBlobs {
-    std::vector<std::vector<char>> blobs;  // the marshal blobs of each slice
-    std::vector<StorageCost> costs;        // the cost of each slice
-};
 
 class ReduceHelper {
  public:
@@ -119,16 +108,6 @@ class ReduceHelper {
     void
     Initialize();
 
-    void
-    FillEntryData();
-
-    std::pair<std::vector<char>, StorageCost>
-    GetSearchResultDataSlice(const int slice_index,
-                             const StorageCost& total_cost);
-
-    void
-    GetTotalStorageCost();
-
  protected:
     std::vector<SearchResult*>& search_results_;
     milvus::query::Plan* plan_;
@@ -137,10 +116,6 @@ class ReduceHelper {
     std::vector<int64_t> slice_nqs_prefix_sum_;
     int64_t num_segments_;
     std::vector<int64_t> slice_topKs_;
-    // Used for merge results,
-    // define these here to avoid allocating them for each query
-    std::vector<SearchResultPair> pairs_;
-    std::unordered_set<milvus::PkType> pk_set_;
     // dim0: num_segments_; dim1: total_nq_; dim2: offset
     std::vector<std::vector<std::vector<int64_t>>> final_search_records_;
     std::vector<int64_t> slice_nqs_;

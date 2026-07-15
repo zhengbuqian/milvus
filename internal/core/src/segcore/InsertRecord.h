@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
@@ -24,6 +25,7 @@
 
 #include "TimestampData.h"
 #include "TimestampIndex.h"
+#include "common/ArrayOffsets.h"
 #include "common/EasyAssert.h"
 #include "common/Schema.h"
 #include "common/TrackingStdAllocator.h"
@@ -31,6 +33,7 @@
 #include "mmap/ChunkedColumn.h"
 #include "segcore/AckResponder.h"
 #include "segcore/ConcurrentVector.h"
+#include <tuple>
 #include <type_traits>
 
 namespace milvus::segcore {
@@ -267,7 +270,21 @@ class OffsetMap {
     using OffsetType = int64_t;
     // TODO: in fact, we can retrieve the pk here. Not sure which way is more efficient.
     virtual std::pair<std::vector<OffsetMap::OffsetType>, bool>
-    find_first(int64_t limit, const BitsetTypeView& bitset) const = 0;
+    find_first_n(int64_t limit, const BitsetTypeView& bitset) const = 0;
+
+    // Element-level version of find_first_n.
+    // Find first N elements that pass filter, ordered by PK then element_index.
+    // Returns:
+    //   - vector of unique doc_offsets (no duplicates)
+    //   - vector of element_indices per doc (element_indices[i] for doc_offsets[i])
+    //   - has_more flag indicating if there are more results
+    virtual std::
+        tuple<std::vector<int64_t>, std::vector<std::vector<int32_t>>, bool>
+        find_first_n_element(
+            int64_t limit,
+            const BitsetTypeView& element_bitset,
+            const IArrayOffsets* array_offsets,
+            const std::optional<QueryIteratorCursor>& cursor) const = 0;
 
     virtual void
     clear() = 0;
@@ -391,7 +408,7 @@ class OffsetOrderedMap : public OffsetMap {
     }
 
     std::pair<std::vector<OffsetMap::OffsetType>, bool>
-    find_first(int64_t limit, const BitsetTypeView& bitset) const override {
+    find_first_n(int64_t limit, const BitsetTypeView& bitset) const override {
         std::shared_lock<std::shared_mutex> lck(mtx_);
 
         if (limit == Unlimited || limit == NoLimit) {
@@ -400,7 +417,23 @@ class OffsetOrderedMap : public OffsetMap {
 
         // TODO: we can't retrieve pk by offset very conveniently.
         //      Selectivity should be done outside.
-        return find_first_by_index(limit, bitset);
+        return find_first_n_by_index(limit, bitset);
+    }
+
+    std::tuple<std::vector<int64_t>, std::vector<std::vector<int32_t>>, bool>
+    find_first_n_element(
+        int64_t limit,
+        const BitsetTypeView& element_bitset,
+        const IArrayOffsets* array_offsets,
+        const std::optional<QueryIteratorCursor>& cursor) const override {
+        std::shared_lock<std::shared_mutex> lck(mtx_);
+
+        if (limit == Unlimited || limit == NoLimit) {
+            limit = static_cast<int64_t>(element_bitset.size());
+        }
+
+        return find_first_n_element_by_index(
+            limit, element_bitset, array_offsets, cursor);
     }
 
     void
@@ -417,10 +450,11 @@ class OffsetOrderedMap : public OffsetMap {
 
  private:
     std::pair<std::vector<OffsetMap::OffsetType>, bool>
-    find_first_by_index(int64_t limit, const BitsetTypeView& bitset) const {
+    find_first_n_by_index(int64_t limit, const BitsetTypeView& bitset) const {
         int64_t hit_num = 0;  // avoid counting the number everytime.
         auto size = bitset.size();
         int64_t cnt = size - bitset.count();
+        auto more_hit_than_limit = cnt > limit;
         limit = std::min(limit, cnt);
         std::vector<int64_t> seg_offsets;
         seg_offsets.reserve(limit);
@@ -443,7 +477,96 @@ class OffsetOrderedMap : public OffsetMap {
                 }
             }
         }
-        return {seg_offsets, it != map_.end()};
+        return {seg_offsets, more_hit_than_limit && it != map_.end()};
+    }
+
+    std::tuple<std::vector<int64_t>, std::vector<std::vector<int32_t>>, bool>
+    find_first_n_element_by_index(
+        int64_t limit,
+        const BitsetTypeView& element_bitset,
+        const IArrayOffsets* array_offsets,
+        const std::optional<QueryIteratorCursor>& cursor) const {
+        std::vector<int64_t> doc_offsets;
+        std::vector<std::vector<int32_t>> element_indices;
+
+        int64_t hit_num = 0;
+        auto element_size = static_cast<int64_t>(element_bitset.size());
+        // Clamp limit to the actual number of matching elements,
+        // same as find_first_n_by_index does for doc-level queries.
+        int64_t cnt = element_size - element_bitset.count();
+        auto more_hit_than_limit = cnt > limit;
+        limit = std::min(limit, cnt);
+
+        // Traverse map_ in PK order
+        std::vector<int32_t> matching_indices;
+        auto it = map_.begin();
+        for (; hit_num < limit && it != map_.end(); ++it) {
+            // For each PK, traverse from back to front to obtain the latest offset.
+            // Same as find_first_n_by_index: only use the first (newest) offset
+            // that has matching elements, then break to avoid returning stale versions.
+            for (int i = it->second.size() - 1; i >= 0 && hit_num < limit;
+                 --i) {
+                auto doc_offset = it->second[i];
+
+                // Get element range for this doc
+                auto [first_elem, last_elem] =
+                    array_offsets->ElementIDRangeOfRow(doc_offset);
+
+                // Collect all matching element indices for this doc
+                matching_indices.clear();
+                for (int64_t elem_id = first_elem;
+                     elem_id < last_elem && hit_num < limit;
+                     ++elem_id) {
+                    if (elem_id >= element_size) {
+                        continue;
+                    }
+                    if (is_skipped_by_cursor(
+                            it->first, elem_id - first_elem, cursor)) {
+                        continue;
+                    }
+                    if (!element_bitset[elem_id]) {  // 0 means pass filter
+                        matching_indices.push_back(
+                            static_cast<int32_t>(elem_id - first_elem));
+                        hit_num++;
+                    }
+                }
+
+                // Only add doc if it has matching elements
+                if (!matching_indices.empty()) {
+                    doc_offsets.push_back(doc_offset);
+                    element_indices.push_back(std::move(matching_indices));
+                    // PK hit, no need to continue traversing older offsets with the same PK.
+                    break;
+                }
+                if (is_cursor_pk(it->first, cursor)) {
+                    // The cursor applies to the newest visible row for this PK.
+                    // Do not fall through to older offsets of the same PK.
+                    break;
+                }
+            }
+        }
+
+        bool has_more = more_hit_than_limit && hit_num >= limit;
+        return {std::move(doc_offsets), std::move(element_indices), has_more};
+    }
+
+    bool
+    is_skipped_by_cursor(
+        const T& pk,
+        int64_t element_offset,
+        const std::optional<QueryIteratorCursor>& cursor) const {
+        return is_cursor_pk(pk, cursor) &&
+               element_offset <= cursor->last_element_offset;
+    }
+
+    bool
+    is_cursor_pk(const T& pk,
+                 const std::optional<QueryIteratorCursor>& cursor) const {
+        if (!cursor.has_value()) {
+            return false;
+        }
+        auto last_pk = std::get_if<T>(&cursor->last_pk);
+        return last_pk != nullptr && *last_pk == pk;
     }
 
  private:
@@ -571,7 +694,7 @@ class OffsetOrderedArray : public OffsetMap {
     }
 
     std::pair<std::vector<OffsetMap::OffsetType>, bool>
-    find_first(int64_t limit, const BitsetTypeView& bitset) const override {
+    find_first_n(int64_t limit, const BitsetTypeView& bitset) const override {
         check_search();
 
         if (limit == Unlimited || limit == NoLimit) {
@@ -580,7 +703,23 @@ class OffsetOrderedArray : public OffsetMap {
 
         // TODO: we can't retrieve pk by offset very conveniently.
         //      Selectivity should be done outside.
-        return find_first_by_index(limit, bitset);
+        return find_first_n_by_index(limit, bitset);
+    }
+
+    std::tuple<std::vector<int64_t>, std::vector<std::vector<int32_t>>, bool>
+    find_first_n_element(
+        int64_t limit,
+        const BitsetTypeView& element_bitset,
+        const IArrayOffsets* array_offsets,
+        const std::optional<QueryIteratorCursor>& cursor) const override {
+        check_search();
+
+        if (limit == Unlimited || limit == NoLimit) {
+            limit = static_cast<int64_t>(element_bitset.size());
+        }
+
+        return find_first_n_element_by_index(
+            limit, element_bitset, array_offsets, cursor);
     }
 
     void
@@ -596,7 +735,7 @@ class OffsetOrderedArray : public OffsetMap {
 
  private:
     std::pair<std::vector<OffsetMap::OffsetType>, bool>
-    find_first_by_index(int64_t limit, const BitsetTypeView& bitset) const {
+    find_first_n_by_index(int64_t limit, const BitsetTypeView& bitset) const {
         int64_t hit_num = 0;  // avoid counting the number everytime.
         auto size = bitset.size();
         int64_t cnt = size - bitset.count();
@@ -618,6 +757,76 @@ class OffsetOrderedArray : public OffsetMap {
             }
         }
         return {seg_offsets, more_hit_than_limit && it != array_.end()};
+    }
+
+    std::tuple<std::vector<int64_t>, std::vector<std::vector<int32_t>>, bool>
+    find_first_n_element_by_index(
+        int64_t limit,
+        const BitsetTypeView& element_bitset,
+        const IArrayOffsets* array_offsets,
+        const std::optional<QueryIteratorCursor>& cursor) const {
+        std::vector<int64_t> doc_offsets;
+        std::vector<std::vector<int32_t>> element_indices;
+
+        int64_t hit_num = 0;
+        auto element_size = static_cast<int64_t>(element_bitset.size());
+        // Clamp limit to the actual number of matching elements,
+        // same as find_first_n_by_index does for doc-level queries.
+        int64_t cnt = element_size - element_bitset.count();
+        auto more_hit_than_limit = cnt > limit;
+        limit = std::min(limit, cnt);
+
+        // Traverse array_ in PK order (already sorted)
+        std::vector<int32_t> matching_indices;
+        auto it = array_.begin();
+        for (; hit_num < limit && it != array_.end(); ++it) {
+            auto doc_offset = it->second;
+
+            // Get element range for this doc
+            auto [first_elem, last_elem] =
+                array_offsets->ElementIDRangeOfRow(doc_offset);
+
+            // Collect all matching element indices for this doc
+            matching_indices.clear();
+            for (int64_t elem_id = first_elem;
+                 elem_id < last_elem && hit_num < limit;
+                 ++elem_id) {
+                if (elem_id >= element_size) {
+                    continue;
+                }
+                if (is_skipped_by_cursor(
+                        it->first, elem_id - first_elem, cursor)) {
+                    continue;
+                }
+                if (!element_bitset[elem_id]) {  // 0 means pass filter
+                    matching_indices.push_back(
+                        static_cast<int32_t>(elem_id - first_elem));
+                    hit_num++;
+                }
+            }
+
+            // Only add doc if it has matching elements
+            if (!matching_indices.empty()) {
+                doc_offsets.push_back(doc_offset);
+                element_indices.push_back(std::move(matching_indices));
+            }
+        }
+
+        bool has_more = more_hit_than_limit && hit_num >= limit;
+        return {std::move(doc_offsets), std::move(element_indices), has_more};
+    }
+
+    bool
+    is_skipped_by_cursor(
+        const T& pk,
+        int64_t element_offset,
+        const std::optional<QueryIteratorCursor>& cursor) const {
+        if (!cursor.has_value()) {
+            return false;
+        }
+        auto last_pk = std::get_if<T>(&cursor->last_pk);
+        return last_pk != nullptr && *last_pk == pk &&
+               element_offset <= cursor->last_element_offset;
     }
 
     void
@@ -764,9 +973,11 @@ class VirtualPKOffsetMap : public OffsetMap {
     }
 
     std::tuple<std::vector<int64_t>, std::vector<std::vector<int32_t>>, bool>
-    find_first_n_element(int64_t limit,
-                         const BitsetTypeView& element_bitset,
-                         const IArrayOffsets* array_offsets) const override {
+    find_first_n_element(
+        int64_t limit,
+        const BitsetTypeView& element_bitset,
+        const IArrayOffsets* array_offsets,
+        const std::optional<QueryIteratorCursor>& cursor) const override {
         // External tables don't support array fields, but implement
         // the interface for completeness.
         auto element_size = static_cast<int64_t>(element_bitset.size());
@@ -787,7 +998,8 @@ class VirtualPKOffsetMap : public OffsetMap {
             std::vector<int32_t> matching;
             for (int64_t e = first_elem; e < last_elem && hit_num < limit;
                  e++) {
-                if (e < element_size && !element_bitset[e]) {
+                if (e < element_size && !element_bitset[e] &&
+                    !is_skipped_by_cursor(doc, e - first_elem, cursor)) {
                     matching.push_back(static_cast<int32_t>(e - first_elem));
                     hit_num++;
                 }
@@ -810,6 +1022,24 @@ class VirtualPKOffsetMap : public OffsetMap {
     size_t
     memory_size() const override {
         return sizeof(VirtualPKOffsetMap);
+    }
+
+    bool
+    is_skipped_by_cursor(
+        int64_t doc,
+        int64_t element_offset,
+        const std::optional<QueryIteratorCursor>& cursor) const {
+        if (!cursor.has_value()) {
+            return false;
+        }
+        auto last_pk = std::get_if<int64_t>(&cursor->last_pk);
+        return last_pk != nullptr && *last_pk == (shifted_segment_id_ | doc) &&
+               element_offset <= cursor->last_element_offset;
+    }
+
+    bool
+    is_zero_storage() const override {
+        return true;
     }
 
  private:
@@ -1370,6 +1600,12 @@ class InsertRecordGrowing {
                                               field_meta.get_dim(),
                                               size_per_chunk,
                                               dense_vec_mmap_descriptor);
+                return;
+            } else if (field_meta.get_data_type() == DataType::VECTOR_ARRAY) {
+                this->append_data<VectorArray>(field_id,
+                                               field_meta.get_dim(),
+                                               size_per_chunk,
+                                               dense_vec_mmap_descriptor);
                 return;
             } else {
                 ThrowInfo(DataTypeInvalid,

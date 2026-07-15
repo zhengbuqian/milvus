@@ -337,32 +337,8 @@ GetDataGetter(milvus::OpContext* op_ctx,
     }
 }
 
-void
-SearchGroupBy(milvus::OpContext* op_ctx,
-              const std::vector<std::shared_ptr<VectorIterator>>& iterators,
-              const SearchInfo& searchInfo,
-              std::vector<GroupByValueType>& group_by_values,
-              const segcore::SegmentInternalInterface& segment,
-              std::vector<int64_t>& seg_offsets,
-              std::vector<float>& distances,
-              std::vector<size_t>& topk_per_nq_prefix_sum);
-
-template <typename T>
-void
-GroupIteratorsByType(
-    const std::vector<std::shared_ptr<VectorIterator>>& iterators,
-    int64_t topK,
-    int64_t group_size,
-    bool strict_group_size,
-    const std::shared_ptr<DataGetter<T>>& data_getter,
-    std::vector<GroupByValueType>& group_by_values,
-    std::vector<int64_t>& seg_offsets,
-    std::vector<float>& distances,
-    const knowhere::MetricType& metrics_type,
-    std::vector<size_t>& topk_per_nq_prefix_sum);
-
-template <typename T>
-struct GroupByMap {
+// GroupByMap for CompositeGroupKey
+struct CompositeGroupByMap {
  private:
     std::unordered_map<CompositeGroupKey, int, CompositeGroupKeyHash>
         group_map_{};
@@ -449,14 +425,15 @@ class MultiFieldDataGetter {
 
 // Unified group by interface - always emits CompositeGroupKey
 void
-GroupIteratorResult(const std::shared_ptr<VectorIterator>& iterator,
-                    int64_t topK,
-                    int64_t group_size,
-                    bool strict_group_size,
-                    const std::shared_ptr<DataGetter<T>>& data_getter,
-                    std::vector<int64_t>& offsets,
-                    std::vector<float>& distances,
-                    const knowhere::MetricType& metrics_type);
+SearchGroupBy(milvus::OpContext* op_ctx,
+              const std::vector<std::shared_ptr<VectorIterator>>& iterators,
+              const SearchInfo& searchInfo,
+              std::vector<CompositeGroupKey>& composite_group_by_values,
+              const segcore::SegmentInternalInterface& segment,
+              std::vector<int64_t>& seg_offsets,
+              std::vector<float>& distances,
+              std::vector<size_t>& topk_per_nq_prefix_sum,
+              std::vector<int32_t>* element_indices = nullptr);
 
 }  // namespace exec
 }  // namespace milvus

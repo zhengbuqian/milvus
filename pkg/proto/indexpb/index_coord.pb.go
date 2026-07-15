@@ -2172,11 +2172,12 @@ type OptionalFieldInfo struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	FieldID   int64    `protobuf:"varint,1,opt,name=fieldID,proto3" json:"fieldID,omitempty"`
-	FieldName string   `protobuf:"bytes,2,opt,name=field_name,json=fieldName,proto3" json:"field_name,omitempty"`
-	FieldType int32    `protobuf:"varint,3,opt,name=field_type,json=fieldType,proto3" json:"field_type,omitempty"`
-	DataPaths []string `protobuf:"bytes,4,rep,name=data_paths,json=dataPaths,proto3" json:"data_paths,omitempty"`
-	DataIds   []int64  `protobuf:"varint,5,rep,packed,name=data_ids,json=dataIds,proto3" json:"data_ids,omitempty"`
+	FieldID     int64    `protobuf:"varint,1,opt,name=fieldID,proto3" json:"fieldID,omitempty"`
+	FieldName   string   `protobuf:"bytes,2,opt,name=field_name,json=fieldName,proto3" json:"field_name,omitempty"`
+	FieldType   int32    `protobuf:"varint,3,opt,name=field_type,json=fieldType,proto3" json:"field_type,omitempty"`
+	DataPaths   []string `protobuf:"bytes,4,rep,name=data_paths,json=dataPaths,proto3" json:"data_paths,omitempty"`
+	DataIds     []int64  `protobuf:"varint,5,rep,packed,name=data_ids,json=dataIds,proto3" json:"data_ids,omitempty"`
+	ElementType int32    `protobuf:"varint,6,opt,name=element_type,json=elementType,proto3" json:"element_type,omitempty"`
 }
 
 func (x *OptionalFieldInfo) Reset() {
@@ -2244,6 +2245,13 @@ func (x *OptionalFieldInfo) GetDataIds() []int64 {
 		return x.DataIds
 	}
 	return nil
+}
+
+func (x *OptionalFieldInfo) GetElementType() int32 {
+	if x != nil {
+		return x.ElementType
+	}
+	return 0
 }
 
 type JobInfo struct {

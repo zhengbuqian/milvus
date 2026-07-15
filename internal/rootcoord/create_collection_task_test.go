@@ -630,7 +630,290 @@ func Test_createCollectionTask_validateSchema(t *testing.T) {
 		err := task.validateSchema(context.TODO(), schema)
 		assert.NoError(t, err)
 	})
-}
+
+	t.Run("struct array field - empty fields", func(t *testing.T) {
+		collectionName := funcutil.GenRandomStr()
+		task := createCollectionTask{
+			Req: &milvuspb.CreateCollectionRequest{
+				Base:           &commonpb.MsgBase{MsgType: commonpb.MsgType_CreateCollection},
+				CollectionName: collectionName,
+			},
+		}
+		schema := &schemapb.CollectionSchema{
+			Name: collectionName,
+			StructArrayFields: []*schemapb.StructArrayFieldSchema{
+				{
+					Name:   "struct_field",
+					Fields: []*schemapb.FieldSchema{},
+				},
+			},
+		}
+		err := task.validateSchema(context.TODO(), schema)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "empty fields in StructArrayField")
+	})
+
+	t.Run("struct array field - vector type with nullable", func(t *testing.T) {
+		collectionName := funcutil.GenRandomStr()
+		task := createCollectionTask{
+			Req: &milvuspb.CreateCollectionRequest{
+				Base:           &commonpb.MsgBase{MsgType: commonpb.MsgType_CreateCollection},
+				CollectionName: collectionName,
+			},
+		}
+		schema := &schemapb.CollectionSchema{
+			Name: collectionName,
+			StructArrayFields: []*schemapb.StructArrayFieldSchema{
+				{
+					Name:     "struct_field",
+					Nullable: true,
+					Fields: []*schemapb.FieldSchema{
+						{
+							Name:        "vector_array_field",
+							DataType:    schemapb.DataType_ArrayOfVector,
+							ElementType: schemapb.DataType_FloatVector,
+							Nullable:    true,
+							TypeParams: []*commonpb.KeyValuePair{
+								{Key: common.DimKey, Value: "128"},
+								{Key: common.MaxCapacityKey, Value: "100"},
+							},
+						},
+					},
+				},
+			},
+		}
+		err := task.validateSchema(context.TODO(), schema)
+		assert.NoError(t, err)
+	})
+
+	t.Run("struct array field - field with default value", func(t *testing.T) {
+		collectionName := funcutil.GenRandomStr()
+		task := createCollectionTask{
+			Req: &milvuspb.CreateCollectionRequest{
+				Base:           &commonpb.MsgBase{MsgType: commonpb.MsgType_CreateCollection},
+				CollectionName: collectionName,
+			},
+		}
+		schema := &schemapb.CollectionSchema{
+			Name: collectionName,
+			StructArrayFields: []*schemapb.StructArrayFieldSchema{
+				{
+					Name: "struct_field",
+					Fields: []*schemapb.FieldSchema{
+						{
+							Name:        "array_field",
+							DataType:    schemapb.DataType_Array,
+							ElementType: schemapb.DataType_Int32,
+							DefaultValue: &schemapb.ValueField{
+								Data: &schemapb.ValueField_IntData{
+									IntData: 1,
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		err := task.validateSchema(context.TODO(), schema)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "fields in struct array field not support default_value")
+	})
+
+	t.Run("struct array field - duplicate type params", func(t *testing.T) {
+		collectionName := funcutil.GenRandomStr()
+		task := createCollectionTask{
+			Req: &milvuspb.CreateCollectionRequest{
+				Base:           &commonpb.MsgBase{MsgType: commonpb.MsgType_CreateCollection},
+				CollectionName: collectionName,
+			},
+		}
+		schema := &schemapb.CollectionSchema{
+			Name: collectionName,
+			StructArrayFields: []*schemapb.StructArrayFieldSchema{
+				{
+					Name: "struct_field",
+					Fields: []*schemapb.FieldSchema{
+						{
+							Name:        "array_field",
+							DataType:    schemapb.DataType_Array,
+							ElementType: schemapb.DataType_VarChar,
+							TypeParams: []*commonpb.KeyValuePair{
+								{Key: common.MaxLengthKey, Value: "100"},
+								{Key: common.MaxLengthKey, Value: "200"},
+							},
+						},
+					},
+				},
+			},
+		}
+		err := task.validateSchema(context.TODO(), schema)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "duplicated type param key")
+	})
+
+	t.Run("struct array field - duplicate index params", func(t *testing.T) {
+		collectionName := funcutil.GenRandomStr()
+		task := createCollectionTask{
+			Req: &milvuspb.CreateCollectionRequest{
+				Base:           &commonpb.MsgBase{MsgType: commonpb.MsgType_CreateCollection},
+				CollectionName: collectionName,
+			},
+		}
+		schema := &schemapb.CollectionSchema{
+			Name: collectionName,
+			StructArrayFields: []*schemapb.StructArrayFieldSchema{
+				{
+					Name: "struct_field",
+					Fields: []*schemapb.FieldSchema{
+						{
+							Name:        "vector_array_field",
+							DataType:    schemapb.DataType_ArrayOfVector,
+							ElementType: schemapb.DataType_FloatVector,
+							IndexParams: []*commonpb.KeyValuePair{
+								{Key: common.MetricTypeKey, Value: "L2"},
+								{Key: common.MetricTypeKey, Value: "IP"},
+							},
+						},
+					},
+				},
+			},
+		}
+		err := task.validateSchema(context.TODO(), schema)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "duplicated index param key")
+	})
+
+	t.Run("struct array field - invalid data type", func(t *testing.T) {
+		collectionName := funcutil.GenRandomStr()
+		task := createCollectionTask{
+			Req: &milvuspb.CreateCollectionRequest{
+				Base:           &commonpb.MsgBase{MsgType: commonpb.MsgType_CreateCollection},
+				CollectionName: collectionName,
+			},
+		}
+		schema := &schemapb.CollectionSchema{
+			Name: collectionName,
+			StructArrayFields: []*schemapb.StructArrayFieldSchema{
+				{
+					Name: "struct_field",
+					Fields: []*schemapb.FieldSchema{
+						{
+							Name:        "invalid_field",
+							DataType:    schemapb.DataType_Int64,
+							ElementType: schemapb.DataType_Int64,
+						},
+					},
+				},
+			},
+		}
+		err := task.validateSchema(context.TODO(), schema)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "fields in StructArrayField can only be array or array of vector")
+	})
+
+	t.Run("struct array field - nested array", func(t *testing.T) {
+		collectionName := funcutil.GenRandomStr()
+		task := createCollectionTask{
+			Req: &milvuspb.CreateCollectionRequest{
+				Base:           &commonpb.MsgBase{MsgType: commonpb.MsgType_CreateCollection},
+				CollectionName: collectionName,
+			},
+		}
+		schema := &schemapb.CollectionSchema{
+			Name: collectionName,
+			StructArrayFields: []*schemapb.StructArrayFieldSchema{
+				{
+					Name: "struct_field",
+					Fields: []*schemapb.FieldSchema{
+						{
+							Name:        "nested_array",
+							DataType:    schemapb.DataType_Array,
+							ElementType: schemapb.DataType_Array,
+							TypeParams:  []*commonpb.KeyValuePair{{Key: common.MaxCapacityKey, Value: "100"}},
+						},
+					},
+				},
+			},
+		}
+		err := task.validateSchema(context.TODO(), schema)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "nested array is not supported")
+	})
+
+	t.Run("struct array field - invalid element type", func(t *testing.T) {
+		collectionName := funcutil.GenRandomStr()
+		task := createCollectionTask{
+			Req: &milvuspb.CreateCollectionRequest{
+				Base:           &commonpb.MsgBase{MsgType: commonpb.MsgType_CreateCollection},
+				CollectionName: collectionName,
+			},
+		}
+		schema := &schemapb.CollectionSchema{
+			Name: collectionName,
+			StructArrayFields: []*schemapb.StructArrayFieldSchema{
+				{
+					Name: "struct_field",
+					Fields: []*schemapb.FieldSchema{
+						{
+							Name:        "array_field",
+							DataType:    schemapb.DataType_Array,
+							ElementType: schemapb.DataType_None,
+							TypeParams:  []*commonpb.KeyValuePair{{Key: common.MaxCapacityKey, Value: "100"}},
+						},
+					},
+				},
+			},
+		}
+		err := task.validateSchema(context.TODO(), schema)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "field data type: None is not supported")
+	})
+
+	t.Run("struct array field - valid case", func(t *testing.T) {
+		collectionName := funcutil.GenRandomStr()
+		task := createCollectionTask{
+			Req: &milvuspb.CreateCollectionRequest{
+				Base:           &commonpb.MsgBase{MsgType: commonpb.MsgType_CreateCollection},
+				CollectionName: collectionName,
+			},
+		}
+		schema := &schemapb.CollectionSchema{
+			Name: collectionName,
+			StructArrayFields: []*schemapb.StructArrayFieldSchema{
+				{
+					Name: "struct_field",
+					Fields: []*schemapb.FieldSchema{
+						{
+							Name:        "text_array",
+							DataType:    schemapb.DataType_Array,
+							ElementType: schemapb.DataType_VarChar,
+							TypeParams: []*commonpb.KeyValuePair{
+								{Key: common.MaxLengthKey, Value: "100"},
+								{Key: common.MaxCapacityKey, Value: "100"},
+							},
+						},
+						{
+							Name:        "int_array",
+							DataType:    schemapb.DataType_Array,
+							ElementType: schemapb.DataType_Int32,
+							TypeParams:  []*commonpb.KeyValuePair{{Key: common.MaxCapacityKey, Value: "100"}},
+						},
+						{
+							Name:        "vector_array",
+							DataType:    schemapb.DataType_ArrayOfVector,
+							ElementType: schemapb.DataType_FloatVector,
+							TypeParams: []*commonpb.KeyValuePair{
+								{Key: common.DimKey, Value: "128"},
+								{Key: common.MaxCapacityKey, Value: "100"},
+							},
+						},
+					},
+				},
+			},
+		}
+		err := task.validateSchema(context.TODO(), schema)
+		assert.NoError(t, err)
+	})
 
 	t.Run("external schema valid case", func(t *testing.T) {
 		collectionName := funcutil.GenRandomStr()
@@ -833,7 +1116,7 @@ func Test_createCollectionTask_prepareSchema(t *testing.T) {
 			Fields: []*schemapb.FieldSchema{
 				{
 					Name:     field1,
-					DataType: 200,
+					DataType: 300,
 				},
 			},
 		}
@@ -1895,146 +2178,14 @@ func TestCreateCollectionTask_Prepare_WithProperty(t *testing.T) {
 
 	t.Run("reject invalid namespace mode", func(t *testing.T) {
 		meta := mockrootcoord.NewIMetaTable(t)
-		meta.On("GetCollectionByName",
-			mock.Anything,
-			mock.Anything,
-			mock.Anything,
-			mock.Anything,
-		).Return(coll, nil)
-		meta.EXPECT().DescribeAlias(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
-			Return("", merr.WrapErrAliasNotFound("", ""))
-
-		core := newTestCore(withMeta(meta), withTtSynchronizer(ticker))
-
-		task := &createCollectionTask{
-			baseTask: newBaseTask(context.Background(), core),
-			Req: &milvuspb.CreateCollectionRequest{
-				Base:           &commonpb.MsgBase{MsgType: commonpb.MsgType_CreateCollection},
-				CollectionName: collectionName,
-			},
-			schema: &schemapb.CollectionSchema{Name: collectionName, Fields: []*schemapb.FieldSchema{{Name: field1}}},
-		}
-
-		err := task.Execute(context.Background())
-		assert.Error(t, err)
-	})
-
-	t.Run("add duplicate collection", func(t *testing.T) {
-		defer cleanTestEnv()
-		ticker := newRocksMqTtSynchronizer()
-		shardNum := 2
-		pchans := ticker.getDmlChannelNames(shardNum)
-
-		collectionName := funcutil.GenRandomStr()
-		field1 := funcutil.GenRandomStr()
-		collID := UniqueID(1)
-		schema := &schemapb.CollectionSchema{Name: collectionName, Fields: []*schemapb.FieldSchema{{Name: field1}}}
-		channels := collectionChannels{
-			virtualChannels:  []string{funcutil.GenRandomStr(), funcutil.GenRandomStr()},
-			physicalChannels: pchans,
-		}
-		coll := &model.Collection{
-			CollectionID:         collID,
-			Name:                 schema.Name,
-			Description:          schema.Description,
-			AutoID:               schema.AutoID,
-			Fields:               model.UnmarshalFieldModels(schema.GetFields()),
-			VirtualChannelNames:  channels.virtualChannels,
-			PhysicalChannelNames: channels.physicalChannels,
-		}
-
-		meta := mockrootcoord.NewIMetaTable(t)
-		meta.On("GetCollectionByName",
-			mock.Anything,
-			mock.Anything,
-			mock.Anything,
-			mock.Anything,
-		).Return(coll, nil)
-		meta.EXPECT().DescribeAlias(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
-			Return("", merr.WrapErrAliasNotFound("", ""))
-
-		core := newTestCore(withMeta(meta), withTtSynchronizer(ticker))
-
-		task := &createCollectionTask{
-			baseTask: newBaseTask(context.Background(), core),
-			Req: &milvuspb.CreateCollectionRequest{
-				Base:           &commonpb.MsgBase{MsgType: commonpb.MsgType_CreateCollection},
-				CollectionName: collectionName,
-			},
-			collID:   collID,
-			schema:   schema,
-			channels: channels,
-		}
-
-		err := task.Execute(context.Background())
-		assert.NoError(t, err)
-	})
-
-	t.Run("failed to get start positions", func(t *testing.T) {
-		ticker := newTickerWithMockFailStream()
-		shardNum := 2
-		pchans := ticker.getDmlChannelNames(shardNum)
-		meta := mockrootcoord.NewIMetaTable(t)
-		meta.EXPECT().GetCollectionByName(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
-			Return(nil, errors.New("error mock GetCollectionByName"))
-		meta.EXPECT().DescribeAlias(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
-			Return("", merr.WrapErrAliasNotFound("", ""))
-		core := newTestCore(withTtSynchronizer(ticker), withMeta(meta))
-		schema := &schemapb.CollectionSchema{Name: "", Fields: []*schemapb.FieldSchema{{}}}
-		task := &createCollectionTask{
-			baseTask: newBaseTask(context.Background(), core),
-			channels: collectionChannels{
-				physicalChannels: pchans,
-				virtualChannels:  []string{funcutil.GenRandomStr(), funcutil.GenRandomStr()},
-			},
-			Req: &milvuspb.CreateCollectionRequest{
-				Base:           &commonpb.MsgBase{MsgType: commonpb.MsgType_CreateCollection},
-				CollectionName: "",
-				Schema:         []byte{},
-				ShardsNum:      int32(shardNum),
-			},
-			schema: schema,
-		}
-		err := task.Execute(context.Background())
-		assert.Error(t, err)
-	})
-
-	t.Run("collection name duplicates an alias", func(t *testing.T) {
-		defer cleanTestEnv()
-
-		collectionName := funcutil.GenRandomStr()
-		ticker := newRocksMqTtSynchronizer()
-		field1 := funcutil.GenRandomStr()
-		schema := &schemapb.CollectionSchema{Name: collectionName, Fields: []*schemapb.FieldSchema{{Name: field1}}}
-
-		meta := mockrootcoord.NewIMetaTable(t)
-		// mock collection name duplicates an alias
-		meta.EXPECT().DescribeAlias(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
-			Return(collectionName, nil)
-
-		core := newTestCore(withMeta(meta), withTtSynchronizer(ticker))
-		task := &createCollectionTask{
-			baseTask: newBaseTask(context.Background(), core),
-			Req: &milvuspb.CreateCollectionRequest{
-				Base:           &commonpb.MsgBase{MsgType: commonpb.MsgType_CreateCollection},
-				DbName:         "mock-db",
-				CollectionName: collectionName,
-				Properties: []*commonpb.KeyValuePair{
-					{
-						Key:   common.ConsistencyLevel,
-						Value: "1",
-					},
-				},
-			},
-			schema: schema,
-		}
-		err := task.Execute(context.Background())
-		assert.Error(t, err)
-		assert.True(t, strings.Contains(err.Error(), "conflicts with an existing alias"))
-	})
-
-	t.Run("normal case", func(t *testing.T) {
-		t.Skip("normal case")
+		meta.EXPECT().GetDatabaseByName(mock.Anything, mock.Anything, mock.Anything).Return(&model.Database{
+			Name: "foo",
+			ID:   1,
+		}, nil).Twice()
+		meta.EXPECT().ListAllAvailCollections(mock.Anything).Return(map[int64][]int64{
+			util.DefaultDBID: {1, 2},
+		}).Once()
+		meta.EXPECT().GetGeneralCount(mock.Anything).Return(0).Once()
 		defer cleanTestEnv()
 
 		collectionName := funcutil.GenRandomStr()

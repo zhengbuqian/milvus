@@ -194,7 +194,7 @@ func TestConvertPlaceholderGroupToFloat16(t *testing.T) {
 		DataType: schemapb.DataType_Float16Vector,
 	}
 
-	convertedBytes, err := ConvertPlaceholderGroup(phgBytes, fieldSchema)
+	convertedBytes, _, err := ConvertPlaceholderGroup(phgBytes, fieldSchema)
 	assert.NoError(t, err)
 
 	var resultPhg commonpb.PlaceholderGroup
@@ -215,7 +215,7 @@ func TestConvertPlaceholderGroupToBFloat16(t *testing.T) {
 		DataType: schemapb.DataType_BFloat16Vector,
 	}
 
-	convertedBytes, err := ConvertPlaceholderGroup(phgBytes, fieldSchema)
+	convertedBytes, _, err := ConvertPlaceholderGroup(phgBytes, fieldSchema)
 	assert.NoError(t, err)
 
 	var resultPhg commonpb.PlaceholderGroup
@@ -242,7 +242,7 @@ func TestConvertPlaceholderGroupTypeMismatch(t *testing.T) {
 		DataType: schemapb.DataType_BFloat16Vector,
 	}
 
-	_, err := ConvertPlaceholderGroup(phgBytes, fieldSchema)
+	_, _, err := ConvertPlaceholderGroup(phgBytes, fieldSchema)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "vector type must be the same")
 }
@@ -263,7 +263,7 @@ func TestConvertPlaceholderGroupPassThrough(t *testing.T) {
 		DataType: schemapb.DataType_FloatVector,
 	}
 
-	result, err := ConvertPlaceholderGroup(phgBytes, fieldSchema)
+	result, _, err := ConvertPlaceholderGroup(phgBytes, fieldSchema)
 	assert.NoError(t, err)
 	assert.Equal(t, phgBytes, result)
 }
@@ -276,7 +276,7 @@ func TestConvertPlaceholderGroupNoConversionNeeded(t *testing.T) {
 		DataType: schemapb.DataType_FloatVector,
 	}
 
-	convertedBytes, err := ConvertPlaceholderGroup(phgBytes, fieldSchema)
+	convertedBytes, _, err := ConvertPlaceholderGroup(phgBytes, fieldSchema)
 	assert.NoError(t, err)
 	assert.Equal(t, phgBytes, convertedBytes)
 }
@@ -289,7 +289,7 @@ func TestConvertPlaceholderGroupOverflowToFloat16Infinity(t *testing.T) {
 		DataType: schemapb.DataType_Float16Vector,
 	}
 
-	_, err := ConvertPlaceholderGroup(phgBytes, fieldSchema)
+	_, _, err := ConvertPlaceholderGroup(phgBytes, fieldSchema)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "nan or infinity")
 }
@@ -429,7 +429,7 @@ func TestConvertPlaceholderGroupIntegration(t *testing.T) {
 			DataType: schemapb.DataType_Float16Vector,
 		}
 
-		convertedBytes, err := ConvertPlaceholderGroup(phgBytes, fieldSchema)
+		convertedBytes, _, err := ConvertPlaceholderGroup(phgBytes, fieldSchema)
 		assert.NoError(t, err)
 
 		var resultPhg commonpb.PlaceholderGroup
@@ -446,7 +446,7 @@ func TestConvertPlaceholderGroupIntegration(t *testing.T) {
 			DataType: schemapb.DataType_BFloat16Vector,
 		}
 
-		convertedBytes, err := ConvertPlaceholderGroup(phgBytes, fieldSchema)
+		convertedBytes, _, err := ConvertPlaceholderGroup(phgBytes, fieldSchema)
 		assert.NoError(t, err)
 
 		var resultPhg commonpb.PlaceholderGroup
@@ -463,7 +463,7 @@ func TestConvertPlaceholderGroupIntegration(t *testing.T) {
 			DataType: schemapb.DataType_FloatVector,
 		}
 
-		convertedBytes, err := ConvertPlaceholderGroup(phgBytes, fieldSchema)
+		convertedBytes, _, err := ConvertPlaceholderGroup(phgBytes, fieldSchema)
 		assert.NoError(t, err)
 		assert.Equal(t, phgBytes, convertedBytes) // Should be unchanged
 	})

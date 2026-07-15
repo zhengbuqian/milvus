@@ -44,6 +44,41 @@ namespace milvus {
 using ArrowSchemaPtr = std::shared_ptr<arrow::Schema>;
 static int64_t debug_id = START_USER_FIELDID;
 
+std::optional<FieldId>
+ParseFieldIdColumnName(const std::string& column_name);
+
+bool
+IsMilvusTableExternalSpec(const std::string& external_spec);
+
+// Physical column mapping for a schema field in external storage manifests.
+struct PhysicalColumnMapping {
+    std::string schema_column_name;
+    std::string storage_column_name;
+    bool is_external_column = false;
+};
+
+PhysicalColumnMapping
+ResolvePhysicalColumnMapping(
+    bool is_milvus_table,
+    const milvus::proto::schema::FieldSchema& field_schema);
+
+inline std::optional<std::string>
+GetStructNameForArrayField(const FieldMeta& field_meta) {
+    auto data_type = field_meta.get_data_type();
+    if (data_type != DataType::ARRAY && data_type != DataType::VECTOR_ARRAY) {
+        return std::nullopt;
+    }
+
+    const auto& field_name = field_meta.get_name().get();
+    auto left = field_name.find('[');
+    auto right = field_name.find(']', left == std::string::npos ? 0 : left);
+    if (left == std::string::npos || right == std::string::npos || left == 0) {
+        return std::nullopt;
+    }
+
+    return field_name.substr(0, left);
+}
+
 class Schema {
  public:
     Schema() = default;
@@ -140,6 +175,51 @@ class Schema {
                                     metric_type,
                                     nullable,
                                     std::nullopt);
+        this->AddField(std::move(field_meta));
+        return field_id;
+    }
+
+    // array of vector type
+    FieldId
+    AddDebugVectorArrayField(const std::string& name,
+                             DataType element_type,
+                             int64_t dim,
+                             std::optional<knowhere::MetricType> metric_type,
+                             bool nullable = false) {
+        auto field_id = FieldId(debug_id);
+        debug_id++;
+        auto field_meta = FieldMeta(FieldName(name),
+                                    field_id,
+                                    DataType::VECTOR_ARRAY,
+                                    element_type,
+                                    dim,
+                                    metric_type,
+                                    nullable);
+        this->AddField(std::move(field_meta));
+        return field_id;
+    }
+
+    // string type
+    FieldId
+    AddDebugVarcharField(const FieldName& name,
+                         DataType data_type,
+                         int64_t max_length,
+                         bool nullable,
+                         bool enable_match,
+                         bool enable_analyzer,
+                         std::map<std::string, std::string>& params,
+                         std::optional<DefaultValueType> default_value) {
+        auto field_id = FieldId(debug_id);
+        debug_id++;
+        auto field_meta = FieldMeta(name,
+                                    field_id,
+                                    data_type,
+                                    max_length,
+                                    nullable,
+                                    enable_match,
+                                    enable_analyzer,
+                                    params,
+                                    std::move(default_value));
         this->AddField(std::move(field_meta));
         return field_id;
     }
@@ -478,7 +558,17 @@ class Schema {
         name_ids_.emplace(field_name, field_id);
         id_names_.emplace(field_id, field_name);
 
-        fields_.emplace(field_id, field_meta);
+        // Build struct_array_field_cache_ for ARRAY/VECTOR_ARRAY fields.
+        if (auto struct_name = GetStructNameForArrayField(field_meta);
+            struct_name.has_value()) {
+            // Only cache the first array field for each struct.
+            if (struct_array_field_cache_.find(*struct_name) ==
+                struct_array_field_cache_.end()) {
+                struct_array_field_cache_[*struct_name] = field_id;
+            }
+        }
+
+        fields_.emplace(field_id, std::move(field_meta));
         field_ids_.emplace_back(field_id);
     }
 
@@ -502,6 +592,72 @@ class Schema {
      */
     std::pair<bool, bool>
     MmapEnabled(const FieldId& field) const;
+
+    // Find the first array field belonging to a struct (cached)
+    const FieldMeta&
+    GetFirstArrayFieldInStruct(const std::string& struct_name) const;
+
+    DataType
+    GetFieldType(const FieldId& field_id) const {
+        AssertInfo(fields_.count(field_id),
+                   "field_id:{} does not exist in the schema",
+                   field_id.get());
+        auto& meta = fields_.at(field_id);
+        return meta.get_data_type();
+    }
+
+    const std::string&
+    GetFieldName(const FieldId& field_id) const {
+        AssertInfo(fields_.count(field_id),
+                   "field_id:{} does not exist in the schema",
+                   field_id.get());
+        auto& meta = fields_.at(field_id);
+        return meta.get_name().get();
+    }
+
+    /**
+     * @brief Get the warmup policy for a specific field.
+     *
+     * This function checks warmup policy at the field level first. If no field-level
+     * setting is found, it falls back to the appropriate collection-level warmup
+     * configuration based on whether the field is vector/scalar and index/field.
+     *
+     * @param field The field ID to check warmup policy for.
+     * @param is_vector Whether the field is a vector field.
+     * @param is_index Whether this is for index loading (vs raw field data).
+     *
+     * @return A pair where:
+     *         - first:  Whether a warmup policy exists (at field or collection level).
+     *         - second: The warmup policy string ("disable", "sync", etc.).
+     *                   Only meaningful when first is true.
+     *
+     * @note If no warmup policy exists at any level, first will be false and second
+     *       should be ignored (use global config fallback).
+     */
+    std::pair<bool, std::string>
+    WarmupPolicy(const FieldId& field, bool is_vector, bool is_index) const;
+
+    // True if the field carries FieldSchema::is_function_output.
+    bool
+    is_function_output(const FieldId& field_id) const {
+        return function_output_field_ids_.count(field_id) > 0;
+    }
+
+    const std::unordered_set<FieldId>&
+    function_output_field_ids() const {
+        return function_output_field_ids_;
+    }
+
+    void
+    add_function_output_field_id(const FieldId& field_id) {
+        function_output_field_ids_.insert(field_id);
+    }
+
+    // Storage column name used by packed manifests for a given field.
+    std::string
+    get_storage_column_name(const FieldId& field_id) const {
+        return GetPhysicalColumnName(field_id);
+    }
 
  private:
     // Keep Schema's copy constructor and assignment operator in sync with
@@ -534,6 +690,32 @@ class Schema {
     bool has_mmap_setting_ = false;
     bool mmap_enabled_ = false;
     std::unordered_map<FieldId, bool> mmap_fields_;
+
+    // Cache for struct_name -> first array field mapping (built during AddField)
+    std::unordered_map<std::string, FieldId> struct_array_field_cache_;
+
+    // warmup policy settings
+    // Valid values: "disable", "sync", "async" (empty string means no setting)
+    // Collection-level warmup policies for different data types
+    std::optional<std::string> warmup_vector_index_ = std::nullopt;
+    std::optional<std::string> warmup_scalar_index_ = std::nullopt;
+    std::optional<std::string> warmup_scalar_field_ = std::nullopt;
+    std::optional<std::string> warmup_vector_field_ = std::nullopt;
+    // Per-field warmup policy (key: "warmup" in field type_params)
+    std::unordered_map<FieldId, std::string> warmup_fields_;
+
+    // External collection properties
+    std::string
+        external_source_;  // External data source identifier (e.g., S3 path, table name)
+    std::string
+        external_spec_;  // External data source specification (JSON format)
+
+    // Field IDs marked as function outputs by FieldSchema::is_function_output.
+    std::unordered_set<FieldId> function_output_field_ids_;
+
+    bool is_milvus_table_external_ = false;
+
+    mutable ArrowSchemaPtr loon_arrow_lob_schema_cache_;
 };
 
 using SchemaPtr = std::shared_ptr<Schema>;

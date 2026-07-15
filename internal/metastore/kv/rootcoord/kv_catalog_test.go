@@ -238,7 +238,13 @@ func TestCatalog_ListCollections(t *testing.T) {
 			})).
 			Return([]string{"rootcoord/functions/1/1"}, []string{string(fcm)}, nil)
 
-		kc := NewCatalog(nil, kv)
+		kv.On("LoadWithPrefix", mock.Anything, mock.MatchedBy(
+			func(prefix string) bool {
+				return strings.HasPrefix(prefix, StructArrayFieldMetaPrefix)
+			})).
+			Return([]string{}, []string{}, nil)
+
+		kc := NewCatalog(kv)
 		ret, err := kc.ListCollections(ctx, testDb, ts)
 		assert.NoError(t, err)
 		assert.NotNil(t, ret)
@@ -288,8 +294,14 @@ func TestCatalog_ListCollections(t *testing.T) {
 			})).
 			Return([]string{"rootcoord/functions/1/1"}, []string{string(fcm)}, nil)
 
-		kv.On("MultiSaveAndRemove", mock.Anything, mock.Anything, mock.Anything, ts).Return(nil)
-		kc := NewCatalog(nil, kv)
+		kv.On("LoadWithPrefix", mock.Anything, mock.MatchedBy(
+			func(prefix string) bool {
+				return strings.HasPrefix(prefix, StructArrayFieldMetaPrefix)
+			})).
+			Return([]string{}, []string{}, nil)
+
+		kv.On("MultiSaveAndRemove", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+		kc := NewCatalog(kv)
 
 		ret, err := kc.ListCollections(ctx, util.NonDBID, ts)
 		assert.NoError(t, err)
@@ -1419,9 +1431,9 @@ func TestCatalog_CreateCollection(t *testing.T) {
 		assert.NoError(t, err)
 	})
 
-	t.Run("create collection with function", func(t *testing.T) {
-		mockSnapshot := newMockSnapshot(t, withMockSave(nil), withMockMultiSave(nil))
-		kc := NewCatalog(nil, mockSnapshot)
+	t.Run("create collection with function and struct array field", func(t *testing.T) {
+		mockSnapshot := newMockSnapshot(t, withMockMultiSave(nil), withMockSave(nil))
+		kc := NewCatalog(mockSnapshot)
 		ctx := context.Background()
 		coll := &model.Collection{
 			Partitions: []*model.Partition{
@@ -1441,6 +1453,23 @@ func TestCatalog_CreateCollection(t *testing.T) {
 				{
 					Name:     "sparse",
 					DataType: schemapb.DataType_SparseFloatVector,
+				},
+			},
+			StructArrayFields: []*model.StructArrayField{
+				{
+					Name: "test_struct",
+					Fields: []*model.Field{
+						{
+							Name:        "sub_text",
+							DataType:    schemapb.DataType_Array,
+							ElementType: schemapb.DataType_VarChar,
+						},
+						{
+							Name:        "sub_sparse",
+							DataType:    schemapb.DataType_ArrayOfVector,
+							ElementType: schemapb.DataType_SparseFloatVector,
+						},
+					},
 				},
 			},
 			Functions: []*model.Function{
@@ -1537,6 +1566,23 @@ func TestCatalog_DropCollection(t *testing.T) {
 				{
 					Name:     "sparse",
 					DataType: schemapb.DataType_SparseFloatVector,
+				},
+			},
+			StructArrayFields: []*model.StructArrayField{
+				{
+					Name: "test_struct",
+					Fields: []*model.Field{
+						{
+							Name:        "sub_text",
+							DataType:    schemapb.DataType_Array,
+							ElementType: schemapb.DataType_VarChar,
+						},
+						{
+							Name:        "sub_sparse",
+							DataType:    schemapb.DataType_ArrayOfVector,
+							ElementType: schemapb.DataType_SparseFloatVector,
+						},
+					},
 				},
 			},
 			Functions: []*model.Function{

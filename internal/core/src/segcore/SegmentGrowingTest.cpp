@@ -170,6 +170,185 @@ TEST(Growing, RealCount) {
     ASSERT_EQ(0, segment->get_real_count());
 }
 
+TEST(Growing, LoadStorageV3ManifestCapsRowsAtCheckpoint) {
+    auto schema = std::make_shared<Schema>();
+    AddStorageV3SystemFields(schema);
+    auto pk = schema->AddDebugField("pk", DataType::INT64);
+    constexpr int64_t dim = 4;
+    auto vec = schema->AddDebugField(
+        "vec", DataType::VECTOR_FLOAT, dim, knowhere::metric::L2);
+
+    std::map<std::string, std::string> analyzer_params;
+    auto text = schema->AddDebugVarcharField(FieldName("text"),
+                                             DataType::VARCHAR,
+                                             65535,
+                                             false,
+                                             true,
+                                             true,
+                                             analyzer_params,
+                                             std::nullopt);
+    schema->set_primary_field_id(pk);
+
+    auto base_path = (std::filesystem::path(TestLocalPath) /
+                      "growing_recovery_checkpoint_row_cap")
+                         .string();
+    std::filesystem::remove_all(base_path);
+    milvus::test::V3SegmentTestData test_data(
+        schema, 2, 3, dim, TestLocalPath, base_path);
+    ASSERT_EQ(test_data.NumColumnGroups(), 2);
+    ASSERT_TRUE(ManifestHasField(test_data, RowFieldID));
+    ASSERT_TRUE(ManifestHasField(test_data, TimestampFieldID));
+
+    constexpr int64_t checkpoint_rows = 4;
+    milvus::proto::segcore::SegmentLoadInfo load_info;
+    load_info.set_collectionid(1);
+    load_info.set_partitionid(2);
+    load_info.set_segmentid(3);
+    load_info.set_storageversion(STORAGE_V3);
+    load_info.set_num_of_rows(checkpoint_rows);
+    load_info.set_manifest_path(test_data.ManifestPathJson());
+    load_info.set_insert_channel("by-dev-rootcoord-dml_0_1v0");
+
+    auto segment =
+        CreateGrowingSegment(schema, empty_index_meta, load_info.segmentid());
+    segment->SetLoadInfo(load_info);
+    milvus::tracer::TraceContext trace_ctx;
+    segment->Load(trace_ctx, nullptr);
+    ASSERT_EQ(segment->get_row_count(), checkpoint_rows);
+    EXPECT_EQ(segment->get_real_count(), checkpoint_rows);
+
+    std::vector<int64_t> row_ids = {checkpoint_rows};
+    std::vector<Timestamp> timestamps = {100};
+    std::vector<int64_t> pks = {100000};
+    std::vector<std::string> texts = {"text after recovery checkpoint"};
+    std::vector<float> vectors(dim, 1.0F);
+
+    auto insert_data = std::make_unique<InsertRecordProto>();
+    insert_data->set_num_rows(1);
+    insert_data->mutable_fields_data()->AddAllocated(
+        CreateDataArrayFrom(pks.data(), nullptr, 1, (*schema)[pk]).release());
+    insert_data->mutable_fields_data()->AddAllocated(
+        CreateDataArrayFrom(texts.data(), nullptr, 1, (*schema)[text])
+            .release());
+    insert_data->mutable_fields_data()->AddAllocated(
+        CreateDataArrayFrom(vectors.data(), nullptr, 1, (*schema)[vec])
+            .release());
+
+    auto offset = segment->PreInsert(1);
+    ASSERT_EQ(offset, checkpoint_rows);
+    ASSERT_NO_THROW(segment->Insert(
+        offset, 1, row_ids.data(), timestamps.data(), insert_data.get()));
+    EXPECT_EQ(segment->get_row_count(), checkpoint_rows + 1);
+
+    std::filesystem::remove_all(base_path);
+}
+
+TEST(Growing, LoadStorageV3ManifestRejectsShortRequiredRows) {
+    auto schema = std::make_shared<Schema>();
+    AddStorageV3SystemFields(schema);
+    auto pk = schema->AddDebugField("pk", DataType::INT64);
+    schema->set_primary_field_id(pk);
+
+    auto base_path = (std::filesystem::path(TestLocalPath) /
+                      "growing_recovery_short_required_rows")
+                         .string();
+    std::filesystem::remove_all(base_path);
+    milvus::test::V3SegmentTestData test_data(
+        schema, 1, 2, 1, TestLocalPath, base_path);
+    ASSERT_TRUE(ManifestHasField(test_data, RowFieldID));
+    ASSERT_TRUE(ManifestHasField(test_data, TimestampFieldID));
+
+    milvus::proto::segcore::SegmentLoadInfo load_info;
+    load_info.set_collectionid(1);
+    load_info.set_partitionid(2);
+    load_info.set_segmentid(4);
+    load_info.set_storageversion(STORAGE_V3);
+    load_info.set_num_of_rows(test_data.TotalRows() + 1);
+    load_info.set_manifest_path(test_data.ManifestPathJson());
+    load_info.set_insert_channel("by-dev-rootcoord-dml_0_1v0");
+
+    auto segment =
+        CreateGrowingSegment(schema, empty_index_meta, load_info.segmentid());
+    segment->SetLoadInfo(load_info);
+    milvus::tracer::TraceContext trace_ctx;
+    ASSERT_ANY_THROW(segment->Load(trace_ctx, nullptr));
+    EXPECT_EQ(segment->get_row_count(), 0);
+
+    std::filesystem::remove_all(base_path);
+}
+
+TEST(Growing, InsertSkipsMissingFunctionOutputField) {
+    auto schema = std::make_shared<Schema>();
+    schema->set_schema_version(2);
+    auto pk = schema->AddDebugField("pk", DataType::INT64);
+    schema->set_primary_field_id(pk);
+    auto sparse = FieldId(pk.get() + 1);
+    schema->AddField(FieldName("sparse_out"),
+                     sparse,
+                     DataType::VECTOR_SPARSE_U32_F32,
+                     0,
+                     std::nullopt,
+                     false);
+    schema->add_function_output_field_id(sparse);
+
+    auto segment = CreateGrowingSegment(schema, empty_index_meta);
+
+    auto insert_schema = std::make_shared<Schema>();
+    insert_schema->set_schema_version(1);
+    insert_schema->AddField(
+        FieldName("pk"), pk, DataType::INT64, false, std::nullopt);
+    insert_schema->set_primary_field_id(pk);
+
+    constexpr int64_t row_count = 5;
+    auto dataset = DataGen(insert_schema, row_count);
+    segment->PreInsert(row_count);
+    ASSERT_NO_THROW(segment->Insert(0,
+                                    row_count,
+                                    dataset.row_ids_.data(),
+                                    dataset.timestamps_.data(),
+                                    dataset.raw_));
+    EXPECT_FALSE(segment->FieldAccessible(sparse));
+}
+
+TEST(Growing, MissingStructArrayOffsetsReturnsEmptyForOldRows) {
+    auto old_schema = std::make_shared<Schema>();
+    old_schema->set_schema_version(1);
+    auto pk = old_schema->AddDebugField("pk", DataType::INT64);
+    old_schema->set_primary_field_id(pk);
+    auto segment = CreateGrowingSegment(old_schema, empty_index_meta);
+
+    constexpr int64_t row_count = 5;
+    auto dataset = DataGen(old_schema, row_count);
+    segment->Insert(0,
+                    row_count,
+                    dataset.row_ids_.data(),
+                    dataset.timestamps_.data(),
+                    dataset.raw_);
+
+    auto new_schema = std::make_shared<Schema>();
+    new_schema->set_schema_version(2);
+    new_schema->AddField(
+        FieldName("pk"), pk, DataType::INT64, false, std::nullopt);
+    new_schema->set_primary_field_id(pk);
+    auto label = FieldId(pk.get() + 1);
+    new_schema->AddField(FieldName("chunks[label]"),
+                         label,
+                         DataType::ARRAY,
+                         DataType::VARCHAR,
+                         true);
+    segment->Reopen(new_schema);
+
+    auto offsets = segment->GetArrayOffsets(label);
+    ASSERT_NE(offsets, nullptr);
+    EXPECT_EQ(offsets->GetRowCount(), row_count);
+    EXPECT_EQ(offsets->GetTotalElementCount(), 0);
+    for (int64_t i = 0; i <= row_count; ++i) {
+        auto [start, end] = offsets->ElementIDRangeOfRow(i);
+        EXPECT_EQ(start, 0);
+        EXPECT_EQ(end, 0);
+    }
+}
+
 class GrowingTest
     : public ::testing::TestWithParam<
           std::tuple</*index type*/ std::string, knowhere::MetricType>> {
@@ -1155,7 +1334,7 @@ TEST(GrowingTest, SearchVectorArray) {
     config.set_enable_interim_segment_index(true);
 
     std::map<std::string, std::string> index_params = {
-        {"index_type", knowhere::IndexEnum::INDEX_EMB_LIST_HNSW},
+        {"index_type", knowhere::IndexEnum::INDEX_HNSW},
         {"metric_type", metric_type},
         {"nlist", "128"}};
     std::map<std::string, std::string> type_params = {
@@ -1185,11 +1364,11 @@ TEST(GrowingTest, SearchVectorArray) {
     int vec_num = 10;  // Total number of query vectors
     std::vector<float> query_vec = generate_float_vector(vec_num, dim);
 
-    // Create query dataset with lims for VectorArray
-    std::vector<size_t> query_vec_lims;
-    query_vec_lims.push_back(0);  // First query has 3 vectors
-    query_vec_lims.push_back(3);
-    query_vec_lims.push_back(10);  // Second query has 7 vectors
+    // Create query dataset with offsets for VectorArray
+    std::vector<size_t> query_vec_offsets;
+    query_vec_offsets.push_back(0);  // First query has 3 vectors
+    query_vec_offsets.push_back(3);
+    query_vec_offsets.push_back(10);  // Second query has 7 vectors
 
     // Create search plan using ScopedSchemaHandle
     milvus::segcore::ScopedSchemaHandle schema_handle(*schema);
@@ -1205,7 +1384,7 @@ TEST(GrowingTest, SearchVectorArray) {
 
     // Use CreatePlaceholderGroupFromBlob for VectorArray
     auto ph_group_raw = CreatePlaceholderGroupFromBlob<EmbListFloatVector>(
-        vec_num, dim, query_vec.data(), query_vec_lims);
+        vec_num, dim, query_vec.data(), query_vec_offsets);
     auto ph_group =
         ParsePlaceholderGroup(plan.get(), ph_group_raw.SerializeAsString());
 

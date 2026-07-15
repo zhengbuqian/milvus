@@ -22,6 +22,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
+#include <random>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "arrow/api.h"
@@ -33,6 +37,7 @@
 #include "common/Types.h"
 #include "gtest/gtest.h"
 
+using milvus::DataType;
 using milvus::MemChunkTarget;
 using milvus::MMAP_ARRAY_PADDING;
 using milvus::VectorArrayChunk;
@@ -40,14 +45,34 @@ using milvus::VectorArrayChunkWriter;
 
 namespace {
 
+// Calculate byte width for a single vector based on data type and dimension
+int
+GetByteWidth(DataType data_type, int dim) {
+    switch (data_type) {
+        case DataType::VECTOR_FLOAT:
+            return dim * sizeof(float);
+        case DataType::VECTOR_FLOAT16:
+        case DataType::VECTOR_BFLOAT16:
+            return dim * 2;
+        case DataType::VECTOR_INT8:
+            return dim;
+        case DataType::VECTOR_BINARY:
+            return (dim + 7) / 8;
+        default:
+            return dim * sizeof(float);
+    }
+}
+
 // Helper function to build a ListArray of FixedSizeBinary (vector array)
 // Each row contains a variable number of vectors
 // vectors_per_row: specifies how many vectors each row contains
-// dim: dimension of each vector (number of floats)
+// dim: dimension of each vector
+// data_type: the vector data type
 std::shared_ptr<arrow::ListArray>
-BuildVectorArrayListArray(const std::vector<int>& vectors_per_row, int dim) {
-    // Each vector is stored as FixedSizeBinary with size = dim * sizeof(float)
-    int byte_width = dim * sizeof(float);
+BuildVectorArrayListArray(const std::vector<int>& vectors_per_row,
+                          int dim,
+                          DataType data_type = DataType::VECTOR_FLOAT) {
+    int byte_width = GetByteWidth(data_type, dim);
     auto value_type = arrow::fixed_size_binary(byte_width);
 
     arrow::FixedSizeBinaryBuilder value_builder(value_type);
@@ -58,13 +83,46 @@ BuildVectorArrayListArray(const std::vector<int>& vectors_per_row, int dim) {
     auto& fsb_builder = dynamic_cast<arrow::FixedSizeBinaryBuilder&>(
         *list_builder.value_builder());
 
-    float counter = 0.0f;
+    std::default_random_engine gen(42);
+    std::uniform_int_distribution<int> dist(0, 255);
+
     for (size_t row = 0; row < vectors_per_row.size(); ++row) {
         EXPECT_TRUE(list_builder.Append().ok());
         for (int vec = 0; vec < vectors_per_row[row]; ++vec) {
+            std::vector<uint8_t> vector_data(byte_width);
+            for (int d = 0; d < byte_width; ++d) {
+                vector_data[d] = static_cast<uint8_t>(dist(gen));
+            }
+            EXPECT_TRUE(fsb_builder.Append(vector_data.data()).ok());
+        }
+    }
+
+    std::shared_ptr<arrow::Array> result;
+    EXPECT_TRUE(list_builder.Finish(&result).ok());
+    return std::static_pointer_cast<arrow::ListArray>(result);
+}
+
+std::shared_ptr<arrow::ListArray>
+BuildNullableFloatVectorArrayListArray(
+    const std::vector<std::optional<int>>& vectors_per_row, int dim) {
+    auto value_type = arrow::fixed_size_binary(dim * sizeof(float));
+    arrow::ListBuilder list_builder(
+        arrow::default_memory_pool(),
+        std::make_shared<arrow::FixedSizeBinaryBuilder>(value_type));
+    auto& fsb_builder = dynamic_cast<arrow::FixedSizeBinaryBuilder&>(
+        *list_builder.value_builder());
+
+    float value = 1.0F;
+    for (const auto& vector_count : vectors_per_row) {
+        if (!vector_count.has_value()) {
+            EXPECT_TRUE(list_builder.AppendNull().ok());
+            continue;
+        }
+        EXPECT_TRUE(list_builder.Append().ok());
+        for (int vec = 0; vec < vector_count.value(); ++vec) {
             std::vector<float> vector_data(dim);
             for (int d = 0; d < dim; ++d) {
-                vector_data[d] = counter++;
+                vector_data[d] = value++;
             }
             EXPECT_TRUE(fsb_builder
                             .Append(reinterpret_cast<const uint8_t*>(
@@ -78,27 +136,52 @@ BuildVectorArrayListArray(const std::vector<int>& vectors_per_row, int dim) {
     return std::static_pointer_cast<arrow::ListArray>(result);
 }
 
+// Test parameter structure for parameterized tests
+struct VectorArrayWriterTestParam {
+    DataType data_type;
+    int dim;
+    std::string test_name;
+};
+
 }  // namespace
 
-// Test basic functionality without slicing
-TEST(VectorArrayChunkWriterTest, BasicNoSlice) {
-    const int dim = 4;
+// Parameterized test class for VectorArrayChunkWriter
+class VectorArrayChunkWriterParameterizedTest
+    : public ::testing::TestWithParam<VectorArrayWriterTestParam> {
+ protected:
+    DataType
+    data_type() const {
+        return GetParam().data_type;
+    }
+    int
+    dim() const {
+        return GetParam().dim;
+    }
+    int
+    byte_width() const {
+        return GetByteWidth(data_type(), dim());
+    }
+};
+
+// Test basic functionality without slicing - parameterized version
+TEST_P(VectorArrayChunkWriterParameterizedTest, BasicNoSlice) {
     // 5 rows with varying number of vectors per row
     std::vector<int> vectors_per_row = {2, 3, 1, 4, 2};  // Total: 12 vectors
 
-    auto list_array = BuildVectorArrayListArray(vectors_per_row, dim);
+    auto list_array =
+        BuildVectorArrayListArray(vectors_per_row, dim(), data_type());
     ASSERT_EQ(list_array->length(), 5);
 
     arrow::ArrayVector vec{list_array};
 
-    VectorArrayChunkWriter writer(dim, milvus::DataType::VECTOR_FLOAT);
+    VectorArrayChunkWriter writer(dim(), data_type(), false);
     auto [calculated_size, row_count] = writer.calculate_size(vec);
 
     // Expected size:
-    // - 12 vectors * 4 floats * 4 bytes = 192 bytes for data
+    // - 12 vectors * byte_width bytes for data
     // - (5 * 2 + 1) * 4 bytes = 44 bytes for offsets and lengths
     // - MMAP_ARRAY_PADDING (1) byte for padding
-    int expected_data_size = 12 * dim * sizeof(float);  // 192
+    int expected_data_size = 12 * byte_width();
     int expected_overhead =
         sizeof(uint32_t) * (5 * 2 + 1) + MMAP_ARRAY_PADDING;  // 44 + 1 = 45
     EXPECT_EQ(calculated_size, expected_data_size + expected_overhead);
@@ -110,24 +193,19 @@ TEST(VectorArrayChunkWriterTest, BasicNoSlice) {
 
     // Create chunk from target data
     auto* data = target->release();
-    auto chunk =
-        std::make_unique<VectorArrayChunk>(dim,
-                                           row_count,
-                                           data,
-                                           calculated_size,
-                                           milvus::DataType::VECTOR_FLOAT,
-                                           nullptr);
+    auto chunk = std::make_unique<VectorArrayChunk>(
+        dim(), row_count, data, calculated_size, data_type(), nullptr, false);
     ASSERT_NE(chunk, nullptr);
     EXPECT_EQ(chunk->RowNums(), 5);
 }
 
 // Test with sliced ListArray - THIS IS THE KEY TEST FOR THE BUG
-TEST(VectorArrayChunkWriterTest, SlicedListArray) {
-    const int dim = 4;
+TEST_P(VectorArrayChunkWriterParameterizedTest, SlicedListArray) {
     // Original: 10 rows with 2 vectors each = 20 vectors total
     std::vector<int> vectors_per_row(10, 2);
 
-    auto original_array = BuildVectorArrayListArray(vectors_per_row, dim);
+    auto original_array =
+        BuildVectorArrayListArray(vectors_per_row, dim(), data_type());
     ASSERT_EQ(original_array->length(), 10);
 
     // Slice: take rows 3-6 (4 rows, should have 8 vectors)
@@ -148,14 +226,14 @@ TEST(VectorArrayChunkWriterTest, SlicedListArray) {
 
     arrow::ArrayVector vec{sliced_array};
 
-    VectorArrayChunkWriter writer(dim, milvus::DataType::VECTOR_FLOAT);
+    VectorArrayChunkWriter writer(dim(), data_type(), false);
     auto [calculated_size, row_count] = writer.calculate_size(vec);
 
     // Expected size with the fix:
-    // - 8 vectors * 4 floats * 4 bytes = 128 bytes for data
+    // - 8 vectors * byte_width bytes for data
     // - (4 * 2 + 1) * 4 bytes = 36 bytes for offsets and lengths
     // - MMAP_ARRAY_PADDING (1) byte for padding
-    int expected_data_size = 8 * dim * sizeof(float);  // 128
+    int expected_data_size = 8 * byte_width();
     int expected_overhead =
         sizeof(uint32_t) * (4 * 2 + 1) + MMAP_ARRAY_PADDING;  // 36 + 1 = 37
     EXPECT_EQ(calculated_size, expected_data_size + expected_overhead);
@@ -167,28 +245,23 @@ TEST(VectorArrayChunkWriterTest, SlicedListArray) {
 
     // Create chunk from target data
     auto* data = target->release();
-    auto chunk =
-        std::make_unique<VectorArrayChunk>(dim,
-                                           row_count,
-                                           data,
-                                           calculated_size,
-                                           milvus::DataType::VECTOR_FLOAT,
-                                           nullptr);
+    auto chunk = std::make_unique<VectorArrayChunk>(
+        dim(), row_count, data, calculated_size, data_type(), nullptr, false);
     ASSERT_NE(chunk, nullptr);
     EXPECT_EQ(chunk->RowNums(), 4);
 }
 
 // Test with multiple sliced arrays in array_vec
-TEST(VectorArrayChunkWriterTest, MultipleSlicedArrays) {
-    const int dim = 4;
-
+TEST_P(VectorArrayChunkWriterParameterizedTest, MultipleSlicedArrays) {
     // First array: 8 rows with varying vectors
     std::vector<int> vectors_per_row1 = {1, 2, 3, 2, 1, 2, 3, 2};  // 16 total
-    auto array1 = BuildVectorArrayListArray(vectors_per_row1, dim);
+    auto array1 =
+        BuildVectorArrayListArray(vectors_per_row1, dim(), data_type());
 
     // Second array: 6 rows with 2 vectors each
     std::vector<int> vectors_per_row2(6, 2);  // 12 total
-    auto array2 = BuildVectorArrayListArray(vectors_per_row2, dim);
+    auto array2 =
+        BuildVectorArrayListArray(vectors_per_row2, dim(), data_type());
 
     // Slice both: first array rows 2-5 (4 rows), second array rows 1-4 (4 rows)
     auto sliced1 =
@@ -207,11 +280,10 @@ TEST(VectorArrayChunkWriterTest, MultipleSlicedArrays) {
 
     arrow::ArrayVector vec{sliced1, sliced2};
 
-    VectorArrayChunkWriter writer(dim, milvus::DataType::VECTOR_FLOAT);
+    VectorArrayChunkWriter writer(dim(), data_type(), false);
     auto [calculated_size, row_count] = writer.calculate_size(vec);
 
-    int expected_data_size =
-        expected_vectors * dim * sizeof(float);  // 16 * 16 = 256
+    int expected_data_size = expected_vectors * byte_width();
     int expected_overhead = sizeof(uint32_t) * (expected_rows * 2 + 1) +
                             MMAP_ARRAY_PADDING;  // 17 * 4 + 1 = 69
     EXPECT_EQ(calculated_size, expected_data_size + expected_overhead);
@@ -223,23 +295,18 @@ TEST(VectorArrayChunkWriterTest, MultipleSlicedArrays) {
 
     // Create chunk from target data
     auto* data = target->release();
-    auto chunk =
-        std::make_unique<VectorArrayChunk>(dim,
-                                           row_count,
-                                           data,
-                                           calculated_size,
-                                           milvus::DataType::VECTOR_FLOAT,
-                                           nullptr);
+    auto chunk = std::make_unique<VectorArrayChunk>(
+        dim(), row_count, data, calculated_size, data_type(), nullptr, false);
     ASSERT_NE(chunk, nullptr);
     EXPECT_EQ(chunk->RowNums(), expected_rows);
 }
 
 // Test edge case: slice from the beginning
-TEST(VectorArrayChunkWriterTest, SliceFromBeginning) {
-    const int dim = 4;
+TEST_P(VectorArrayChunkWriterParameterizedTest, SliceFromBeginning) {
     std::vector<int> vectors_per_row = {3, 2, 1, 4, 2};  // 12 vectors total
 
-    auto original_array = BuildVectorArrayListArray(vectors_per_row, dim);
+    auto original_array =
+        BuildVectorArrayListArray(vectors_per_row, dim(), data_type());
 
     // Slice first 2 rows (should have 3+2=5 vectors)
     auto sliced =
@@ -248,10 +315,10 @@ TEST(VectorArrayChunkWriterTest, SliceFromBeginning) {
 
     arrow::ArrayVector vec{sliced};
 
-    VectorArrayChunkWriter writer(dim, milvus::DataType::VECTOR_FLOAT);
+    VectorArrayChunkWriter writer(dim(), data_type(), false);
     auto [calculated_size, row_count] = writer.calculate_size(vec);
 
-    int expected_data_size = 5 * dim * sizeof(float);  // 80
+    int expected_data_size = 5 * byte_width();
     int expected_overhead =
         sizeof(uint32_t) * (2 * 2 + 1) + MMAP_ARRAY_PADDING;  // 20 + 1 = 21
     EXPECT_EQ(calculated_size, expected_data_size + expected_overhead);
@@ -259,11 +326,11 @@ TEST(VectorArrayChunkWriterTest, SliceFromBeginning) {
 }
 
 // Test edge case: slice to the end
-TEST(VectorArrayChunkWriterTest, SliceToEnd) {
-    const int dim = 4;
+TEST_P(VectorArrayChunkWriterParameterizedTest, SliceToEnd) {
     std::vector<int> vectors_per_row = {3, 2, 1, 4, 2};  // 12 vectors total
 
-    auto original_array = BuildVectorArrayListArray(vectors_per_row, dim);
+    auto original_array =
+        BuildVectorArrayListArray(vectors_per_row, dim(), data_type());
 
     // Slice last 2 rows (should have 4+2=6 vectors)
     auto sliced =
@@ -272,10 +339,10 @@ TEST(VectorArrayChunkWriterTest, SliceToEnd) {
 
     arrow::ArrayVector vec{sliced};
 
-    VectorArrayChunkWriter writer(dim, milvus::DataType::VECTOR_FLOAT);
+    VectorArrayChunkWriter writer(dim(), data_type(), false);
     auto [calculated_size, row_count] = writer.calculate_size(vec);
 
-    int expected_data_size = 6 * dim * sizeof(float);  // 96
+    int expected_data_size = 6 * byte_width();
     int expected_overhead =
         sizeof(uint32_t) * (2 * 2 + 1) + MMAP_ARRAY_PADDING;  // 20 + 1 = 21
     EXPECT_EQ(calculated_size, expected_data_size + expected_overhead);
@@ -283,12 +350,15 @@ TEST(VectorArrayChunkWriterTest, SliceToEnd) {
 }
 
 // Test that calculate_size and write_to_target produce consistent results
-TEST(VectorArrayChunkWriterTest, SizeConsistencyWithSlice) {
-    const int dim = 8;
+TEST_P(VectorArrayChunkWriterParameterizedTest, SizeConsistencyWithSlice) {
+    // Use dim() from parameter, but for consistency test use a fixed dim=8
+    // to match the original test's vectors_per_row expectations
+    const int test_dim = 8;
     std::vector<int> vectors_per_row = {
         1, 3, 2, 4, 1, 2, 3, 1};  // 17 vectors total
 
-    auto original_array = BuildVectorArrayListArray(vectors_per_row, dim);
+    auto original_array =
+        BuildVectorArrayListArray(vectors_per_row, test_dim, data_type());
 
     // Try various slices and verify size consistency
     std::vector<std::pair<int64_t, int64_t>> slices = {
@@ -308,7 +378,7 @@ TEST(VectorArrayChunkWriterTest, SizeConsistencyWithSlice) {
 
         arrow::ArrayVector vec{sliced};
 
-        VectorArrayChunkWriter writer(dim, milvus::DataType::VECTOR_FLOAT);
+        VectorArrayChunkWriter writer(test_dim, data_type(), false);
         auto [calculated_size, row_count] = writer.calculate_size(vec);
         EXPECT_EQ(row_count, length);
 
@@ -319,15 +389,84 @@ TEST(VectorArrayChunkWriterTest, SizeConsistencyWithSlice) {
 
         // Create chunk from target data
         auto* data = target->release();
-        auto chunk =
-            std::make_unique<VectorArrayChunk>(dim,
-                                               row_count,
-                                               data,
-                                               calculated_size,
-                                               milvus::DataType::VECTOR_FLOAT,
-                                               nullptr);
+        auto chunk = std::make_unique<VectorArrayChunk>(test_dim,
+                                                        row_count,
+                                                        data,
+                                                        calculated_size,
+                                                        data_type(),
+                                                        nullptr,
+                                                        false);
         ASSERT_NE(chunk, nullptr)
             << "Failed for slice(" << offset << ", " << length << ")";
         EXPECT_EQ(chunk->RowNums(), length);
     }
 }
+
+TEST(VectorArrayChunkWriterTest, NullableRowsRoundTripThroughChunkViews) {
+    constexpr int dim = 2;
+    auto list_array =
+        BuildNullableFloatVectorArrayListArray({1, std::nullopt, 0, 2}, dim);
+    ASSERT_EQ(list_array->length(), 4);
+    ASSERT_EQ(list_array->null_count(), 1);
+
+    arrow::ArrayVector vec{list_array};
+    VectorArrayChunkWriter writer(dim, DataType::VECTOR_FLOAT, true);
+    auto [calculated_size, row_count] = writer.calculate_size(vec);
+
+    const int expected_vectors = 3;
+    const int expected_size =
+        (row_count + 7) / 8 + sizeof(uint32_t) * (row_count * 2 + 1) +
+        expected_vectors * dim * sizeof(float) + MMAP_ARRAY_PADDING;
+    EXPECT_EQ(calculated_size, expected_size);
+    EXPECT_EQ(row_count, 4);
+
+    auto target = std::make_shared<MemChunkTarget>(calculated_size);
+    writer.write_to_target(vec, target);
+
+    auto* data = target->release();
+    VectorArrayChunk chunk(dim,
+                           row_count,
+                           data,
+                           calculated_size,
+                           DataType::VECTOR_FLOAT,
+                           nullptr,
+                           true);
+    auto [views, valid] = chunk.Views();
+    ASSERT_EQ(views.size(), 4);
+    ASSERT_EQ(valid.size(), 4);
+    EXPECT_TRUE(valid[0]);
+    EXPECT_FALSE(valid[1]);
+    EXPECT_TRUE(valid[2]);
+    EXPECT_TRUE(valid[3]);
+    EXPECT_EQ(views[0].length(), 1);
+    EXPECT_EQ(views[1].length(), 0);
+    EXPECT_EQ(views[2].length(), 0);
+    EXPECT_EQ(views[3].length(), 2);
+
+    const auto* offsets = chunk.Offsets();
+    EXPECT_EQ(offsets[0], 0);
+    EXPECT_EQ(offsets[1], 1);
+    EXPECT_EQ(offsets[2], 1);
+    EXPECT_EQ(offsets[3], 1);
+    EXPECT_EQ(offsets[4], 3);
+
+    EXPECT_ANY_THROW(chunk.View(1));
+    EXPECT_EQ(chunk.View(2).length(), 0);
+}
+
+// Instantiate parameterized tests for all vector types
+INSTANTIATE_TEST_SUITE_P(
+    VectorTypes,
+    VectorArrayChunkWriterParameterizedTest,
+    ::testing::Values(
+        VectorArrayWriterTestParam{DataType::VECTOR_FLOAT, 4, "FloatVector"},
+        VectorArrayWriterTestParam{
+            DataType::VECTOR_FLOAT16, 4, "Float16Vector"},
+        VectorArrayWriterTestParam{
+            DataType::VECTOR_BFLOAT16, 4, "BFloat16Vector"},
+        VectorArrayWriterTestParam{DataType::VECTOR_INT8, 4, "Int8Vector"},
+        VectorArrayWriterTestParam{
+            DataType::VECTOR_BINARY, 32, "BinaryVector"}),
+    [](const ::testing::TestParamInfo<VectorArrayWriterTestParam>& info) {
+        return info.param.test_name;
+    });

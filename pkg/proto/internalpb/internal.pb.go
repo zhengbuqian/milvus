@@ -2443,6 +2443,9 @@ type RetrieveResults struct {
 	HasMoreResult      bool             `protobuf:"varint,15,opt,name=has_more_result,json=hasMoreResult,proto3" json:"has_more_result,omitempty"`
 	ScannedRemoteBytes int64            `protobuf:"varint,16,opt,name=scanned_remote_bytes,json=scannedRemoteBytes,proto3" json:"scanned_remote_bytes,omitempty"`
 	ScannedTotalBytes  int64            `protobuf:"varint,17,opt,name=scanned_total_bytes,json=scannedTotalBytes,proto3" json:"scanned_total_bytes,omitempty"`
+	// Element-level query support
+	ElementLevel   bool              `protobuf:"varint,18,opt,name=element_level,json=elementLevel,proto3" json:"element_level,omitempty"`
+	ElementIndices []*ElementIndices `protobuf:"bytes,19,rep,name=element_indices,json=elementIndices,proto3" json:"element_indices,omitempty"`
 }
 
 func (x *RetrieveResults) Reset() {
@@ -2566,6 +2569,20 @@ func (x *RetrieveResults) GetScannedTotalBytes() int64 {
 		return x.ScannedTotalBytes
 	}
 	return 0
+}
+
+func (x *RetrieveResults) GetElementLevel() bool {
+	if x != nil {
+		return x.ElementLevel
+	}
+	return false
+}
+
+func (x *RetrieveResults) GetElementIndices() []*ElementIndices {
+	if x != nil {
+		return x.ElementIndices
+	}
+	return nil
 }
 
 type LoadIndex struct {

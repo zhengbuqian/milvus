@@ -260,6 +260,223 @@ TEST(test_chunk_segment, TestSearchOnSealed) {
     }
 }
 
+TEST(test_chunk_segment, RejectRemoteVectorOutputFailsWhenVectorCellsAreCold) {
+    constexpr int64_t row_count = 16;
+    constexpr int64_t dim = 4;
+    auto schema = std::make_shared<Schema>();
+    auto pk_id = schema->AddDebugField("pk", DataType::INT64);
+    auto vector_id = schema->AddDebugField(
+        "vec", DataType::VECTOR_FLOAT, dim, knowhere::metric::L2);
+    schema->set_primary_field_id(pk_id);
+
+    auto segment = CreateColdVectorOutputSegment(schema, vector_id, row_count);
+    auto* chunked =
+        dynamic_cast<segcore::ChunkedSegmentSealedImpl*>(segment.get());
+    ASSERT_NE(chunked, nullptr);
+
+    query::Plan plan(schema);
+    plan.target_entries_ = {vector_id};
+    auto result = MakeSearchResult({0, 3, 7});
+
+    ScopedRejectRemoteVectorOutput scoped_config(true);
+
+    try {
+        chunked->TestFillTargetEntry(&plan, result);
+        FAIL() << "expected cold vector output to be rejected";
+    } catch (const SegcoreError& err) {
+        EXPECT_EQ(err.get_error_code(), RetrieveError);
+        EXPECT_NE(std::string(err.what()).find("vector field"),
+                  std::string::npos);
+    }
+}
+
+TEST(test_chunk_segment,
+     RejectRemoteVectorOutputFailsForRetrieveWhenVectorCellsAreCold) {
+    constexpr int64_t row_count = 16;
+    constexpr int64_t dim = 4;
+    auto schema = std::make_shared<Schema>();
+    auto pk_id = schema->AddDebugField("pk", DataType::INT64);
+    auto vector_id = schema->AddDebugField(
+        "vec", DataType::VECTOR_FLOAT, dim, knowhere::metric::L2);
+    schema->set_primary_field_id(pk_id);
+
+    auto segment = CreateColdVectorOutputSegment(schema, vector_id, row_count);
+    auto* chunked =
+        dynamic_cast<segcore::ChunkedSegmentSealedImpl*>(segment.get());
+    ASSERT_NE(chunked, nullptr);
+
+    query::RetrievePlan plan(schema);
+    plan.field_ids_ = {vector_id};
+    const int64_t offsets[] = {0, 3, 7};
+
+    ScopedRejectRemoteVectorOutput scoped_config(true);
+
+    try {
+        auto results = chunked->Retrieve(
+            nullptr,
+            &plan,
+            offsets,
+            static_cast<int64_t>(sizeof(offsets) / sizeof(offsets[0])),
+            folly::CancellationToken());
+        (void)results;
+        FAIL() << "expected cold vector output to be rejected";
+    } catch (const SegcoreError& err) {
+        EXPECT_EQ(err.get_error_code(), RetrieveError);
+        EXPECT_NE(std::string(err.what()).find("vector field"),
+                  std::string::npos);
+    }
+}
+
+TEST(test_chunk_segment,
+     RejectRemoteVectorOutputAllowsScalarAndDisabledConfig) {
+    constexpr int64_t row_count = 16;
+    constexpr int64_t dim = 4;
+    auto schema = std::make_shared<Schema>();
+    auto pk_id = schema->AddDebugField("pk", DataType::INT64);
+    auto scalar_id = schema->AddDebugField("scalar", DataType::INT64);
+    auto vector_id = schema->AddDebugField(
+        "vec", DataType::VECTOR_FLOAT, dim, knowhere::metric::L2);
+    schema->set_primary_field_id(pk_id);
+
+    {
+        auto segment =
+            CreateColdVectorOutputSegment(schema, vector_id, row_count);
+        auto* chunked =
+            dynamic_cast<segcore::ChunkedSegmentSealedImpl*>(segment.get());
+        ASSERT_NE(chunked, nullptr);
+
+        query::Plan scalar_plan(schema);
+        scalar_plan.target_entries_ = {scalar_id};
+        auto scalar_result = MakeSearchResult({1, 2, 5});
+
+        ScopedRejectRemoteVectorOutput scoped_config(true);
+        ASSERT_NO_THROW(
+            chunked->TestFillTargetEntry(&scalar_plan, scalar_result));
+        ASSERT_EQ(scalar_result.output_fields_data_.count(scalar_id), 1);
+    }
+
+    {
+        auto segment =
+            CreateColdVectorOutputSegment(schema, vector_id, row_count);
+        auto* chunked =
+            dynamic_cast<segcore::ChunkedSegmentSealedImpl*>(segment.get());
+        ASSERT_NE(chunked, nullptr);
+
+        query::Plan vector_plan(schema);
+        vector_plan.target_entries_ = {vector_id};
+        auto vector_result = MakeSearchResult({1, 2, 5});
+
+        ScopedRejectRemoteVectorOutput scoped_config(false);
+        ASSERT_NO_THROW(
+            chunked->TestFillTargetEntry(&vector_plan, vector_result));
+        ASSERT_EQ(vector_result.output_fields_data_.count(vector_id), 1);
+    }
+}
+
+TEST(test_chunk_segment, ReopenSkipsFunctionOutputFieldWithoutData) {
+    auto old_schema = std::make_shared<Schema>();
+    old_schema->set_schema_version(1);
+    auto pk = old_schema->AddDebugField("pk", DataType::INT64);
+    old_schema->set_primary_field_id(pk);
+
+    auto segment = segcore::CreateSealedSegment(old_schema);
+
+    constexpr int64_t row_count = 5;
+    std::vector<int64_t> pk_values(row_count);
+    std::iota(pk_values.begin(), pk_values.end(), 0);
+
+    auto field_data =
+        std::make_shared<FieldData<int64_t>>(DataType::INT64, false);
+    field_data->FillFieldData(pk_values.data(), row_count);
+
+    auto cm = milvus::storage::RemoteChunkManagerSingleton::GetInstance()
+                  .GetRemoteChunkManager();
+    auto load_info = PrepareSingleFieldInsertBinlog(
+        kCollectionID, kPartitionID, kSegmentID, pk.get(), {field_data}, cm);
+    segment->LoadFieldData(load_info);
+
+    auto new_schema = std::make_shared<Schema>();
+    new_schema->set_schema_version(2);
+    new_schema->AddField(
+        FieldName("pk"), pk, DataType::INT64, false, std::nullopt);
+    new_schema->set_primary_field_id(pk);
+    auto sparse = FieldId(pk.get() + 1);
+    new_schema->AddField(FieldName("sparse_out"),
+                         sparse,
+                         DataType::VECTOR_SPARSE_U32_F32,
+                         0,
+                         std::nullopt,
+                         false);
+    new_schema->add_function_output_field_id(sparse);
+
+    segment->Reopen(new_schema);
+    EXPECT_FALSE(segment->FieldAccessible(sparse));
+}
+
+// #50783 defense-in-depth: GetFieldIndexMeta must throw (AssertInfo) rather than
+// dereference end() for a missing field; assert() is compiled out under NDEBUG.
+TEST(test_chunk_segment, GetFieldIndexMetaThrowsOnMissingField) {
+    std::map<FieldId, FieldIndexMeta> field_metas;
+    FieldId present(100);
+    field_metas.emplace(
+        present,
+        FieldIndexMeta(
+            present, {{"index_type", "IVF_FLAT"}, {"metric_type", "L2"}}, {}));
+    CollectionIndexMeta meta(1024, std::move(field_metas));
+
+    EXPECT_TRUE(meta.HasField(present));
+    EXPECT_NO_THROW(meta.GetFieldIndexMeta(present));
+    EXPECT_FALSE(meta.HasField(FieldId(present.get() + 1)));
+    EXPECT_THROW(meta.GetFieldIndexMeta(FieldId(present.get() + 1)),
+                 SegcoreError);
+}
+
+TEST(test_chunk_segment, MissingStructArrayOffsetsReturnsEmptyForOldRows) {
+    auto old_schema = std::make_shared<Schema>();
+    old_schema->set_schema_version(1);
+    auto pk = old_schema->AddDebugField("pk", DataType::INT64);
+    old_schema->set_primary_field_id(pk);
+
+    auto segment = segcore::CreateSealedSegment(old_schema);
+
+    constexpr int64_t row_count = 5;
+    std::vector<int64_t> pk_values(row_count);
+    std::iota(pk_values.begin(), pk_values.end(), 0);
+
+    auto field_data =
+        std::make_shared<FieldData<int64_t>>(DataType::INT64, false);
+    field_data->FillFieldData(pk_values.data(), row_count);
+
+    auto cm = milvus::storage::RemoteChunkManagerSingleton::GetInstance()
+                  .GetRemoteChunkManager();
+    auto load_info = PrepareSingleFieldInsertBinlog(
+        kCollectionID, kPartitionID, kSegmentID, pk.get(), {field_data}, cm);
+    segment->LoadFieldData(load_info);
+
+    auto new_schema = std::make_shared<Schema>();
+    new_schema->set_schema_version(2);
+    new_schema->AddField(
+        FieldName("pk"), pk, DataType::INT64, false, std::nullopt);
+    new_schema->set_primary_field_id(pk);
+    auto label = FieldId(pk.get() + 1);
+    new_schema->AddField(FieldName("chunks[label]"),
+                         label,
+                         DataType::ARRAY,
+                         DataType::VARCHAR,
+                         true);
+    segment->Reopen(new_schema);
+
+    auto offsets = segment->GetArrayOffsets(label);
+    ASSERT_NE(offsets, nullptr);
+    EXPECT_EQ(offsets->GetRowCount(), row_count);
+    EXPECT_EQ(offsets->GetTotalElementCount(), 0);
+    for (int64_t i = 0; i <= row_count; ++i) {
+        auto [start, end] = offsets->ElementIDRangeOfRow(i);
+        EXPECT_EQ(start, 0);
+        EXPECT_EQ(end, 0);
+    }
+}
+
 TEST(test_chunk_segment, SearchOnSealedColumnBruteForceUsesOriginalTopk) {
     int dim = 16;
     int chunk_num = 2;

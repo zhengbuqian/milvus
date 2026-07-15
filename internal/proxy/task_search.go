@@ -10,6 +10,7 @@ import (
 
 	"github.com/cockroachdb/errors"
 	"github.com/samber/lo"
+	"github.com/tidwall/gjson"
 	"go.opentelemetry.io/otel"
 	"google.golang.org/protobuf/proto"
 
@@ -121,6 +122,11 @@ type searchTask struct {
 
 	// Old SDK sent only singular group_by_field; output must downgrade plural→singular.
 	legacyGroupByWire bool
+
+	hybridSubSearchInfos []hybridSubSearchInfo
+	hybridElementLevel   bool
+
+	chMgr channelsMgr
 }
 
 func (t *searchTask) CanSkipAllocTimestamp() bool {
@@ -546,10 +552,12 @@ func (t *searchTask) initAdvancedSearchRequest(ctx context.Context) error {
 
 	t.SubReqs = make([]*internalpb.SubSearchRequest, len(t.request.GetSubReqs()))
 	t.queryInfos = make([]*planpb.QueryInfo, len(t.request.GetSubReqs()))
+	t.hybridSubSearchInfos = make([]hybridSubSearchInfo, len(t.request.GetSubReqs()))
+	t.hybridElementLevel = false
 	queryFieldIDs := []int64{}
 	for index, subReq := range t.request.GetSubReqs() {
 		// For hybrid search, order_by_fields comes from main search params, not sub-search params
-		plan, queryInfo, offset, _, _, searchType, err := t.tryGeneratePlan(subReq.GetSearchParams(), subReq.GetDsl(), subReq.GetExprTemplateValues())
+		plan, queryInfo, offset, subIsIterator, _, searchType, err := t.tryGeneratePlan(subReq.GetSearchParams(), subReq.GetDsl(), subReq.GetExprTemplateValues())
 		if err != nil {
 			return err
 		}
@@ -557,6 +565,58 @@ func (t *searchTask) initAdvancedSearchRequest(ctx context.Context) error {
 			return merr.WrapErrParameterInvalid("", "",
 				"search iterator v2 is not supported for hybrid search")
 		}
+
+		convertedPlaceholder, placeholderType, err := t.convertPlaceholderIfNeeded(subReq.GetPlaceholderGroup(), queryInfo.GetQueryFieldId())
+		if err != nil {
+			return err
+		}
+		if err := validateElementFilterVectorSearch(plan, t.schema.CollectionSchema, queryInfo.GetQueryFieldId(), placeholderType); err != nil {
+			return err
+		}
+
+		subSearchInfo := classifyHybridSubSearch(t.schema.CollectionSchema, queryInfo.GetQueryFieldId(), placeholderType)
+		annsField := typeutil.GetField(t.schema.CollectionSchema, queryInfo.GetQueryFieldId())
+		collapseConfig, elementScopeProvided, sanitizedSearchParams, err := parseAndRemoveElementScope(queryInfo.GetSearchParams())
+		if err != nil {
+			return err
+		}
+		if elementScopeProvided {
+			if subSearchInfo.Kind != hybridSubSearchStructElement {
+				return merr.WrapErrParameterInvalidMsg("%s is only supported for element-level search on struct array vector sub-fields", elementScopeKey)
+			}
+			if err := validateElementCollapseMetricType(collapseConfig, resolveElementCollapseMetricType(queryInfo.GetMetricType(), annsField)); err != nil {
+				return err
+			}
+			queryInfo.SearchParams = sanitizedSearchParams
+			subSearchInfo.ElementScopeProvided = true
+			subSearchInfo.Collapse = collapseConfig
+		}
+
+		// ArrayOfVector hybrid validation is kind-specific: embedding-list
+		// rejects range/iterator here, element-level rejects legacy iterator
+		// here, and group-by is validated after same-struct inference below.
+
+		// Hybrid search only supports plain top-K on ArrayOfVector fields. Both
+		// element-level and embedding-list searches reject advanced controls here.
+		if annsField != nil && annsField.GetDataType() == schemapb.DataType_ArrayOfVector {
+			isStructElementSubSearch := subSearchInfo.Kind == hybridSubSearchStructElement
+			isStructEmbListSubSearch := subSearchInfo.Kind == hybridSubSearchStructEmbList
+			if isStructElementSubSearch || isStructEmbListSubSearch {
+				searchKind := "element-level"
+				if isStructEmbListSubSearch {
+					searchKind = "embedding-list"
+				}
+				if isStructEmbListSubSearch && gjson.Get(queryInfo.GetSearchParams(), radiusKey).Exists() {
+					return merr.WrapErrParameterInvalid("", "",
+						"range search is not supported for vector array ("+searchKind+") fields in hybrid search, fieldName:"+annsField.GetName())
+				}
+				if subIsIterator {
+					return merr.WrapErrParameterInvalid("", "",
+						"search iterator is not supported for vector array ("+searchKind+") fields in hybrid search, fieldName:"+annsField.GetName())
+				}
+			}
+		}
+		t.hybridSubSearchInfos[index] = subSearchInfo
 
 		ignoreGrowing := t.IgnoreGrowing
 		if !ignoreGrowing {
@@ -639,16 +699,25 @@ func (t *searchTask) initAdvancedSearchRequest(ctx context.Context) error {
 		if typeutil.IsFieldSparseFloatVector(t.schema.CollectionSchema, internalSubReq.FieldId) {
 			metrics.ProxySearchSparseNumNonZeros.WithLabelValues(strconv.FormatInt(paramtable.GetNodeID(), 10), t.collectionName, metrics.HybridSearchLabel, strconv.FormatInt(internalSubReq.FieldId, 10)).Observe(float64(typeutil.EstimateSparseVectorNNZFromPlaceholderGroup(internalSubReq.PlaceholderGroup, int(internalSubReq.GetNq()))))
 		}
-		// Convert placeholder group vector type if needed (e.g., fp32 -> fp16/bf16)
-		internalSubReq.PlaceholderGroup, err = t.convertPlaceholderIfNeeded(subReq.GetPlaceholderGroup(), internalSubReq.FieldId)
-		if err != nil {
-			return err
-		}
+		internalSubReq.PlaceholderGroup = convertedPlaceholder
 		t.SubReqs[index] = internalSubReq
 		t.queryInfos[index] = queryInfo
 		log.Debug(ctx, "proxy init search request",
 			mlog.Int64s("plan.OutputFieldIds", plan.GetOutputFieldIds()),
 			mlog.Stringer("plan", plan)) // may be very large if large term passed.
+	}
+
+	t.hybridElementLevel = inferElementLevelHybrid(t.hybridSubSearchInfos)
+	if err := t.validateHybridArrayOfVectorGroupBy(); err != nil {
+		return err
+	}
+	for index, info := range t.hybridSubSearchInfos {
+		if t.hybridElementLevel && info.ElementScopeProvided {
+			return merr.WrapErrParameterInvalidMsg("%s is not allowed for same-struct element-level hybrid search", elementScopeKey)
+		}
+		if !t.hybridElementLevel && info.Kind == hybridSubSearchStructElement && !info.ElementScopeProvided {
+			t.hybridSubSearchInfos[index].Collapse = defaultElementCollapseConfig()
+		}
 	}
 
 	if embedding.HasNonBM25AndMinHashFunctions(t.schema.Functions, queryFieldIDs) {
@@ -672,6 +741,50 @@ func (t *searchTask) initAdvancedSearchRequest(ctx context.Context) error {
 		t.PartitionIDs = t.partitionIDsSet.Collect()
 	}
 
+	return nil
+}
+
+func (t *searchTask) validateHybridArrayOfVectorGroupBy() error {
+	groupByFieldIDs := t.rankParams.GetGroupByFieldIds()
+	if len(groupByFieldIDs) == 0 {
+		return nil
+	}
+
+	fieldName := func(index int) string {
+		if index >= 0 && index < len(t.queryInfos) {
+			if field := typeutil.GetField(t.schema.CollectionSchema, t.queryInfos[index].GetQueryFieldId()); field != nil {
+				return field.GetName()
+			}
+		}
+		return ""
+	}
+
+	hasStructElementSubSearch := false
+	for index, info := range t.hybridSubSearchInfos {
+		switch info.Kind {
+		case hybridSubSearchStructEmbList:
+			return merr.WrapErrParameterInvalid("", "",
+				"group by search is not supported for vector array (embedding-list) fields in hybrid search, fieldName:"+fieldName(index))
+		case hybridSubSearchStructElement:
+			hasStructElementSubSearch = true
+			if !t.hybridElementLevel {
+				return merr.WrapErrParameterInvalid("", "",
+					"group by search is only supported for same-struct element-level vector array fields in hybrid search, fieldName:"+fieldName(index))
+			}
+		}
+	}
+	if !hasStructElementSubSearch {
+		return nil
+	}
+
+	pkField, err := t.schema.GetPkField()
+	if err != nil {
+		return err
+	}
+	if len(groupByFieldIDs) != 1 || pkField == nil || groupByFieldIDs[0] != pkField.GetFieldID() {
+		return merr.WrapErrParameterInvalid("", "",
+			"only group by primary key is supported for same-struct element-level vector array fields in hybrid search")
+	}
 	return nil
 }
 
@@ -847,10 +960,35 @@ func (t *searchTask) initSearchRequest(ctx context.Context) error {
 		}
 	}
 
-	vectorOutputFields := lo.Filter(t.schema.GetFields(), func(field *schemapb.FieldSchema, _ int) bool {
-		return lo.Contains(t.translatedOutputFields, field.GetName()) && typeutil.IsVectorType(field.GetDataType())
-	})
-	t.needRequery = len(vectorOutputFields) > 0
+	if t.aggCtx != nil {
+		t.needRequery = false
+	} else {
+		allFields := typeutil.GetAllFieldSchemas(t.schema.CollectionSchema)
+		vectorOutputFields := lo.Filter(allFields, func(field *schemapb.FieldSchema, _ int) bool {
+			return lo.Contains(t.translatedOutputFields, field.GetName()) && typeutil.IsVectorType(field.GetDataType())
+		})
+		// TEXT type output fields need requery since TEXT data is stored as LOB references
+		textOutputFields := lo.Filter(allFields, func(field *schemapb.FieldSchema, _ int) bool {
+			return lo.Contains(t.translatedOutputFields, field.GetName()) && typeutil.IsTextType(field.GetDataType())
+		})
+		switch strings.ToLower(paramtable.Get().CommonCfg.SearchRequeryPolicy.GetValue()) {
+		case "always":
+			t.needRequery = true
+		case "outputfields":
+			t.needRequery = len(t.request.GetOutputFields()) > 0
+		case "outputvector":
+			fallthrough
+		default:
+			t.needRequery = len(vectorOutputFields) > 0 || len(textOutputFields) > 0
+		}
+	}
+	if t.skipRequeryByNamespacePartitionMode() {
+		t.needRequery = false
+	}
+	var rerankInputFieldIDs []int64
+	if t.rerankMeta != nil {
+		rerankInputFieldIDs = t.rerankMeta.GetInputFieldIDs()
+	}
 	if t.needRequery {
 		plan.OutputFieldIds = rerankInputFieldIDs
 	} else {
@@ -904,16 +1042,59 @@ func (t *searchTask) initSearchRequest(ctx context.Context) error {
 		metrics.ProxySearchSparseNumNonZeros.WithLabelValues(strconv.FormatInt(paramtable.GetNodeID(), 10), t.collectionName, metrics.SearchLabel, strconv.FormatInt(t.FieldId, 10)).Observe(float64(typeutil.EstimateSparseVectorNNZFromPlaceholderGroup(t.request.GetPlaceholderGroup(), int(t.request.GetNq()))))
 	}
 	// Convert placeholder group vector type if needed (e.g., fp32 -> fp16/bf16)
-	t.SearchRequest.PlaceholderGroup, err = t.convertPlaceholderIfNeeded(t.request.GetPlaceholderGroup(), t.SearchRequest.FieldId)
+	var placeholderType commonpb.PlaceholderType
+	t.PlaceholderGroup, placeholderType, err = t.convertPlaceholderIfNeeded(t.request.GetPlaceholderGroup(), t.FieldId)
 	if err != nil {
 		return err
 	}
-	t.SearchRequest.Topk = queryInfo.GetTopk()
-	t.SearchRequest.MetricType = queryInfo.GetMetricType()
-	t.queryInfos = append(t.queryInfos, queryInfo)
-	t.SearchRequest.DslType = commonpb.DslType_BoolExprV1
-	t.SearchRequest.GroupByFieldId = queryInfo.GroupByFieldId
-	t.SearchRequest.GroupSize = queryInfo.GroupSize
+	if err := validateElementFilterVectorSearch(plan, t.schema.CollectionSchema, t.FieldId, placeholderType); err != nil {
+		return err
+	}
+
+	// For ArrayOfVector fields, the placeholder type decides the search semantics:
+	// - Element-level (plain vector placeholder): behaves like a normal single-vector
+	//   search; supports range search, search iterator v2, and group by primary key.
+	// - Embedding-list-level (multi-search-multi): does not support range search,
+	//   iterator, or group by (other than the PK case above).
+	annsField := typeutil.GetField(t.schema.CollectionSchema, t.FieldId)
+	if annsField != nil && annsField.GetDataType() == schemapb.DataType_ArrayOfVector {
+		isEmbList := isEmbeddingListPlaceholderType(placeholderType)
+
+		if isEmbList {
+			if gjson.Get(queryInfo.GetSearchParams(), radiusKey).Exists() {
+				return merr.WrapErrParameterInvalid("", "",
+					"range search is not supported for multi-search-multi on embedding list fields")
+			}
+			if t.isIterator {
+				return merr.WrapErrParameterInvalid("", "",
+					"search iterator is not supported for multi-search-multi on embedding list fields")
+			}
+		} else if t.isIterator && queryInfo.GetSearchIteratorV2Info() == nil {
+			return merr.WrapErrParameterInvalid("", "",
+				"legacy search iterator is not supported for element-level search; use search iterator v2")
+		}
+
+		groupByFieldIDs := queryInfo.GetGroupByFieldIds()
+		if len(groupByFieldIDs) == 0 && queryInfo.GetGroupByFieldId() > 0 {
+			groupByFieldIDs = []int64{queryInfo.GetGroupByFieldId()}
+		}
+		if len(groupByFieldIDs) > 0 {
+			if isEmbList {
+				return merr.WrapErrParameterInvalid("", "",
+					"group by is not supported for multi-search-multi on embedding list fields")
+			}
+			pkField, _ := t.schema.GetPkField()
+			for _, groupByFieldID := range groupByFieldIDs {
+				if pkField == nil || groupByFieldID != pkField.GetFieldID() {
+					return merr.WrapErrParameterInvalid("", "",
+						"only group by primary key is supported for element-level search")
+				}
+			}
+		}
+	}
+
+	t.Topk = queryInfo.GetTopk()
+	t.MetricType = queryInfo.GetMetricType()
 
 	t.queryInfos = append(t.queryInfos, queryInfo)
 	t.DslType = commonpb.DslType_BoolExprV1
@@ -947,10 +1128,11 @@ func (t *searchTask) skipRequeryByNamespacePartitionMode() bool {
 }
 
 // convertPlaceholderIfNeeded converts fp32 vectors to fp16/bf16 if the target field uses lower precision.
-func (t *searchTask) convertPlaceholderIfNeeded(phgBytes []byte, fieldID int64) ([]byte, error) {
+// Returns converted bytes and the original placeholder type (before any conversion).
+func (t *searchTask) convertPlaceholderIfNeeded(phgBytes []byte, fieldID int64) ([]byte, commonpb.PlaceholderType, error) {
 	field := typeutil.GetFieldByID(t.schema.CollectionSchema, fieldID)
 	if field == nil {
-		return phgBytes, nil
+		return phgBytes, 0, nil
 	}
 	return ConvertPlaceholderGroup(phgBytes, field)
 }
@@ -1124,6 +1306,44 @@ func getLastBound(result *milvuspb.SearchResults, incomingLastBound *float32, me
 	return -math.MaxFloat32
 }
 
+func isEmbeddingListPlaceholderType(pt commonpb.PlaceholderType) bool {
+	switch pt {
+	case commonpb.PlaceholderType_EmbListFloatVector,
+		commonpb.PlaceholderType_EmbListFloat16Vector,
+		commonpb.PlaceholderType_EmbListBFloat16Vector,
+		commonpb.PlaceholderType_EmbListBinaryVector,
+		commonpb.PlaceholderType_EmbListInt8Vector:
+		return true
+	default:
+		return false
+	}
+}
+
+func validateElementFilterVectorSearch(plan *planpb.PlanNode, schema *schemapb.CollectionSchema, fieldID int64, placeholderType commonpb.PlaceholderType) error {
+	anns := plan.GetVectorAnns()
+	if anns == nil {
+		return nil
+	}
+	elementFilter := anns.GetPredicates().GetElementFilterExpr()
+	if elementFilter == nil {
+		return nil
+	}
+
+	field := typeutil.GetField(schema, fieldID)
+	parentStructName, isStructSubField := getStructParentFieldName(schema, fieldID)
+	_, isPlainVectorPlaceholderType := placeholderTypeToDataType[placeholderType]
+	if field != nil &&
+		field.GetDataType() == schemapb.DataType_ArrayOfVector &&
+		isStructSubField &&
+		parentStructName == elementFilter.GetStructName() &&
+		isPlainVectorPlaceholderType {
+		return nil
+	}
+
+	return merr.WrapErrParameterInvalidMsg(
+		"element_filter is only supported for element-level search on vector sub-fields of the same struct array; use MATCH_ANY/MATCH_* for row-level vector search")
+}
+
 func (t *searchTask) PostExecute(ctx context.Context) error {
 	ctx, sp := otel.Tracer(typeutil.ProxyRole).Start(ctx, "Proxy-Search-PostExecute")
 	defer sp.End()
@@ -1174,6 +1394,7 @@ func (t *searchTask) PostExecute(ctx context.Context) error {
 	}
 	t.fillResult()
 	t.result.Results.OutputFields = t.userOutputFields
+	reconstructStructFieldDataForSearch(t.result, t.schema.CollectionSchema)
 	t.result.CollectionName = t.request.GetCollectionName()
 
 	primaryFieldSchema, _ := t.schema.GetPkField()
@@ -1325,7 +1546,18 @@ func (t *searchTask) estimateResultSize(nq int64, topK int64) (int64, error) {
 	vectorOutputFields := lo.Filter(t.schema.GetFields(), func(field *schemapb.FieldSchema, _ int) bool {
 		return lo.Contains(t.translatedOutputFields, field.GetName()) && typeutil.IsVectorType(field.GetDataType())
 	})
-	// Currently, we get vectors by requery. Once we support getting vectors from search,
+	for _, structArrayField := range t.schema.GetStructArrayFields() {
+		for _, field := range structArrayField.GetFields() {
+			if lo.Contains(t.translatedOutputFields, field.GetName()) && typeutil.IsVectorType(field.GetDataType()) {
+				vectorOutputFields = append(vectorOutputFields, field)
+			}
+		}
+	}
+	// TEXT type output fields also need requery since TEXT data is stored as LOB references
+	textOutputFields := lo.Filter(t.schema.GetFields(), func(field *schemapb.FieldSchema, _ int) bool {
+		return lo.Contains(t.translatedOutputFields, field.GetName()) && typeutil.IsTextType(field.GetDataType())
+	})
+	// Currently, we get vectors and TEXT by requery. Once we support getting vectors from search,
 	// searches with small result size could no longer need requery.
 	if len(vectorOutputFields) > 0 || len(textOutputFields) > 0 {
 		return math.MaxInt64, nil

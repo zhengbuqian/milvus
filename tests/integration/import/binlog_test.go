@@ -27,18 +27,20 @@ import (
 	"github.com/samber/lo"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
+	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/importutilv2"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/metric"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/internalpb"
+	"github.com/milvus-io/milvus/pkg/v3/util/funcutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/metric"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 	"github.com/milvus-io/milvus/tests/integration"
 )
 
@@ -69,7 +71,7 @@ func (s *BulkInsertSuite) PrepareSourceCollection(dim int, dmlGroup *DMLGroup) *
 
 	collectionName := "TestBinlogImport_A_" + funcutil.RandomString(8)
 
-	schema := integration.ConstructSchema(collectionName, dim, true)
+	schema := integration.ConstructSchemaOfVecDataTypeWithStruct(collectionName, dim, true)
 	marshaledSchema, err := proto.Marshal(schema)
 	s.NoError(err)
 
@@ -102,6 +104,17 @@ func (s *BulkInsertSuite) PrepareSourceCollection(dim int, dmlGroup *DMLGroup) *
 	s.NoError(merr.CheckRPCCall(createIndexStatus, err))
 	s.WaitForIndexBuilt(ctx, collectionName, integration.FloatVecField)
 
+	name := typeutil.ConcatStructFieldName(integration.StructArrayField, integration.StructSubFloatVecField)
+	createIndexResult, err := c.MilvusClient.CreateIndex(context.TODO(), &milvuspb.CreateIndexRequest{
+		CollectionName: collectionName,
+		FieldName:      name,
+		IndexName:      "array_of_vector_index",
+		ExtraParams:    integration.ConstructIndexParam(dim, integration.IndexHNSW, metric.MaxSim),
+	})
+	s.NoError(err)
+	s.Require().Equal(createIndexResult.GetErrorCode(), commonpb.ErrorCode_Success)
+	s.WaitForIndexBuilt(context.TODO(), collectionName, name)
+
 	// load
 	loadStatus, err := c.MilvusClient.LoadCollection(ctx, &milvuspb.LoadCollectionRequest{
 		CollectionName: collectionName,
@@ -129,10 +142,11 @@ func (s *BulkInsertSuite) PrepareSourceCollection(dim int, dmlGroup *DMLGroup) *
 		totalDeleteRowNum += delRow
 
 		fVecColumn := integration.NewFloatVectorFieldData(integration.FloatVecField, insRow, dim)
+		structColumn := integration.NewStructArrayFieldData(schema.StructArrayFields[0], integration.StructArrayField, insRow, dim)
 		hashKeys := integration.GenerateHashKeys(insRow)
 		insertResult, err := c.MilvusClient.Insert(ctx, &milvuspb.InsertRequest{
 			CollectionName: collectionName,
-			FieldsData:     []*schemapb.FieldData{fVecColumn},
+			FieldsData:     []*schemapb.FieldData{fVecColumn, structColumn},
 			HashKeys:       hashKeys,
 			NumRows:        uint32(insRow),
 		})

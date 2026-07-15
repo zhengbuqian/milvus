@@ -25,4 +25,6 @@ RetrievePlanNode::accept(PlanNodeVisitor& visitor) {
     visitor.visit(*this);
 }
 
+// no other vector plan node types
+
 }  // namespace milvus::query

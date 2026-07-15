@@ -19,6 +19,7 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+#include <memory>
 
 #include <arrow/array.h>
 #include <arrow/array/builder_primitive.h>
@@ -34,13 +35,7 @@ class Array {
  public:
     Array() = default;
 
-    ~Array() {
-        delete[] data_;
-        if (offsets_ptr_) {
-            // only deallocate offsets for string type array
-            delete[] offsets_ptr_;
-        }
-    }
+    ~Array() = default;
 
     Array(char* data,
           int len,
@@ -48,78 +43,79 @@ class Array {
           DataType element_type,
           const uint32_t* offsets_ptr)
         : size_(size), length_(len), element_type_(element_type) {
-        data_ = new char[size];
-        std::copy(data, data + size, data_);
+        data_ = std::make_unique<char[]>(size);
+        milvus::fastmem::FastMemcpy(data_.get(), data, size);
         if (IsVariableDataType(element_type)) {
             AssertInfo(offsets_ptr != nullptr,
                        "For variable type elements in array, offsets_ptr must "
                        "be non-null");
-            offsets_ptr_ = new uint32_t[len];
-            std::copy(offsets_ptr, offsets_ptr + len, offsets_ptr_);
+            offsets_ptr_ = std::make_unique<uint32_t[]>(len);
+            milvus::fastmem::FastMemcpy(
+                offsets_ptr_.get(), offsets_ptr, len * sizeof(uint32_t));
         }
     }
 
-    explicit Array(const ScalarArray& field_data) {
+    explicit Array(const ScalarFieldProto& field_data) {
         switch (field_data.data_case()) {
-            case ScalarArray::kBoolData: {
+            case ScalarFieldProto::kBoolData: {
                 element_type_ = DataType::BOOL;
                 length_ = field_data.bool_data().data().size();
-                auto data = new bool[length_];
                 size_ = length_;
+                data_ = std::make_unique<char[]>(size_);
                 for (int i = 0; i < length_; ++i) {
-                    data[i] = field_data.bool_data().data(i);
+                    reinterpret_cast<bool*>(data_.get())[i] =
+                        field_data.bool_data().data(i);
                 }
-                data_ = reinterpret_cast<char*>(data);
                 break;
             }
-            case ScalarArray::kIntData: {
+            case ScalarFieldProto::kIntData: {
                 element_type_ = DataType::INT32;
                 length_ = field_data.int_data().data().size();
                 size_ = length_ * sizeof(int32_t);
-                data_ = new char[size_];
+                data_ = std::make_unique<char[]>(size_);
                 for (int i = 0; i < length_; ++i) {
-                    reinterpret_cast<int*>(data_)[i] =
+                    reinterpret_cast<int*>(data_.get())[i] =
                         field_data.int_data().data(i);
                 }
                 break;
             }
-            case ScalarArray::kLongData: {
+            case ScalarFieldProto::kLongData: {
                 element_type_ = DataType::INT64;
                 length_ = field_data.long_data().data().size();
                 size_ = length_ * sizeof(int64_t);
-                data_ = new char[size_];
+                data_ = std::make_unique<char[]>(size_);
                 for (int i = 0; i < length_; ++i) {
-                    reinterpret_cast<int64_t*>(data_)[i] =
+                    reinterpret_cast<int64_t*>(data_.get())[i] =
                         field_data.long_data().data(i);
                 }
                 break;
             }
-            case ScalarArray::kFloatData: {
+            case ScalarFieldProto::kFloatData: {
                 element_type_ = DataType::FLOAT;
                 length_ = field_data.float_data().data().size();
                 size_ = length_ * sizeof(float);
-                data_ = new char[size_];
+                data_ = std::make_unique<char[]>(size_);
                 for (int i = 0; i < length_; ++i) {
-                    reinterpret_cast<float*>(data_)[i] =
+                    reinterpret_cast<float*>(data_.get())[i] =
                         field_data.float_data().data(i);
                 }
                 break;
             }
-            case ScalarArray::kDoubleData: {
+            case ScalarFieldProto::kDoubleData: {
                 element_type_ = DataType::DOUBLE;
                 length_ = field_data.double_data().data().size();
                 size_ = length_ * sizeof(double);
-                data_ = new char[size_];
+                data_ = std::make_unique<char[]>(size_);
                 for (int i = 0; i < length_; ++i) {
-                    reinterpret_cast<double*>(data_)[i] =
+                    reinterpret_cast<double*>(data_.get())[i] =
                         field_data.double_data().data(i);
                 }
                 break;
             }
-            case ScalarArray::kStringData: {
+            case ScalarFieldProto::kStringData: {
                 element_type_ = DataType::STRING;
                 length_ = field_data.string_data().data().size();
-                offsets_ptr_ = new uint32_t[length_];
+                offsets_ptr_ = std::make_unique<uint32_t[]>(length_);
                 for (int i = 0; i < length_; ++i) {
                     offsets_ptr_[i] = size_;
                     size_ +=
@@ -127,11 +123,12 @@ class Array {
                             .data(i)
                             .size();  //type risk here between uint32_t vs size_t
                 }
-                data_ = new char[size_];
+                data_ = std::make_unique<char[]>(size_);
                 for (int i = 0; i < length_; ++i) {
-                    std::copy_n(field_data.string_data().data(i).data(),
-                                field_data.string_data().data(i).size(),
-                                data_ + offsets_ptr_[i]);
+                    const auto& value = field_data.string_data().data(i);
+                    milvus::fastmem::FastMemcpy(data_.get() + offsets_ptr_[i],
+                                                value.data(),
+                                                value.size());
                 }
                 break;
             }
@@ -145,35 +142,44 @@ class Array {
         : length_{array.length_},
           size_{array.size_},
           element_type_{array.element_type_} {
-        data_ = new char[array.size_];
-        std::copy(array.data_, array.data_ + array.size_, data_);
+        data_ = std::make_unique<char[]>(array.size_);
+        milvus::fastmem::FastMemcpy(
+            data_.get(), array.data_.get(), array.size_);
         if (IsVariableDataType(array.element_type_)) {
             AssertInfo(array.get_offsets_data() != nullptr,
                        "for array with variable length elements, offsets_ptr"
                        "must not be nullptr");
-            offsets_ptr_ = new uint32_t[length_];
-            std::copy_n(array.get_offsets_data(), array.length(), offsets_ptr_);
+            offsets_ptr_ = std::make_unique<uint32_t[]>(length_);
+            milvus::fastmem::FastMemcpy(offsets_ptr_.get(),
+                                        array.get_offsets_data(),
+                                        array.length() * sizeof(uint32_t));
         }
+    }
+
+    friend void
+    swap(Array& array1, Array& array2) noexcept {
+        using std::swap;
+        swap(array1.data_, array2.data_);
+        swap(array1.length_, array2.length_);
+        swap(array1.size_, array2.size_);
+        swap(array1.element_type_, array2.element_type_);
+        swap(array1.offsets_ptr_, array2.offsets_ptr_);
     }
 
     Array&
     operator=(const Array& array) {
-        delete[] data_;
-        if (offsets_ptr_) {
-            delete[] offsets_ptr_;
-        }
-        length_ = array.length_;
-        size_ = array.size_;
-        element_type_ = array.element_type_;
-        data_ = new char[size_];
-        std::copy(array.data_, array.data_ + size_, data_);
-        if (IsVariableDataType(element_type_)) {
-            AssertInfo(array.get_offsets_data() != nullptr,
-                       "for array with variable length elements, offsets_ptr"
-                       "must not be nullptr");
-            offsets_ptr_ = new uint32_t[length_];
-            std::copy_n(array.get_offsets_data(), array.length(), offsets_ptr_);
-        }
+        Array temp(array);
+        swap(*this, temp);
+        return *this;
+    }
+
+    Array(Array&& other) noexcept : Array() {
+        swap(*this, other);
+    }
+
+    Array&
+    operator=(Array&& other) noexcept {
+        swap(*this, other);
         return *this;
     }
 
@@ -261,7 +267,7 @@ class Array {
                 (index == length_ - 1)
                     ? size_ - offsets_ptr_[length_ - 1]
                     : offsets_ptr_[index + 1] - offsets_ptr_[index];
-            return T(data_ + offsets_ptr_[index], element_length);
+            return T(data_.get() + offsets_ptr_[index], element_length);
         }
         if constexpr (std::is_same_v<T, int> || std::is_same_v<T, int64_t> ||
                       std::is_same_v<T, int8_t> || std::is_same_v<T, int16_t> ||
@@ -271,32 +277,31 @@ class Array {
                 case DataType::INT16:
                 case DataType::INT32:
                     return static_cast<T>(
-                        reinterpret_cast<int32_t*>(data_)[index]);
+                        reinterpret_cast<int32_t*>(data_.get())[index]);
                 case DataType::INT64:
                     return static_cast<T>(
-                        reinterpret_cast<int64_t*>(data_)[index]);
+                        reinterpret_cast<int64_t*>(data_.get())[index]);
                 case DataType::FLOAT:
                     return static_cast<T>(
-                        reinterpret_cast<float*>(data_)[index]);
+                        reinterpret_cast<float*>(data_.get())[index]);
                 case DataType::DOUBLE:
                     return static_cast<T>(
-                        reinterpret_cast<double*>(data_)[index]);
+                        reinterpret_cast<double*>(data_.get())[index]);
                 default:
                     ThrowInfo(Unsupported,
                               "unsupported element type for array");
             }
         }
-        return reinterpret_cast<T*>(data_)[index];
+        return reinterpret_cast<T*>(data_.get())[index];
     }
 
     uint32_t*
     get_offsets_data() const {
-        return offsets_ptr_;
+        return offsets_ptr_.get();
     }
 
-    ScalarArray
-    output_data() const {
-        ScalarArray data_array;
+    void
+    output_data(ScalarFieldProto& data_array) const {
         switch (element_type_) {
             case DataType::BOOL: {
                 data_array.mutable_bool_data()->mutable_data()->Reserve(
@@ -395,7 +400,7 @@ class Array {
 
     const char*
     data() const {
-        return data_;
+        return data_.get();
     }
 
     bool
@@ -474,11 +479,11 @@ class Array {
     }
 
  private:
-    char* data_{nullptr};
+    std::unique_ptr<char[]> data_{nullptr};
     int length_ = 0;
     int size_ = 0;
     DataType element_type_ = DataType::NONE;
-    uint32_t* offsets_ptr_{nullptr};
+    std::unique_ptr<uint32_t[]> offsets_ptr_{nullptr};
 };
 
 class ArrayView {
@@ -565,9 +570,8 @@ class ArrayView {
         return reinterpret_cast<T*>(data_)[index];
     }
 
-    ScalarArray
-    output_data() const {
-        ScalarArray data_array;
+    void
+    output_data(ScalarFieldProto& data_array) const {
         switch (element_type_) {
             case DataType::BOOL: {
                 data_array.mutable_bool_data()->mutable_data()->Reserve(

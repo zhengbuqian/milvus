@@ -47,13 +47,14 @@
 #include "monitor/Monitor.h"
 #include "plan/PlanNode.h"
 #include "prometheus/histogram.h"
+#include "exec/operator/Utils.h"
 
 namespace milvus {
 namespace exec {
 PhyIterativeFilterNode::PhyIterativeFilterNode(
     int32_t operator_id,
     DriverContext* driverctx,
-    const std::shared_ptr<const plan::FilterNode>& filter)
+    const std::shared_ptr<const plan::IterativeFilterNode>& filter)
     : Operator(driverctx,
                filter->output_type(),
                operator_id,
@@ -87,40 +88,16 @@ PhyIterativeFilterNode::IsFinished() {
     return is_finished_;
 }
 
-template <bool large_is_better>
-inline size_t
-find_binsert_position(const std::vector<float>& distances,
-                      size_t lo,
-                      size_t hi,
-                      float dist) {
-    while (lo < hi) {
-        size_t mid = lo + ((hi - lo) >> 1);
-        if constexpr (large_is_better) {
-            if (distances[mid] < dist) {
-                hi = mid;
-            } else {
-                lo = mid + 1;
-            }
-        } else {
-            if (distances[mid] > dist) {
-                hi = mid;
-            } else {
-                lo = mid + 1;
-            }
-        }
-    }
-    return lo;
-}
-
 inline void
 insert_helper(milvus::SearchResult& search_result,
               int& topk,
               const bool large_is_better,
               const FixedVector<float>& distances,
-              const FixedVector<int32_t>& offsets,
               const int64_t nq_index,
               const int64_t unity_topk,
-              const int i) {
+              const int i,
+              int64_t doc_id,
+              std::optional<int32_t> elem_idx) {
     auto pos = large_is_better
                    ? find_binsert_position<true>(search_result.distances_,
                                                  nq_index * unity_topk,
@@ -130,6 +107,7 @@ insert_helper(milvus::SearchResult& search_result,
                                                   nq_index * unity_topk,
                                                   nq_index * unity_topk + topk,
                                                   distances[i]);
+
     if (topk > pos) {
         std::memmove(&search_result.distances_[pos + 1],
                      &search_result.distances_[pos],
@@ -137,8 +115,16 @@ insert_helper(milvus::SearchResult& search_result,
         std::memmove(&search_result.seg_offsets_[pos + 1],
                      &search_result.seg_offsets_[pos],
                      (topk - pos) * sizeof(int64_t));
+        if (elem_idx.has_value()) {
+            std::memmove(&search_result.element_indices_[pos + 1],
+                         &search_result.element_indices_[pos],
+                         (topk - pos) * sizeof(int32_t));
+        }
     }
-    search_result.seg_offsets_[pos] = offsets[i];
+    search_result.seg_offsets_[pos] = doc_id;
+    if (elem_idx.has_value()) {
+        search_result.element_indices_[pos] = elem_idx.value();
+    }
     search_result.distances_[pos] = distances[i];
     ++topk;
 }
@@ -171,7 +157,7 @@ PhyIterativeFilterNode::GetOutput() {
     TargetBitmap bitset;
     // get bitset of whole segment first
     if (!is_native_supported_) {
-        EvalCtx eval_ctx(operator_context_->get_exec_context(), exprs_.get());
+        EvalCtx eval_ctx(operator_context_->get_exec_context());
 
         TargetBitmap valid_bitset;
         while (num_processed_rows_ < need_process_rows_) {
@@ -215,13 +201,36 @@ PhyIterativeFilterNode::GetOutput() {
                        search_result.total_nq_,
                    "Vector Iterators' count must be equal to total_nq_, Check "
                    "your code");
+
+        bool element_level = search_result.element_level_;
+        auto array_offsets = query_context_->get_array_offsets();
+
+        // For element-level, we need array_offsets to convert element_id → doc_id
+        if (element_level) {
+            AssertInfo(
+                array_offsets != nullptr,
+                "Array offsets required for element-level iterative filter");
+        }
+
         int nq_index = 0;
 
         search_result.seg_offsets_.resize(nq * unity_topk, INVALID_SEG_OFFSET);
         search_result.distances_.resize(nq * unity_topk);
+        if (element_level) {
+            search_result.element_indices_.resize(nq * unity_topk, -1);
+        }
+
+        // Reuse memory allocation across batches and nqs
+        FixedVector<int32_t> offsets;
+        FixedVector<float> distances;
+        FixedVector<int32_t> doc_offsets;
+        // For element-level: cache (doc_id, elem_idx) to avoid duplicate ElementIDToRowID calls
+        std::vector<std::pair<int32_t, int32_t>> element_to_doc_mapping;
+        std::unordered_map<int64_t, bool> doc_eval_cache;
+        std::unordered_set<int64_t> unique_doc_ids;
+
         for (auto& iterator : search_result.vector_iterators_.value()) {
-            EvalCtx eval_ctx(operator_context_->get_exec_context(),
-                             exprs_.get());
+            EvalCtx eval_ctx(operator_context_->get_exec_context());
             int topk = 0;
             while (iterator->HasNext() && topk < unity_topk) {
                 offsets.clear();
@@ -245,8 +254,42 @@ PhyIterativeFilterNode::GetOutput() {
                         break;
                     }
                 }
+
+                // Clear but retain capacity
+                doc_offsets.clear();
+                element_to_doc_mapping.clear();
+                doc_eval_cache.clear();
+                unique_doc_ids.clear();
+
+                // eval_offsets points to the offset vector used for
+                // expression evaluation — either the deduplicated
+                // doc_offsets (element-level) or the raw offsets
+                // (non-element-level, avoids a copy).
+                FixedVector<int32_t>* eval_offsets;
+                if (element_level) {
+                    // 1. Convert element_ids to doc_ids and do filter on those doc_ids
+                    // 2. element_ids with doc_ids that pass the filter are what we interested in
+                    // Cache both doc_id and elem_idx to avoid duplicate ElementIDToRowID calls
+                    element_to_doc_mapping.reserve(offsets.size());
+
+                    for (auto element_id : offsets) {
+                        auto [doc_id, elem_idx] =
+                            array_offsets->ElementIDToRowID(element_id);
+                        element_to_doc_mapping.push_back({doc_id, elem_idx});
+                        unique_doc_ids.insert(doc_id);
+                    }
+
+                    doc_offsets.reserve(unique_doc_ids.size());
+                    for (auto doc_id : unique_doc_ids) {
+                        doc_offsets.emplace_back(static_cast<int32_t>(doc_id));
+                    }
+                    eval_offsets = &doc_offsets;
+                } else {
+                    eval_offsets = &offsets;
+                }
+
                 if (is_native_supported_) {
-                    eval_ctx.set_offset_input(&offsets);
+                    eval_ctx.set_offset_input(eval_offsets);
                     std::vector<VectorPtr> results;
                     exprs_->Eval(0, 1, true, eval_ctx, results);
                     AssertInfo(
@@ -260,34 +303,69 @@ PhyIterativeFilterNode::GetOutput() {
                     auto col_vec_size = col_vec->size();
                     TargetBitmapView bitsetview(col_vec->GetRawData(),
                                                 col_vec_size);
-                    Assert(bitsetview.size() <= batch_size);
-                    Assert(bitsetview.size() == offsets.size());
-                    for (auto i = 0; i < offsets.size(); ++i) {
-                        if (bitsetview[i] > 0) {
-                            insert_helper(search_result,
-                                          topk,
-                                          large_is_better,
-                                          distances,
-                                          offsets,
-                                          nq_index,
-                                          unity_topk,
-                                          i);
-                            if (topk == unity_topk) {
-                                break;
+                    // Fold UNKNOWN into FALSE explicitly (data &= valid):
+                    // rows are included below on the data bit alone.
+                    TargetBitmapView validview(col_vec->GetValidRawData(),
+                                               col_vec_size);
+                    bitsetview.inplace_and(validview, col_vec_size);
+
+                    if (element_level) {
+                        Assert(bitsetview.size() == doc_offsets.size());
+                        for (size_t i = 0; i < doc_offsets.size(); ++i) {
+                            doc_eval_cache[doc_offsets[i]] =
+                                (bitsetview[i] > 0);
+                        }
+
+                        for (size_t i = 0; i < offsets.size(); ++i) {
+                            auto [doc_id, elem_idx] = element_to_doc_mapping[i];
+                            if (doc_eval_cache[doc_id]) {
+                                insert_helper(search_result,
+                                              topk,
+                                              large_is_better,
+                                              distances,
+                                              nq_index,
+                                              unity_topk,
+                                              i,
+                                              doc_id,
+                                              elem_idx);
+                                if (topk == unity_topk) {
+                                    break;
+                                }
+                            }
+                        }
+                    } else {
+                        Assert(bitsetview.size() <= batch_size);
+                        Assert(bitsetview.size() == offsets.size());
+                        for (auto i = 0; i < offsets.size(); ++i) {
+                            if (bitsetview[i]) {
+                                insert_helper(search_result,
+                                              topk,
+                                              large_is_better,
+                                              distances,
+                                              nq_index,
+                                              unity_topk,
+                                              i,
+                                              offsets[i],
+                                              std::nullopt);
+                                if (topk == unity_topk) {
+                                    break;
+                                }
                             }
                         }
                     }
                 } else {
+                    Assert(!element_level);
                     for (auto i = 0; i < offsets.size(); ++i) {
                         if (bitset[offsets[i]] > 0) {
                             insert_helper(search_result,
                                           topk,
                                           large_is_better,
                                           distances,
-                                          offsets,
                                           nq_index,
                                           unity_topk,
-                                          i);
+                                          i,
+                                          offsets[i],
+                                          std::nullopt);
                             if (topk == unity_topk) {
                                 break;
                             }

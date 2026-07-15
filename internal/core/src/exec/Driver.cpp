@@ -35,15 +35,22 @@
 #include "exec/operator/AggregationNode.h"
 #include "exec/operator/CallbackSink.h"
 #include "exec/operator/ElementFilterBitsNode.h"
-#include "exec/operator/ElementFilterNode.h"
+#include "exec/operator/IterativeElementFilterNode.h"
 #include "exec/operator/FilterBitsNode.h"
 #include "exec/operator/IterativeFilterNode.h"
 #include "exec/operator/MvccNode.h"
 #include "exec/operator/Operator.h"
 #include "exec/operator/ProjectNode.h"
 #include "exec/operator/RandomSampleNode.h"
-#include "exec/operator/GroupByNode.h"
-#include "exec/Task.h"
+#include "exec/operator/RescoresNode.h"
+#include "exec/operator/SearchGroupByNode.h"
+#include "exec/operator/VectorSearchNode.h"
+#include "exec/operator/QueryOrderByNode.h"
+#include "fmt/core.h"
+#include "folly/Executor.h"
+#include "folly/Unit.h"
+#include "glog/logging.h"
+#include "log/Log.h"
 #include "plan/PlanNode.h"
 #include "storage/PrefetchThreadPool.h"
 
@@ -75,11 +82,10 @@ DriverFactory::CreateDriver(
             tracer::AddEvent("create_operator: FilterBitsNode");
             operators.push_back(std::make_shared<PhyFilterBitsNode>(
                 id, ctx.get(), filterbitsnode));
-        } else if (auto filternode =
-                       std::dynamic_pointer_cast<const plan::FilterNode>(
-                           plannode)) {
-            tracer::AddEvent("create_operator: FilterNode");
-            operators.push_back(std::make_unique<PhyIterativeFilterNode>(
+        } else if (auto filternode = std::dynamic_pointer_cast<
+                       const plan::IterativeFilterNode>(plannode)) {
+            tracer::AddEvent("create_operator: IterativeFilterNode");
+            operators.push_back(std::make_shared<PhyIterativeFilterNode>(
                 id, ctx.get(), filternode));
         } else if (auto mvccnode =
                        std::dynamic_pointer_cast<const plan::MvccNode>(
@@ -128,7 +134,19 @@ DriverFactory::CreateDriver(
                            plannode)) {
             tracer::AddEvent("create_operator: RescoresNode");
             operators.push_back(
-                std::make_unique<PhyRescoresNode>(id, ctx.get(), rescoresnode));
+                std::make_shared<PhyRescoresNode>(id, ctx.get(), rescoresnode));
+        } else if (auto node = std::dynamic_pointer_cast<
+                       const plan::IterativeElementFilterNode>(plannode)) {
+            tracer::AddEvent("create_operator: IterativeElementFilterNode");
+            operators.push_back(std::make_shared<PhyIterativeElementFilterNode>(
+                id, ctx.get(), node));
+        } else if (auto node = std::dynamic_pointer_cast<
+                       const plan::ElementFilterBitsNode>(plannode)) {
+            tracer::AddEvent("create_operator: ElementFilterBitsNode");
+            operators.push_back(std::make_shared<PhyElementFilterBitsNode>(
+                id, ctx.get(), node));
+        } else {
+            ThrowInfo(ErrorCode::UnexpectedError, "Unknown plan node type");
         }
         // TODO: add more operators
     }

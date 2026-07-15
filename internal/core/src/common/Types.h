@@ -96,6 +96,7 @@ enum class DataType {
     VECTOR_BFLOAT16 = 103,
     VECTOR_SPARSE_U32_F32 = 104,
     VECTOR_INT8 = 105,
+    VECTOR_ARRAY = 106,
 };
 
 using Timestamp = uint64_t;  // TODO: use TiKV-like timestamp
@@ -104,13 +105,18 @@ constexpr auto MAX_ROW_COUNT = std::numeric_limits<idx_t>::max();
 
 using OpType = proto::plan::OpType;
 using ArithOpType = proto::plan::ArithOpType;
-using ScalarArray = proto::schema::ScalarField;
+using ScalarFieldProto = proto::schema::ScalarField;
 using DataArray = proto::schema::FieldData;
-using VectorArray = proto::schema::VectorField;
+using VectorFieldProto = proto::schema::VectorField;
 using IdArray = proto::schema::IDs;
 using InsertRecordProto = proto::segcore::InsertRecord;
 using PkType = std::variant<std::monostate, int64_t, std::string>;
 using DefaultValueType = proto::schema::ValueField;
+
+struct QueryIteratorCursor {
+    PkType last_pk;
+    int64_t last_element_offset = -1;
+};
 
 inline size_t
 GetDataTypeSize(DataType data_type, int dim = 1) {
@@ -264,6 +270,33 @@ GetArrowDataType(DataType data_type, int dim = 1) {
     }
 }
 
+inline std::shared_ptr<arrow::DataType>
+GetArrowDataTypeForVectorArray(DataType elem_type, int dim) {
+    if (dim <= 0) {
+        ThrowInfo(DataTypeInvalid, "dim must be provided for VectorArray");
+    }
+    // VectorArray stores vectors as FixedSizeBinaryArray
+    // We must have dim to create the correct fixed_size_binary type
+    switch (elem_type) {
+        case DataType::VECTOR_FLOAT:
+            return arrow::list(arrow::fixed_size_binary(dim * sizeof(float)));
+        case DataType::VECTOR_BINARY:
+            return arrow::list(arrow::fixed_size_binary((dim + 7) / 8));
+        case DataType::VECTOR_FLOAT16:
+            return arrow::list(arrow::fixed_size_binary(dim * 2));
+        case DataType::VECTOR_BFLOAT16:
+            return arrow::list(arrow::fixed_size_binary(dim * 2));
+        case DataType::VECTOR_INT8:
+            return arrow::list(arrow::fixed_size_binary(dim));
+        default: {
+            ThrowInfo(
+                DataTypeInvalid,
+                "failed to get arrow type for vector array, invalid type {}",
+                elem_type);
+        }
+    }
+}
+
 template <typename T>
 inline size_t
 GetVecRowSize(int64_t dim) {
@@ -320,6 +353,8 @@ GetDataTypeName(DataType data_type) {
             return "VECTOR_SPARSE_U32_F32";
         case DataType::VECTOR_INT8:
             return "vector_int8";
+        case DataType::VECTOR_ARRAY:
+            return "vector_array";
         default:
             ThrowInfo(DataTypeInvalid, "Unsupported DataType({})", data_type);
     }
@@ -492,7 +527,7 @@ IsGeometryDataType(DataType data_type) {
 
 inline bool
 IsArrayDataType(DataType data_type) {
-    return data_type == DataType::ARRAY;
+    return data_type == DataType::ARRAY || data_type == DataType::VECTOR_ARRAY;
 }
 
 inline bool
@@ -569,9 +604,15 @@ IsFloatVectorDataType(DataType data_type) {
 }
 
 inline bool
+IsVectorArrayDataType(DataType data_type) {
+    return data_type == DataType::VECTOR_ARRAY;
+}
+
+inline bool
 IsVectorDataType(DataType data_type) {
     return IsBinaryVectorDataType(data_type) ||
-           IsFloatVectorDataType(data_type) || IsIntVectorDataType(data_type);
+           IsFloatVectorDataType(data_type) || IsIntVectorDataType(data_type) ||
+           IsVectorArrayDataType(data_type);
 }
 
 inline bool
@@ -606,10 +647,12 @@ using FieldName = fluent::NamedType<std::string,
                                     fluent::Comparable,
                                     fluent::Hashable>;
 
-// field id -> (field name, field type, binlog paths)
-using OptFieldT = std::unordered_map<
-    int64_t,
-    std::tuple<std::string, milvus::DataType, std::vector<std::string>>>;
+// field id -> (field name, field type, element type, binlog paths)
+using OptFieldT = std::unordered_map<int64_t,
+                                     std::tuple<std::string,
+                                                milvus::DataType,
+                                                milvus::DataType,
+                                                std::vector<std::string>>>;
 
 using SegmentInsertFiles = std::vector<std::vector<std::string>>;
 
@@ -654,7 +697,11 @@ IsFloatVectorMetricType(const MetricType& metric_type) {
     return metric_type == knowhere::metric::L2 ||
            metric_type == knowhere::metric::IP ||
            metric_type == knowhere::metric::COSINE ||
-           metric_type == knowhere::metric::BM25;
+           metric_type == knowhere::metric::BM25 ||
+           metric_type == knowhere::metric::MAX_SIM ||
+           metric_type == knowhere::metric::MAX_SIM_COSINE ||
+           metric_type == knowhere::metric::MAX_SIM_IP ||
+           metric_type == knowhere::metric::MAX_SIM_L2;
 }
 
 inline bool
@@ -663,14 +710,20 @@ IsBinaryVectorMetricType(const MetricType& metric_type) {
            metric_type == knowhere::metric::JACCARD ||
            metric_type == knowhere::metric::SUPERSTRUCTURE ||
            metric_type == knowhere::metric::SUBSTRUCTURE ||
-           metric_type == knowhere::metric::MHJACCARD;
+           metric_type == knowhere::metric::MHJACCARD ||
+           metric_type == knowhere::metric::MAX_SIM_HAMMING ||
+           metric_type == knowhere::metric::MAX_SIM_JACCARD;
 }
 
 inline bool
 IsIntVectorMetricType(const MetricType& metric_type) {
     return metric_type == knowhere::metric::L2 ||
            metric_type == knowhere::metric::IP ||
-           metric_type == knowhere::metric::COSINE;
+           metric_type == knowhere::metric::COSINE ||
+           metric_type == knowhere::metric::MAX_SIM ||
+           metric_type == knowhere::metric::MAX_SIM_COSINE ||
+           metric_type == knowhere::metric::MAX_SIM_IP ||
+           metric_type == knowhere::metric::MAX_SIM_L2;
 }
 
 // Plus 1 because we can't use greater(>) symbol
@@ -840,6 +893,51 @@ struct TypeTraits<DataType::VECTOR_FLOAT> {
     static constexpr const char* Name = "VECTOR_FLOAT";
 };
 
+template <>
+struct TypeTraits<DataType::VECTOR_FLOAT16> {
+    using NativeType = float16;
+    static constexpr DataType TypeKind = DataType::VECTOR_FLOAT16;
+    static constexpr bool IsPrimitiveType = false;
+    static constexpr bool IsFixedWidth = true;
+    static constexpr const char* Name = "VECTOR_FLOAT16";
+};
+
+template <>
+struct TypeTraits<DataType::VECTOR_BFLOAT16> {
+    using NativeType = bfloat16;
+    static constexpr DataType TypeKind = DataType::VECTOR_BFLOAT16;
+    static constexpr bool IsPrimitiveType = false;
+    static constexpr bool IsFixedWidth = true;
+    static constexpr const char* Name = "VECTOR_BFLOAT16";
+};
+
+template <>
+struct TypeTraits<DataType::VECTOR_SPARSE_U32_F32> {
+    using NativeType = void;
+    static constexpr DataType TypeKind = DataType::VECTOR_SPARSE_U32_F32;
+    static constexpr bool IsPrimitiveType = false;
+    static constexpr bool IsFixedWidth = false;
+    static constexpr const char* Name = "VECTOR_SPARSE_U32_F32";
+};
+
+template <>
+struct TypeTraits<DataType::VECTOR_INT8> {
+    using NativeType = int8_t;
+    static constexpr DataType TypeKind = DataType::VECTOR_INT8;
+    static constexpr bool IsPrimitiveType = false;
+    static constexpr bool IsFixedWidth = true;
+    static constexpr const char* Name = "VECTOR_INT8";
+};
+
+template <>
+struct TypeTraits<DataType::VECTOR_ARRAY> {
+    using NativeType = void;
+    static constexpr DataType TypeKind = DataType::VECTOR_ARRAY;
+    static constexpr bool IsPrimitiveType = false;
+    static constexpr bool IsFixedWidth = false;
+    static constexpr const char* Name = "VECTOR_ARRAY";
+};
+
 inline DataType
 FromValCase(milvus::proto::plan::GenericValue::ValCase val_case) {
     switch (val_case) {
@@ -857,6 +955,32 @@ FromValCase(milvus::proto::plan::GenericValue::ValCase val_case) {
             return DataType::NONE;
     }
 }
+
+// Calculate bytes per vector element for different vector types
+// Used by VectorArray and storage utilities
+inline size_t
+vector_bytes_per_element(const DataType data_type, int64_t dim) {
+    switch (data_type) {
+        case DataType::VECTOR_BINARY:
+            // Binary vector stores bits, so dim represents bit count
+            // Need (dim + 7) / 8 bytes to store dim bits
+            return (dim + 7) / 8;
+        case DataType::VECTOR_FLOAT:
+            return dim * sizeof(float);
+        case DataType::VECTOR_FLOAT16:
+            return dim * sizeof(float16);
+        case DataType::VECTOR_BFLOAT16:
+            return dim * sizeof(bfloat16);
+        case DataType::VECTOR_INT8:
+            return dim * sizeof(int8);
+        default:
+            ThrowInfo(UnexpectedError, "invalid data type: {}", data_type);
+    }
+}
+
+bool
+IsFixedSizeType(DataType type);
+
 }  // namespace milvus
 template <>
 struct fmt::formatter<milvus::DataType> : formatter<string_view> {
@@ -929,6 +1053,9 @@ struct fmt::formatter<milvus::DataType> : formatter<string_view> {
                 break;
             case milvus::DataType::VECTOR_INT8:
                 name = "VECTOR_INT8";
+                break;
+            case milvus::DataType::VECTOR_ARRAY:
+                name = "VECTOR_ARRAY";
                 break;
         }
         return formatter<string_view>::format(name, ctx);

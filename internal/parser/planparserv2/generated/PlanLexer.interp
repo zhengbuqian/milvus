@@ -70,6 +70,7 @@ null
 null
 null
 null
+null
 '$meta'
 null
 null
@@ -101,6 +102,11 @@ TEXTMATCH
 TEXTMATCHFUZZY
 PHRASEMATCH
 RANDOMSAMPLE
+MATCH_ALL
+MATCH_ANY
+MATCH_LEAST
+MATCH_MOST
+MATCH_EXACT
 INTERVAL
 ISO
 MINIMUM_SHOULD_MATCH
@@ -134,6 +140,7 @@ ArrayContains
 ArrayContainsAll
 ArrayContainsAny
 ArrayLength
+ElementFilter
 STEuqals
 STTouches
 STOverlaps
@@ -151,6 +158,9 @@ Meta
 StringLiteral
 RawStringLiteral
 JSONIdentifier
+StructIndexFieldIdentifier
+StructFieldIdentifier
+StructSubFieldIdentifier
 Whitespace
 Newline
 
@@ -174,6 +184,11 @@ TEXTMATCH
 TEXTMATCHFUZZY
 PHRASEMATCH
 RANDOMSAMPLE
+MATCH_ALL
+MATCH_ANY
+MATCH_LEAST
+MATCH_MOST
+MATCH_EXACT
 INTERVAL
 ISO
 MINIMUM_SHOULD_MATCH
@@ -207,6 +222,7 @@ ArrayContains
 ArrayContainsAll
 ArrayContainsAny
 ArrayLength
+ElementFilter
 STEuqals
 STTouches
 STOverlaps
@@ -224,6 +240,9 @@ Meta
 StringLiteral
 RawStringLiteral
 JSONIdentifier
+StructIndexFieldIdentifier
+StructFieldIdentifier
+StructSubFieldIdentifier
 EncodingPrefix
 DoubleSCharSequence
 SingleSCharSequence

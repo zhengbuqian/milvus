@@ -45,6 +45,7 @@ import (
 	"github.com/milvus-io/milvus/pkg/v3/proto/planpb"
 	"github.com/milvus-io/milvus/pkg/v3/util/commonpbutil"
 	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/metric"
 	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
 	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
@@ -115,16 +116,18 @@ func (n *Node) Run(ctx context.Context, span trace.Span, msg opMsg) (opMsg, erro
 const aggOp = "search_agg"
 
 const (
-	searchReduceOp       = "search_reduce"
-	hybridSearchReduceOp = "hybrid_search_reduce"
-	rerankOp             = "rerank"
-	requeryOp            = "requery"
-	organizeOp           = "organize"
-	hybridAssembleOp     = "hybrid_assemble"
-	endOp                = "end"
-	lambdaOp             = "lambda"
-	highlightOp          = "highlight"
-	orderByOp            = "order_by"
+	searchReduceOp        = "search_reduce"
+	hybridSearchReduceOp  = "hybrid_search_reduce"
+	rerankOp              = "rerank"
+	requeryOp             = "requery"
+	organizeOp            = "organize"
+	elementBestCollapseOp = "element_best_collapse"
+	elementKeyRestoreOp   = "element_key_restore"
+	hybridAssembleOp      = "hybrid_assemble"
+	endOp                 = "end"
+	lambdaOp              = "lambda"
+	highlightOp           = "highlight"
+	orderByOp             = "order_by"
 )
 
 const (
@@ -134,17 +137,19 @@ const (
 )
 
 var opFactory = map[string]func(t *searchTask, params map[string]any) (operator, error){
-	searchReduceOp:       newSearchReduceOperator,
-	hybridSearchReduceOp: newHybridSearchReduceOperator,
-	aggOp:                newAggregateOperator,
-	rerankOp:             newRerankOperator,
-	organizeOp:           newOrganizeOperator,
-	hybridAssembleOp:     newHybridAssembleOperator,
-	requeryOp:            newRequeryOperator,
-	lambdaOp:             newLambdaOperator,
-	endOp:                newEndOperator,
-	highlightOp:          newHighlightOperator,
-	orderByOp:            newOrderByOperator,
+	searchReduceOp:        newSearchReduceOperator,
+	hybridSearchReduceOp:  newHybridSearchReduceOperator,
+	aggOp:                 newAggregateOperator,
+	rerankOp:              newRerankOperator,
+	organizeOp:            newOrganizeOperator,
+	elementBestCollapseOp: newElementBestCollapseOperator,
+	elementKeyRestoreOp:   newElementKeyRestoreOperator,
+	hybridAssembleOp:      newHybridAssembleOperator,
+	requeryOp:             newRequeryOperator,
+	lambdaOp:              newLambdaOperator,
+	endOp:                 newEndOperator,
+	highlightOp:           newHighlightOperator,
+	orderByOp:             newOrderByOperator,
 }
 
 func NewNode(info *nodeDef, t *searchTask) (*Node, error) {
@@ -287,6 +292,520 @@ func (op *hybridSearchReduceOperator) run(ctx context.Context, span trace.Span, 
 		multipleMilvusResults[index] = result
 	}
 	return []any{multipleMilvusResults, searchMetrics}, nil
+}
+
+type elementBestCollapseOperator struct {
+	configs            []elementCollapseConfig
+	elementLevelHybrid bool
+}
+
+func newElementBestCollapseOperator(t *searchTask, _ map[string]any) (operator, error) {
+	return &elementBestCollapseOperator{
+		configs:            t.hybridCollapseConfigs(),
+		elementLevelHybrid: t.hybridElementLevel,
+	}, nil
+}
+
+func (t *searchTask) hybridCollapseConfigs() []elementCollapseConfig {
+	if len(t.hybridSubSearchInfos) == 0 {
+		return nil
+	}
+	configs := make([]elementCollapseConfig, len(t.hybridSubSearchInfos))
+	for i, info := range t.hybridSubSearchInfos {
+		configs[i] = info.Collapse
+		if configs[i].Strategy == "" {
+			configs[i] = defaultElementCollapseConfig()
+		}
+	}
+	return configs
+}
+
+// elementBestCollapseOperator normalizes element-level hybrid sub-search results
+// into row-level results before rerank, or prepares same-struct element-level
+// hybrid results with proxy-internal element keys so rerank can distinguish
+// different elements from the same row.
+func (op *elementBestCollapseOperator) run(ctx context.Context, span trace.Span, inputs ...any) ([]any, error) {
+	if len(inputs) < 2 {
+		return nil, merr.WrapErrServiceInternal("element best collapse: missing inputs")
+	}
+	results, ok := inputs[0].([]*milvuspb.SearchResults)
+	if !ok {
+		return nil, merr.WrapErrParameterInvalidMsg("element best collapse: inputs[0] must be []*SearchResults, got %T", inputs[0])
+	}
+	metrics, ok := inputs[1].([]string)
+	if !ok {
+		return nil, merr.WrapErrParameterInvalidMsg("element best collapse: inputs[1] must be []string, got %T", inputs[1])
+	}
+	if len(metrics) != len(results) {
+		return nil, merr.WrapErrServiceInternalMsg("element best collapse: metrics length (%d) does not match results length (%d)", len(metrics), len(results))
+	}
+
+	collapsed := make([]*milvuspb.SearchResults, len(results))
+	for i, result := range results {
+		if op.elementLevelHybrid {
+			var err error
+			collapsed[i], err = prepareElementLevelHybridResult(result)
+			if err != nil {
+				return nil, err
+			}
+			continue
+		}
+		metricType := metrics[i]
+		if result != nil && result.GetResults() != nil && result.GetResults().GetElementIndices() != nil && strings.TrimSpace(metricType) == "" {
+			totalRows := int64(0)
+			for _, topk := range result.GetResults().GetTopks() {
+				totalRows += topk
+			}
+			if totalRows > 0 {
+				return nil, merr.WrapErrServiceInternalMsg("element best collapse: missing metric type for element-level result[%d]", i)
+			}
+		}
+		var err error
+		config := defaultElementCollapseConfig()
+		if i < len(op.configs) && op.configs[i].Strategy != "" {
+			config = op.configs[i]
+		}
+		collapsed[i], err = collapseElementLevelResultByMetricType(result, metricType, config)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return []any{collapsed}, nil
+}
+
+type bestElementHit struct {
+	rowIdx     int64
+	score      float32
+	order      int
+	aggregate  float32
+	groupCount int
+}
+
+type rowIdxComputeItem struct {
+	outputIdx int
+	rowIdx    int64
+}
+
+func computeFieldIdxsByOriginalOrder(rowIdxs []int64, compute func(int64) []int64) [][]int64 {
+	items := make([]rowIdxComputeItem, 0, len(rowIdxs))
+	for i, rowIdx := range rowIdxs {
+		items = append(items, rowIdxComputeItem{
+			outputIdx: i,
+			rowIdx:    rowIdx,
+		})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].rowIdx < items[j].rowIdx
+	})
+
+	fieldIdxsByOutput := make([][]int64, len(rowIdxs))
+	for _, item := range items {
+		fieldIdxsByOutput[item.outputIdx] = append([]int64(nil), compute(item.rowIdx)...)
+	}
+	return fieldIdxsByOutput
+}
+
+func collapseElementLevelResultByBestScore(result *milvuspb.SearchResults, largerScoreIsBetter bool) (*milvuspb.SearchResults, error) {
+	return collapseElementLevelResult(result, largerScoreIsBetter, defaultElementCollapseConfig())
+}
+
+func collapseElementLevelResult(result *milvuspb.SearchResults, largerScoreIsBetter bool, config elementCollapseConfig) (*milvuspb.SearchResults, error) {
+	return collapseElementLevelResultWithMetricDirection(result, largerScoreIsBetter, true, config)
+}
+
+func collapseElementLevelResultByMetricType(result *milvuspb.SearchResults, metricType string, config elementCollapseConfig) (*milvuspb.SearchResults, error) {
+	metricType = strings.TrimSpace(metricType)
+	return collapseElementLevelResultWithMetricDirection(result, metric.PositivelyRelated(metricType), metricType != "", config)
+}
+
+func collapseElementLevelResultWithMetricDirection(result *milvuspb.SearchResults, largerScoreIsBetter bool, metricKnown bool, config elementCollapseConfig) (*milvuspb.SearchResults, error) {
+	if result == nil || result.GetResults() == nil || result.GetResults().GetElementIndices() == nil {
+		return result, nil
+	}
+
+	data := result.GetResults()
+	topks := data.GetTopks()
+	totalRows := int64(0)
+	for _, topk := range topks {
+		totalRows += topk
+	}
+
+	if isElementCollapseSumFamily(config.Strategy) && metricKnown && !largerScoreIsBetter {
+		return nil, merr.WrapErrParameterInvalidMsg(
+			"%s.collapse.strategy %s is only supported for positively related metrics",
+			elementScopeKey, config.Strategy)
+	}
+	if totalRows == 0 {
+		return copySearchResultsWithData(result, &schemapb.SearchResultData{
+			NumQueries:              data.GetNumQueries(),
+			TopK:                    0,
+			Topks:                   append([]int64(nil), topks...),
+			FieldsData:              []*schemapb.FieldData{},
+			Scores:                  []float32{},
+			OutputFields:            append([]string(nil), data.GetOutputFields()...),
+			AllSearchCount:          data.GetAllSearchCount(),
+			PrimaryFieldName:        data.GetPrimaryFieldName(),
+			SearchIteratorV2Results: data.GetSearchIteratorV2Results(),
+		}), nil
+	}
+
+	if !metricKnown {
+		return nil, merr.WrapErrServiceInternal("element best collapse: missing metric type for element-level result")
+	}
+
+	if typeutil.GetSizeOfIDs(data.GetIds()) < int(totalRows) {
+		return nil, merr.WrapErrServiceInternalMsg("element best collapse: ids length (%d) is less than total rows (%d)",
+			typeutil.GetSizeOfIDs(data.GetIds()), totalRows)
+	}
+	if int64(len(data.GetScores())) < totalRows {
+		return nil, merr.WrapErrServiceInternalMsg("element best collapse: scores length (%d) is less than total rows (%d)",
+			len(data.GetScores()), totalRows)
+	}
+	if int64(len(data.GetElementIndices().GetData())) < totalRows {
+		return nil, merr.WrapErrServiceInternalMsg("element best collapse: element_indices length (%d) is less than total rows (%d)",
+			len(data.GetElementIndices().GetData()), totalRows)
+	}
+	if len(data.GetDistances()) > 0 && int64(len(data.GetDistances())) < totalRows {
+		return nil, merr.WrapErrServiceInternalMsg("element best collapse: distances length (%d) is less than total rows (%d)",
+			len(data.GetDistances()), totalRows)
+	}
+	if len(data.GetRecalls()) > 0 && int64(len(data.GetRecalls())) < totalRows {
+		return nil, merr.WrapErrServiceInternalMsg("element best collapse: recalls length (%d) is less than total rows (%d)",
+			len(data.GetRecalls()), totalRows)
+	}
+
+	output := &schemapb.SearchResultData{
+		NumQueries:              data.GetNumQueries(),
+		Topks:                   make([]int64, 0, len(topks)),
+		FieldsData:              typeutil.PrepareResultFieldData(data.GetFieldsData(), totalRows),
+		Scores:                  make([]float32, 0, totalRows),
+		Ids:                     &schemapb.IDs{},
+		OutputFields:            append([]string(nil), data.GetOutputFields()...),
+		AllSearchCount:          data.GetAllSearchCount(),
+		PrimaryFieldName:        data.GetPrimaryFieldName(),
+		SearchIteratorV2Results: data.GetSearchIteratorV2Results(),
+	}
+	if len(data.GetDistances()) > 0 {
+		output.Distances = make([]float32, 0, totalRows)
+	}
+	if len(data.GetRecalls()) > 0 {
+		output.Recalls = make([]float32, 0, totalRows)
+	}
+
+	idxComputer := typeutil.NewFieldDataIdxComputer(data.GetFieldsData())
+	offset := int64(0)
+	for _, topk := range topks {
+		grouped := make(map[any][]bestElementHit)
+		groupOrder := make(map[any]int)
+		for i := int64(0); i < topk; i++ {
+			rowIdx := offset + i
+			pk := typeutil.GetPK(data.GetIds(), rowIdx)
+			if pk == nil {
+				continue
+			}
+			score := data.GetScores()[rowIdx]
+			if _, ok := grouped[pk]; !ok {
+				groupOrder[pk] = int(i)
+			}
+			grouped[pk] = append(grouped[pk], bestElementHit{
+				rowIdx: rowIdx,
+				score:  score,
+				order:  int(i),
+			})
+		}
+
+		hits := make([]bestElementHit, 0, len(grouped))
+		for pk, pkHits := range grouped {
+			hit := aggregateElementHits(pkHits, config, largerScoreIsBetter)
+			hit.order = groupOrder[pk]
+			hits = append(hits, hit)
+		}
+		sort.SliceStable(hits, func(i, j int) bool {
+			if hits[i].aggregate != hits[j].aggregate {
+				return isBetterElementScore(hits[i].aggregate, hits[j].aggregate, largerScoreIsBetter)
+			}
+			return hits[i].order < hits[j].order
+		})
+
+		output.Topks = append(output.Topks, int64(len(hits)))
+		if int64(len(hits)) > output.TopK {
+			output.TopK = int64(len(hits))
+		}
+
+		var fieldIdxsByOutput [][]int64
+		if len(data.GetFieldsData()) > 0 {
+			rowIdxs := make([]int64, 0, len(hits))
+			for _, hit := range hits {
+				rowIdxs = append(rowIdxs, hit.rowIdx)
+			}
+			fieldIdxsByOutput = computeFieldIdxsByOriginalOrder(rowIdxs, idxComputer.Compute)
+		}
+
+		for i, hit := range hits {
+			typeutil.AppendIDs(output.Ids, data.GetIds(), int(hit.rowIdx))
+			output.Scores = append(output.Scores, hit.aggregate)
+			// For aggregate collapse strategies, Score is the row aggregate while
+			// Distance/Recall keep the representative best element's values.
+			if len(data.GetDistances()) > 0 {
+				output.Distances = append(output.Distances, data.GetDistances()[hit.rowIdx])
+			}
+			if len(data.GetRecalls()) > 0 {
+				output.Recalls = append(output.Recalls, data.GetRecalls()[hit.rowIdx])
+			}
+			if len(data.GetFieldsData()) > 0 {
+				typeutil.AppendFieldData(output.FieldsData, data.GetFieldsData(), hit.rowIdx, fieldIdxsByOutput[i]...)
+			}
+		}
+		offset += topk
+	}
+
+	return copySearchResultsWithData(result, output), nil
+}
+
+func aggregateElementHits(hits []bestElementHit, config elementCollapseConfig, largerScoreIsBetter bool) bestElementHit {
+	if len(hits) == 0 {
+		return bestElementHit{}
+	}
+
+	bestHits := append([]bestElementHit(nil), hits...)
+	sort.SliceStable(bestHits, func(i, j int) bool {
+		if bestHits[i].score != bestHits[j].score {
+			return isBetterElementScore(bestHits[i].score, bestHits[j].score, largerScoreIsBetter)
+		}
+		return bestHits[i].order < bestHits[j].order
+	})
+
+	switch config.Strategy {
+	case elementCollapseSum, elementCollapseAvg:
+		sum := float32(0)
+		for _, hit := range hits {
+			sum += hit.score
+		}
+		selected := bestHits[0]
+		selected.aggregate = sum
+		selected.groupCount = len(hits)
+		if config.Strategy == elementCollapseAvg {
+			selected.aggregate = sum / float32(len(hits))
+		}
+		return selected
+	case elementCollapseTopKSum, elementCollapseTopKAvg:
+		k := config.TopK
+		if k <= 0 || k > len(bestHits) {
+			k = len(bestHits)
+		}
+		sum := float32(0)
+		for _, hit := range bestHits[:k] {
+			sum += hit.score
+		}
+		selected := bestHits[0]
+		selected.aggregate = sum
+		selected.groupCount = k
+		if config.Strategy == elementCollapseTopKAvg {
+			selected.aggregate = sum / float32(k)
+		}
+		return selected
+	case elementCollapseMax:
+		fallthrough
+	default:
+		selected := bestHits[0]
+		selected.aggregate = selected.score
+		selected.groupCount = 1
+		return selected
+	}
+}
+
+func prepareElementLevelHybridResult(result *milvuspb.SearchResults) (*milvuspb.SearchResults, error) {
+	if result == nil || result.GetResults() == nil {
+		return result, nil
+	}
+	data := result.GetResults()
+	totalRows := int64(0)
+	for _, topk := range data.GetTopks() {
+		totalRows += topk
+	}
+	if totalRows == 0 {
+		output := &schemapb.SearchResultData{
+			NumQueries:              data.GetNumQueries(),
+			TopK:                    data.GetTopK(),
+			Topks:                   append([]int64(nil), data.GetTopks()...),
+			FieldsData:              data.GetFieldsData(),
+			Scores:                  append([]float32(nil), data.GetScores()...),
+			Ids:                     &schemapb.IDs{IdField: &schemapb.IDs_StrId{StrId: &schemapb.StringArray{}}},
+			OutputFields:            append([]string(nil), data.GetOutputFields()...),
+			AllSearchCount:          data.GetAllSearchCount(),
+			PrimaryFieldName:        data.GetPrimaryFieldName(),
+			ElementIndices:          &schemapb.LongArray{},
+			GroupByFieldValues:      append([]*schemapb.FieldData(nil), data.GetGroupByFieldValues()...),
+			GroupByFieldValue:       data.GetGroupByFieldValue(),
+			SearchIteratorV2Results: data.GetSearchIteratorV2Results(),
+		}
+		if len(data.GetDistances()) > 0 {
+			output.Distances = append([]float32(nil), data.GetDistances()...)
+		}
+		if len(data.GetRecalls()) > 0 {
+			output.Recalls = append([]float32(nil), data.GetRecalls()...)
+		}
+		return copySearchResultsWithData(result, output), nil
+	}
+	if typeutil.GetSizeOfIDs(data.GetIds()) < int(totalRows) {
+		return nil, merr.WrapErrServiceInternalMsg("element-level hybrid: ids length (%d) is less than total rows (%d)",
+			typeutil.GetSizeOfIDs(data.GetIds()), totalRows)
+	}
+	if data.GetElementIndices() == nil {
+		return nil, merr.WrapErrServiceInternal("element-level hybrid: missing element_indices")
+	}
+	if int64(len(data.GetElementIndices().GetData())) < totalRows {
+		return nil, merr.WrapErrServiceInternalMsg("element-level hybrid: element_indices length (%d) is less than total rows (%d)",
+			len(data.GetElementIndices().GetData()), totalRows)
+	}
+
+	keys := make([]string, 0, totalRows)
+	for i := int64(0); i < totalRows; i++ {
+		keys = append(keys, makeHybridElementKey(typeutil.GetPK(data.GetIds(), i), data.GetElementIndices().GetData()[i]))
+	}
+	output := &schemapb.SearchResultData{
+		NumQueries:              data.GetNumQueries(),
+		TopK:                    data.GetTopK(),
+		Topks:                   append([]int64(nil), data.GetTopks()...),
+		FieldsData:              data.GetFieldsData(),
+		Scores:                  append([]float32(nil), data.GetScores()...),
+		Ids:                     &schemapb.IDs{IdField: &schemapb.IDs_StrId{StrId: &schemapb.StringArray{Data: keys}}},
+		OutputFields:            append([]string(nil), data.GetOutputFields()...),
+		AllSearchCount:          data.GetAllSearchCount(),
+		PrimaryFieldName:        data.GetPrimaryFieldName(),
+		ElementIndices:          data.GetElementIndices(),
+		GroupByFieldValues:      append([]*schemapb.FieldData(nil), data.GetGroupByFieldValues()...),
+		GroupByFieldValue:       data.GetGroupByFieldValue(),
+		SearchIteratorV2Results: data.GetSearchIteratorV2Results(),
+	}
+	if len(data.GetDistances()) > 0 {
+		output.Distances = append([]float32(nil), data.GetDistances()...)
+	}
+	if len(data.GetRecalls()) > 0 {
+		output.Recalls = append([]float32(nil), data.GetRecalls()...)
+	}
+	return copySearchResultsWithData(result, output), nil
+}
+
+type elementKeyRestoreOperator struct {
+	enabled bool
+}
+
+func newElementKeyRestoreOperator(t *searchTask, _ map[string]any) (operator, error) {
+	return &elementKeyRestoreOperator{enabled: t.hybridElementLevel}, nil
+}
+
+func (op *elementKeyRestoreOperator) run(ctx context.Context, span trace.Span, inputs ...any) ([]any, error) {
+	if len(inputs) < 1 {
+		return nil, merr.WrapErrServiceInternal("element key restore: missing inputs")
+	}
+
+	target := inputs[len(inputs)-1]
+	if !op.enabled {
+		return []any{target}, nil
+	}
+
+	switch v := target.(type) {
+	case *milvuspb.SearchResults:
+		if v == nil || v.GetResults() == nil {
+			return []any{v}, nil
+		}
+		restored, err := restoreElementLevelHybridRankResult(v)
+		if err != nil {
+			return nil, err
+		}
+		return []any{restored}, nil
+	case []*milvuspb.SearchResults:
+		restored := make([]*milvuspb.SearchResults, len(v))
+		for i, result := range v {
+			if result == nil || result.GetResults() == nil {
+				restored[i] = result
+				continue
+			}
+			var err error
+			restored[i], err = restoreElementLevelHybridRankResult(result)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return []any{restored}, nil
+	default:
+		return nil, merr.WrapErrParameterInvalidMsg("element key restore: input must be *SearchResults or []*SearchResults, got %T", target)
+	}
+}
+
+func restoreElementLevelHybridRankResult(rankResult *milvuspb.SearchResults) (*milvuspb.SearchResults, error) {
+	data := rankResult.GetResults()
+	size := typeutil.GetSizeOfIDs(data.GetIds())
+	outputIDs := &schemapb.IDs{}
+	elementIndices := make([]int64, 0, size)
+	for i := 0; i < size; i++ {
+		rawKey := typeutil.GetPK(data.GetIds(), int64(i))
+		key, ok := rawKey.(string)
+		if !ok {
+			return nil, merr.WrapErrServiceInternalMsg("element key restore: expected string element key, got %T", rawKey)
+		}
+		pk, elementIndex, ok := parseHybridElementKey(key)
+		if !ok {
+			return nil, merr.WrapErrServiceInternalMsg("element key restore: invalid element key %q", key)
+		}
+		appendPK(outputIDs, pk)
+		elementIndices = append(elementIndices, elementIndex)
+	}
+
+	output := &schemapb.SearchResultData{
+		NumQueries:              data.GetNumQueries(),
+		TopK:                    data.GetTopK(),
+		Topks:                   append([]int64(nil), data.GetTopks()...),
+		FieldsData:              data.GetFieldsData(),
+		Scores:                  append([]float32(nil), data.GetScores()...),
+		Ids:                     outputIDs,
+		OutputFields:            append([]string(nil), data.GetOutputFields()...),
+		AllSearchCount:          data.GetAllSearchCount(),
+		PrimaryFieldName:        data.GetPrimaryFieldName(),
+		ElementIndices:          &schemapb.LongArray{Data: elementIndices},
+		GroupByFieldValues:      append([]*schemapb.FieldData(nil), data.GetGroupByFieldValues()...),
+		GroupByFieldValue:       data.GetGroupByFieldValue(),
+		SearchIteratorV2Results: data.GetSearchIteratorV2Results(),
+	}
+	if len(data.GetDistances()) > 0 {
+		output.Distances = append([]float32(nil), data.GetDistances()...)
+	}
+	if len(data.GetRecalls()) > 0 {
+		output.Recalls = append([]float32(nil), data.GetRecalls()...)
+	}
+	return copySearchResultsWithData(rankResult, output), nil
+}
+
+func appendPK(ids *schemapb.IDs, pk any) {
+	switch v := pk.(type) {
+	case int64:
+		if ids.GetIntId() == nil {
+			ids.IdField = &schemapb.IDs_IntId{IntId: &schemapb.LongArray{}}
+		}
+		ids.GetIntId().Data = append(ids.GetIntId().Data, v)
+	case string:
+		if ids.GetStrId() == nil {
+			ids.IdField = &schemapb.IDs_StrId{StrId: &schemapb.StringArray{}}
+		}
+		ids.GetStrId().Data = append(ids.GetStrId().Data, v)
+	}
+}
+
+func isBetterElementScore(candidate, current float32, largerScoreIsBetter bool) bool {
+	if largerScoreIsBetter {
+		return candidate > current
+	}
+	return candidate < current
+}
+
+func copySearchResultsWithData(src *milvuspb.SearchResults, data *schemapb.SearchResultData) *milvuspb.SearchResults {
+	return &milvuspb.SearchResults{
+		Status:         src.GetStatus(),
+		Results:        data,
+		CollectionName: src.GetCollectionName(),
+		SessionTs:      src.GetSessionTs(),
+	}
 }
 
 type aggregateOperator struct {
@@ -611,8 +1130,9 @@ func fillFieldNames(schema *schemapb.CollectionSchema, resultData *schemapb.Sear
 	if schema == nil || resultData == nil {
 		return
 	}
-	fieldIDToName := make(map[int64]string, len(schema.GetFields()))
-	for _, field := range schema.GetFields() {
+	allFields := typeutil.GetAllFieldSchemas(schema)
+	fieldIDToName := make(map[int64]string, len(allFields))
+	for _, field := range allFields {
 		fieldIDToName[field.GetFieldID()] = field.GetName()
 	}
 	for _, fd := range resultData.GetFieldsData() {
@@ -1079,15 +1599,21 @@ func pickFieldData(ids *schemapb.IDs, pkOffset map[any]int, fields []*schemapb.F
 	// ===========================================
 	fieldsData := make([]*schemapb.FieldData, len(fields))
 	idxComputer := typeutil.NewFieldDataIdxComputerWithSchema(fields, schema)
-	for i := 0; i < typeutil.GetSizeOfIDs(ids); i++ {
+
+	size := typeutil.GetSizeOfIDs(ids)
+	rowIdxs := make([]int64, 0, size)
+	for i := 0; i < size; i++ {
 		id := typeutil.GetPK(ids, int64(i))
 		if _, ok := pkOffset[id]; !ok {
 			return nil, merr.WrapErrInconsistentRequery(fmt.Sprintf("incomplete query result, missing id %s, len(searchIDs) = %d, len(queryIDs) = %d, collection=%d",
 				id, typeutil.GetSizeOfIDs(ids), len(pkOffset), collectionID))
 		}
-		rowIdx := int64(pkOffset[id])
-		fieldIdxs := idxComputer.Compute(rowIdx)
-		typeutil.AppendFieldData(fieldsData, fields, rowIdx, fieldIdxs...)
+		rowIdxs = append(rowIdxs, int64(pkOffset[id]))
+	}
+
+	fieldIdxsByOutput := computeFieldIdxsByOriginalOrder(rowIdxs, idxComputer.Compute)
+	for i, rowIdx := range rowIdxs {
+		typeutil.AppendFieldData(fieldsData, fields, rowIdx, fieldIdxsByOutput[i]...)
 	}
 
 	return fieldsData, nil
@@ -1097,12 +1623,14 @@ func pickFieldData(ids *schemapb.IDs, pkOffset map[any]int, fields []*schemapb.F
 // sub-search results using a PK index, avoiding the full data copy that
 // merging all FieldsData would require.
 type hybridAssembleOperator struct {
-	collectionID int64
+	collectionID       int64
+	elementLevelHybrid bool
 }
 
 func newHybridAssembleOperator(t *searchTask, _ map[string]any) (operator, error) {
 	return &hybridAssembleOperator{
-		collectionID: t.GetCollectionID(),
+		collectionID:       t.GetCollectionID(),
+		elementLevelHybrid: t.hybridElementLevel,
 	}, nil
 }
 
@@ -1122,13 +1650,21 @@ func (op *hybridAssembleOperator) run(ctx context.Context, span trace.Span, inpu
 		return []any{rankResult}, nil
 	}
 
-	// Build PK → (resultIdx, rowIdx) index across all sub-search results.
 	type pkLoc struct{ resultIdx, rowIdx int }
+
+	// Build candidate-key -> (resultIdx, rowIdx) index across all sub-search results.
+	// Row-level hybrid keys by PK; element-level hybrid keys by (PK, element_index).
 	pkIndex := make(map[any]pkLoc)
 	for rIdx, result := range reducedResults {
 		ids := result.GetResults().GetIds()
 		for i := 0; i < typeutil.GetSizeOfIDs(ids); i++ {
-			pkIndex[typeutil.GetPK(ids, int64(i))] = pkLoc{rIdx, i}
+			key := typeutil.GetPK(ids, int64(i))
+			if op.elementLevelHybrid {
+				if rawKey, ok := key.(string); ok {
+					key = rawKey
+				}
+			}
+			pkIndex[key] = pkLoc{rIdx, i}
 		}
 	}
 
@@ -1144,6 +1680,7 @@ func (op *hybridAssembleOperator) run(ctx context.Context, span trace.Span, inpu
 		return []any{rankResult}, nil
 	}
 
+	locs := make([]pkLoc, numReranked)
 	// Pre-compute field-index computers per sub-search result (one per distinct FieldsData layout).
 	computers := make([]*typeutil.FieldDataIdxComputer, len(reducedResults))
 	for i, r := range reducedResults {
@@ -1162,23 +1699,53 @@ func (op *hybridAssembleOperator) run(ctx context.Context, span trace.Span, inpu
 	// dropping the row would corrupt the PK ↔ field mapping downstream
 	// (rerankedIDs and FieldsData would have different lengths). Fail loud
 	// instead so the bug is caught immediately at its source.
-	fieldsData := make([]*schemapb.FieldData, len(templateFields))
+	itemsByResult := make([][]rowIdxComputeItem, len(reducedResults))
 	for i := 0; i < numReranked; i++ {
-		pk := typeutil.GetPK(rerankedIDs, int64(i))
-		loc, ok := pkIndex[pk]
+		candidateKey := typeutil.GetPK(rerankedIDs, int64(i))
+		if op.elementLevelHybrid {
+			elementIndices := rankResult.GetResults().GetElementIndices().GetData()
+			if i >= len(elementIndices) {
+				return nil, merr.WrapErrServiceInternalMsg("hybrid assemble: missing element index for reranked row %d, collection=%d", i, op.collectionID)
+			}
+			candidateKey = makeHybridElementKey(candidateKey, elementIndices[i])
+		}
+		loc, ok := pkIndex[candidateKey]
 		if !ok {
 			return nil, merr.WrapErrInconsistentRequery(
-				fmt.Sprintf("hybrid assemble: missing id %v, collection=%d", pk, op.collectionID))
+				fmt.Sprintf("hybrid assemble: missing id %v, collection=%d", candidateKey, op.collectionID))
 		}
 		if computers[loc.resultIdx] == nil {
 			return nil, merr.WrapErrServiceInternalMsg(
 				"hybrid assemble: sub-result[%d] has empty FieldsData but contributed reranked id %v; "+
 					"all sub-results that contribute ids must share the same FieldsData layout, "+
-					"collection=%d", loc.resultIdx, pk, op.collectionID))
+					"collection=%d", loc.resultIdx, candidateKey, op.collectionID)
 		}
+		locs[i] = loc
+		itemsByResult[loc.resultIdx] = append(itemsByResult[loc.resultIdx], rowIdxComputeItem{
+			outputIdx: i,
+			rowIdx:    int64(loc.rowIdx),
+		})
+	}
+
+	fieldIdxsByOutput := make([][]int64, numReranked)
+	for resultIdx, items := range itemsByResult {
+		if len(items) == 0 {
+			continue
+		}
+		rowIdxs := make([]int64, 0, len(items))
+		for _, item := range items {
+			rowIdxs = append(rowIdxs, item.rowIdx)
+		}
+		fieldIdxs := computeFieldIdxsByOriginalOrder(rowIdxs, computers[resultIdx].Compute)
+		for i, item := range items {
+			fieldIdxsByOutput[item.outputIdx] = fieldIdxs[i]
+		}
+	}
+
+	fieldsData := make([]*schemapb.FieldData, len(templateFields))
+	for i, loc := range locs {
 		srcFields := reducedResults[loc.resultIdx].GetResults().GetFieldsData()
-		fieldIdxs := computers[loc.resultIdx].Compute(int64(loc.rowIdx))
-		typeutil.AppendFieldData(fieldsData, srcFields, int64(loc.rowIdx), fieldIdxs...)
+		typeutil.AppendFieldData(fieldsData, srcFields, int64(loc.rowIdx), fieldIdxsByOutput[i]...)
 	}
 
 	rankResult.Results.FieldsData = fieldsData
@@ -1205,24 +1772,24 @@ func (op *lambdaOperator) run(ctx context.Context, span trace.Span, inputs ...an
 
 type endOperator struct {
 	outputFieldNames []string
-	schema           *schemaInfo
+	fieldSchemas     []*schemapb.FieldSchema
 }
 
 func newEndOperator(t *searchTask, _ map[string]any) (operator, error) {
 	return &endOperator{
 		outputFieldNames: t.translatedOutputFields,
-		schema:           t.schema,
+		fieldSchemas:     typeutil.GetAllFieldSchemas(t.schema.CollectionSchema),
 	}, nil
 }
 
 func (op *endOperator) run(ctx context.Context, span trace.Span, inputs ...any) ([]any, error) {
 	result := inputs[0].(*milvuspb.SearchResults)
 	for _, retField := range result.Results.FieldsData {
-		for _, schemaField := range op.schema.Fields {
-			if retField != nil && retField.FieldId == schemaField.FieldID {
-				retField.FieldName = schemaField.Name
-				retField.Type = schemaField.DataType
-				retField.IsDynamic = schemaField.IsDynamic
+		for _, fieldSchema := range op.fieldSchemas {
+			if retField != nil && retField.FieldId == fieldSchema.FieldID {
+				retField.FieldName = fieldSchema.Name
+				retField.Type = fieldSchema.DataType
+				retField.IsDynamic = fieldSchema.IsDynamic
 			}
 		}
 	}
@@ -2722,14 +3289,26 @@ var hybridSearchPipe = &pipelineDef{
 			opName:  hybridSearchReduceOp,
 		},
 		{
-			name:    "rerank",
+			name:    "element_best_collapse",
 			inputs:  []string{"reduced", "metrics"},
+			outputs: []string{"collapsed"},
+			opName:  elementBestCollapseOp,
+		},
+		{
+			name:    "rerank",
+			inputs:  []string{"collapsed", "metrics"},
 			outputs: []string{"rank_result"},
 			opName:  rerankOp,
 		},
 		{
+			name:    "restore_element_keys",
+			inputs:  []string{"collapsed", "rank_result"},
+			outputs: []string{"rank_result"},
+			opName:  elementKeyRestoreOp,
+		},
+		{
 			name:    "assemble",
-			inputs:  []string{"reduced", "rank_result"},
+			inputs:  []string{"collapsed", "rank_result"},
 			outputs: []string{"result"},
 			opName:  hybridAssembleOp,
 		},
@@ -2746,8 +3325,20 @@ var hybridSearchWithRequeryAndRerankByFieldDataPipe = &pipelineDef{
 			opName:  hybridSearchReduceOp,
 		},
 		{
+			name:    "element_best_collapse",
+			inputs:  []string{"reduced", "metrics"},
+			outputs: []string{"collapsed"},
+			opName:  elementBestCollapseOp,
+		},
+		{
+			name:    "restore_element_keys_for_requery",
+			inputs:  []string{"collapsed"},
+			outputs: []string{"requery_data"},
+			opName:  elementKeyRestoreOp,
+		},
+		{
 			name:    "merge_ids",
-			inputs:  []string{"reduced"},
+			inputs:  []string{"requery_data"},
 			outputs: []string{"ids"},
 			opName:  lambdaOp,
 			params: map[string]any{
@@ -2762,7 +3353,7 @@ var hybridSearchWithRequeryAndRerankByFieldDataPipe = &pipelineDef{
 		},
 		{
 			name:    "parse_ids",
-			inputs:  []string{"reduced"},
+			inputs:  []string{"requery_data"},
 			outputs: []string{"id_list"},
 			opName:  lambdaOp,
 			params: map[string]any{
@@ -2783,7 +3374,7 @@ var hybridSearchWithRequeryAndRerankByFieldDataPipe = &pipelineDef{
 		},
 		{
 			name:    "gen_rank_data",
-			inputs:  []string{"reduced", "organized_fields"},
+			inputs:  []string{"collapsed", "organized_fields"},
 			outputs: []string{"rank_data"},
 			opName:  lambdaOp,
 			params: map[string]any{
@@ -2802,6 +3393,12 @@ var hybridSearchWithRequeryAndRerankByFieldDataPipe = &pipelineDef{
 			inputs:  []string{"rank_data", "metrics"},
 			outputs: []string{"rank_result"},
 			opName:  rerankOp,
+		},
+		{
+			name:    "restore_element_keys",
+			inputs:  []string{"rank_data", "rank_result"},
+			outputs: []string{"rank_result"},
+			opName:  elementKeyRestoreOp,
 		},
 		{
 			name:    "pick_ids",
@@ -2847,10 +3444,22 @@ var hybridSearchWithRequeryPipe = &pipelineDef{
 			opName:  hybridSearchReduceOp,
 		},
 		{
-			name:    "rerank",
+			name:    "element_best_collapse",
 			inputs:  []string{"reduced", "metrics"},
+			outputs: []string{"collapsed"},
+			opName:  elementBestCollapseOp,
+		},
+		{
+			name:    "rerank",
+			inputs:  []string{"collapsed", "metrics"},
 			outputs: []string{"rank_result"},
 			opName:  rerankOp,
+		},
+		{
+			name:    "restore_element_keys",
+			inputs:  []string{"collapsed", "rank_result"},
+			outputs: []string{"rank_result"},
+			opName:  elementKeyRestoreOp,
 		},
 		{
 			name:    "pick_ids",

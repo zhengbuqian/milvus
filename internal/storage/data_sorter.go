@@ -17,14 +17,17 @@
 package storage
 
 import (
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
-	"github.com/milvus-io/milvus/pkg/v2/common"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 // DataSorter sorts insert data
 type DataSorter struct {
-	InsertCodec *InsertCodec
-	InsertData  *InsertData
+	InsertCodec             *InsertCodec
+	InsertData              *InsertData
+	AllFields               []*schemapb.FieldSchema
+	nullableVectorDataRanks map[int64]*nullableVectorRanks
 }
 
 // getRowIDFieldData returns auto generated row id Field
@@ -196,7 +199,10 @@ func swapCompactNullableSparseRows(contents [][]byte, validData []bool, i, j int
 
 // Swap swaps each field's i-th and j-th element
 func (ds *DataSorter) Swap(i, j int) {
-	for _, field := range ds.InsertCodec.Schema.Schema.Fields {
+	if ds.AllFields == nil {
+		ds.AllFields = typeutil.GetAllFieldSchemas(ds.InsertCodec.Schema.Schema)
+	}
+	for _, field := range ds.AllFields {
 		singleData, has := ds.InsertData.Data[field.FieldID]
 		if !has {
 			continue
@@ -308,7 +314,25 @@ func (ds *DataSorter) Swap(i, j int) {
 			swapValidData(fd.ValidData, i, j)
 		case schemapb.DataType_SparseFloatVector:
 			fieldData := singleData.(*SparseFloatVectorFieldData)
-			fieldData.Contents[i], fieldData.Contents[j] = fieldData.Contents[j], fieldData.Contents[i]
+			if len(fieldData.ValidData) > 0 {
+				ranks := ds.getNullableVectorDataRanks(field.FieldID, fieldData.ValidData)
+				swapCompactNullableSparseRows(fieldData.Contents, fieldData.ValidData, i, j, &fieldData.L2PMapping, ranks)
+			} else {
+				fieldData.Contents[i], fieldData.Contents[j] = fieldData.Contents[j], fieldData.Contents[i]
+			}
+		case schemapb.DataType_Int8Vector:
+			fd := singleData.(*Int8VectorFieldData)
+			data := fd.Data
+			dim := fd.Dim
+			if len(fd.ValidData) > 0 {
+				ranks := ds.getNullableVectorDataRanks(field.FieldID, fd.ValidData)
+				swapCompactNullableFixedRows(data, fd.ValidData, i, j, dim, &fd.L2PMapping, ranks)
+			} else {
+				swapFixedRows(data, i, j, dim)
+			}
+		case schemapb.DataType_ArrayOfVector:
+			fieldData := singleData.(*VectorArrayFieldData)
+			fieldData.Data[i], fieldData.Data[j] = fieldData.Data[j], fieldData.Data[i]
 		default:
 			errMsg := "undefined data type " + string(field.DataType)
 			panic(errMsg)

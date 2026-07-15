@@ -601,6 +601,22 @@ func parseSearchInfo(searchParamsPair []*commonpb.KeyValuePair, schema *schemapb
 		return nil, merr.WrapErrParameterInvalidMsg("parse iterator v2 info failed: %v", err)
 	}
 
+	// 7. parse order_by_fields
+	orderByFields, err := parseOrderByFields(searchParamsPair, schema)
+	if err != nil {
+		return nil, err
+	}
+	if len(groupByFieldIds) > 1 && len(orderByFields) > 0 {
+		return nil, merr.WrapErrParameterInvalidMsg(
+			"order_by_fields is not supported with multi-field group_by_fields")
+	}
+
+	// 8. validate iterator + order_by combination is not allowed
+	if isIterator && len(orderByFields) > 0 {
+		return nil, merr.WrapErrParameterInvalid("", "",
+			"order_by is not supported when using search iterator")
+	}
+
 	return &SearchInfo{
 		planInfo: &planpb.QueryInfo{
 			Topk:                 queryTopK,

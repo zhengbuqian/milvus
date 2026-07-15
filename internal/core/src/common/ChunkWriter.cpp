@@ -280,20 +280,16 @@ ArrayChunkWriter::calculate_size(const arrow::ArrayVector& array_vec) {
                    data ? static_cast<int>(data->type_id()) : -1);
         for (int64_t i = 0; i < array->length(); ++i) {
             auto str = array->GetView(i);
-            ScalarArray scalar_array;
+            ScalarFieldProto scalar_array;
             scalar_array.ParseFromArray(str.data(), str.size());
-            auto arr = Array(scalar_array);
-            size += arr.byte_size();
-            arrays.push_back(std::move(arr));
+            cached_arrays_.emplace_back(scalar_array);
+            const auto& arr = cached_arrays_.back();
+            header_.push_back(static_cast<uint32_t>(cursor));        // off_i
+            header_.push_back(static_cast<uint32_t>(arr.length()));  // len_i
             if (is_string) {
                 cursor += sizeof(uint32_t) * arr.length();
             }
-        }
-        row_nums_ += array->length();
-        if (nullable_) {
-            auto null_bitmap_n = (data->length() + 7) / 8;
-            null_bitmaps.emplace_back(data->null_bitmap_data(), null_bitmap_n);
-            size += null_bitmap_n;
+            cursor += arr.byte_size();
         }
     }
     header_.push_back(static_cast<uint32_t>(cursor));  // off_N (sentinel)
@@ -337,18 +333,153 @@ ArrayChunkWriter::write_to_target(const arrow::ArrayVector& array_vec,
     header_.shrink_to_fit();
 }
 
-std::unique_ptr<Chunk>
-ArrayChunkWriter::finish() {
+std::pair<size_t, size_t>
+VectorArrayChunkWriter::calculate_size(const arrow::ArrayVector& array_vec) {
+    size_t total_rows = 0;
+    size_t total_size = 0;
+
+    for (const auto& array_data : array_vec) {
+        total_rows += array_data->length();
+        auto list_array =
+            std::static_pointer_cast<arrow::ListArray>(array_data);
+        AssertInfo(nullable_ || list_array->null_count() == 0,
+                   "VECTOR_ARRAY does not support null rows");
+
+        switch (element_type_) {
+            case milvus::DataType::VECTOR_FLOAT:
+            case milvus::DataType::VECTOR_BINARY:
+            case milvus::DataType::VECTOR_FLOAT16:
+            case milvus::DataType::VECTOR_BFLOAT16:
+            case milvus::DataType::VECTOR_INT8: {
+                auto binary_values =
+                    std::static_pointer_cast<arrow::FixedSizeBinaryArray>(
+                        list_array->values());
+                int byte_width = binary_values->byte_width();
+                const int32_t* list_offsets = list_array->raw_value_offsets();
+                int64_t actual_values_count = 0;
+                for (int64_t i = 0; i < list_array->length(); ++i) {
+                    if (nullable_ && list_array->IsNull(i)) {
+                        continue;
+                    }
+                    actual_values_count +=
+                        list_offsets[i + 1] - list_offsets[i];
+                }
+                total_size += actual_values_count * byte_width;
+                break;
+            }
+            default:
+                ThrowInfo(DataTypeInvalid,
+                          "Invalid element type {} for VectorArray",
+                          static_cast<int>(element_type_));
+        }
+    }
+
+    row_nums_ = total_rows;
+
+    if (nullable_) {
+        total_size += (total_rows + 7) / 8;
+    }
+    // Add space for logical-row offset and length arrays.
+    total_size += sizeof(uint32_t) * (row_nums_ * 2 + 1) + MMAP_ARRAY_PADDING;
+    return {total_size, total_rows};
+}
+
+void
+VectorArrayChunkWriter::write_to_target(
+    const arrow::ArrayVector& array_vec,
+    const std::shared_ptr<ChunkTarget>& target) {
+    std::vector<uint32_t> offsets_lens;
+    offsets_lens.reserve(row_nums_ * 2 + 1);
+    std::vector<const uint8_t*> vector_data_ptrs;
+    std::vector<size_t> data_sizes;
+
+    if (nullable_) {
+        std::vector<std::tuple<const uint8_t*, int64_t, int64_t>> null_bitmaps;
+        null_bitmaps.reserve(array_vec.size());
+        for (const auto& data : array_vec) {
+            null_bitmaps.emplace_back(
+                data->null_bitmap_data(), data->length(), data->offset());
+        }
+        write_null_bit_maps(null_bitmaps, target);
+    }
+
+    uint32_t current_offset =
+        (nullable_ ? static_cast<uint32_t>((row_nums_ + 7) / 8) : 0) +
+        sizeof(uint32_t) * (row_nums_ * 2 + 1);
+
+    for (const auto& array_data : array_vec) {
+        auto list_array =
+            std::static_pointer_cast<arrow::ListArray>(array_data);
+        auto binary_values =
+            std::static_pointer_cast<arrow::FixedSizeBinaryArray>(
+                list_array->values());
+        const int32_t* list_offsets = list_array->raw_value_offsets();
+        int byte_width = binary_values->byte_width();
+
+        // Generate offsets and lengths for each row
+        // Each list contains multiple vectors, each stored as a fixed-size binary chunk
+        for (int64_t i = 0; i < list_array->length(); i++) {
+            if (nullable_ && list_array->IsNull(i)) {
+                offsets_lens.push_back(current_offset);
+                offsets_lens.push_back(0);
+                continue;
+            }
+            auto start_idx = list_offsets[i];
+            auto end_idx = list_offsets[i + 1];
+            auto vector_count = end_idx - start_idx;
+            auto byte_size = static_cast<uint32_t>(vector_count * byte_width);
+
+            offsets_lens.push_back(current_offset);
+            offsets_lens.push_back(static_cast<uint32_t>(vector_count));
+
+            for (int32_t j = start_idx; j < end_idx; ++j) {
+                vector_data_ptrs.push_back(binary_values->GetValue(j));
+                data_sizes.push_back(byte_width);
+            }
+
+            current_offset += byte_size;
+        }
+    }
+
+    offsets_lens.push_back(current_offset);
+
+    // Write offset and length arrays
+    for (size_t i = 0; i < offsets_lens.size() - 1; i += 2) {
+        target->write(&offsets_lens[i], sizeof(uint32_t));      // offset
+        target->write(&offsets_lens[i + 1], sizeof(uint32_t));  // length
+    }
+    target->write(&offsets_lens.back(), sizeof(uint32_t));  // final offset
+
+    for (size_t i = 0; i < vector_data_ptrs.size(); i++) {
+        target->write(vector_data_ptrs[i], data_sizes[i]);
+    }
+
     char padding[MMAP_ARRAY_PADDING];
-    target_->write(padding, MMAP_ARRAY_PADDING);
-    auto [data, size] = target_->get();
-    auto mmap_file_raii = std::make_unique<MmapFileRAII>(file_path_);
-    return std::make_unique<ArrayChunk>(row_nums_,
-                                        data,
-                                        size,
-                                        element_type_,
-                                        nullable_,
-                                        std::move(mmap_file_raii));
+    target->write(padding, MMAP_ARRAY_PADDING);
+}
+
+std::pair<size_t, size_t>
+SparseFloatVectorChunkWriter::calculate_size(
+    const arrow::ArrayVector& array_vec) {
+    row_nums_ = 0;
+    size_t size = 0;
+
+    for (const auto& data : array_vec) {
+        auto array = std::dynamic_pointer_cast<arrow::BinaryArray>(data);
+        for (int64_t i = 0; i < array->length(); ++i) {
+            if (!nullable_ || !array->IsNull(i)) {
+                auto str = array->GetView(i);
+                size += str.size();
+            }
+        }
+        row_nums_ += array->length();
+    }
+
+    if (nullable_) {
+        size += (row_nums_ + 7) / 8;
+    }
+    size += sizeof(uint64_t) * (row_nums_ + 1);
+    return {size, row_nums_};
 }
 
 void
@@ -495,12 +626,11 @@ create_chunk_writer(const FieldMeta& field_meta) {
         case milvus::DataType::ARRAY:
             return std::make_shared<ArrayChunkWriter>(
                 field_meta.get_element_type(), nullable);
-            break;
-        }
-        case milvus::DataType::VECTOR_SPARSE_FLOAT: {
-            w = std::make_shared<SparseFloatVectorChunkWriter>(nullable);
-            break;
-        }
+        case milvus::DataType::VECTOR_SPARSE_U32_F32:
+            return std::make_shared<SparseFloatVectorChunkWriter>(nullable);
+        case milvus::DataType::VECTOR_ARRAY:
+            return std::make_shared<VectorArrayChunkWriter>(
+                dim, field_meta.get_element_type(), nullable);
         default:
             ThrowInfo(Unsupported, "Unsupported data type");
     }
@@ -651,7 +781,8 @@ make_chunk(const FieldMeta& field_meta,
                 data,
                 size,
                 field_meta.get_element_type(),
-                chunk_mmap_guard);
+                chunk_mmap_guard,
+                nullable);
         default:
             ThrowInfo(DataTypeInvalid, "Unsupported data type");
     }
@@ -785,79 +916,6 @@ create_group_chunk(const std::vector<FieldId>& field_ids,
             char padding[ChunkTarget::ALIGNED_SIZE] = {};
             target->write(padding, padding_size);
         }
-        case milvus::DataType::INT32: {
-            w = std::make_shared<ChunkWriter<arrow::Int32Array, int32_t>>(
-                dim, file, file_offset, nullable);
-            break;
-        }
-        case milvus::DataType::INT64: {
-            w = std::make_shared<ChunkWriter<arrow::Int64Array, int64_t>>(
-                dim, file, file_offset, nullable);
-            break;
-        }
-        case milvus::DataType::FLOAT: {
-            w = std::make_shared<ChunkWriter<arrow::FloatArray, float>>(
-                dim, file, file_offset, nullable);
-            break;
-        }
-        case milvus::DataType::DOUBLE: {
-            w = std::make_shared<ChunkWriter<arrow::DoubleArray, double>>(
-                dim, file, file_offset, nullable);
-            break;
-        }
-        case milvus::DataType::VECTOR_FLOAT: {
-            w = std::make_shared<
-                ChunkWriter<arrow::FixedSizeBinaryArray, knowhere::fp32>>(
-                dim, file, file_offset, nullable);
-            break;
-        }
-        case milvus::DataType::VECTOR_BINARY: {
-            w = std::make_shared<
-                ChunkWriter<arrow::FixedSizeBinaryArray, knowhere::bin1>>(
-                dim / 8, file, file_offset, nullable);
-            break;
-        }
-        case milvus::DataType::VECTOR_FLOAT16: {
-            w = std::make_shared<
-                ChunkWriter<arrow::FixedSizeBinaryArray, knowhere::fp16>>(
-                dim, file, file_offset, nullable);
-            break;
-        }
-        case milvus::DataType::VECTOR_BFLOAT16: {
-            w = std::make_shared<
-                ChunkWriter<arrow::FixedSizeBinaryArray, knowhere::bf16>>(
-                dim, file, file_offset, nullable);
-            break;
-        }
-        case milvus::DataType::VECTOR_INT8: {
-            w = std::make_shared<
-                ChunkWriter<arrow::FixedSizeBinaryArray, knowhere::int8>>(
-                dim, file, file_offset, nullable);
-            break;
-        }
-        case milvus::DataType::VARCHAR:
-        case milvus::DataType::STRING:
-        case milvus::DataType::TEXT: {
-            w = std::make_shared<StringChunkWriter>(
-                file, file_offset, nullable);
-            break;
-        }
-        case milvus::DataType::JSON: {
-            w = std::make_shared<JSONChunkWriter>(file, file_offset, nullable);
-            break;
-        }
-        case milvus::DataType::ARRAY: {
-            w = std::make_shared<ArrayChunkWriter>(
-                field_meta.get_element_type(), file, file_offset, nullable);
-            break;
-        }
-        case milvus::DataType::VECTOR_SPARSE_FLOAT: {
-            w = std::make_shared<SparseFloatVectorChunkWriter>(
-                file, file_offset, nullable);
-            break;
-        }
-        default:
-            PanicInfo(Unsupported, "Unsupported data type");
     }
 
     auto data = target->release();

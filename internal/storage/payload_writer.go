@@ -18,6 +18,7 @@ package storage
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"math"
 	"sync"
@@ -60,8 +61,15 @@ func WithDim(dim int) PayloadWriterOptions {
 	}
 }
 
+func WithElementType(elementType schemapb.DataType) PayloadWriterOptions {
+	return func(w *NativePayloadWriter) {
+		w.elementType = &elementType
+	}
+}
+
 type NativePayloadWriter struct {
 	dataType    schemapb.DataType
+	elementType *schemapb.DataType
 	arrowType   arrow.DataType
 	builder     array.Builder
 	finished    bool
@@ -98,12 +106,34 @@ func NewPayloadWriter(colType schemapb.DataType, options ...PayloadWriterOptions
 	} else {
 		w.dim = NewNullableInt(1)
 	}
-	w.arrowType = MilvusDataTypeToArrowType(colType, *w.dim.Value)
-	w.builder = array.NewBuilder(memory.DefaultAllocator, w.arrowType)
+
+	// Handle ArrayOfVector type with elementType
+	if colType == schemapb.DataType_ArrayOfVector {
+		if w.elementType == nil {
+			return nil, merr.WrapErrParameterInvalidMsg("ArrayOfVector requires elementType, use WithElementType option")
+		}
+		if w.dim == nil {
+			return nil, merr.WrapErrParameterInvalidMsg("ArrayOfVector requires dim to be specified")
+		}
+		elemType, err := VectorArrayToArrowType(*w.elementType, *w.dim.Value)
+		if err != nil {
+			return nil, err
+		}
+		w.arrowType = arrow.ListOf(elemType)
+		w.builder = array.NewListBuilder(memory.DefaultAllocator, elemType)
+	} else {
+		if w.nullable && typeutil.IsSupportedNullableVectorType(colType) && !typeutil.IsSparseFloatVectorType(colType) {
+			w.arrowType = &arrow.BinaryType{}
+			w.builder = array.NewBinaryBuilder(memory.DefaultAllocator, arrow.BinaryTypes.Binary)
+		} else {
+			w.arrowType = MilvusDataTypeToArrowType(colType, *w.dim.Value)
+			w.builder = array.NewBuilder(memory.DefaultAllocator, w.arrowType)
+		}
+	}
 	return w, nil
 }
 
-func (w *NativePayloadWriter) AddDataToPayload(data interface{}, validData []bool) error {
+func (w *NativePayloadWriter) AddDataToPayloadForUT(data interface{}, validData []bool) error {
 	switch w.dataType {
 	case schemapb.DataType_Bool:
 		val, ok := data.([]bool)
@@ -264,7 +294,13 @@ func (w *NativePayloadWriter) AddDataToPayload(data interface{}, validData []boo
 		if !ok {
 			return merr.WrapErrParameterInvalidMsg("incorrect data type")
 		}
-		return w.AddInt8VectorToPayload(val, w.dim.GetValue())
+		return w.AddInt8VectorToPayload(val, w.dim.GetValue(), validData)
+	case schemapb.DataType_ArrayOfVector:
+		val, ok := data.(*VectorArrayFieldData)
+		if !ok {
+			return merr.WrapErrParameterInvalidMsg("incorrect data type: expected *VectorArrayFieldData")
+		}
+		return w.AddVectorArrayFieldDataToPayload(val)
 	default:
 		return merr.WrapErrServiceInternalMsg("unsupported datatype")
 	}
@@ -999,10 +1035,29 @@ func (w *NativePayloadWriter) FinishPayloadWriter() error {
 
 	w.finished = true
 
+	// Prepare metadata for VectorArray type
+	var metadata arrow.Metadata
+	if w.dataType == schemapb.DataType_ArrayOfVector {
+		if w.elementType == nil {
+			return merr.WrapErrServiceInternalMsg("element type for DataType_ArrayOfVector must be set")
+		}
+
+		metadata = arrow.NewMetadata(
+			[]string{"elementType", "dim"},
+			[]string{fmt.Sprintf("%d", int32(*w.elementType)), fmt.Sprintf("%d", w.dim.GetValue())},
+		)
+	} else if w.nullable && typeutil.IsSupportedNullableVectorType(w.dataType) && !typeutil.IsSparseFloatVectorType(w.dataType) {
+		metadata = arrow.NewMetadata(
+			[]string{"dim"},
+			[]string{fmt.Sprintf("%d", w.dim.GetValue())},
+		)
+	}
+
 	field := arrow.Field{
 		Name:     "val",
 		Type:     w.arrowType,
 		Nullable: w.nullable,
+		Metadata: metadata,
 	}
 	schema := arrow.NewSchema([]arrow.Field{
 		field,
@@ -1017,11 +1072,20 @@ func (w *NativePayloadWriter) FinishPayloadWriter() error {
 	table := array.NewTable(schema, []arrow.Column{column}, int64(column.Len()))
 	defer table.Release()
 
+	arrowWriterProps := pqarrow.DefaultWriterProps()
+	if w.dataType == schemapb.DataType_ArrayOfVector ||
+		(w.nullable && typeutil.IsSupportedNullableVectorType(w.dataType) && !typeutil.IsSparseFloatVectorType(w.dataType)) {
+		// Store metadata in the Arrow writer properties
+		arrowWriterProps = pqarrow.NewArrowWriterProperties(
+			pqarrow.WithStoreSchema(),
+		)
+	}
+
 	return pqarrow.WriteTable(table,
 		w.output,
 		1024*1024*1024,
 		w.writerProps,
-		pqarrow.DefaultWriterProps(),
+		arrowWriterProps,
 	)
 }
 
@@ -1100,7 +1164,217 @@ func MilvusDataTypeToArrowType(dataType schemapb.DataType, dim int) arrow.DataTy
 		return &arrow.FixedSizeBinaryType{
 			ByteWidth: dim,
 		}
+	case schemapb.DataType_ArrayOfVector:
+		// ArrayOfVector requires elementType, should use VectorArrayToArrowType instead
+		panic("ArrayOfVector type requires elementType information, use VectorArrayToArrowType")
 	default:
 		panic("unsupported data type")
 	}
+}
+
+// AddVectorArrayFieldDataToPayload adds VectorArrayFieldData to payload using Arrow ListArray
+func (w *NativePayloadWriter) AddVectorArrayFieldDataToPayload(data *VectorArrayFieldData) error {
+	if w.finished {
+		return merr.WrapErrServiceInternalMsg("can't append data to finished vector array payload")
+	}
+
+	if len(data.Data) == 0 {
+		return merr.WrapErrServiceInternalMsg("can't add empty vector array field data")
+	}
+
+	builder, ok := w.builder.(*array.ListBuilder)
+	if !ok {
+		return merr.WrapErrServiceInternalMsg("failed to cast to ListBuilder for VectorArray")
+	}
+
+	switch data.ElementType {
+	case schemapb.DataType_FloatVector:
+		return w.addFloatVectorArrayToPayload(builder, data)
+	case schemapb.DataType_BinaryVector:
+		return w.addBinaryVectorArrayToPayload(builder, data)
+	case schemapb.DataType_Float16Vector:
+		return w.addFloat16VectorArrayToPayload(builder, data)
+	case schemapb.DataType_BFloat16Vector:
+		return w.addBFloat16VectorArrayToPayload(builder, data)
+	case schemapb.DataType_Int8Vector:
+		return w.addInt8VectorArrayToPayload(builder, data)
+	default:
+		return merr.WrapErrParameterInvalidMsg("unsupported element type in VectorArray: %s", data.ElementType.String())
+	}
+}
+
+// addFloatVectorArrayToPayload handles FloatVector elements in VectorArray
+func (w *NativePayloadWriter) addFloatVectorArrayToPayload(builder *array.ListBuilder, data *VectorArrayFieldData) error {
+	if data.Dim <= 0 {
+		return merr.WrapErrParameterInvalidMsg("vector dimension must be greater than 0")
+	}
+
+	valueBuilder := builder.ValueBuilder().(*array.FixedSizeBinaryBuilder)
+
+	// Each element in data.Data represents one row of VectorArray
+	for _, vectorField := range data.Data {
+		if vectorField.GetFloatVector() == nil {
+			return merr.WrapErrParameterInvalidMsg("expected FloatVector but got different type")
+		}
+
+		floatData := vectorField.GetFloatVector().GetData()
+
+		numVectors, err := validateVectorArrayElementCount(len(floatData), int(data.Dim))
+		if err != nil {
+			return err
+		}
+
+		// Start a new list for this row
+		builder.Append(true)
+
+		for i := 0; i < numVectors; i++ {
+			start := i * int(data.Dim)
+			end := start + int(data.Dim)
+			vectorSlice := floatData[start:end]
+
+			bytes := make([]byte, data.Dim*4)
+			for j, f := range vectorSlice {
+				binary.LittleEndian.PutUint32(bytes[j*4:], math.Float32bits(f))
+			}
+
+			valueBuilder.Append(bytes)
+		}
+	}
+
+	return nil
+}
+
+// addBinaryVectorArrayToPayload handles BinaryVector elements in VectorArray
+func (w *NativePayloadWriter) addBinaryVectorArrayToPayload(builder *array.ListBuilder, data *VectorArrayFieldData) error {
+	if data.Dim <= 0 {
+		return merr.WrapErrParameterInvalidMsg("vector dimension must be greater than 0")
+	}
+
+	valueBuilder := builder.ValueBuilder().(*array.FixedSizeBinaryBuilder)
+
+	// Each element in data.Data represents one row of VectorArray
+	for _, vectorField := range data.Data {
+		if vectorField.GetBinaryVector() == nil {
+			return merr.WrapErrParameterInvalidMsg("expected BinaryVector but got different type")
+		}
+
+		binaryData := vectorField.GetBinaryVector()
+		byteWidth := (data.Dim + 7) / 8
+		numVectors, err := validateVectorArrayElementCount(len(binaryData), int(byteWidth))
+		if err != nil {
+			return err
+		}
+
+		// Start a new list for this row
+		builder.Append(true)
+
+		for i := 0; i < numVectors; i++ {
+			start := i * int(byteWidth)
+			end := start + int(byteWidth)
+			valueBuilder.Append(binaryData[start:end])
+		}
+	}
+
+	return nil
+}
+
+// addFloat16VectorArrayToPayload handles Float16Vector elements in VectorArray
+func (w *NativePayloadWriter) addFloat16VectorArrayToPayload(builder *array.ListBuilder, data *VectorArrayFieldData) error {
+	if data.Dim <= 0 {
+		return merr.WrapErrParameterInvalidMsg("vector dimension must be greater than 0")
+	}
+
+	valueBuilder := builder.ValueBuilder().(*array.FixedSizeBinaryBuilder)
+
+	// Each element in data.Data represents one row of VectorArray
+	for _, vectorField := range data.Data {
+		if vectorField.GetFloat16Vector() == nil {
+			return merr.WrapErrParameterInvalidMsg("expected Float16Vector but got different type")
+		}
+
+		float16Data := vectorField.GetFloat16Vector()
+		byteWidth := data.Dim * 2
+		numVectors, err := validateVectorArrayElementCount(len(float16Data), int(byteWidth))
+		if err != nil {
+			return err
+		}
+
+		// Start a new list for this row
+		builder.Append(true)
+
+		for i := 0; i < numVectors; i++ {
+			start := i * int(byteWidth)
+			end := start + int(byteWidth)
+			valueBuilder.Append(float16Data[start:end])
+		}
+	}
+
+	return nil
+}
+
+// addBFloat16VectorArrayToPayload handles BFloat16Vector elements in VectorArray
+func (w *NativePayloadWriter) addBFloat16VectorArrayToPayload(builder *array.ListBuilder, data *VectorArrayFieldData) error {
+	if data.Dim <= 0 {
+		return merr.WrapErrParameterInvalidMsg("vector dimension must be greater than 0")
+	}
+
+	valueBuilder := builder.ValueBuilder().(*array.FixedSizeBinaryBuilder)
+
+	// Each element in data.Data represents one row of VectorArray
+	for _, vectorField := range data.Data {
+		if vectorField.GetBfloat16Vector() == nil {
+			return merr.WrapErrParameterInvalidMsg("expected BFloat16Vector but got different type")
+		}
+
+		bfloat16Data := vectorField.GetBfloat16Vector()
+		byteWidth := data.Dim * 2
+		numVectors, err := validateVectorArrayElementCount(len(bfloat16Data), int(byteWidth))
+		if err != nil {
+			return err
+		}
+
+		// Start a new list for this row
+		builder.Append(true)
+
+		for i := 0; i < numVectors; i++ {
+			start := i * int(byteWidth)
+			end := start + int(byteWidth)
+			valueBuilder.Append(bfloat16Data[start:end])
+		}
+	}
+
+	return nil
+}
+
+// addInt8VectorArrayToPayload handles Int8Vector elements in VectorArray
+func (w *NativePayloadWriter) addInt8VectorArrayToPayload(builder *array.ListBuilder, data *VectorArrayFieldData) error {
+	if data.Dim <= 0 {
+		return merr.WrapErrParameterInvalidMsg("vector dimension must be greater than 0")
+	}
+
+	valueBuilder := builder.ValueBuilder().(*array.FixedSizeBinaryBuilder)
+
+	// Each element in data.Data represents one row of VectorArray
+	for _, vectorField := range data.Data {
+		if vectorField.GetInt8Vector() == nil {
+			return merr.WrapErrParameterInvalidMsg("expected Int8Vector but got different type")
+		}
+
+		int8Data := vectorField.GetInt8Vector()
+		numVectors, err := validateVectorArrayElementCount(len(int8Data), int(data.Dim))
+		if err != nil {
+			return err
+		}
+
+		// Start a new list for this row
+		builder.Append(true)
+
+		for i := 0; i < numVectors; i++ {
+			start := i * int(data.Dim)
+			end := start + int(data.Dim)
+			valueBuilder.Append(int8Data[start:end])
+		}
+	}
+
+	return nil
 }

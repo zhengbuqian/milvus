@@ -45,6 +45,12 @@ type FieldReader struct {
 	dim            int
 	field          *schemapb.FieldSchema
 	sparseIsString bool
+
+	// timezone is the collection's default timezone
+	timezone string
+
+	// structReader is non-nil when Struct Array field exists
+	structReader *StructFieldReader
 }
 
 func NewFieldReader(ctx context.Context, reader *pqarrow.FileReader, columnIndex int, field *schemapb.FieldSchema, timezone string) (*FieldReader, error) {
@@ -80,6 +86,11 @@ func NewFieldReader(ctx context.Context, reader *pqarrow.FileReader, columnIndex
 }
 
 func (c *FieldReader) Next(count int64) (any, any, error) {
+	// Check if this FieldReader wraps a StructFieldReader
+	if c.structReader != nil {
+		return c.structReader.Next(count)
+	}
+
 	switch c.field.GetDataType() {
 	case schemapb.DataType_Bool:
 		if c.field.GetNullable() || c.field.GetDefaultValue() != nil {
@@ -234,6 +245,12 @@ func (c *FieldReader) Next(count int64) (any, any, error) {
 			return ReadNullableArrayData(c, count)
 		}
 		data, err := ReadArrayData(c, count)
+		return data, nil, err
+	case schemapb.DataType_ArrayOfVector:
+		if c.field.GetNullable() {
+			return ReadNullableVectorArrayData(c, count)
+		}
+		data, err := ReadVectorArrayData(c, count)
 		return data, nil, err
 	default:
 		return nil, nil, merr.WrapErrImportFailedMsg("unsupported data type '%s' for field '%s'",
@@ -2159,4 +2176,354 @@ func ReadNullableArrayData(pcr *FieldReader, count int64) (any, []bool, error) {
 		return nil, nil, merr.WrapErrImportFailedMsg("unsupported data type '%s' for array field '%s'",
 			elementType.String(), pcr.field.GetName())
 	}
+}
+
+func ReadVectorArrayData(pcr *FieldReader, count int64) (any, error) {
+	data, _, err := readVectorArrayData(pcr, count, false)
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func ReadNullableVectorArrayData(pcr *FieldReader, count int64) (any, []bool, error) {
+	return readVectorArrayData(pcr, count, true)
+}
+
+func readVectorArrayData(pcr *FieldReader, count int64, nullable bool) ([]*schemapb.VectorField, []bool, error) {
+	data := make([]*schemapb.VectorField, 0, count)
+	var validData []bool
+	if nullable {
+		validData = make([]bool, 0, count)
+	}
+
+	maxCapacity, err := parameterutil.GetMaxCapacity(pcr.field)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	dim, err := typeutil.GetDim(pcr.field)
+	if err != nil {
+		return nil, nil, err
+	}
+	if _, err = vectorArrayBytesPerVector(pcr.field.GetElementType(), dim); err != nil {
+		return nil, nil, err
+	}
+
+	chunked, err := pcr.columnReader.NextBatch(count)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if chunked == nil || chunked.Len() == 0 {
+		return nil, nil, nil
+	}
+
+	for _, chunk := range chunked.Chunks() {
+		switch reader := chunk.(type) {
+		case *array.Null:
+			if !nullable {
+				return nil, nil, WrapNullRowErr(pcr.field)
+			}
+			for i := 0; i < reader.Len(); i++ {
+				data = append(data, emptyVectorArrayRow(dim, pcr.field.GetElementType()))
+				validData = append(validData, false)
+			}
+
+		case *array.List:
+			if !nullable && reader.NullN() > 0 {
+				return nil, nil, WrapNullRowErr(pcr.field)
+			}
+
+			for i := 0; i < reader.Len(); i++ {
+				if reader.IsNull(i) {
+					data = append(data, emptyVectorArrayRow(dim, pcr.field.GetElementType()))
+					validData = append(validData, false)
+					continue
+				}
+				start, end := reader.ValueOffsets(i)
+				vectorCount := end - start
+
+				if err = common.CheckArrayCapacity(int(vectorCount), maxCapacity, pcr.field); err != nil {
+					return nil, nil, err
+				}
+
+				var rowData *schemapb.VectorField
+				switch values := reader.ListValues().(type) {
+				case *array.List:
+					rowData, err = buildVectorArrayFieldFromList(pcr.field, dim, values, start, end)
+				case *array.FixedSizeBinary:
+					rowData, err = buildVectorArrayFieldFromFixedSizeBinary(pcr.field, dim, values, start, end)
+				default:
+					return nil, nil, WrapTypeErr(pcr.field, reader.ListValues().DataType().Name())
+				}
+				if err != nil {
+					return nil, nil, err
+				}
+
+				data = append(data, rowData)
+				if nullable {
+					validData = append(validData, true)
+				}
+			}
+
+		default:
+			return nil, nil, WrapTypeErr(pcr.field, chunk.DataType().Name())
+		}
+	}
+
+	if len(data) == 0 {
+		return nil, nil, nil
+	}
+	return data, validData, nil
+}
+
+func emptyVectorArrayRow(dim int64, elementType schemapb.DataType) *schemapb.VectorField {
+	vectorField := &schemapb.VectorField{Dim: dim}
+	switch elementType {
+	case schemapb.DataType_FloatVector:
+		vectorField.Data = &schemapb.VectorField_FloatVector{FloatVector: &schemapb.FloatArray{}}
+	case schemapb.DataType_BinaryVector:
+		vectorField.Data = &schemapb.VectorField_BinaryVector{BinaryVector: []byte{}}
+	case schemapb.DataType_Float16Vector:
+		vectorField.Data = &schemapb.VectorField_Float16Vector{Float16Vector: []byte{}}
+	case schemapb.DataType_BFloat16Vector:
+		vectorField.Data = &schemapb.VectorField_Bfloat16Vector{Bfloat16Vector: []byte{}}
+	case schemapb.DataType_Int8Vector:
+		vectorField.Data = &schemapb.VectorField_Int8Vector{Int8Vector: []byte{}}
+	}
+	return vectorField
+}
+
+func vectorArrayBytesPerVector(elementType schemapb.DataType, dim int64) (int, error) {
+	switch elementType {
+	case schemapb.DataType_FloatVector:
+		return int(dim) * 4, nil
+	case schemapb.DataType_BinaryVector:
+		return int((dim + 7) / 8), nil
+	case schemapb.DataType_Float16Vector, schemapb.DataType_BFloat16Vector:
+		return int(dim) * 2, nil
+	case schemapb.DataType_Int8Vector:
+		return int(dim), nil
+	case schemapb.DataType_SparseFloatVector:
+		return 0, merr.WrapErrImportFailed("ArrayOfVector with SparseFloatVector element type is not implemented yet")
+	default:
+		return 0, merr.WrapErrImportFailedMsg("unsupported ArrayOfVector element type: %v", elementType)
+	}
+}
+
+func buildVectorArrayFieldFromFixedSizeBinary(field *schemapb.FieldSchema, dim int64, values *array.FixedSizeBinary, start, end int64) (*schemapb.VectorField, error) {
+	bytesPerVector, err := vectorArrayBytesPerVector(field.GetElementType(), dim)
+	if err != nil {
+		return nil, err
+	}
+	actualByteSize := values.DataType().(*arrow.FixedSizeBinaryType).ByteWidth
+	if actualByteSize != bytesPerVector {
+		return nil, merr.WrapErrImportFailedMsg("vector byte size mismatch: expected %d, got %d for field '%s'",
+			bytesPerVector, actualByteSize, field.GetName())
+	}
+
+	switch field.GetElementType() {
+	case schemapb.DataType_FloatVector:
+		floatData := make([]float32, 0, int(end-start)*int(dim))
+		for vectorIndex := start; vectorIndex < end; vectorIndex++ {
+			if values.IsNull(int(vectorIndex)) {
+				return nil, WrapNullElementErr(field)
+			}
+			vectorFloats := arrow.Float32Traits.CastFromBytes(values.Value(int(vectorIndex)))
+			floatData = append(floatData, vectorFloats...)
+		}
+		if err := typeutil.VerifyFloats32(floatData); err != nil {
+			return nil, err
+		}
+		return &schemapb.VectorField{
+			Dim: dim,
+			Data: &schemapb.VectorField_FloatVector{
+				FloatVector: &schemapb.FloatArray{Data: floatData},
+			},
+		}, nil
+	case schemapb.DataType_BinaryVector:
+		binaryData := make([]byte, 0, int(end-start)*bytesPerVector)
+		for vectorIndex := start; vectorIndex < end; vectorIndex++ {
+			if values.IsNull(int(vectorIndex)) {
+				return nil, WrapNullElementErr(field)
+			}
+			binaryData = append(binaryData, values.Value(int(vectorIndex))...)
+		}
+		return &schemapb.VectorField{
+			Dim:  dim,
+			Data: &schemapb.VectorField_BinaryVector{BinaryVector: binaryData},
+		}, nil
+	case schemapb.DataType_Float16Vector:
+		float16Data := make([]byte, 0, int(end-start)*bytesPerVector)
+		for vectorIndex := start; vectorIndex < end; vectorIndex++ {
+			if values.IsNull(int(vectorIndex)) {
+				return nil, WrapNullElementErr(field)
+			}
+			float16Data = append(float16Data, values.Value(int(vectorIndex))...)
+		}
+		return &schemapb.VectorField{
+			Dim:  dim,
+			Data: &schemapb.VectorField_Float16Vector{Float16Vector: float16Data},
+		}, nil
+	case schemapb.DataType_BFloat16Vector:
+		bfloat16Data := make([]byte, 0, int(end-start)*bytesPerVector)
+		for vectorIndex := start; vectorIndex < end; vectorIndex++ {
+			if values.IsNull(int(vectorIndex)) {
+				return nil, WrapNullElementErr(field)
+			}
+			bfloat16Data = append(bfloat16Data, values.Value(int(vectorIndex))...)
+		}
+		return &schemapb.VectorField{
+			Dim:  dim,
+			Data: &schemapb.VectorField_Bfloat16Vector{Bfloat16Vector: bfloat16Data},
+		}, nil
+	case schemapb.DataType_Int8Vector:
+		int8Data := make([]byte, 0, int(end-start)*bytesPerVector)
+		for vectorIndex := start; vectorIndex < end; vectorIndex++ {
+			if values.IsNull(int(vectorIndex)) {
+				return nil, WrapNullElementErr(field)
+			}
+			int8Data = append(int8Data, values.Value(int(vectorIndex))...)
+		}
+		return &schemapb.VectorField{
+			Dim:  dim,
+			Data: &schemapb.VectorField_Int8Vector{Int8Vector: int8Data},
+		}, nil
+	default:
+		return nil, merr.WrapErrImportFailedMsg("unsupported ArrayOfVector element type: %v", field.GetElementType())
+	}
+}
+
+func buildVectorArrayFieldFromList(field *schemapb.FieldSchema, dim int64, vectors *array.List, start, end int64) (*schemapb.VectorField, error) {
+	switch field.GetElementType() {
+	case schemapb.DataType_FloatVector:
+		floatData := make([]float32, 0, int(end-start)*int(dim))
+		appendFloat := func(pos int) error {
+			switch values := vectors.ListValues().(type) {
+			case *array.Float32:
+				if values.IsNull(pos) {
+					return WrapNullElementErr(field)
+				}
+				floatData = append(floatData, values.Value(pos))
+			case *array.Float64:
+				if values.IsNull(pos) {
+					return WrapNullElementErr(field)
+				}
+				floatData = append(floatData, float32(values.Value(pos)))
+			default:
+				return WrapTypeErr(field, vectors.ListValues().DataType().Name())
+			}
+			return nil
+		}
+		for vectorIndex := start; vectorIndex < end; vectorIndex++ {
+			vecStart, vecEnd, err := vectorArrayValueOffsets(field, dim, vectors, vectorIndex, int(dim))
+			if err != nil {
+				return nil, err
+			}
+			for pos := vecStart; pos < vecEnd; pos++ {
+				if err := appendFloat(int(pos)); err != nil {
+					return nil, err
+				}
+			}
+		}
+		if err := typeutil.VerifyFloats32(floatData); err != nil {
+			return nil, err
+		}
+		return &schemapb.VectorField{
+			Dim: dim,
+			Data: &schemapb.VectorField_FloatVector{
+				FloatVector: &schemapb.FloatArray{Data: floatData},
+			},
+		}, nil
+	case schemapb.DataType_BinaryVector:
+		return buildByteVectorArrayFieldFromList(field, dim, vectors, start, end, int((dim+7)/8), func(data []byte) *schemapb.VectorField {
+			return &schemapb.VectorField{
+				Dim:  dim,
+				Data: &schemapb.VectorField_BinaryVector{BinaryVector: data},
+			}
+		})
+	case schemapb.DataType_Float16Vector:
+		return buildByteVectorArrayFieldFromList(field, dim, vectors, start, end, int(dim)*2, func(data []byte) *schemapb.VectorField {
+			return &schemapb.VectorField{
+				Dim:  dim,
+				Data: &schemapb.VectorField_Float16Vector{Float16Vector: data},
+			}
+		})
+	case schemapb.DataType_BFloat16Vector:
+		return buildByteVectorArrayFieldFromList(field, dim, vectors, start, end, int(dim)*2, func(data []byte) *schemapb.VectorField {
+			return &schemapb.VectorField{
+				Dim:  dim,
+				Data: &schemapb.VectorField_Bfloat16Vector{Bfloat16Vector: data},
+			}
+		})
+	case schemapb.DataType_Int8Vector:
+		int8Values, ok := vectors.ListValues().(*array.Int8)
+		if !ok {
+			return nil, WrapTypeErr(field, vectors.ListValues().DataType().Name())
+		}
+		int8Data := make([]byte, 0, int(end-start)*int(dim))
+		for vectorIndex := start; vectorIndex < end; vectorIndex++ {
+			vecStart, vecEnd, err := vectorArrayValueOffsets(field, dim, vectors, vectorIndex, int(dim))
+			if err != nil {
+				return nil, err
+			}
+			for pos := vecStart; pos < vecEnd; pos++ {
+				if int8Values.IsNull(int(pos)) {
+					return nil, WrapNullElementErr(field)
+				}
+				int8Data = append(int8Data, byte(int8Values.Value(int(pos))))
+			}
+		}
+		return &schemapb.VectorField{
+			Dim:  dim,
+			Data: &schemapb.VectorField_Int8Vector{Int8Vector: int8Data},
+		}, nil
+	case schemapb.DataType_SparseFloatVector:
+		return nil, merr.WrapErrImportFailed("ArrayOfVector with SparseFloatVector element type is not implemented yet")
+	default:
+		return nil, merr.WrapErrImportFailedMsg("unsupported ArrayOfVector element type: %v", field.GetElementType())
+	}
+}
+
+func vectorArrayValueOffsets(field *schemapb.FieldSchema, dim int64, vectors *array.List, vectorIndex int64, expected int) (int64, int64, error) {
+	if vectors.IsNull(int(vectorIndex)) {
+		return 0, 0, WrapNullElementErr(field)
+	}
+	start, end := vectors.ValueOffsets(int(vectorIndex))
+	if int(end-start) != expected {
+		return 0, 0, merr.WrapErrImportFailed(
+			fmt.Sprintf("vector dimension mismatch for field '%s': position=%d, actual=%d, expected=%d",
+				field.GetName(), vectorIndex, end-start, dim))
+	}
+	return start, end, nil
+}
+
+func buildByteVectorArrayFieldFromList(
+	field *schemapb.FieldSchema,
+	dim int64,
+	vectors *array.List,
+	start int64,
+	end int64,
+	expectedBytes int,
+	build func([]byte) *schemapb.VectorField,
+) (*schemapb.VectorField, error) {
+	values, ok := vectors.ListValues().(*array.Uint8)
+	if !ok {
+		return nil, WrapTypeErr(field, vectors.ListValues().DataType().Name())
+	}
+	data := make([]byte, 0, int(end-start)*expectedBytes)
+	for vectorIndex := start; vectorIndex < end; vectorIndex++ {
+		vecStart, vecEnd, err := vectorArrayValueOffsets(field, dim, vectors, vectorIndex, expectedBytes)
+		if err != nil {
+			return nil, err
+		}
+		for pos := vecStart; pos < vecEnd; pos++ {
+			if values.IsNull(int(pos)) {
+				return nil, WrapNullElementErr(field)
+			}
+		}
+		data = append(data, values.Uint8Values()[int(vecStart):int(vecEnd)]...)
+	}
+	return build(data), nil
 }

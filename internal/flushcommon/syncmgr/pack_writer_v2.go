@@ -114,7 +114,8 @@ func (bw *BulkPackWriterV2) getBucketName() string {
 	if bw.storageConfig != nil {
 		return bw.storageConfig.BucketName
 	}
-	columnGroups := storagecommon.SplitBySchema(bw.schema.GetFields())
+	return paramtable.Get().MinioCfg.BucketName.GetValue()
+}
 
 func (bw *BulkPackWriterV2) getPluginContext(collectionID int64) *indexcgopb.StoragePluginContext {
 	if !hookutil.IsClusterEncryptionEnabled() {
@@ -264,8 +265,7 @@ func (bw *BulkPackWriterV2) serializeBinlog(_ context.Context, pack *SyncPack) (
 	if len(pack.insertData) == 0 {
 		return nil, nil
 	}
-
-	arrowSchema, err := storage.ConvertToArrowSchema(bw.schema.GetFields())
+	arrowSchema, err := storage.ConvertToArrowSchema(bw.schema, true)
 	if err != nil {
 		return nil, err
 	}
@@ -273,15 +273,15 @@ func (bw *BulkPackWriterV2) serializeBinlog(_ context.Context, pack *SyncPack) (
 	defer builder.Release()
 
 	for _, chunk := range pack.insertData {
-		if err := storage.BuildRecord(builder, chunk, bw.schema.GetFields()); err != nil {
+		if err := storage.BuildRecord(builder, chunk, bw.schema); err != nil {
 			return nil, err
 		}
 	}
 
 	rec := builder.NewRecord()
-	field2Col := make(map[storage.FieldID]int, len(bw.schema.GetFields()))
-
-	for c, field := range bw.schema.GetFields() {
+	allFields := typeutil.GetAllFieldSchemas(bw.schema)
+	field2Col := make(map[storage.FieldID]int, len(allFields))
+	for c, field := range allFields {
 		field2Col[field.FieldID] = c
 	}
 	return storage.NewSimpleArrowRecord(rec, field2Col), nil

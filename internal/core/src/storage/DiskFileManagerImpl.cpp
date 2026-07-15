@@ -44,7 +44,14 @@
 #include "common/FieldDataInterface.h"
 #include "common/TypeTraits.h"
 #include "common/Types.h"
+#include "common/VectorArray.h"
+#include "common/VectorTrait.h"
+#include "filemanager/FileManager.h"
+#include "fmt/core.h"
+#include "glog/logging.h"
+#include "index/Meta.h"
 #include "index/Utils.h"
+#include "knowhere/sparse_utils.h"
 #include "log/Log.h"
 #include "milvus-storage/filesystem/fs.h"
 #include "nlohmann/json.hpp"
@@ -659,6 +666,21 @@ DiskFileManagerImpl::cache_raw_data_to_disk_internal(const Config& config) {
     std::string local_data_path;
     bool file_created = false;
 
+    // Check if we're dealing with embedding list (VECTOR_ARRAY)
+    auto is_embedding_list =
+        index::GetValueFromConfig<bool>(config, index::EMB_LIST);
+    bool is_vector_array = is_embedding_list.value_or(false);
+    std::vector<size_t> offsets;
+    if (is_vector_array) {
+        offsets.push_back(0);  // Initialize with 0 for cumulative offsets
+    }
+
+    auto valid_data_path = index::GetValueFromConfig<std::string>(
+        config, index::VALID_DATA_PATH_KEY);
+    std::vector<uint8_t> valid_bitmap;
+    uint64_t total_num_rows = 0;
+    bool nullable = false;
+
     // get batch raw data from s3 and write batch data to disk file
     // TODO: load and write of different batches at the same time
     std::vector<std::string> batch_files;
@@ -671,17 +693,38 @@ DiskFileManagerImpl::cache_raw_data_to_disk_internal(const Config& config) {
 
     auto FetchRawData = [&]() {
         auto field_datas = GetObjectData(rcm_.get(), batch_files);
-        int batch_size = batch_files.size();
-        for (int i = 0; i < batch_size; i++) {
-            auto field_data = field_datas[i].get()->GetFieldData();
-            num_rows += uint32_t(field_data->get_num_rows());
-            cache_raw_data_to_disk_common<DataType>(field_data,
-                                                    local_chunk_manager,
-                                                    local_data_path,
-                                                    file_created,
-                                                    dim,
-                                                    write_offset);
-        }
+        storage::ProcessFuturesInOrder(
+            field_datas, [&](std::unique_ptr<DataCodec> codec) {
+                auto field_data = codec->GetFieldData();
+                num_rows += uint32_t(field_data->get_valid_rows());
+
+                if (valid_data_path.has_value() && field_data->IsNullable()) {
+                    nullable = true;
+                    auto rows = field_data->get_num_rows();
+                    if (rows > 0) {
+                        auto new_size = (total_num_rows + rows + 7) / 8;
+                        if (new_size >
+                            static_cast<int64_t>(valid_bitmap.size())) {
+                            valid_bitmap.resize(new_size, 0);
+                        }
+                        for (int64_t i = 0; i < rows; ++i) {
+                            if (field_data->is_valid(i)) {
+                                set_bit(valid_bitmap, total_num_rows + i);
+                            }
+                        }
+                        total_num_rows += rows;
+                    }
+                }
+
+                cache_raw_data_to_disk_common<DataType>(
+                    field_data,
+                    local_chunk_manager,
+                    local_data_path,
+                    file_created,
+                    dim,
+                    write_offset,
+                    is_vector_array ? &offsets : nullptr);
+            });
     };
 
     auto parallel_degree =
@@ -699,6 +742,12 @@ DiskFileManagerImpl::cache_raw_data_to_disk_internal(const Config& config) {
         FetchRawData();
     }
 
+    // For vector arrays, num_rows should be the total flattened vector count,
+    // not the number of emb_lists, because DiskANN reads this from the data file header.
+    if (is_vector_array) {
+        num_rows = static_cast<uint32_t>(offsets.back());
+    }
+
     // write num_rows and dim value to file header
     write_offset = 0;
     local_chunk_manager->Write(
@@ -706,6 +755,46 @@ DiskFileManagerImpl::cache_raw_data_to_disk_internal(const Config& config) {
     write_offset += sizeof(num_rows);
     local_chunk_manager->Write(
         local_data_path, write_offset, &dim, sizeof(dim));
+
+    // Write offsets file for VECTOR_ARRAY
+    if (is_vector_array) {
+        AssertInfo(
+            !offsets.empty() && offsets.front() == 0,
+            "invalid emb_list offsets: size {}, front {}",
+            offsets.size(),
+            offsets.empty() ? -1 : static_cast<int64_t>(offsets.front()));
+        if (offsets.size() == 1) {
+            AssertInfo(nullable || total_num_rows == 0,
+                       "non-nullable emb_list offsets must include rows");
+            AssertInfo(num_rows == 0,
+                       "empty emb_list offsets cannot reference raw vectors");
+        } else {
+            // Get offsets path from config if provided, otherwise use default
+            auto offsets_path = index::GetValueFromConfig<std::string>(
+                                    config, index::EMB_LIST_OFFSETS_PATH)
+                                    .value();
+            local_chunk_manager->CreateFile(offsets_path);
+
+            size_t num_offsets = offsets.size();
+            int64_t offsets_write_pos = 0;
+
+            local_chunk_manager->Write(
+                offsets_path, offsets_write_pos, &num_offsets, sizeof(size_t));
+            offsets_write_pos += sizeof(size_t);
+
+            local_chunk_manager->Write(offsets_path,
+                                       offsets_write_pos,
+                                       offsets.data(),
+                                       offsets.size() * sizeof(size_t));
+        }
+    }
+
+    if (nullable && valid_data_path.has_value() && total_num_rows > 0) {
+        write_valid_data_file(local_chunk_manager,
+                              valid_data_path.value(),
+                              valid_bitmap,
+                              total_num_rows);
+    }
 
     return local_data_path;
 }
@@ -718,7 +807,8 @@ DiskFileManagerImpl::cache_raw_data_to_disk_common(
     std::string& local_data_path,
     bool& file_created,
     uint32_t& dim,
-    int64_t& write_offset) {
+    int64_t& write_offset,
+    std::vector<size_t>* offsets) {
     auto data_type = field_data->get_data_type();
     if (!file_created) {
         auto init_file_info = [&](milvus::DataType dt) {
@@ -752,6 +842,54 @@ DiskFileManagerImpl::cache_raw_data_to_disk_common(
                 local_data_path, write_offset, row.data(), row_byte_size);
             write_offset += row_byte_size;
         }
+    } else if (data_type == milvus::DataType::VECTOR_ARRAY) {
+        // Handle VECTOR_ARRAY - need to flatten the array data
+        auto vec_array_data =
+            dynamic_cast<FieldData<VectorArray>*>(field_data.get());
+        AssertInfo(vec_array_data != nullptr,
+                   "failed to cast field data to vector array");
+
+        dim = field_data->get_dim();
+        auto rows = vec_array_data->get_num_rows();
+
+        // Calculate total data size needed
+        int64_t total_size = 0;
+        for (auto i = 0; i < vec_array_data->get_valid_rows(); ++i) {
+            total_size += vec_array_data->DataSize(i);
+        }
+
+        // Allocate buffer and copy data
+        auto buf = std::unique_ptr<uint8_t[]>(new uint8_t[total_size]);
+        int64_t buf_offset = 0;
+
+        int64_t physical_row = 0;
+        for (auto i = 0; i < rows; ++i) {
+            if (vec_array_data->IsNullable() && !vec_array_data->is_valid(i)) {
+                continue;
+            }
+
+            auto vec_array = vec_array_data->value_at(physical_row);
+            auto size = vec_array_data->DataSize(physical_row);
+
+            // Collect offsets information if needed (cumulative offsets)
+            if (offsets != nullptr) {
+                // Add cumulative offset (number of vectors processed so far)
+                size_t last_offset = offsets->back();
+                offsets->push_back(last_offset + vec_array->length());
+            }
+
+            if (size > 0) {
+                milvus::fastmem::FastMemcpy(
+                    buf.get() + buf_offset, vec_array->data(), size);
+            }
+            buf_offset += size;
+            physical_row++;
+        }
+
+        // Write flattened data to disk
+        local_chunk_manager->Write(
+            local_data_path, write_offset, buf.get(), total_size);
+        write_offset += total_size;
     } else {
         dim = field_data->get_dim();
         auto data_size =
@@ -787,7 +925,11 @@ template <typename T>
 std::string
 DiskFileManagerImpl::cache_raw_data_to_disk_storage_v2(const Config& config) {
     auto data_type = index::GetValueFromConfig<DataType>(config, DATA_TYPE_KEY);
+    auto element_type =
+        index::GetValueFromConfig<DataType>(config, ELEMENT_TYPE_KEY);
     AssertInfo(data_type.has_value(), "data type is empty when build index");
+    AssertInfo(element_type.has_value(),
+               "element type is empty when build index");
     auto dim = index::GetValueFromConfig<int64_t>(config, DIM_KEY).value_or(0);
     auto segment_insert_files =
         index::GetValueFromConfig<std::vector<std::vector<std::string>>>(
@@ -804,17 +946,67 @@ DiskFileManagerImpl::cache_raw_data_to_disk_storage_v2(const Config& config) {
     std::string local_data_path;
     bool file_created = false;
 
+    // Check if we're dealing with embedding list (VECTOR_ARRAY)
+    auto is_embedding_list =
+        index::GetValueFromConfig<bool>(config, index::EMB_LIST);
+    bool is_vector_array = is_embedding_list.value_or(false);
+    std::vector<size_t> offsets;
+    if (is_vector_array) {
+        offsets.push_back(0);  // Initialize with 0 for cumulative offsets
+    }
+
+    // Check if we need to track validity data for nullable vector fields
+    auto valid_data_path = index::GetValueFromConfig<std::string>(
+        config, index::VALID_DATA_PATH_KEY);
+
     // file format
     // num_rows(uint32) | dim(uint32) | index_data ([]uint8_t)
     uint32_t num_rows = 0;
     uint32_t var_dim = 0;
     int64_t write_offset = sizeof(num_rows) + sizeof(var_dim);
 
-    auto field_datas = GetFieldDatasFromStorageV2(all_remote_files,
-                                                  GetFieldDataMeta().field_id,
-                                                  data_type.value(),
-                                                  dim,
-                                                  fs_);
+    std::vector<FieldDataPtr> field_datas;
+    auto manifest =
+        index::GetValueFromConfig<std::string>(config, SEGMENT_MANIFEST_KEY);
+    auto manifest_path_str = manifest.value_or("");
+    if (manifest_path_str != "") {
+        AssertInfo(
+            loon_ffi_properties_ != nullptr,
+            "loon ffi properties is null when build index with manifest");
+        field_datas = GetFieldDatasFromManifest(
+            manifest_path_str,
+            loon_ffi_properties_,
+            field_meta_,
+            data_type,
+            dim,
+            element_type,
+            GetStorageColumnMapping(field_meta_.field_id));
+    } else {
+        field_datas = GetFieldDatasFromStorageV2(all_remote_files,
+                                                 GetFieldDataMeta().field_id,
+                                                 data_type.value(),
+                                                 element_type.value(),
+                                                 dim,
+                                                 fs_);
+    }
+
+    bool nullable = false;
+    uint64_t total_num_rows = 0;
+    if (valid_data_path.has_value()) {
+        for (auto& field_data : field_datas) {
+            if (field_data->IsNullable()) {
+                nullable = true;
+            }
+            total_num_rows += field_data->get_num_rows();
+        }
+    }
+
+    std::vector<uint8_t> valid_bitmap;
+    if (nullable) {
+        valid_bitmap.resize((total_num_rows + 7) / 8, 0);
+    }
+
+    int64_t chunk_offset = 0;
     for (auto& field_data : field_datas) {
         num_rows += uint32_t(field_data->get_valid_rows());
         if (nullable) {
@@ -832,7 +1024,14 @@ DiskFileManagerImpl::cache_raw_data_to_disk_storage_v2(const Config& config) {
                                          local_data_path,
                                          file_created,
                                          var_dim,
-                                         write_offset);
+                                         write_offset,
+                                         is_vector_array ? &offsets : nullptr);
+    }
+
+    // For vector arrays, num_rows should be the total flattened vector count,
+    // not the number of emb_lists, because DiskANN reads this from the data file header.
+    if (is_vector_array) {
+        num_rows = static_cast<uint32_t>(offsets.back());
     }
 
     // write num_rows and dim value to file header
@@ -842,6 +1041,47 @@ DiskFileManagerImpl::cache_raw_data_to_disk_storage_v2(const Config& config) {
     write_offset += sizeof(num_rows);
     local_chunk_manager->Write(
         local_data_path, write_offset, &var_dim, sizeof(var_dim));
+
+    // Write offsets file for VECTOR_ARRAY
+    if (is_vector_array) {
+        AssertInfo(
+            !offsets.empty() && offsets.front() == 0,
+            "invalid emb_list offsets: size {}, front {}",
+            offsets.size(),
+            offsets.empty() ? -1 : static_cast<int64_t>(offsets.front()));
+        if (offsets.size() == 1) {
+            AssertInfo(nullable || total_num_rows == 0,
+                       "non-nullable emb_list offsets must include rows");
+            AssertInfo(num_rows == 0,
+                       "empty emb_list offsets cannot reference raw vectors");
+        } else {
+            // Get offsets path from config if provided, otherwise use default
+            auto offsets_path = index::GetValueFromConfig<std::string>(
+                                    config, index::EMB_LIST_OFFSETS_PATH)
+                                    .value();
+
+            local_chunk_manager->CreateFile(offsets_path);
+
+            size_t num_offsets = offsets.size();
+            int64_t offsets_write_pos = 0;
+
+            local_chunk_manager->Write(
+                offsets_path, offsets_write_pos, &num_offsets, sizeof(size_t));
+            offsets_write_pos += sizeof(size_t);
+
+            local_chunk_manager->Write(offsets_path,
+                                       offsets_write_pos,
+                                       offsets.data(),
+                                       offsets.size() * sizeof(size_t));
+        }
+    }
+
+    if (nullable && valid_data_path.has_value() && total_num_rows > 0) {
+        write_valid_data_file(local_chunk_manager,
+                              valid_data_path.value(),
+                              valid_bitmap,
+                              total_num_rows);
+    }
 
     return local_data_path;
 }
@@ -1109,18 +1349,14 @@ DiskFileManagerImpl::cache_opt_field_to_disk_v2(const Config& config) {
     std::unordered_set<int64_t> actual_field_ids;
     for (auto& [field_id, tup] : fields_map) {
         const auto& field_type = std::get<1>(tup);
+        const auto& element_type = std::get<2>(tup);
 
-        std::vector<FieldDataPtr> field_datas;
-        // fetch scalar data from storage v2
-        if (storage_version == STORAGE_V2) {
-            field_datas = GetFieldDatasFromStorageV2(
-                remote_files_storage_v2, field_id, field_type, 1, fs_);
-        } else {  // original way
-            auto& field_paths = std::get<2>(tup);
-            if (0 == field_paths.size()) {
-                LOG_WARN("optional field {} has no data", field_id);
-                return "";
-            }
+        auto field_datas = GetFieldDatasFromStorageV2(remote_files_storage_v2,
+                                                      field_id,
+                                                      field_type,
+                                                      element_type,
+                                                      1,
+                                                      fs_);
 
         if (WriteOptFieldIvfData(field_type,
                                  field_id,

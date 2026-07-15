@@ -31,6 +31,7 @@
 #include "common/Consts.h"
 #include "common/FieldMeta.h"
 #include "common/LoadInfo.h"
+#include "common/Schema.h"
 #include "common/Types.h"
 #include "common/EasyAssert.h"
 #include "knowhere/dataset.h"
@@ -173,7 +174,10 @@ PositivelyRelated(const knowhere::MetricType& metric_type) {
     return IsMetricType(metric_type, knowhere::metric::IP) ||
            IsMetricType(metric_type, knowhere::metric::COSINE) ||
            IsMetricType(metric_type, knowhere::metric::BM25) ||
-           IsMetricType(metric_type, knowhere::metric::MHJACCARD);
+           IsMetricType(metric_type, knowhere::metric::MHJACCARD) ||
+           IsMetricType(metric_type, knowhere::metric::MAX_SIM) ||
+           IsMetricType(metric_type, knowhere::metric::MAX_SIM_IP) ||
+           IsMetricType(metric_type, knowhere::metric::MAX_SIM_COSINE);
 }
 
 inline std::string
@@ -570,6 +574,11 @@ Align(int32_t number, int32_t alignment) {
                "Alignment must be a power of 2, got {}",
                alignment);
     return (number + alignment - 1) & ~(alignment - 1);
+}
+
+inline bool
+IsStructSubField(const std::string& fieldName) {
+    return fieldName.find('[') != std::string::npos;
 }
 
 }  // namespace milvus

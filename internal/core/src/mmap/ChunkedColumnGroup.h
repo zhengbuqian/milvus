@@ -29,14 +29,12 @@
 #include "cachinglayer/Translator.h"
 #include "cachinglayer/Utils.h"
 
-#include "common/Array.h"
 #include "common/Chunk.h"
 #include "common/GroupChunk.h"
 #include "common/EasyAssert.h"
 #include "common/FastMem.h"
 #include "common/OpContext.h"
 #include "common/Span.h"
-#include "common/Array.h"
 #include "mmap/ChunkedColumnInterface.h"
 #include "segcore/storagev2translator/GroupCTMeta.h"
 
@@ -369,6 +367,39 @@ class ProxyChunkColumn : public ChunkedColumnInterface {
             static_cast<ArrayChunk*>(chunk.get())->Views(offset_len));
     }
 
+    PinWrapper<std::pair<std::vector<VectorArrayView>, FixedVector<bool>>>
+    VectorArrayViews(milvus::OpContext* op_ctx,
+                     int64_t chunk_id,
+                     std::optional<std::pair<int64_t, int64_t>> offset_len =
+                         std::nullopt) const override {
+        if (!IsChunkedVectorArrayColumnDataType(data_type_)) {
+            ThrowInfo(ErrorCode::Unsupported,
+                      "[StorageV2] VectorArrayViews only supported for "
+                      "ChunkedVectorArrayColumn");
+        }
+        auto chunk_wrapper = group_->GetGroupChunk(op_ctx, chunk_id);
+        auto chunk = chunk_wrapper.get()->GetChunk(field_id_);
+        return PinWrapper<
+            std::pair<std::vector<VectorArrayView>, FixedVector<bool>>>(
+            std::move(chunk_wrapper),
+            static_cast<VectorArrayChunk*>(chunk.get())->Views(offset_len));
+    }
+
+    PinWrapper<const size_t*>
+    VectorArrayOffsets(milvus::OpContext* op_ctx,
+                       int64_t chunk_id) const override {
+        if (!IsChunkedVectorArrayColumnDataType(data_type_)) {
+            ThrowInfo(ErrorCode::Unsupported,
+                      "VectorArrayOffsets only supported for "
+                      "ChunkedVectorArrayColumn");
+        }
+        auto chunk_wrapper = group_->GetGroupChunk(op_ctx, chunk_id);
+        auto chunk = chunk_wrapper.get()->GetChunk(field_id_);
+        return PinWrapper<const size_t*>(
+            std::move(chunk_wrapper),
+            static_cast<VectorArrayChunk*>(chunk.get())->Offsets());
+    }
+
     PinWrapper<std::pair<std::vector<std::string_view>, FixedVector<bool>>>
     StringViewsByOffsets(milvus::OpContext* op_ctx,
                          int64_t chunk_id,
@@ -638,7 +669,40 @@ class ProxyChunkColumn : public ChunkedColumnInterface {
     }
 
     void
-    BulkArrayAt(std::function<void(ScalarArray&&, size_t)> fn,
+    BulkRawBsonAt(milvus::OpContext* op_ctx,
+                  std::function<void(BsonView, uint32_t, uint32_t)> fn,
+                  const uint32_t* row_offsets,
+                  const uint32_t* value_offsets,
+                  int64_t count) const override {
+        if (data_type_ != DataType::STRING) {
+            ThrowInfo(ErrorCode::Unsupported,
+                      "BulkRawBsonAt only supported for ProxyChunkColumn of "
+                      "Bson type");
+        }
+        if (count == 0) {
+            return;
+        }
+
+        AssertInfo(row_offsets != nullptr, "row_offsets is nullptr");
+        auto [cids, offsets_in_chunk] = ToChunkIdAndOffset(row_offsets, count);
+        auto ca = group_->GetGroupChunks(op_ctx, cids);
+
+        for (int64_t i = 0; i < count; i++) {
+            auto* group_chunk = ca->get_cell_of(cids[i]);
+            auto chunk = group_chunk->GetChunk(field_id_);
+            auto str_view = static_cast<StringChunk*>(chunk.get())
+                                ->
+                                operator[](offsets_in_chunk[i]);
+            fn(BsonView(reinterpret_cast<const uint8_t*>(str_view.data()),
+                        str_view.size()),
+               row_offsets[i],
+               value_offsets[i]);
+        }
+    }
+
+    void
+    BulkArrayAt(milvus::OpContext* op_ctx,
+                std::function<void(const ArrayView&, size_t)> fn,
                 const int64_t* offsets,
                 int64_t count) const override {
         if (!IsChunkedArrayColumnDataType(data_type_)) {
@@ -654,6 +718,29 @@ class ProxyChunkColumn : public ChunkedColumnInterface {
             auto view = static_cast<ArrayChunk*>(chunk.get())
                             ->View(offsets_in_chunk[i]);
             fn(view, i);
+        }
+    }
+
+    void
+    BulkVectorArrayAt(milvus::OpContext* op_ctx,
+                      std::function<void(VectorFieldProto&&, size_t)> fn,
+                      const int64_t* offsets,
+                      int64_t count) const override {
+        if (!IsChunkedVectorArrayColumnDataType(data_type_)) {
+            ThrowInfo(ErrorCode::Unsupported,
+                      "[StorageV2] BulkVectorArrayAt only supported for "
+                      "ChunkedVectorArrayColumn");
+        }
+        auto [cids, offsets_in_chunk] = ToChunkIdAndOffset(offsets, count);
+        auto ca = group_->GetGroupChunks(op_ctx, cids);
+        for (int64_t i = 0; i < count; i++) {
+            auto* group_chunk = ca->get_cell_of(cids[i]);
+            auto chunk = group_chunk->GetChunk(field_id_);
+            auto offset = offsets_in_chunk[i];
+            auto array = static_cast<VectorArrayChunk*>(chunk.get())
+                             ->View(offset)
+                             .output_data();
+            fn(std::move(array), i);
         }
     }
 

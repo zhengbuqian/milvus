@@ -73,6 +73,7 @@ class IndexFactory {
             case DataType::VECTOR_BINARY:
             case DataType::VECTOR_SPARSE_U32_F32:
             case DataType::VECTOR_INT8:
+            case DataType::VECTOR_ARRAY:
                 return std::make_unique<VecIndexCreator>(type, config, context);
 
             default:

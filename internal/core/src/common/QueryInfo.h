@@ -18,6 +18,7 @@
 
 #include <memory>
 
+#include "ArrayOffsets.h"
 #include "common/Tracer.h"
 #include "common/Types.h"
 #include "knowhere/config.h"
@@ -47,6 +48,21 @@ struct SearchInfo {
     std::optional<std::string> json_path_;
     std::optional<milvus::DataType> json_type_;
     bool strict_cast_{false};
+    std::shared_ptr<const IArrayOffsets> array_offsets_{
+        nullptr};  // For element-level search
+    bool global_refine_enable_{false};
+    float search_topk_ratio_{0.0f};
+    float refine_topk_ratio_{0.0f};
+
+    bool
+    element_level() const {
+        return array_offsets_ != nullptr;
+    }
+
+    bool
+    has_group_by() const {
+        return !group_by_field_ids_.empty();
+    }
 };
 
 using SearchInfoPtr = std::shared_ptr<SearchInfo>;

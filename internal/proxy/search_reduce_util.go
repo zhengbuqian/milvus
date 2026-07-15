@@ -547,6 +547,18 @@ func reduceAdvanceGroupBy(ctx context.Context, subSearchResultData []*schemapb.S
 				acceptedRows = append(acceptedRows, reduce.RowRef{ResultIdx: subIdx, RowIdx: innerIdx})
 				typeutil.AppendPKs(ret.Results.Ids, pk)
 				ret.Results.Scores = append(ret.Results.Scores, score)
+
+				// Handle ElementIndices if present
+				if subData.ElementIndices != nil {
+					if ret.Results.ElementIndices == nil {
+						ret.Results.ElementIndices = &schemapb.LongArray{
+							Data: make([]int64, 0, limit),
+						}
+					}
+					elemIdx := subData.ElementIndices.GetData()[innerIdx]
+					ret.Results.ElementIndices.Data = append(ret.Results.ElementIndices.Data, elemIdx)
+				}
+
 				dataCount += 1
 			}
 		}
@@ -584,103 +596,12 @@ func findMultiGroupEntry(bucket []*multiGroupEntry, values []any) *multiGroupEnt
 	return nil
 }
 
-	var (
-		subSearchNum = len(subSearchResultData)
-		// for results of each subSearchResultData, storing the start offset of each query of nq queries
-		subSearchNqOffset                 = make([][]int64, subSearchNum)
-		totalResCount               int64 = 0
-		subSearchGroupByValIterator       = make([]func(int) any, subSearchNum)
-	)
-	for i := 0; i < subSearchNum; i++ {
-		subSearchNqOffset[i] = make([]int64, subSearchResultData[i].GetNumQueries())
-		for j := int64(1); j < nq; j++ {
-			subSearchNqOffset[i][j] = subSearchNqOffset[i][j-1] + subSearchResultData[i].Topks[j-1]
-		}
-		totalResCount += subSearchNqOffset[i][nq-1]
-		subSearchGroupByValIterator[i] = typeutil.GetDataIterator(subSearchResultData[i].GetGroupByFieldValue())
-	}
-
-	gpFieldBuilder, err := typeutil.NewFieldDataBuilder(subSearchResultData[0].GetGroupByFieldValue().GetType(), true, int(limit))
-	if err != nil {
-		return ret, merr.WrapErrServiceInternal("failed to construct group by field data builder, this is abnormal as segcore should always set up a group by field, no matter data status, check code on qn", err.Error())
-	}
-
-	var realTopK int64 = -1
-	var retSize int64
-
-	maxOutputSize := paramtable.Get().QuotaConfig.MaxOutputSize.GetAsInt64()
-	// reducing nq * topk results
-	for i := int64(0); i < nq; i++ {
-		var (
-			// cursor of current data of each subSearch for merging the j-th data of TopK.
-			// sum(cursors) == j
-			cursors = make([]int64, subSearchNum)
-
-			j              int64
-			groupByValMap  = make(map[interface{}][]*groupReduceInfo)
-			skipOffsetMap  = make(map[interface{}]bool)
-			groupByValList = make([]interface{}, limit)
-			groupByValIdx  = 0
-		)
-
-		for j = 0; j < groupBound; {
-			subSearchIdx, resultDataIdx := selectHighestScoreIndex(ctx, subSearchResultData, subSearchNqOffset, cursors, i)
-			if subSearchIdx == -1 {
-				break
-			}
-			subSearchRes := subSearchResultData[subSearchIdx]
-
-			id := typeutil.GetPK(subSearchRes.GetIds(), resultDataIdx)
-			score := subSearchRes.GetScores()[resultDataIdx]
-			groupByVal := subSearchGroupByValIterator[subSearchIdx](int(resultDataIdx))
-
-			if int64(len(skipOffsetMap)) < offset || skipOffsetMap[groupByVal] {
-				skipOffsetMap[groupByVal] = true
-				// the first offset's group will be ignored
-			} else if len(groupByValMap[groupByVal]) == 0 && int64(len(groupByValMap)) >= limit {
-				// skip when groupbyMap has been full and found new groupByVal
-			} else if int64(len(groupByValMap[groupByVal])) >= groupSize {
-				// skip when target group has been full
-			} else {
-				if len(groupByValMap[groupByVal]) == 0 {
-					groupByValList[groupByValIdx] = groupByVal
-					groupByValIdx++
-				}
-				groupByValMap[groupByVal] = append(groupByValMap[groupByVal], &groupReduceInfo{
-					subSearchIdx: subSearchIdx,
-					resultIdx:    resultDataIdx, id: id, score: score,
-				})
-				j++
-			}
-
-			cursors[subSearchIdx]++
-		}
-
-		// assemble all eligible values in group
-		// values in groupByValList is sorted by the highest score in each group
-		for _, groupVal := range groupByValList {
-			groupEntities := groupByValMap[groupVal]
-			for _, groupEntity := range groupEntities {
-				subResData := subSearchResultData[groupEntity.subSearchIdx]
-				if len(ret.Results.FieldsData) > 0 {
-					retSize += typeutil.AppendFieldData(ret.Results.FieldsData, subResData.FieldsData, groupEntity.resultIdx)
-				}
-				typeutil.AppendPKs(ret.Results.Ids, groupEntity.id)
-				ret.Results.Scores = append(ret.Results.Scores, groupEntity.score)
-				gpFieldBuilder.Add(groupVal)
-			}
-		}
-
-		if realTopK != -1 && realTopK != j {
-			log.Ctx(ctx).Warn("Proxy Reduce Search Result", zap.Error(errors.New("the length (topk) between all result of query is different")))
-		}
-		realTopK = j
-		ret.Results.Topks = append(ret.Results.Topks, realTopK)
-		ret.Results.GroupByFieldValue = gpFieldBuilder.Build()
-
-		// limit search result to avoid oom
-		if retSize > maxOutputSize {
-			return nil, fmt.Errorf("search results exceed the maxOutputSize Limit %d", maxOutputSize)
+func buildMultiGroupKeyExtractor(data *schemapb.SearchResultData, groupByFieldIDs []int64) multiGroupKeyExtractor {
+	iters := make([]func(int) any, len(groupByFieldIDs))
+	for i, fid := range groupByFieldIDs {
+		fd := reduce.FindGroupByFieldData(data, fid, len(groupByFieldIDs) == 1)
+		if fd != nil {
+			iters[i] = typeutil.GetDataIterator(fd)
 		}
 	}
 	return reduce.MakeCompositeKeyExtractor(iters)
@@ -797,6 +718,18 @@ func reduceSearchResultDataNoGroupBy(ctx context.Context, subSearchResultData []
 				}
 				typeutil.CopyPk(ret.Results.Ids, subSearchResultData[subSearchIdx].GetIds(), int(resultDataIdx))
 				ret.Results.Scores = append(ret.Results.Scores, score)
+
+				// Handle ElementIndices if present
+				if subSearchResultData[subSearchIdx].ElementIndices != nil {
+					if ret.Results.ElementIndices == nil {
+						ret.Results.ElementIndices = &schemapb.LongArray{
+							Data: make([]int64, 0, limit),
+						}
+					}
+					elemIdx := subSearchResultData[subSearchIdx].ElementIndices.GetData()[resultDataIdx]
+					ret.Results.ElementIndices.Data = append(ret.Results.ElementIndices.Data, elemIdx)
+				}
+
 				cursors[subSearchIdx]++
 			}
 			if realTopK != -1 && realTopK != j {

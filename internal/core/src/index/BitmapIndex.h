@@ -49,7 +49,8 @@ class BitmapIndex : public ScalarIndex<T> {
  public:
     explicit BitmapIndex(
         const storage::FileManagerContext& file_manager_context =
-            storage::FileManagerContext());
+            storage::FileManagerContext(),
+        bool is_nested_index = false);
 
     ~BitmapIndex() {
         if (is_mmap_) {
@@ -74,6 +75,11 @@ class BitmapIndex : public ScalarIndex<T> {
     ScalarIndexType
     GetIndexType() const override {
         return ScalarIndexType::BITMAP;
+    }
+
+    bool
+    IsNestedIndex() const override {
+        return is_nested_index_;
     }
 
     void
@@ -182,7 +188,8 @@ class BitmapIndex : public ScalarIndex<T> {
 
     const bool
     HasRawData() const override {
-        if (schema_.data_type() == proto::schema::DataType::Array) {
+        if (schema_.data_type() == proto::schema::DataType::Array &&
+            !is_nested_index_) {
             return false;
         }
         return true;
@@ -323,6 +330,9 @@ class BitmapIndex : public ScalarIndex<T> {
     void
     BuildArrayField(const std::vector<FieldDataPtr>& datas);
 
+    void
+    BuildArrayFieldNested(const std::vector<FieldDataPtr>& datas);
+
     size_t
     GetIndexDataSize();
 
@@ -330,16 +340,35 @@ class BitmapIndex : public ScalarIndex<T> {
     SerializeIndexData(uint8_t* index_data_ptr);
 
     std::pair<std::shared_ptr<uint8_t[]>, size_t>
+    SerializeValidBitsetData() const;
+
+    std::pair<std::shared_ptr<uint8_t[]>, size_t>
     SerializeIndexMeta();
 
     std::pair<size_t, size_t>
     DeserializeIndexMeta(const uint8_t* data_ptr, size_t data_size);
 
+    void
+    DeserializeValidBitsetData(const uint8_t* data_ptr, size_t data_size);
+
     T
     ParseKey(const uint8_t** ptr);
 
+    // Deserialize posting data.
+    //
+    // New bitmap index formats persist valid_bitset_, which is the
+    // authoritative source of row validity. Legacy formats do not, so we may
+    // rebuild validity from postings as a backward-compatibility fallback for
+    // nullable fields. Non-nullable fields do not persist valid_bitset_ and
+    // are treated as all-valid on load.
+    //
+    // Rebuilding validity from postings is lossy for ARRAY fields: empty
+    // arrays have no element postings, so they cannot be distinguished from
+    // null arrays during reconstruction.
     void
-    DeserializeIndexData(const uint8_t* data_ptr, size_t index_length);
+    DeserializeIndexData(const uint8_t* data_ptr,
+                         size_t index_length,
+                         bool rebuild_validity_from_postings);
 
     void
     BuildOffsetCache();
@@ -383,12 +412,24 @@ class BitmapIndex : public ScalarIndex<T> {
                  const T& upper_bound_value,
                  bool ub_inclusive);
 
+    // Build mmap-backed posting storage from serialized bitmap index data.
+    //
+    // New bitmap index formats persist valid_bitset_, which is the
+    // authoritative source of row validity. Legacy formats do not, so we may
+    // rebuild validity from postings as a backward-compatibility fallback for
+    // nullable fields. Non-nullable fields do not persist valid_bitset_ and
+    // are treated as all-valid on load.
+    //
+    // Rebuilding validity from postings is lossy for ARRAY fields: empty
+    // arrays have no element postings, so they cannot be distinguished from
+    // null arrays during reconstruction.
     void
     MMapIndexData(const std::string& filepath,
                   const uint8_t* data,
                   size_t data_size,
                   size_t index_length,
-                  milvus::proto::common::LoadPriority priority);
+                  milvus::proto::common::LoadPriority priority,
+                  bool rebuild_validity_from_postings);
 
     void
     UnmapIndexData();
@@ -399,6 +440,7 @@ class BitmapIndex : public ScalarIndex<T> {
     std::map<T, roaring::Roaring> data_;
     std::map<T, TargetBitmap> bitsets_;
     bool is_mmap_{false};
+    bool is_nested_index_{false};
     char* mmap_data_;
     int64_t mmap_size_;
     std::map<T, roaring::Roaring> bitmap_info_map_;

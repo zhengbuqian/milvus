@@ -63,7 +63,11 @@ PhyExistsFilterExpr::Eval(EvalCtx& context, VectorPtr& result) {
 
     auto input = context.get_offset_input();
     SetHasOffsetInput((input != nullptr));
-    switch (expr_->column_.data_type_) {
+    auto data_type = expr_->column_.data_type_;
+    if (expr_->column_.element_level_) {
+        data_type = expr_->column_.element_type_;
+    }
+    switch (data_type) {
         case DataType::JSON: {
             span.GetSpan()->SetAttribute("json_filter_expr_type", "exists");
             if (exec_path_ == ExprExecPath::ScalarIndex && !has_offset_input_) {
@@ -74,9 +78,7 @@ PhyExistsFilterExpr::Eval(EvalCtx& context, VectorPtr& result) {
             break;
         }
         default:
-            ThrowInfo(DataTypeInvalid,
-                      "unsupported data type: {}",
-                      expr_->column_.data_type_);
+            ThrowInfo(DataTypeInvalid, "unsupported data type: {}", data_type);
     }
 }
 
@@ -157,8 +159,8 @@ PhyExistsFilterExpr::EvalJsonExistsForDataSegment(EvalCtx& context) {
     auto pointer = milvus::Json::pointer(expr_->column_.nested_path_);
     int processed_cursor = 0;
     auto execute_sub_batch =
-        [&bitmap_input,
-         &processed_cursor]<FilterType filter_type = FilterType::sequential>(
+        [&bitmap_input, &
+         processed_cursor ]<FilterType filter_type = FilterType::sequential>(
             const milvus::Json* data,
             const bool* valid_data,
             const int32_t* offsets,
@@ -166,23 +168,29 @@ PhyExistsFilterExpr::EvalJsonExistsForDataSegment(EvalCtx& context) {
             TargetBitmapView res,
             TargetBitmapView valid_res,
             const std::string& pointer) {
-            bool has_bitmap_input = !bitmap_input.empty();
-            for (int i = 0; i < size; ++i) {
-                auto offset = i;
-                if constexpr (filter_type == FilterType::random) {
-                    offset = (offsets) ? offsets[i] : i;
-                }
-                if (valid_data != nullptr && !valid_data[offset]) {
-                    res[i] = valid_res[i] = false;
-                    continue;
-                }
-                if (has_bitmap_input && !bitmap_input[processed_cursor + i]) {
-                    continue;
-                }
-                res[i] = data[offset].exist(pointer);
-            }
+        // If data is nullptr, this chunk was skipped by SkipIndex.
+        // We only need to update processed_cursor for bitmap_input indexing.
+        if (data == nullptr) {
             processed_cursor += size;
-        };
+            return;
+        }
+        bool has_bitmap_input = !bitmap_input.empty();
+        for (int i = 0; i < size; ++i) {
+            auto offset = i;
+            if constexpr (filter_type == FilterType::random) {
+                offset = (offsets) ? offsets[i] : i;
+            }
+            if (valid_data != nullptr && !valid_data[offset]) {
+                res[i] = false;
+                continue;
+            }
+            if (has_bitmap_input && !bitmap_input[processed_cursor + i]) {
+                continue;
+            }
+            res[i] = data[offset].exist(pointer);
+        }
+        processed_cursor += size;
+    };
 
     int64_t processed_size;
     if (has_offset_input_) {

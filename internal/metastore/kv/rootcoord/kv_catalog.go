@@ -80,6 +80,14 @@ func BuildFunctionKey(collectionID typeutil.UniqueID, functionID int64) string {
 	return fmt.Sprintf("%s/%d/%d", FunctionMetaPrefix, collectionID, functionID)
 }
 
+func BuildStructArrayFieldPrefix(collectionID typeutil.UniqueID) string {
+	return fmt.Sprintf("%s/%d/", StructArrayFieldMetaPrefix, collectionID)
+}
+
+func BuildStructArrayFieldKey(collectionId typeutil.UniqueID, fieldId int64) string {
+	return fmt.Sprintf("%s/%d/%d", StructArrayFieldMetaPrefix, collectionId, fieldId)
+}
+
 func BuildAliasKey210(alias string) string {
 	return fmt.Sprintf("%s/%s", CollectionAliasMetaPrefix210, alias)
 }
@@ -196,6 +204,17 @@ func (kc *Catalog) CreateCollection(ctx context.Context, coll *model.Collection,
 		k := BuildFieldKey(coll.CollectionID, field.FieldID)
 		fieldInfo := model.MarshalFieldModel(field)
 		v, err := proto.Marshal(fieldInfo)
+		if err != nil {
+			return err
+		}
+		kvs[k] = string(v)
+	}
+
+	// save struct array fields to new path
+	for _, structArrayField := range coll.StructArrayFields {
+		k := BuildStructArrayFieldKey(coll.CollectionID, structArrayField.FieldID)
+		structArrayFieldInfo := model.MarshalStructArrayFieldModel(structArrayField)
+		v, err := proto.Marshal(structArrayFieldInfo)
 		if err != nil {
 			return err
 		}
@@ -403,7 +422,7 @@ func (kc *Catalog) batchListPartitionsAfter210(ctx context.Context, ts typeutil.
 }
 
 func fieldVersionAfter210(collMeta *pb.CollectionInfo) bool {
-	return len(collMeta.GetSchema().GetFields()) <= 0
+	return len(collMeta.GetSchema().GetFields()) <= 0 && len(collMeta.GetSchema().GetStructArrayFields()) <= 0
 }
 
 func (kc *Catalog) listFieldsAfter210(ctx context.Context, collectionID typeutil.UniqueID, ts typeutil.Timestamp) ([]*model.Field, error) {
@@ -454,6 +473,27 @@ func (kc *Catalog) batchListFieldsAfter210(ctx context.Context, ts typeutil.Time
 		ret[collectionID] = append(ret[collectionID], model.UnmarshalFieldModel(fieldMeta))
 	}
 	return ret, nil
+}
+
+func (kc *Catalog) listStructArrayFieldsAfter210(ctx context.Context, collectionID typeutil.UniqueID, ts typeutil.Timestamp) ([]*model.StructArrayField, error) {
+	prefix := BuildStructArrayFieldPrefix(collectionID)
+	_, values, err := kc.Txn.LoadWithPrefix(ctx, prefix)
+	if err != nil {
+		return nil, err
+	}
+	structFields := make([]*model.StructArrayField, 0, len(values))
+	for _, v := range values {
+		if IsTombstone(v) {
+			continue
+		}
+		partitionMeta := &schemapb.StructArrayFieldSchema{}
+		err := proto.Unmarshal([]byte(v), partitionMeta)
+		if err != nil {
+			return nil, err
+		}
+		structFields = append(structFields, model.UnmarshalStructArrayFieldModel(partitionMeta))
+	}
+	return structFields, nil
 }
 
 func (kc *Catalog) listFunctions(ctx context.Context, collectionID typeutil.UniqueID, ts typeutil.Timestamp) ([]*model.Function, error) {
@@ -553,11 +593,7 @@ func (kc *Catalog) appendPartitionAndFieldsInfo(ctx context.Context, collMeta *p
 
 	collection.Partitions = partitions
 	collection.Fields = fields
-
-	functions, err := kc.listFunctions(ctx, collection.CollectionID, ts)
-	if err != nil {
-		return nil, err
-	}
+	collection.StructArrayFields = structArrayFields
 	collection.Functions = functions
 	return collection, nil
 }
@@ -666,6 +702,9 @@ func (kc *Catalog) DropCollection(ctx context.Context, collectionInfo *model.Col
 	for _, field := range collectionInfo.Fields {
 		delMetakeysSnap = append(delMetakeysSnap, BuildFieldKey(collectionInfo.CollectionID, field.FieldID))
 	}
+	for _, structArrayField := range collectionInfo.StructArrayFields {
+		delMetakeysSnap = append(delMetakeysSnap, BuildStructArrayFieldKey(collectionInfo.CollectionID, structArrayField.FieldID))
+	}
 	for _, function := range collectionInfo.Functions {
 		delMetakeysSnap = append(delMetakeysSnap, BuildFunctionKey(collectionInfo.CollectionID, function.ID))
 	}
@@ -705,6 +744,7 @@ func (kc *Catalog) alterModifyCollection(ctx context.Context, oldColl *model.Col
 	oldCollClone.State = newColl.State
 	oldCollClone.Properties = newColl.Properties
 	oldCollClone.Fields = newColl.Fields
+	oldCollClone.StructArrayFields = newColl.StructArrayFields
 	oldCollClone.UpdateTimestamp = newColl.UpdateTimestamp
 	oldCollClone.EnableDynamicField = newColl.EnableDynamicField
 	oldCollClone.SchemaVersion = newColl.SchemaVersion
@@ -733,9 +773,56 @@ func (kc *Catalog) alterModifyCollection(ctx context.Context, oldColl *model.Col
 			}
 			saves[k] = string(v)
 		}
+		for _, field := range oldColl.Fields {
+			if _, ok := newFieldIDs[field.FieldID]; !ok {
+				removals = append(removals, BuildFieldKey(oldColl.CollectionID, field.FieldID))
+			}
+		}
+
+		newStructArrayFieldIDs := make(map[int64]struct{}, len(newColl.StructArrayFields))
+		for _, structArrayField := range newColl.StructArrayFields {
+			newStructArrayFieldIDs[structArrayField.FieldID] = struct{}{}
+			k := BuildStructArrayFieldKey(newColl.CollectionID, structArrayField.FieldID)
+			structArrayFieldInfo := model.MarshalStructArrayFieldModel(structArrayField)
+			v, err := proto.Marshal(structArrayFieldInfo)
+			if err != nil {
+				return err
+			}
+			saves[k] = string(v)
+		}
+		for _, structArrayField := range oldColl.StructArrayFields {
+			if _, ok := newStructArrayFieldIDs[structArrayField.FieldID]; !ok {
+				removals = append(removals, BuildStructArrayFieldKey(oldColl.CollectionID, structArrayField.FieldID))
+			}
+		}
+
+		newFunctionIDs := make(map[int64]struct{}, len(newColl.Functions))
+		for _, function := range newColl.Functions {
+			newFunctionIDs[function.ID] = struct{}{}
+			k := BuildFunctionKey(newColl.CollectionID, function.ID)
+			functionInfo := model.MarshalFunctionModel(function)
+			v, err := proto.Marshal(functionInfo)
+			if err != nil {
+				return err
+			}
+			saves[k] = string(v)
+		}
+		for _, function := range oldColl.Functions {
+			if _, ok := newFunctionIDs[function.ID]; !ok {
+				removals = append(removals, BuildFunctionKey(oldColl.CollectionID, function.ID))
+			}
+		}
 	}
-	return etcd.SaveByBatchWithLimit(saves, util.MaxEtcdTxnNum/2, func(partialKvs map[string]string) error {
-		return kc.Snapshot.MultiSave(ctx, partialKvs, ts)
+
+	maxTxnNum := paramtable.Get().MetaStoreCfg.MaxEtcdTxnNum.GetAsInt()
+	if len(removals) > 0 {
+		if len(saves)+len(removals) <= maxTxnNum {
+			return kc.Txn.MultiSaveAndRemove(ctx, saves, removals)
+		}
+		return batchMultiSaveAndRemove(ctx, kc.Txn, maxTxnNum, saves, removals)
+	}
+	return etcd.SaveByBatchWithLimit(saves, maxTxnNum, func(partialKvs map[string]string) error {
+		return kc.Txn.MultiSave(ctx, partialKvs)
 	})
 }
 

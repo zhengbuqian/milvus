@@ -98,15 +98,16 @@ func (t *queryTask) getQueryLabel() string {
 }
 
 type queryParams struct {
-	limit             int64
-	offset            int64
-	reduceType        reduce.IReduceType
-	isIterator        bool
-	collectionID      int64
-	groupByFields     []string
-	orderByFields     []string // NEW: ORDER BY field specifications (e.g., "price:desc")
-	timezone          string
-	extractTimeFields []string
+	limit               int64
+	offset              int64
+	reduceType          reduce.IReduceType
+	isIterator          bool
+	collectionID        int64
+	groupByFields       []string
+	orderByFields       []string // NEW: ORDER BY field specifications (e.g., "price:desc")
+	timezone            string
+	extractTimeFields   []string
+	queryIteratorCursor *planpb.QueryIteratorCursor
 }
 
 func isSupportedGroupByFieldType(dt schemapb.DataType) bool {
@@ -280,6 +281,20 @@ func translateToOutputFieldIDs(outputFields []string, schema *schemapb.Collectio
 					break
 				}
 			}
+
+			if !fieldFound {
+			structFieldLoop:
+				for _, structField := range schema.StructArrayFields {
+					for _, field := range structField.Fields {
+						if reqField == field.Name {
+							outputFieldIDs = append(outputFieldIDs, field.FieldID)
+							fieldFound = true
+							break structFieldLoop
+						}
+					}
+				}
+			}
+
 			if !fieldFound {
 				return nil, merr.WrapErrParameterInvalidMsg("field %s not exist", reqField)
 			}
@@ -312,7 +327,7 @@ func filterSystemFields(outputFieldIDs []UniqueID) []UniqueID {
 }
 
 // parseQueryParams get limit and offset from queryParamsPair, both are optional.
-func parseQueryParams(queryParamsPair []*commonpb.KeyValuePair, largeTopKEnabled bool) (*queryParams, error) {
+func parseQueryParams(queryParamsPair []*commonpb.KeyValuePair, largeTopKEnabled bool, pkDataType schemapb.DataType) (*queryParams, error) {
 	var (
 		limit             int64
 		offset            int64
@@ -425,17 +440,74 @@ func parseQueryParams(queryParamsPair []*commonpb.KeyValuePair, largeTopKEnabled
 		}
 	}
 
+	queryIteratorCursor, err := parseQueryIteratorCursor(queryParamsPair, isIterator, pkDataType)
+	if err != nil {
+		return nil, err
+	}
+
 	return &queryParams{
-		limit:             limit,
-		offset:            offset,
-		reduceType:        reduceType,
-		isIterator:        isIterator,
-		collectionID:      collectionID,
-		groupByFields:     groupByFields,
-		orderByFields:     orderByFields,
-		timezone:          timezone,
-		extractTimeFields: extractTimeFields,
+		limit:               limit,
+		offset:              offset,
+		reduceType:          reduceType,
+		isIterator:          isIterator,
+		collectionID:        collectionID,
+		groupByFields:       groupByFields,
+		orderByFields:       orderByFields,
+		queryIteratorCursor: queryIteratorCursor,
+		timezone:            timezone,
+		extractTimeFields:   extractTimeFields,
 	}, nil
+}
+
+func parseQueryIteratorCursor(queryParamsPair []*commonpb.KeyValuePair, isIterator bool, pkDataType schemapb.DataType) (*planpb.QueryIteratorCursor, error) {
+	lastPK, hasLastPK := funcutil.TryGetAttrByKeyFromRepeatedKV(QueryIterLastPKKey, queryParamsPair)
+	lastOffsetStr, hasLastOffset := funcutil.TryGetAttrByKeyFromRepeatedKV(QueryIterLastOffsetKey, queryParamsPair)
+	if !hasLastPK && !hasLastOffset {
+		return nil, nil
+	}
+	if !isIterator {
+		return nil, merr.WrapErrParameterInvalidMsg(
+			"invalid query iterator cursor params: %s and %s can only be used when iterator=true",
+			QueryIterLastPKKey, QueryIterLastOffsetKey)
+	}
+	if !hasLastPK || !hasLastOffset {
+		return nil, merr.WrapErrParameterInvalidMsg(
+			"incomplete query iterator cursor params: %s and %s must be provided together, has_last_pk=%t, has_last_element_offset=%t",
+			QueryIterLastPKKey, QueryIterLastOffsetKey, hasLastPK, hasLastOffset)
+	}
+
+	lastOffset, err := strconv.ParseInt(lastOffsetStr, 0, 64)
+	if err != nil || lastOffset < 0 {
+		return nil, merr.WrapErrParameterInvalid("non-negative int value", lastOffsetStr,
+			"value for query iterator last element offset is invalid")
+	}
+
+	cursor := &planpb.QueryIteratorCursor{
+		LastElementOffset: lastOffset,
+	}
+	switch pkDataType {
+	case schemapb.DataType_Int64:
+		lastIntPK, err := strconv.ParseInt(lastPK, 0, 64)
+		if err != nil {
+			return nil, merr.WrapErrParameterInvalid("int64 primary key", lastPK,
+				"value for query iterator last primary key is invalid")
+		}
+		cursor.LastIntPk = &lastIntPK
+	case schemapb.DataType_VarChar:
+		cursor.LastStrPk = &lastPK
+	default:
+		return nil, merr.WrapErrParameterInvalidMsg("unsupported primary key type %s for query iterator cursor", pkDataType.String())
+	}
+	return cursor, nil
+}
+
+func getPrimaryKeyDataType(schema *schemapb.CollectionSchema) schemapb.DataType {
+	for _, field := range schema.GetFields() {
+		if field.GetIsPrimaryKey() {
+			return field.GetDataType()
+		}
+	}
+	return schemapb.DataType_None
 }
 
 func matchCountRule(outputs []string) bool {
@@ -662,7 +734,7 @@ func (t *queryTask) PreExecute(ctx context.Context) error {
 	if t.IgnoreGrowing, err = isIgnoreGrowing(t.request.GetQueryParams()); err != nil {
 		return err
 	}
-	queryParams, err := parseQueryParams(t.request.GetQueryParams(), colInfo.queryMode == common.QueryModeLargeTopK)
+	queryParams, err := parseQueryParams(t.request.GetQueryParams(), colInfo.queryMode == common.QueryModeLargeTopK, getPrimaryKeyDataType(schema.CollectionSchema))
 	if err != nil {
 		return err
 	}
@@ -717,6 +789,9 @@ func (t *queryTask) PreExecute(ctx context.Context) error {
 		return err
 	}
 	t.plan.GetQuery().Limit = t.Limit
+	if t.queryParams.queryIteratorCursor != nil {
+		t.plan.GetQuery().QueryIteratorCursor = t.queryParams.queryIteratorCursor
+	}
 
 	// Aggregation queries have bounded result sizes:
 	// - global aggregation (no GROUP BY) returns exactly one row
@@ -982,11 +1057,11 @@ func (t *queryTask) PostExecute(ctx context.Context) error {
 		}
 	}
 	t.result.OutputFields = t.userOutputFields
-	primaryFieldSchema, err := t.schema.GetPkField()
-	if err != nil {
-		log.Warn("failed to get primary field schema", zap.Error(err))
-		return err
+	if !t.reQuery {
+		reconstructStructFieldDataForQuery(t.result, t.schema.CollectionSchema)
 	}
+
+	t.result.CollectionName = t.collectionName
 	t.result.PrimaryFieldName = primaryFieldSchema.GetName()
 	metrics.ProxyReduceResultLatency.WithLabelValues(strconv.FormatInt(paramtable.GetNodeID(), 10), t.getQueryLabel()).Observe(float64(tr.RecordSpan().Microseconds()) / 1000.0)
 
@@ -1093,11 +1168,24 @@ func reduceRetrieveResults(ctx context.Context, retrieveResults []*internalpb.Re
 		loopEnd int
 	)
 
+	// Detect if this is an element-level query
+	isElementLevel := len(retrieveResults) > 0 && retrieveResults[0].GetElementLevel()
+
 	validRetrieveResults := []*internalpb.RetrieveResults{}
 	for _, r := range retrieveResults {
 		size := typeutil.GetSizeOfIDs(r.GetIds())
 		if r == nil || len(r.GetFieldsData()) == 0 || size == 0 {
 			continue
+		}
+		// Validate element-level consistency: if any result is element-level, all
+		// must be. The flag and element_indices come from querynode results, never
+		// from the request, so a mismatch is an internal contract violation.
+		if isElementLevel && !r.GetElementLevel() {
+			return nil, merr.WrapErrServiceInternalMsg("inconsistent element-level flag: expected all results to be element-level")
+		}
+		// Validate element_indices length matches ids length for element-level
+		if isElementLevel && len(r.GetElementIndices()) != size {
+			return nil, merr.WrapErrServiceInternalMsg("element_indices length (%d) does not match ids length (%d)", len(r.GetElementIndices()), size)
 		}
 		validRetrieveResults = append(validRetrieveResults, r)
 		loopEnd += size
@@ -1113,21 +1201,39 @@ func reduceRetrieveResults(ctx context.Context, retrieveResults []*internalpb.Re
 		idxComputers[i] = typeutil.NewFieldDataIdxComputer(vr.GetFieldsData())
 	}
 
+	// Used in element-level query to limit the number of elements returned
+	elementLimit := -1
 	if queryParams != nil && queryParams.limit != typeutil.Unlimited {
 		// IReduceInOrderForBest will try to get as many results as possible
 		// so loopEnd in this case will be set to the sum of all results' size
 		// to get as many qualified results as possible
 		if reduce.ShouldUseInputLimit(queryParams.reduceType) {
-			loopEnd = int(queryParams.limit)
+			if !isElementLevel {
+				loopEnd = int(queryParams.limit)
+			}
+			elementLimit = int(queryParams.limit)
 		}
 	}
 
 	// handle offset
 	if queryParams != nil && queryParams.offset > 0 {
-		for i := int64(0); i < queryParams.offset; i++ {
+		var skipped int64
+		for skipped < queryParams.offset {
 			sel, drainOneResult := typeutil.SelectMinPK(validRetrieveResults, cursors)
 			if sel == -1 || (reduce.ShouldStopWhenDrained(queryParams.reduceType) && drainOneResult) {
 				return ret, nil
+			}
+			if isElementLevel {
+				elemIndices := validRetrieveResults[sel].GetElementIndices()[cursors[sel]]
+				indicesCount := int64(len(elemIndices.GetIndices()))
+				if skipped+indicesCount > queryParams.offset {
+					elemIndices.Indices = elemIndices.Indices[queryParams.offset-skipped:]
+					break
+				} else {
+					skipped += indicesCount
+				}
+			} else {
+				skipped++
 			}
 			cursors[sel]++
 		}
@@ -1135,14 +1241,25 @@ func reduceRetrieveResults(ctx context.Context, retrieveResults []*internalpb.Re
 
 	ret.FieldsData = typeutil.PrepareResultFieldData(validRetrieveResults[0].GetFieldsData(), int64(loopEnd))
 	var retSize int64
+	var availableCount int // for element-level: element count; for doc-level: doc count
 	maxOutputSize := paramtable.Get().QuotaConfig.MaxOutputSize.GetAsInt64()
-	for j := 0; j < loopEnd; j++ {
+	for j := 0; j < loopEnd && (elementLimit == -1 || availableCount < elementLimit); j++ {
 		sel, drainOneResult := typeutil.SelectMinPK(validRetrieveResults, cursors)
 		if sel == -1 || (reduce.ShouldStopWhenDrained(queryParams.reduceType) && drainOneResult) {
 			break
 		}
+
+		// Get element indices for element-level query
+		elemCount := 1 // default for doc-level
+		if isElementLevel {
+			elemIndices := validRetrieveResults[sel].GetElementIndices()[cursors[sel]]
+			elemCount = len(elemIndices.GetIndices())
+			ret.ElementIndices = append(ret.ElementIndices, convertInternalElementIndicesToMilvus(elemIndices))
+		}
+
 		fieldIdxs := idxComputers[sel].Compute(cursors[sel])
 		retSize += typeutil.AppendFieldData(ret.FieldsData, validRetrieveResults[sel].GetFieldsData(), cursors[sel], fieldIdxs...)
+		availableCount += elemCount
 
 		// limit retrieve result to avoid oom
 		if retSize > maxOutputSize {
@@ -1155,19 +1272,19 @@ func reduceRetrieveResults(ctx context.Context, retrieveResults []*internalpb.Re
 	return ret, nil
 }
 
-func reduceRetrieveResultsAndFillIfEmpty(ctx context.Context, retrieveResults []*internalpb.RetrieveResults, queryParams *queryParams, outputFieldsID []int64, schema *schemapb.CollectionSchema) (*milvuspb.QueryResults, error) {
-	result, err := reduceRetrieveResults(ctx, retrieveResults, queryParams)
-	if err != nil {
-		return nil, err
+// convertInternalElementIndicesToMilvus converts internalpb.ElementIndices (int32) to milvuspb.ElementIndices (int64)
+func convertInternalElementIndicesToMilvus(src *internalpb.ElementIndices) *milvuspb.ElementIndices {
+	if src == nil {
+		return nil
 	}
-
-	// filter system fields.
-	filtered := filterSystemFields(outputFieldsID)
-	if err := typeutil2.FillRetrieveResultIfEmpty(typeutil2.NewMilvusResult(result), filtered, schema); err != nil {
-		return nil, fmt.Errorf("failed to fill retrieve results: %s", err.Error())
+	indices := src.GetIndices()
+	data := make([]int64, len(indices))
+	for i, v := range indices {
+		data[i] = int64(v)
 	}
-
-	return result, nil
+	return &milvuspb.ElementIndices{
+		Indices: &schemapb.LongArray{Data: data},
+	}
 }
 
 func (t *queryTask) TraceCtx() context.Context {

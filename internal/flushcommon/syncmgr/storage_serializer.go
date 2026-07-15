@@ -62,7 +62,10 @@ func (s *storageV1Serializer) serializeBinlog(ctx context.Context, pack *SyncPac
 	if len(pack.insertData) == 0 {
 		return make(map[int64]*storage.Blob), nil
 	}
-	log := log.Ctx(ctx)
+	if err := storage.ValidateStorageV1InsertWritableSchema(s.schema); err != nil {
+		return nil, err
+	}
+
 	blobs, err := s.inCodec.Serialize(pack.partitionID, pack.segmentID, pack.insertData...)
 	if err != nil {
 		return nil, err

@@ -121,62 +121,13 @@ PhyRescoresNode::GetOutput() {
 
     std::vector<std::optional<float>> boost_scores(offsets.size());
     auto function_mode = option_->function_mode();
-
-    for (auto& scorer : scorers_) {
-        auto filter = scorer->filter();
-        // boost for all result if no filter
-        if (!filter) {
-            scorer->batch_score(
-                op_context, segment, function_mode, offsets, boost_scores);
-            continue;
-        }
-
-        std::vector<expr::TypedExprPtr> filters;
-        filters.emplace_back(filter);
-        auto expr_set = std::make_unique<ExprSet>(filters, exec_context);
-        std::vector<VectorPtr> results;
-        EvalCtx eval_ctx(exec_context, expr_set.get());
-
-        const auto& exprs = expr_set->exprs();
-        bool is_native_supported = true;
-        for (const auto& expr : exprs) {
-            is_native_supported =
-                (is_native_supported && (expr->SupportOffsetInput()));
-        }
-
-        if (is_native_supported) {
-            // could set input offset if expr was native supported
-            eval_ctx.set_offset_input(&offsets);
-            expr_set->Eval(0, 1, true, eval_ctx, results);
-
-            // filter result for offsets[i] was resut bitset[i]
-            auto col_vec = std::dynamic_pointer_cast<ColumnVector>(results[0]);
-            auto col_vec_size = col_vec->size();
-            TargetBitmapView bitsetview(col_vec->GetRawData(), col_vec_size);
-            scorer->batch_score(op_context,
-                                segment,
-                                function_mode,
-                                offsets,
-                                bitsetview,
-                                boost_scores);
-        } else {
-            // query all segment if expr not native
-            expr_set->Eval(0, 1, true, eval_ctx, results);
-
-            // filter result for offsets[i] was bitset[offset[i]]
-            TargetBitmap bitset;
-            auto col_vec = std::dynamic_pointer_cast<ColumnVector>(results[0]);
-            auto col_vec_size = col_vec->size();
-            TargetBitmapView view(col_vec->GetRawData(), col_vec_size);
-            bitset.append(view);
-            scorer->batch_score(op_context,
-                                segment,
-                                function_mode,
-                                offsets,
-                                bitset,
-                                boost_scores);
-        }
-    }
+    rescores::ComputeFunctionScores(exec_context,
+                                    op_context,
+                                    segment,
+                                    scorers_,
+                                    function_mode,
+                                    offsets,
+                                    boost_scores);
 
     // calculate final score
     auto boost_mode = option_->boost_mode();

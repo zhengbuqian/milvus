@@ -35,11 +35,12 @@
 namespace milvus::query {
 
 static SearchResult
-empty_search_result(int64_t num_queries) {
+empty_search_result(int64_t num_queries, bool element_level = false) {
     SearchResult final_result;
     final_result.total_nq_ = num_queries;
     final_result.unity_topK_ = 0;  // no result
     final_result.total_data_cnt_ = 0;
+    final_result.element_level_ = element_level;
     return final_result;
 }
 
@@ -63,7 +64,21 @@ ExecPlanNodeVisitor::ExecuteTask(
     for (;;) {
         auto result = task->Next();
         if (!result) {
-            Assert(processed_num == query_context->get_active_count());
+            if (ret && !ret->childrens().empty()) {
+                auto first_column =
+                    std::dynamic_pointer_cast<ColumnVector>(ret->child(0));
+                AssertInfo(first_column,
+                           "first column must be a column vector");
+                if (first_column->IsBitmap()) {
+                    if (query_context->bitset_is_element_level()) {
+                        Assert(processed_num ==
+                               query_context->get_active_element_count());
+                    } else {
+                        Assert(processed_num ==
+                               query_context->get_active_count());
+                    }
+                }
+            }
             break;
         }
         processed_num += result->size();
@@ -286,7 +301,8 @@ ExecPlanNodeVisitor::visit(RetrievePlanNode& node) {
 
     // Do task execution
     auto result = ExecuteTask(plan, query_context);
-    setupRetrieveResult(result, op_context, node, retrieve_result, segment);
+    setupRetrieveResult(
+        result, op_context, node, retrieve_result, segment, query_context);
 }
 
 void
@@ -295,7 +311,8 @@ ExecPlanNodeVisitor::setupRetrieveResult(
     const OpContext& op_context,
     const RetrievePlanNode& node,
     RetrieveResult& tmp_retrieve_result,
-    const segcore::SegmentInternalInterface* segment) {
+    const segcore::SegmentInternalInterface* segment,
+    std::shared_ptr<milvus::exec::QueryContext> query_context) {
     if (result == nullptr) {
         // Return empty field_data arrays with correct schema (0 rows, N columns)
         // to ensure result structure matches the expected output type.
@@ -322,11 +339,27 @@ ExecPlanNodeVisitor::setupRetrieveResult(
                "children inside row vector must be of column vector for now");
     tmp_retrieve_result.total_data_cnt_ = first_column->size();
     if (first_column->IsBitmap()) {
-        tracer::AutoSpan _("Find Limit Pk", tracer::GetRootSpan());
         BitsetTypeView view(first_column->GetRawData(), first_column->size());
-        auto results_pair = segment->find_first(node.limit_, view);
-        tmp_retrieve_result.result_offsets_ = std::move(results_pair.first);
-        tmp_retrieve_result.has_more_result = results_pair.second;
+        if (query_context->bitset_is_element_level()) {
+            // Element-level query: bitset is element-level, need to convert to (doc_id, element_index)
+            tmp_retrieve_result.element_level_ = true;
+            tracer::AutoSpan _(
+                "Element Level Find", tracer::GetRootSpan(), true);
+            auto array_offsets = query_context->get_array_offsets();
+            auto [doc_offsets, element_indices, has_more] =
+                segment->find_first_n_element(node.limit_,
+                                              view,
+                                              array_offsets.get(),
+                                              node.query_iterator_cursor_);
+            tmp_retrieve_result.result_offsets_ = std::move(doc_offsets);
+            tmp_retrieve_result.element_indices_ = std::move(element_indices);
+            tmp_retrieve_result.has_more_result = has_more;
+        } else {
+            tracer::AutoSpan _("Find Limit Pk", tracer::GetRootSpan());
+            auto results_pair = segment->find_first_n(node.limit_, view);
+            tmp_retrieve_result.result_offsets_ = std::move(results_pair.first);
+            tmp_retrieve_result.has_more_result = results_pair.second;
+        }
         retrieve_result_opt_ = std::move(tmp_retrieve_result);
     } else {
         // load data in the result vector into retrieve_result
@@ -445,8 +478,9 @@ ExecPlanNodeVisitor::visit(VectorPlanNode& node) {
 
     // PreExecute: skip all calculation
     if (active_count == 0) {
-        search_result_opt_ =
-            empty_search_result(placeholder_group_->at(0).num_of_queries_);
+        const auto& placeholder = placeholder_group_->at(0);
+        search_result_opt_ = empty_search_result(placeholder.num_of_queries_,
+                                                 placeholder.element_level_);
         return;
     }
 
@@ -484,46 +518,11 @@ ExecPlanNodeVisitor::visit(VectorPlanNode& node) {
     auto result = ExecuteTask(plan, query_context);
 
     // Store result
-    if (node.is_count_) {
-        retrieve_result_opt_ = std::move(query_context->get_retrieve_result());
-    } else {
-        retrieve_result.total_data_cnt_ = bitset_holder.size();
-        tracer::AutoSpan _("Find Limit Pk", tracer::GetRootSpan());
-        auto results_pair = segment->find_first(node.limit_, bitset_holder);
-        retrieve_result.result_offsets_ = std::move(results_pair.first);
-        retrieve_result.has_more_result = results_pair.second;
-        retrieve_result_opt_ = std::move(retrieve_result);
-    }
-}
-
-void
-ExecPlanNodeVisitor::visit(FloatVectorANNS& node) {
-    VectorVisitorImpl<FloatVector>(node);
-}
-
-void
-ExecPlanNodeVisitor::visit(BinaryVectorANNS& node) {
-    VectorVisitorImpl<BinaryVector>(node);
-}
-
-void
-ExecPlanNodeVisitor::visit(Float16VectorANNS& node) {
-    VectorVisitorImpl<Float16Vector>(node);
-}
-
-void
-ExecPlanNodeVisitor::visit(BFloat16VectorANNS& node) {
-    VectorVisitorImpl<BFloat16Vector>(node);
-}
-
-void
-ExecPlanNodeVisitor::visit(SparseFloatVectorANNS& node) {
-    VectorVisitorImpl<SparseFloatVector>(node);
-}
-
-void
-ExecPlanNodeVisitor::visit(Int8VectorANNS& node) {
-    VectorVisitorImpl<Int8Vector>(node);
+    search_result_opt_ = std::move(query_context->get_search_result());
+    search_result_opt_->search_storage_cost_.scanned_remote_bytes =
+        op_context.storage_usage.scanned_cold_bytes.load();
+    search_result_opt_->search_storage_cost_.scanned_total_bytes =
+        op_context.storage_usage.scanned_total_bytes.load();
 }
 
 }  // namespace milvus::query

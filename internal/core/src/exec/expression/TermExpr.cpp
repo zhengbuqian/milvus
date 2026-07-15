@@ -70,7 +70,11 @@ PhyTermFilterExpr::Eval(EvalCtx& context, VectorPtr& result) {
         result = ExecPkTermImpl();
         return;
     }
-    switch (expr_->column_.data_type_) {
+    auto data_type = expr_->column_.data_type_;
+    if (expr_->column_.element_level_) {
+        data_type = expr_->column_.element_type_;
+    }
+    switch (data_type) {
         case DataType::BOOL: {
             result = ExecVisitorImpl<bool>(context);
             break;
@@ -919,7 +923,8 @@ PhyTermFilterExpr::ExecVisitorImplForIndex() {
         conditional_t<std::is_same_v<T, std::string_view>, std::string, T>
             IndexInnerType;
     using Index = index::ScalarIndex<IndexInnerType>;
-    auto real_batch_size = GetNextBatchSize();
+    auto real_batch_size =
+        GetNextRealBatchSize(nullptr, expr_->column_.element_level_);
     if (real_batch_size == 0) {
         return nullptr;
     }
@@ -972,7 +977,8 @@ template <>
 VectorPtr
 PhyTermFilterExpr::ExecVisitorImplForIndex<bool>() {
     using Index = index::ScalarIndex<bool>;
-    auto real_batch_size = GetNextBatchSize();
+    auto real_batch_size =
+        GetNextRealBatchSize(nullptr, expr_->column_.element_level_);
     if (real_batch_size == 0) {
         return nullptr;
     }
@@ -1006,8 +1012,9 @@ VectorPtr
 PhyTermFilterExpr::ExecVisitorImplForData(EvalCtx& context) {
     auto* input = context.get_offset_input();
     const auto& bitmap_input = context.get_bitmap_input();
+
     auto real_batch_size =
-        has_offset_input_ ? input->size() : GetNextBatchSize();
+        GetNextRealBatchSize(input, expr_->column_.element_level_);
     if (real_batch_size == 0) {
         return nullptr;
     }
@@ -1186,15 +1193,31 @@ PhyTermFilterExpr::ExecVisitorImplForData(EvalCtx& context) {
 
     int64_t processed_size;
     if (has_offset_input_) {
-        processed_size = ProcessDataByOffsets<T>(execute_sub_batch,
-                                                 skip_index_func,
-                                                 input,
-                                                 res,
-                                                 valid_res,
-                                                 arg_set_);
+        if (expr_->column_.element_level_) {
+            // For element-level filtering with offset input
+            processed_size = ProcessElementLevelByOffsets<T>(execute_sub_batch,
+                                                             skip_index_func,
+                                                             input,
+                                                             res,
+                                                             valid_res,
+                                                             arg_set_);
+        } else {
+            processed_size = ProcessDataByOffsets<T>(execute_sub_batch,
+                                                     skip_index_func,
+                                                     input,
+                                                     res,
+                                                     valid_res,
+                                                     arg_set_);
+        }
     } else {
-        processed_size = ProcessDataChunks<T>(
-            execute_sub_batch, skip_index_func, res, valid_res, arg_set_);
+        if (expr_->column_.element_level_) {
+            // For element-level filtering without offset input (brute force)
+            processed_size = ProcessDataChunksForElementLevel<T>(
+                execute_sub_batch, skip_index_func, res, valid_res, arg_set_);
+        } else {
+            processed_size = ProcessDataChunks<T>(
+                execute_sub_batch, skip_index_func, res, valid_res, arg_set_);
+        }
     }
     AssertInfo(processed_size == real_batch_size,
                "internal error: expr processed rows {} not equal "

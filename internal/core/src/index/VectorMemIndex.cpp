@@ -166,12 +166,14 @@ LoadEmptyEmbListOffsetsFromBinarySet(const BinarySet& binary_set) {
 
 template <typename T>
 VectorMemIndex<T>::VectorMemIndex(
+    DataType elem_type,
     const IndexType& index_type,
     const MetricType& metric_type,
     const IndexVersion& version,
     bool use_knowhere_build_pool,
     const storage::FileManagerContext& file_manager_context)
     : VectorIndex(index_type, metric_type),
+      elem_type_(elem_type),
       use_knowhere_build_pool_(use_knowhere_build_pool) {
     CheckMetricTypeSupport<T>(metric_type);
     AssertInfo(!is_unsupported(index_type, metric_type),
@@ -198,12 +200,14 @@ VectorMemIndex<T>::VectorMemIndex(
 }
 
 template <typename T>
-VectorMemIndex<T>::VectorMemIndex(const IndexType& index_type,
+VectorMemIndex<T>::VectorMemIndex(DataType elem_type,
+                                  const IndexType& index_type,
                                   const MetricType& metric_type,
                                   const IndexVersion& version,
                                   const knowhere::ViewDataOp view_data,
                                   bool use_knowhere_build_pool)
     : VectorIndex(index_type, metric_type),
+      elem_type_(elem_type),
       use_knowhere_build_pool_(use_knowhere_build_pool) {
     CheckMetricTypeSupport<T>(metric_type);
     AssertInfo(!is_unsupported(index_type, metric_type),
@@ -523,30 +527,130 @@ VectorMemIndex<T>::Build(const Config& config) {
     build_config.update(config);
     build_config.erase(INSERT_FILES_KEY);
     build_config.erase(VEC_OPT_FIELDS);
+
+    bool nullable = false;
+    int64_t total_valid_rows = 0;
+    int64_t total_num_rows = 0;
+    for (const auto& data : field_datas) {
+        auto num_rows = data->get_num_rows();
+        auto valid_rows = data->get_valid_rows();
+        total_valid_rows += valid_rows;
+        total_num_rows += num_rows;
+        if (data->IsNullable()) {
+            nullable = true;
+        }
+    }
+    std::unique_ptr<bool[]> valid_data;
+    if (nullable) {
+        valid_data.reset(new bool[total_num_rows]);
+        int64_t chunk_offset = 0;
+        for (const auto& data : field_datas) {
+            auto rows = data->get_num_rows();
+            // Copy valid data from FieldData (bitmap format to bool array)
+            auto src_bitmap = data->ValidData();
+            for (int64_t i = 0; i < rows; ++i) {
+                valid_data[chunk_offset + i] =
+                    (src_bitmap[i >> 3] >> (i & 7)) & 1;
+            }
+            chunk_offset += rows;
+        }
+    }
+
     if (!IndexIsSparse(GetIndexType())) {
-        int64_t total_size = 0;
-        int64_t total_num_rows = 0;
         int64_t dim = 0;
-        for (auto data : field_datas) {
-            total_size += data->Size();
-            total_num_rows += data->get_num_rows();
+        int64_t total_size = 0;
+        for (const auto& data : field_datas) {
             AssertInfo(dim == 0 || dim == data->get_dim(),
                        "inconsistent dim value between field datas!");
             dim = data->get_dim();
+            if (elem_type_ == DataType::NONE) {
+                total_size += data->DataSize();
+            } else {
+                total_size += data->Size();
+            }
+        }
+        if (nullable && total_valid_rows == 0) {
+            SetDim(dim);
+            BuildValidData(valid_data.get(), total_num_rows);
+            return;
         }
         auto buf = std::shared_ptr<uint8_t[]>(new uint8_t[total_size]);
+
+        size_t lim_offset = 0;
+        std::vector<size_t> offsets;
+
         int64_t offset = 0;
-        // TODO: avoid copying
-        for (auto data : field_datas) {
-            std::memcpy(buf.get() + offset, data->Data(), data->Size());
-            offset += data->Size();
-            data.reset();
+        // For embedding list index, elem_type_ is not NONE
+        if (elem_type_ == DataType::NONE) {
+            // TODO: avoid copying
+            for (auto& data : field_datas) {
+                auto valid_size = data->DataSize();
+                milvus::fastmem::FastMemcpy(
+                    buf.get() + offset, data->Data(), valid_size);
+                offset += valid_size;
+                data.reset();
+            }
+        } else {
+            offsets.reserve((nullable ? total_valid_rows : total_num_rows) + 1);
+            offsets.push_back(lim_offset);
+            auto bytes_per_vec = vector_bytes_per_element(elem_type_, dim);
+            for (auto& data : field_datas) {
+                auto vec_array_data =
+                    dynamic_cast<FieldData<VectorArray>*>(data.get());
+                AssertInfo(vec_array_data != nullptr,
+                           "failed to cast field data to vector array");
+
+                auto rows = vec_array_data->get_num_rows();
+                auto data_offset_before = offset;
+                int64_t physical_row = 0;
+                for (auto i = 0; i < rows; ++i) {
+                    if (vec_array_data->IsNullable() &&
+                        !vec_array_data->is_valid(i)) {
+                        continue;
+                    }
+                    auto size = vec_array_data->DataSize(physical_row);
+                    assert(size % bytes_per_vec == 0);
+                    assert(bytes_per_vec != 0);
+
+                    auto vec_array = vec_array_data->value_at(physical_row);
+
+                    if (size > 0) {
+                        milvus::fastmem::FastMemcpy(
+                            buf.get() + offset, vec_array->data(), size);
+                    }
+                    offset += size;
+
+                    lim_offset += size / bytes_per_vec;
+                    offsets.push_back(lim_offset);
+                    physical_row++;
+                }
+
+                AssertInfo(data->DataSize() == offset - data_offset_before,
+                           "inconsistent vector array data size");
+
+                data.reset();
+            }
+
+            total_valid_rows = lim_offset;
+            if (lim_offset == 0) {
+                SetDim(dim);
+                empty_emb_list_offsets_ = std::move(offsets);
+                if (nullable) {
+                    BuildValidData(valid_data.get(), total_num_rows);
+                }
+                return;
+            }
         }
+
         field_datas.clear();
 
         auto dataset = GenDataset(total_valid_rows, dim, buf.get());
         if (!scalar_info.empty()) {
             dataset->Set(knowhere::meta::SCALAR_INFO, std::move(scalar_info));
+        }
+        if (!offsets.empty()) {
+            dataset->Set(knowhere::meta::EMB_LIST_OFFSET,
+                         const_cast<const size_t*>(offsets.data()));
         }
         BuildWithDataset(dataset, build_config);
         if (nullable) {
@@ -622,7 +726,7 @@ VectorMemIndex<T>::Query(const DatasetPtr dataset,
     //    AssertInfo(GetMetricType() == search_info.metric_type_,
     //               "Metric type of field index isn't the same with search info");
 
-    auto num_queries = dataset->GetRows();
+    auto num_vectors = dataset->GetRows();
     knowhere::Json search_conf = PrepareSearchParams(search_info);
     auto topk = search_info.topk_;
     const auto& offset_mapping = GetOffsetMapping();
@@ -666,7 +770,7 @@ VectorMemIndex<T>::Query(const DatasetPtr dataset,
                           res.what());
             }
             auto result = ReGenRangeSearchResult(
-                res.value(), topk, num_queries, GetMetricType());
+                res.value(), topk, num_vectors, GetMetricType());
             milvus::tracer::AddEvent("finish_ReGenRangeSearchResult");
             return result;
         } else {
@@ -687,6 +791,8 @@ VectorMemIndex<T>::Query(const DatasetPtr dataset,
     }();
 
     auto ids = final->GetIds();
+    // In embedding list query, final->GetRows() can be different from dataset->GetRows().
+    auto num_queries = final->GetRows();
     float* distances = const_cast<float*>(final->GetDistance());
     final->SetIsOwner(true);
     auto round_decimal = search_info.round_decimal_;
@@ -752,14 +858,37 @@ VectorMemIndex<T>::GetVector(const DatasetPtr dataset) const {
                   "failed to get vector, {}",
                   KnowhereStatusString(res.error()));
     }
-    auto tensor = res.value()->GetTensor();
-    auto row_num = res.value()->GetRows();
-    auto dim = res.value()->GetDim();
-    int64_t data_size = milvus::GetVecRowSize<T>(dim) * row_num;
-    std::vector<uint8_t> raw_data;
-    raw_data.resize(data_size);
-    memcpy(raw_data.data(), tensor, data_size);
-    return raw_data;
+    return this->template DecodeVectorByIdsResult<T>(res.value());
+}
+
+template <typename T>
+std::pair<std::vector<uint8_t>, std::vector<size_t>>
+VectorMemIndex<T>::GetEmbListByIds(const DatasetPtr dataset,
+                                   const std::string& metric_type) const {
+    if (dataset->GetRows() == 0) {
+        return {{}, {0}};
+    }
+    if (IsEmptyEmbListIndex()) {
+        auto ids = dataset->GetIds();
+        auto rows = dataset->GetRows();
+        auto emb_list_count =
+            static_cast<int64_t>(empty_emb_list_offsets_.size()) - 1;
+        for (int64_t i = 0; i < rows; ++i) {
+            AssertInfo(ids[i] >= 0 && ids[i] < emb_list_count,
+                       "emb list id {} out of range {}",
+                       ids[i],
+                       emb_list_count);
+        }
+        return {{}, std::vector<size_t>(rows + 1, 0)};
+    }
+
+    auto res = index_.GetEmbListByIds(dataset, metric_type);
+    if (!res.has_value()) {
+        ThrowInfo(
+            ErrorCode::UnexpectedError,
+            "failed to get emb list, " + KnowhereStatusString(res.error()));
+    }
+    return this->template DecodeEmbListByIdsResult<T>(res.value());
 }
 
 template <typename T>
@@ -784,7 +913,8 @@ VectorMemIndex<T>::GetSparseVector(const DatasetPtr dataset) const {
 }
 
 template <typename T>
-void VectorMemIndex<T>::LoadFromFile(const Config& config) {
+void
+VectorMemIndex<T>::LoadFromFile(const Config& config) {
     auto local_filepath =
         GetValueFromConfig<std::string>(config, MMAP_FILE_PATH);
     AssertInfo(local_filepath.has_value(),
@@ -800,16 +930,28 @@ void VectorMemIndex<T>::LoadFromFile(const Config& config) {
     auto is_embedding_list = (elem_type_ != DataType::NONE);
     std::unique_ptr<storage::FileWriter> embedding_list_meta_writer_ptr =
         nullptr;
+    std::unique_ptr<storage::FileWriter> embedding_list_raw_index_writer_ptr =
+        nullptr;
     auto embedding_list_meta_path =
         GetValueFromConfig<std::string>(config, EMB_LIST_META_PATH);
+    auto embedding_list_raw_index_path =
+        GetValueFromConfig<std::string>(config, EMB_LIST_RAW_INDEX_PATH);
     if (is_embedding_list) {
         AssertInfo(embedding_list_meta_path.has_value(),
-                   "mmap filepath is empty when load index");
+                   "emb list meta mmap filepath is empty when load index");
         std::filesystem::create_directories(
             std::filesystem::path(embedding_list_meta_path.value())
                 .parent_path());
         embedding_list_meta_writer_ptr = std::make_unique<storage::FileWriter>(
             embedding_list_meta_path.value());
+        if (embedding_list_raw_index_path.has_value()) {
+            std::filesystem::create_directories(
+                std::filesystem::path(embedding_list_raw_index_path.value())
+                    .parent_path());
+            embedding_list_raw_index_writer_ptr =
+                std::make_unique<storage::FileWriter>(
+                    embedding_list_raw_index_path.value());
+        }
     }
 
     auto file_writer = storage::FileWriter(
@@ -864,7 +1006,7 @@ void VectorMemIndex<T>::LoadFromFile(const Config& config) {
         return AssembleIndexDataCodec(std::move(it->second));
     };
     // load files in two parts:
-    // 1. EMB_LIST_META: written separately so knowhere can mmap it.
+    // 1. Emb-list sidecar files: written separately so knowhere can mmap them.
     // 2. All other binaries: Merged and written to file_writer, forming a unified index file for knowhere.
     auto WriteIndexData = [&](const std::string& prefix,
                               std::unique_ptr<storage::DataCodec>& index_data) {
@@ -872,6 +1014,12 @@ void VectorMemIndex<T>::LoadFromFile(const Config& config) {
             embedding_list_meta_writer_ptr) {
             embedding_list_meta_writer_ptr->Write(index_data->PayloadData(),
                                                   index_data->PayloadSize());
+        } else if (prefix == knowhere::meta::EMB_LIST_RAW_INDEX) {
+            AssertInfo(embedding_list_raw_index_writer_ptr,
+                       "emb list raw index mmap filepath is empty when load "
+                       "index");
+            embedding_list_raw_index_writer_ptr->Write(
+                index_data->PayloadData(), index_data->PayloadSize());
         } else if (prefix == VALID_DATA_COUNT_KEY) {
             DeferIndexData(prefix, index_data);
         } else if (prefix == VALID_DATA_KEY) {
@@ -884,6 +1032,7 @@ void VectorMemIndex<T>::LoadFromFile(const Config& config) {
             wrote_index_data = true;
         }
     };
+
     if (!slice_meta_filepath
              .empty()) {  // load with the slice meta info, then we can load batch by batch
         std::string index_file_prefix = slice_meta_filepath.substr(
@@ -913,18 +1062,7 @@ void VectorMemIndex<T>::LoadFromFile(const Config& config) {
                                "lost index slice data");
                     auto&& data = batch_data[file_name];
                     auto start_write_file = std::chrono::system_clock::now();
-                    if (prefix == knowhere::meta::EMB_LIST_META &&
-                        embedding_list_meta_writer_ptr) {
-                        embedding_list_meta_writer_ptr->Write(
-                            data->PayloadData(), data->PayloadSize());
-                    } else if (prefix == VALID_DATA_COUNT_KEY) {
-                        valid_data_count_codec = std::move(data);
-                    } else if (prefix == VALID_DATA_KEY) {
-                        valid_data_codec = std::move(data);
-                    } else {
-                        file_writer.Write(data->PayloadData(),
-                                          data->PayloadSize());
-                    }
+                    WriteIndexData(prefix, data);
                     write_disk_duration_sum +=
                         (std::chrono::system_clock::now() - start_write_file);
                 }
@@ -958,18 +1096,7 @@ void VectorMemIndex<T>::LoadFromFile(const Config& config) {
         //2. write data into files
         auto start_write_file = std::chrono::system_clock::now();
         for (auto& [prefix, index_data] : result) {
-            if (prefix == knowhere::meta::EMB_LIST_META &&
-                embedding_list_meta_writer_ptr) {
-                embedding_list_meta_writer_ptr->Write(
-                    index_data->PayloadData(), index_data->PayloadSize());
-            } else if (prefix == VALID_DATA_COUNT_KEY) {
-                valid_data_count_codec = std::move(index_data);
-            } else if (prefix == VALID_DATA_KEY) {
-                valid_data_codec = std::move(index_data);
-            } else {
-                file_writer.Write(index_data->PayloadData(),
-                                  index_data->PayloadSize());
-            }
+            WriteIndexData(prefix, index_data);
         }
         write_disk_duration_sum +=
             (std::chrono::system_clock::now() - start_write_file);
@@ -989,12 +1116,19 @@ void VectorMemIndex<T>::LoadFromFile(const Config& config) {
     if (embedding_list_meta_writer_ptr) {
         embedding_list_meta_writer_ptr->Finish();
     }
+    if (embedding_list_raw_index_writer_ptr) {
+        embedding_list_raw_index_writer_ptr->Finish();
+    }
 
     auto conf = config;
     conf.erase(MMAP_FILE_PATH);
     conf[ENABLE_MMAP] = true;
     if (is_embedding_list) {
-        conf["emb_list_meta_file_path"] = embedding_list_meta_path.value();
+        conf[EMB_LIST_META_PATH] = embedding_list_meta_path.value();
+        if (embedding_list_raw_index_path.has_value()) {
+            conf[EMB_LIST_RAW_INDEX_PATH] =
+                embedding_list_raw_index_path.value();
+        }
     }
     auto start_deserialize = std::chrono::system_clock::now();
     std::chrono::duration<double> deserialize_duration{};

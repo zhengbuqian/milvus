@@ -255,7 +255,18 @@ func (insertCodec *InsertCodec) Serialize(partitionID UniqueID, segmentID Unique
 		}
 	}
 
-	for _, field := range insertCodec.Schema.Schema.Fields {
+	binlogWriterOpts := []BinlogWriterOptions{}
+	if hookutil.IsClusterEncryptionEnabled() {
+		if ez := hookutil.GetEzByCollProperties(insertCodec.Schema.GetSchema().GetProperties(), insertCodec.Schema.ID); ez != nil {
+			encryptor, safeKey, err := hookutil.GetCipher().GetEncryptor(ez.EzID, ez.CollectionID)
+			if err != nil {
+				return nil, err
+			}
+			binlogWriterOpts = append(binlogWriterOpts, WithWriterEncryptionContext(ez.EzID, safeKey, encryptor))
+		}
+	}
+
+	serializeField := func(field *schemapb.FieldSchema) error {
 		// check insert data contain this field
 		// must be all missing or all exists
 		allExists := true
@@ -269,14 +280,14 @@ func (insertCodec *InsertCodec) Serialize(partitionID UniqueID, segmentID Unique
 		// found missing block
 		if !allExists {
 			if !field.GetNullable() {
-				return nil, errors.Newf("field %d(%s) missing and field not nullable", field.GetFieldID(), field.GetName())
+				return merr.WrapErrStorageMsg("field %d(%s) missing and field not nullable", field.GetFieldID(), field.GetName())
 			}
 			// segment must be in same schema
 			if !allMissing {
-				return nil, errors.Newf("segment must not be heterogeneous, all blocks must contain all fields or none, abnormal field %d(%s)", field.GetFieldID(), field.GetName())
+				return merr.WrapErrStorageMsg("segment must not be heterogeneous, all blocks must contain all fields or none, abnormal field %d(%s)", field.GetFieldID(), field.GetName())
 			}
-			log.Info("Skip field nullable missing field, could be schema change", zap.Int64("fieldId", field.GetFieldID()), zap.String("fieldName", field.GetName()))
-			continue
+			mlog.Info(context.TODO(), "Skip field nullable missing field, could be schema change", mlog.Int64("fieldId", field.GetFieldID()), mlog.String("fieldName", field.GetName()))
+			return nil
 		}
 
 		// encode fields
@@ -287,14 +298,18 @@ func (insertCodec *InsertCodec) Serialize(partitionID UniqueID, segmentID Unique
 		if typeutil.IsVectorType(field.DataType) && !typeutil.IsSparseFloatVectorType(field.DataType) {
 			dim, err := typeutil.GetDim(field)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			payloadWriterOpts = append(payloadWriterOpts, WithDim(int(dim)))
+		}
+
+		if field.DataType == schemapb.DataType_ArrayOfVector {
+			payloadWriterOpts = append(payloadWriterOpts, WithElementType(field.GetElementType()))
 		}
 		eventWriter, err := writer.NextInsertEventWriter(payloadWriterOpts...)
 		if err != nil {
 			writer.Close()
-			return nil, err
+			return err
 		}
 		eventWriter.SetEventTimestamp(startTs, endTs)
 		eventWriter.Reserve(int(rowNum))
@@ -308,7 +323,7 @@ func (insertCodec *InsertCodec) Serialize(partitionID UniqueID, segmentID Unique
 			if err = AddFieldDataToPayload(eventWriter, field.DataType, singleData); err != nil {
 				eventWriter.Close()
 				writer.Close()
-				return nil, err
+				return err
 			}
 			writer.AddExtra(originalSizeKey, fmt.Sprintf("%v", blockMemorySize))
 			writer.SetEventTimeStamp(startTs, endTs)
@@ -318,14 +333,14 @@ func (insertCodec *InsertCodec) Serialize(partitionID UniqueID, segmentID Unique
 		if err != nil {
 			eventWriter.Close()
 			writer.Close()
-			return nil, err
+			return err
 		}
 
 		buffer, err := writer.GetBuffer()
 		if err != nil {
 			eventWriter.Close()
 			writer.Close()
-			return nil, err
+			return err
 		}
 		blobKey := fmt.Sprintf("%d", field.FieldID)
 		blobs = append(blobs, &Blob{
@@ -336,6 +351,21 @@ func (insertCodec *InsertCodec) Serialize(partitionID UniqueID, segmentID Unique
 		})
 		eventWriter.Close()
 		writer.Close()
+
+		return nil
+	}
+	for _, field := range insertCodec.Schema.Schema.Fields {
+		if err := serializeField(field); err != nil {
+			return nil, err
+		}
+	}
+
+	for _, structField := range insertCodec.Schema.Schema.StructArrayFields {
+		for _, field := range structField.Fields {
+			if err := serializeField(field); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	return blobs, nil
@@ -440,6 +470,14 @@ func AddFieldDataToPayload(eventWriter *insertEventWriter, dataType schemapb.Dat
 		if err = eventWriter.AddInt8VectorToPayload(singleData.(*Int8VectorFieldData).Data, singleData.(*Int8VectorFieldData).Dim, singleData.(*Int8VectorFieldData).ValidData); err != nil {
 			return err
 		}
+	case schemapb.DataType_ArrayOfVector:
+		vectorArrayData := singleData.(*VectorArrayFieldData)
+		if vectorArrayData.Nullable {
+			return merr.WrapErrStorageMsg("nullable ArrayOfVector is not supported in V1 storage format")
+		}
+		if err = eventWriter.AddVectorArrayFieldDataToPayload(vectorArrayData); err != nil {
+			return err
+		}
 	default:
 		return merr.WrapErrServiceInternalMsg("undefined data type %d", dataType)
 	}
@@ -528,6 +566,27 @@ func (insertCodec *InsertCodec) DeserializeInto(fieldBinlogs []*Blob, rowNum int
 	}
 
 	return collectionID, partitionID, segmentID, nil
+}
+
+func GetVectorElementType(data *schemapb.VectorField) schemapb.DataType {
+	switch data.Data.(type) {
+	case *schemapb.VectorField_FloatVector:
+		return schemapb.DataType_FloatVector
+	case *schemapb.VectorField_BinaryVector:
+		return schemapb.DataType_BinaryVector
+	case *schemapb.VectorField_Float16Vector:
+		return schemapb.DataType_Float16Vector
+	case *schemapb.VectorField_Bfloat16Vector:
+		return schemapb.DataType_BFloat16Vector
+	case *schemapb.VectorField_Int8Vector:
+		return schemapb.DataType_Int8Vector
+	case *schemapb.VectorField_SparseFloatVector:
+		return schemapb.DataType_SparseFloatVector
+	case *schemapb.VectorField_VectorArray:
+		panic("unexpect vector element type")
+	default:
+		panic("unreacheable")
+	}
 }
 
 func AddInsertData(dataType schemapb.DataType, data interface{}, insertData *InsertData, fieldID int64, rowNum int, eventReader *EventReader, dim int, validData []bool) (dataLength int, err error) {
@@ -820,6 +879,28 @@ func AddInsertData(dataType schemapb.DataType, data interface{}, insertData *Ins
 		}
 		insertData.Data[fieldID] = int8VectorFieldData
 		return length, nil
+
+	case schemapb.DataType_ArrayOfVector:
+		singleData := data.([]*schemapb.VectorField)
+		if len(singleData) == 0 {
+			return 0, nil
+		}
+
+		if fieldData == nil {
+			fieldData = &VectorArrayFieldData{
+				Data:        make([]*schemapb.VectorField, 0, rowNum),
+				Dim:         singleData[0].Dim,
+				ElementType: GetVectorElementType(singleData[0]),
+			}
+		}
+		vectorArrayFieldData := fieldData.(*VectorArrayFieldData)
+
+		if len(validData) > 0 {
+			return 0, merr.WrapErrStorageMsg("nullable ArrayOfVector is not supported in V1 storage format")
+		}
+		vectorArrayFieldData.Data = append(vectorArrayFieldData.Data, singleData...)
+		insertData.Data[fieldID] = vectorArrayFieldData
+		return len(singleData), nil
 
 	default:
 		return 0, merr.WrapErrServiceInternalMsg("undefined data type %d", dataType)

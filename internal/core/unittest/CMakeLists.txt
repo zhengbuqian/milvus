@@ -53,12 +53,24 @@ set(MILVUS_TEST_FILES
         test_string_expr.cpp
         test_rust_result.cpp
         test_storage_v2_index_raw_data.cpp
-        test_chunked_column_group.cpp
-        test_group_chunk_translator.cpp
-        test_chunked_segment_storage_v2.cpp
-        test_expr_cache.cpp
-        test_thread_pool.cpp
-        test_json_flat_index.cpp
+        test_group_by_json.cpp
+        test_element_filter.cpp
+        test_query_group_by.cpp
+        test_minhash.cpp
+        test_async_warmup.cpp
+        test_boost_score_c.cpp
+        test_sort_buffer.cpp
+        test_row_container.cpp
+        test_query_order_by.cpp
+        test_determine_use_index.cpp
+        test_virtual_pk.cpp
+        test_mvcc_fast_path.cpp
+        test_external_take.cpp
+        test_arrow_canonicalize.cpp
+        TextLobSpilloverTest.cpp
+        test_commit_timestamp.cpp
+        test_schema_reopen.cpp
+        test_growing_concurrent_reopen.cpp
         )
 
 if ( NOT (INDEX_ENGINE STREQUAL "cardinal") )

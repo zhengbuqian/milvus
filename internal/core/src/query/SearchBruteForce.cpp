@@ -119,9 +119,29 @@ PrepareBFDataSet(const dataset::SearchDataset& query_ds,
                  DataType data_type) {
     auto base_dataset =
         knowhere::GenDataSet(raw_ds.num_raw_data, raw_ds.dim, raw_ds.raw_data);
+    if (raw_ds.raw_data_offsets != nullptr) {
+        // knowhere::DataSet count vectors in a flattened manner where as the num_raw_data here is the number
+        // of embedding lists where each embedding list contains multiple vectors. So we should use the last element
+        // in offsets which equals to the total number of vectors.
+        base_dataset->Set(knowhere::meta::EMB_LIST_OFFSET,
+                          raw_ds.raw_data_offsets);
+
+        // the length of offsets equals to the number of embedding lists + 1
+        base_dataset->SetRows(raw_ds.raw_data_offsets[raw_ds.num_raw_data]);
+    }
+
     auto query_dataset = knowhere::GenDataSet(
         query_ds.num_queries, query_ds.dim, query_ds.query_data);
-    if (data_type == DataType::VECTOR_SPARSE_FLOAT) {
+    if (query_ds.query_offsets != nullptr) {
+        // ditto
+        query_dataset->Set(knowhere::meta::EMB_LIST_OFFSET,
+                           query_ds.query_offsets);
+        query_dataset->Set(knowhere::meta::NQ, query_ds.num_queries);
+
+        query_dataset->SetRows(query_ds.query_offsets[query_ds.num_queries]);
+    }
+
+    if (data_type == DataType::VECTOR_SPARSE_U32_F32) {
         base_dataset->SetIsSparse(true);
         query_dataset->SetIsSparse(true);
     }
@@ -135,7 +155,9 @@ BruteForceSearch(const dataset::SearchDataset& query_ds,
                  const SearchInfo& search_info,
                  const std::map<std::string, std::string>& index_info,
                  const BitsetView& bitset,
-                 DataType data_type) {
+                 DataType data_type,
+                 DataType element_type,
+                 milvus::OpContext* op_context) {
     SubSearchResult sub_result(query_ds.num_queries,
                                query_ds.topk,
                                query_ds.metric_type,
@@ -149,8 +171,15 @@ BruteForceSearch(const dataset::SearchDataset& query_ds,
     // not gurantee to return exactly `range_search_k` results, which may be more or less.
     // set it to -1 will return all results in the range.
     search_cfg[knowhere::meta::RANGE_SEARCH_K] = topk;
-    sub_result.mutable_seg_offsets().resize(nq * topk);
+    sub_result.mutable_offsets().resize(nq * topk);
     sub_result.mutable_distances().resize(nq * topk);
+
+    // For vector array (embedding list), element type is used to determine how to operate search.
+    if (data_type == DataType::VECTOR_ARRAY) {
+        AssertInfo(element_type != DataType::NONE,
+                   "Element type is not specified for vector array");
+        data_type = element_type;
+    }
 
     if (search_cfg.contains(RADIUS)) {
         if (search_cfg.contains(RANGE_FILTER)) {
@@ -194,17 +223,21 @@ BruteForceSearch(const dataset::SearchDataset& query_ds,
         auto result =
             ReGenRangeSearchResult(res.value(), topk, nq, query_ds.metric_type);
         milvus::tracer::AddEvent("ReGenRangeSearchResult");
-        std::copy_n(
-            GetDatasetIDs(result), nq * topk, sub_result.get_seg_offsets());
-        std::copy_n(
-            GetDatasetDistance(result), nq * topk, sub_result.get_distances());
+        milvus::fastmem::FastMemcpy(
+            sub_result.get_offsets(),
+            GetDatasetIDs(result),
+            nq * topk * sizeof(*sub_result.get_offsets()));
+        milvus::fastmem::FastMemcpy(
+            sub_result.get_distances(),
+            GetDatasetDistance(result),
+            nq * topk * sizeof(*sub_result.get_distances()));
     } else {
         knowhere::Status stat;
         if (data_type == DataType::VECTOR_FLOAT) {
             stat = knowhere::BruteForce::SearchWithBuf<float>(
                 base_dataset,
                 query_dataset,
-                sub_result.mutable_seg_offsets().data(),
+                sub_result.mutable_offsets().data(),
                 sub_result.mutable_distances().data(),
                 search_cfg,
                 bitset,
@@ -213,7 +246,7 @@ BruteForceSearch(const dataset::SearchDataset& query_ds,
             stat = knowhere::BruteForce::SearchWithBuf<float16>(
                 base_dataset,
                 query_dataset,
-                sub_result.mutable_seg_offsets().data(),
+                sub_result.mutable_offsets().data(),
                 sub_result.mutable_distances().data(),
                 search_cfg,
                 bitset,
@@ -222,7 +255,7 @@ BruteForceSearch(const dataset::SearchDataset& query_ds,
             stat = knowhere::BruteForce::SearchWithBuf<bfloat16>(
                 base_dataset,
                 query_dataset,
-                sub_result.mutable_seg_offsets().data(),
+                sub_result.mutable_offsets().data(),
                 sub_result.mutable_distances().data(),
                 search_cfg,
                 bitset,
@@ -231,7 +264,7 @@ BruteForceSearch(const dataset::SearchDataset& query_ds,
             stat = knowhere::BruteForce::SearchWithBuf<bin1>(
                 base_dataset,
                 query_dataset,
-                sub_result.mutable_seg_offsets().data(),
+                sub_result.mutable_offsets().data(),
                 sub_result.mutable_distances().data(),
                 search_cfg,
                 bitset,
@@ -240,7 +273,7 @@ BruteForceSearch(const dataset::SearchDataset& query_ds,
             stat = knowhere::BruteForce::SearchSparseWithBuf(
                 base_dataset,
                 query_dataset,
-                sub_result.mutable_seg_offsets().data(),
+                sub_result.mutable_offsets().data(),
                 sub_result.mutable_distances().data(),
                 search_cfg,
                 bitset,
@@ -249,7 +282,7 @@ BruteForceSearch(const dataset::SearchDataset& query_ds,
             stat = knowhere::BruteForce::SearchWithBuf<int8>(
                 base_dataset,
                 query_dataset,
-                sub_result.mutable_seg_offsets().data(),
+                sub_result.mutable_offsets().data(),
                 sub_result.mutable_distances().data(),
                 search_cfg,
                 bitset,
@@ -275,7 +308,10 @@ DispatchBruteForceIteratorByDataType(const knowhere::DataSetPtr& base_dataset,
                                      const knowhere::DataSetPtr& query_dataset,
                                      const knowhere::Json& config,
                                      const BitsetView& bitset,
-                                     const milvus::DataType& data_type) {
+                                     milvus::DataType data_type) {
+    AssertInfo(data_type != DataType::VECTOR_ARRAY,
+               "VECTOR_ARRAY is not supported for brute force iterator");
+
     switch (data_type) {
         case DataType::VECTOR_FLOAT:
             return knowhere::BruteForce::AnnIterator<float>(

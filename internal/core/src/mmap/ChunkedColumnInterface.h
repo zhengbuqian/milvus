@@ -109,6 +109,16 @@ class ChunkedColumnInterface {
                std::optional<std::pair<int64_t, int64_t>> offset_len) const = 0;
 
     virtual PinWrapper<
+        std::pair<std::vector<VectorArrayView>, FixedVector<bool>>>
+    VectorArrayViews(
+        milvus::OpContext* op_ctx,
+        int64_t chunk_id,
+        std::optional<std::pair<int64_t, int64_t>> offset_len) const = 0;
+
+    virtual PinWrapper<const size_t*>
+    VectorArrayOffsets(milvus::OpContext* op_ctx, int64_t chunk_id) const = 0;
+
+    virtual PinWrapper<
         std::pair<std::vector<std::string_view>, FixedVector<bool>>>
     StringViewsByOffsets(milvus::OpContext* op_ctx,
                          int64_t chunk_id,
@@ -132,6 +142,42 @@ class ChunkedColumnInterface {
 
     virtual std::vector<PinWrapper<Chunk*>>
     GetAllChunks(milvus::OpContext* op_ctx) const = 0;
+
+    virtual void
+    ApplyValidDataInChunk(milvus::OpContext* op_ctx,
+                          int64_t chunk_id,
+                          int64_t offset,
+                          int64_t size,
+                          TargetBitmapView valid_result) const {
+        if (!IsNullable() || size == 0) {
+            return;
+        }
+        AssertInfo(offset >= 0 && size >= 0,
+                   "Invalid valid-data range, offset: {}, size: {}",
+                   offset,
+                   size);
+        auto pw = GetChunk(op_ctx, chunk_id);
+        auto chunk = pw.get();
+        AssertInfo(offset + size <= chunk->RowNums(),
+                   "Valid-data range out of chunk bounds, offset: {}, size: "
+                   "{}, chunk rows: {}",
+                   offset,
+                   size,
+                   chunk->RowNums());
+        auto& valid_data = chunk->Valid();
+        AssertInfo(
+            offset + size <= static_cast<int64_t>(valid_data.size()),
+            "Valid-data range out of valid-data bounds, offset: {}, size: {}, "
+            "valid-data size: {}",
+            offset,
+            size,
+            valid_data.size());
+        for (int64_t i = 0; i < size; ++i) {
+            if (!chunk->isValid(offset + i)) {
+                valid_result[i] = false;
+            }
+        }
+    }
 
     // Get number of rows before a specific chunk
     virtual int64_t
@@ -264,11 +310,33 @@ class ChunkedColumnInterface {
     }
 
     virtual void
-    BulkArrayAt(std::function<void(ScalarArray&&, size_t)> fn,
+    BulkRawBsonAt(milvus::OpContext* op_ctx,
+                  std::function<void(BsonView, uint32_t, uint32_t)> fn,
+                  const uint32_t* row_offsets,
+                  const uint32_t* value_offsets,
+                  int64_t count) const {
+        ThrowInfo(ErrorCode::Unsupported,
+                  "BulkRawBsonAt only supported for ChunkColumnInterface of "
+                  "Bson type");
+    }
+
+    virtual void
+    BulkArrayAt(milvus::OpContext* op_ctx,
+                std::function<void(const ArrayView&, size_t)> fn,
                 const int64_t* offsets,
                 int64_t count) const {
         ThrowInfo(ErrorCode::Unsupported,
                   "BulkArrayAt only supported for ChunkedArrayColumn");
+    }
+
+    virtual void
+    BulkVectorArrayAt(milvus::OpContext* op_ctx,
+                      std::function<void(VectorFieldProto&&, size_t)> fn,
+                      const int64_t* offsets,
+                      int64_t count) const {
+        ThrowInfo(
+            ErrorCode::Unsupported,
+            "BulkVectorArrayAt only supported for ChunkedVectorArrayColumn");
     }
 
     static bool
@@ -290,6 +358,11 @@ class ChunkedColumnInterface {
     static bool
     IsChunkedArrayColumnDataType(DataType data_type) {
         return data_type == DataType::ARRAY;
+    }
+
+    static bool
+    IsChunkedVectorArrayColumnDataType(DataType data_type) {
+        return data_type == DataType::VECTOR_ARRAY;
     }
 
     static bool

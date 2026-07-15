@@ -213,6 +213,39 @@ func appendValueAt(builder array.Builder, a arrow.Array, idx int, defaultValue *
 			b.Append(val)
 			return uint64(len(val)), nil
 		}
+	case *array.ListBuilder:
+		// Handle ListBuilder for ArrayOfVector type
+		la, ok := a.(*array.List)
+		if !ok {
+			return 0, merr.WrapErrServiceInternalMsg("invalid value type %T, expect %T", a.DataType(), builder.Type())
+		}
+		if la.IsNull(idx) {
+			b.AppendNull()
+			return 0, nil
+		}
+
+		start, end := la.ValueOffsets(idx)
+		b.Append(true)
+
+		valuesArray := la.ListValues()
+		var totalSize uint64 = 0
+		valueBuilder := b.ValueBuilder()
+		switch vb := valueBuilder.(type) {
+		case *array.FixedSizeBinaryBuilder:
+			fixedArray, ok := valuesArray.(*array.FixedSizeBinary)
+			if !ok {
+				return 0, merr.WrapErrServiceInternalMsg("invalid value type %T, expect %T", valuesArray.DataType(), vb.Type())
+			}
+			for i := start; i < end; i++ {
+				val := fixedArray.Value(int(i))
+				vb.Append(val)
+				totalSize += uint64(len(val))
+			}
+		default:
+			return 0, merr.WrapErrServiceInternalMsg("unsupported value builder type in ListBuilder: %T", valueBuilder)
+		}
+
+		return totalSize, nil
 	default:
 		return 0, merr.WrapErrServiceInternalMsg("unsupported builder type: %T", builder)
 	}
@@ -228,7 +261,18 @@ func GenerateEmptyArrayFromSchema(schema *schemapb.FieldSchema, numRows int) (ar
 		return nil, merr.WrapErrServiceInternalMsg("missing field data %s", schema.Name)
 	}
 	dim, _ := typeutil.GetDim(schema)
-	builder := array.NewBuilder(memory.DefaultAllocator, serdeMap[schema.GetDataType()].arrowType(int(dim))) // serdeEntry[schema.GetDataType()].newBuilder()
+
+	elementType := schemapb.DataType_None
+	if schema.GetDataType() == schemapb.DataType_ArrayOfVector {
+		elementType = schema.GetElementType()
+	}
+	arrowType := serdeMap[schema.GetDataType()].arrowType(int(dim), elementType)
+	if schema.GetDataType() == schemapb.DataType_Text {
+		arrowType = arrow.BinaryTypes.Binary
+	} else if schema.GetNullable() && isNullableDenseVectorArrowType(schema.GetDataType()) {
+		arrowType = arrow.BinaryTypes.Binary
+	}
+	builder := array.NewBuilder(memory.DefaultAllocator, arrowType)
 	if schema.GetDefaultValue() != nil {
 		switch schema.GetDataType() {
 		case schemapb.DataType_Bool:
@@ -356,13 +400,60 @@ func (b *RecordBuilder) Build() Record {
 }
 
 func NewRecordBuilder(schema *schemapb.CollectionSchema) *RecordBuilder {
-	builders := make([]array.Builder, len(schema.Fields))
-	for i, field := range schema.Fields {
-		dim, _ := typeutil.GetDim(field)
-		builders[i] = array.NewBuilder(memory.DefaultAllocator, serdeMap[field.DataType].arrowType(int(dim)))
+	// assumes 5 sub fields per StructArrayField
+	fields := make([]*schemapb.FieldSchema, 0, len(schema.Fields)+len(schema.StructArrayFields)*5)
+	fields = append(fields, schema.Fields...)
+	for _, sf := range schema.StructArrayFields {
+		fields = append(fields, sf.Fields...)
 	}
+
+	builders := make([]array.Builder, len(fields))
+	arrowFields := make([]arrow.Field, len(fields))
+	for i, field := range fields {
+		dim, _ := typeutil.GetDim(field)
+
+		elementType := schemapb.DataType_None
+		if field.DataType == schemapb.DataType_ArrayOfVector {
+			elementType = field.GetElementType()
+		}
+		if field.GetNullable() && isNullableDenseVectorArrowType(field.DataType) {
+			builders[i] = array.NewBinaryBuilder(memory.DefaultAllocator, arrow.BinaryTypes.Binary)
+		} else if field.DataType == schemapb.DataType_Text {
+			// TEXT fields are stored as binary (LOB references) in manifest storage,
+			// so the builder must use binary type to match what the reader returns.
+			builders[i] = array.NewBinaryBuilder(memory.DefaultAllocator, arrow.BinaryTypes.Binary)
+		} else {
+			arrowType := serdeMap[field.DataType].arrowType(int(dim), elementType)
+			builders[i] = array.NewBuilder(memory.DefaultAllocator, arrowType)
+		}
+		arrowFields[i] = newRecordBuilderArrowField(field, builders[i].Type(), dim, elementType)
+	}
+
 	return &RecordBuilder{
-		fields:   schema.Fields,
-		builders: builders,
+		fields:      fields,
+		arrowFields: arrowFields,
+		builders:    builders,
+	}
+}
+
+func newRecordBuilderArrowField(field *schemapb.FieldSchema, arrowType arrow.DataType, dim int64, elementType schemapb.DataType) arrow.Field {
+	keys := []string{packed.ArrowFieldIdMetadataKey}
+	values := []string{strconv.Itoa(int(field.GetFieldID()))}
+
+	if field.GetNullable() && isNullableDenseVectorArrowType(field.GetDataType()) {
+		keys = append(keys, "dim")
+		values = append(values, strconv.Itoa(int(dim)))
+	}
+
+	if field.GetDataType() == schemapb.DataType_ArrayOfVector {
+		keys = append(keys, "elementType", "dim")
+		values = append(values, strconv.Itoa(int(elementType)), strconv.Itoa(int(dim)))
+	}
+
+	return arrow.Field{
+		Name:     field.GetName(),
+		Type:     arrowType,
+		Nullable: field.GetNullable(),
+		Metadata: arrow.NewMetadata(keys, values),
 	}
 }

@@ -34,11 +34,48 @@
 #include "InsertRecord.h"
 #include "NamedType/underlying_functionalities.hpp"
 #include "SegmentGrowing.h"
+#include "cachinglayer/CacheSlot.h"
+#include "cachinglayer/Manager.h"
+#include "cachinglayer/Utils.h"
+#include "common/Array.h"
+#include "segcore/TextLobSpillover.h"
+#include "common/ArrayOffsets.h"
+#include "common/BitsetView.h"
 #include "common/EasyAssert.h"
-#include "common/IndexMeta.h"
-#include "common/Types.h"
-#include "query/PlanNode.h"
+#include "common/FieldData.h"
+#include "common/FieldMeta.h"
 #include "common/GeometryCache.h"
+#include "common/IndexMeta.h"
+#include "common/Json.h"
+#include "common/LoadInfo.h"
+#include "common/OpContext.h"
+#include "common/QueryInfo.h"
+#include "common/QueryResult.h"
+#include "common/Schema.h"
+#include "common/Span.h"
+#include "common/SystemProperty.h"
+#include "common/Tracer.h"
+#include "common/Types.h"
+#include "common/Utils.h"
+#include "common/VectorArray.h"
+#include "common/VectorTrait.h"
+#include "common/protobuf_utils.h"
+#include "fmt/core.h"
+#include "folly/FBVector.h"
+#include "geos_c.h"
+#include "google/protobuf/message.h"
+#include "index/Index.h"
+#include "milvus-storage/column_groups.h"
+#include "milvus-storage/properties.h"
+#include "milvus-storage/reader.h"
+#include "pb/plan.pb.h"
+#include "pb/schema.pb.h"
+#include "pb/segcore.pb.h"
+#include "query/PlanImpl.h"
+#include "segcore/SegcoreConfig.h"
+#include "segcore/SegmentInterface.h"
+#include "storage/MmapChunkManager.h"
+#include "storage/MmapManager.h"
 
 namespace milvus::segcore {
 
@@ -310,6 +347,17 @@ class SegmentGrowingImpl : public SegmentGrowing {
                               int64_t count,
                               google::protobuf::RepeatedPtrField<T>* dst) const;
 
+    // for vector array vectors
+    template <typename T>
+    void
+    bulk_subscript_vector_array_impl(
+        milvus::OpContext* op_ctx,
+        const VectorBase& vec_raw,
+        const int64_t* seg_offsets,
+        int64_t count,
+        const bool* valid_data,
+        google::protobuf::RepeatedPtrField<T>* dst) const;
+
     template <typename T>
     void
     bulk_subscript_impl(milvus::OpContext* op_ctx,
@@ -398,6 +446,9 @@ class SegmentGrowingImpl : public SegmentGrowing {
               },
               segment_id) {
         this->CreateTextIndexes();
+        this->InitializeTextLobSpillovers();
+        this->InitializeArrayOffsets();
+        this->UpdateResourceTracking();
     }
 
     ~SegmentGrowingImpl() {
@@ -435,6 +486,7 @@ class SegmentGrowingImpl : public SegmentGrowing {
     void
     vector_search(SearchInfo& search_info,
                   const void* query_data,
+                  const size_t* query_offsets,
                   int64_t query_count,
                   Timestamp timestamp,
                   const BitsetView& bitset,
@@ -532,8 +584,18 @@ class SegmentGrowingImpl : public SegmentGrowing {
     }
 
     std::pair<std::vector<OffsetMap::OffsetType>, bool>
-    find_first(int64_t limit, const BitsetTypeView& bitset) const override {
-        return insert_record_.pk2offset_->find_first(limit, bitset);
+    find_first_n(int64_t limit, const BitsetTypeView& bitset) const override {
+        return insert_record_.pk2offset_->find_first_n(limit, bitset);
+    }
+
+    std::tuple<std::vector<int64_t>, std::vector<std::vector<int32_t>>, bool>
+    find_first_n_element(
+        int64_t limit,
+        const BitsetTypeView& element_bitset,
+        const IArrayOffsets* array_offsets,
+        const std::optional<QueryIteratorCursor>& cursor) const override {
+        return insert_record_.pk2offset_->find_first_n_element(
+            limit, element_bitset, array_offsets, cursor);
     }
 
     bool
@@ -577,6 +639,57 @@ class SegmentGrowingImpl : public SegmentGrowing {
         return nullptr;
     }
 
+    std::shared_ptr<const IArrayOffsets>
+    GetArrayOffsets(FieldId field_id) const override {
+        auto it = array_offsets_map_.find(field_id);
+        if (it != array_offsets_map_.end()) {
+            return it->second;
+        }
+        return nullptr;
+    }
+    struct ValidResult {
+        int64_t valid_count = 0;
+        std::unique_ptr<bool[]> valid_data;
+        std::vector<int64_t> valid_offsets;
+    };
+
+    ValidResult
+    FilterVectorValidOffsets(milvus::OpContext* op_ctx,
+                             FieldId field_id,
+                             const int64_t* seg_offsets,
+                             int64_t count) const;
+
+    /**
+     * @brief Estimate the current total resource usage of the growing segment
+     *
+     * This includes memory/disk usage for:
+     * - Field data (raw vectors and scalars)
+     * - Timestamps
+     * - PK-to-offset index
+     * - Interim vector indexes (if enabled)
+     * - Text match indexes (if enabled)
+     * - Deleted records
+     *
+     * @return ResourceUsage containing memory_bytes and file_bytes estimates
+     */
+    ResourceUsage
+    EstimateSegmentResourceUsage() const;
+
+    void
+    ApplyFieldValidData(milvus::OpContext* op_ctx,
+                        FieldId field_id,
+                        int64_t chunk_id,
+                        int64_t offset,
+                        int64_t size,
+                        TargetBitmapView valid_result) const override;
+
+    void
+    ApplyFieldValidDataByOffsets(milvus::OpContext* op_ctx,
+                                 FieldId field_id,
+                                 const int64_t* offsets,
+                                 int64_t count,
+                                 TargetBitmapView valid_result) const override;
+
  protected:
     int64_t
     num_chunk(FieldId field_id) const override;
@@ -595,6 +708,13 @@ class SegmentGrowingImpl : public SegmentGrowing {
 
     PinWrapper<std::pair<std::vector<ArrayView>, FixedVector<bool>>>
     chunk_array_view_impl(
+        milvus::OpContext* op_ctx,
+        FieldId field_id,
+        int64_t chunk_id,
+        std::optional<std::pair<int64_t, int64_t>> offset_len) const override;
+
+    PinWrapper<std::pair<std::vector<VectorArrayView>, FixedVector<bool>>>
+    chunk_vector_array_view_impl(
         milvus::OpContext* op_ctx,
         FieldId field_id,
         int64_t chunk_id,
@@ -626,6 +746,10 @@ class SegmentGrowingImpl : public SegmentGrowing {
 
     void
     fill_empty_field(const FieldMeta& field_meta);
+
+    void
+    EnsureArrayOffsetsForStructField(const FieldMeta& field_meta,
+                                     int64_t row_count);
 
     /**
      * @brief Update resource tracking by refunding old estimate and charging new
@@ -710,6 +834,9 @@ class SegmentGrowingImpl : public SegmentGrowing {
         int64_t index,
         int64_t row_limit);
 
+    void
+    InitializeArrayOffsets();
+
  private:
     storage::MmapChunkDescriptorPtr mmap_descriptor_ = nullptr;
     SegcoreConfig segcore_config_;
@@ -733,6 +860,38 @@ class SegmentGrowingImpl : public SegmentGrowing {
 
     // milvus storage internal api reader instance
     std::unique_ptr<milvus_storage::api::Reader> reader_;
+
+    // field_id -> ArrayOffsetsGrowing (for fast lookup via GetArrayOffsets)
+    // Multiple field_ids from the same struct point to the same ArrayOffsetsGrowing
+    std::unordered_map<FieldId, std::shared_ptr<ArrayOffsetsGrowing>>
+        array_offsets_map_;
+
+    // Representative field_id for each struct (used to extract array lengths during Insert)
+    // One field_id per struct, since all fields in the same struct have identical array lengths
+    std::unordered_set<FieldId> struct_representative_fields_;
+
+    // Tracked resource usage for refund-then-charge pattern
+    // This stores the last estimated resource usage that was charged to the cache manager
+    ResourceUsage tracked_resource_{};
+    // Mutex to protect tracked_resource_ updates (refund-then-charge must be atomic)
+    mutable std::mutex resource_tracking_mutex_;
+
+    // TEXT field spillover: field_id -> TextLobSpillover
+    // TEXT data is written to temporary LOB files to reduce memory usage.
+    // Memory stores only 16-byte references (offset, size, flags).
+    std::unordered_map<FieldId, std::unique_ptr<TextLobSpillover>>
+        text_lob_spillovers_;
+
+    // TEXT field LOB paths for V3 storage reload (same as sealed segment)
+    // field_id -> LOB base path on remote storage
+    // LOBReferences in ConcurrentVector are resolved at query time via TextColumnCache
+    std::unordered_map<FieldId, std::string> text_lob_paths_;
+
+    // Boundary between loaded data and inserted data for TEXT fields.
+    // [0, text_loaded_row_count_): loaded via load paths (raw text or LOBReference)
+    // [text_loaded_row_count_, total): inserted via Insert() (spillover LOBRef)
+    // Query path uses this to determine resolution strategy.
+    int64_t text_loaded_row_count_ = 0;
 };
 
 inline SegmentGrowingPtr

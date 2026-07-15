@@ -912,8 +912,13 @@ func separateLoadInfoV2(loadInfo *querypb.SegmentLoadInfo, schema *schemapb.Coll
 			}
 
 			if fieldID == storagecommon.DefaultShortColumnGroupID {
+				allFields := typeutil.GetAllFieldSchemas(schema)
 				// for short column group, we need to load all fields in the group
-				for _, field := range schema.GetFields() {
+				for _, field := range allFields {
+					// Skip external fields in short column group
+					if externalFieldIDs[field.GetFieldID()] {
+						continue
+					}
 					if infos, ok := fieldID2IndexInfo[field.GetFieldID()]; ok {
 						for _, indexInfo := range infos {
 							fieldInfo := &IndexedFieldInfo{
@@ -1025,6 +1030,7 @@ func separateLoadInfoV2(loadInfo *querypb.SegmentLoadInfo, schema *schemapb.Coll
 	}
 
 	unindexedTextFields := make(map[int64]struct{})
+	// todo(SpadeA): consider struct fields when index is ready
 	for _, field := range schema.GetFields() {
 		h := typeutil.CreateFieldSchemaHelper(field)
 		_, textIndexExist := textIndexedInfo[field.GetFieldID()]
@@ -2364,8 +2370,37 @@ func estimateLoadingResourceUsageOfSegment(schema *schemapb.CollectionSchema, lo
 		}
 	}
 
+	// per struct memory size, used to keep mapping between row id and element id
+	var structArrayOffsetsSize uint64
+	// PART 6: calculate size of struct array offsets
+	// The memory size is 4 * row_count + 4 * total_element_count
+	// We cannot easily get the element count, so we estimate it by the row count * 10
+	rowCount := uint64(loadInfo.GetNumOfRows())
+	for range len(schema.GetStructArrayFields()) {
+		structArrayOffsetsSize += 4*rowCount + 4*rowCount*10
+	}
+
+	// PART 7: calculate size of text index stats data
+	// text index data is managed by the caching layer when tiered eviction is enabled,
+	// so it only needs to be included when tiered eviction is disabled.
+	// Text match index mmap is driven by scalar_field_enable_mmap (same as raw scalar data).
+	// memory_size = sum of Tantivy index file sizes (same value as C++ ByteSize() after load),
+	// so 1.0x is the baseline; textIndexExpansionFactor allows tuning if needed.
+	textIndexMmapEnable := paramtable.Get().QueryNodeCfg.MmapScalarField.GetAsBool()
+	for _, textStats := range loadInfo.GetTextStatsLogs() {
+		if textIndexMmapEnable {
+			if !multiplyFactor.TieredEvictionEnabled {
+				segDiskLoadingSize += uint64(float64(textStats.GetMemorySize()) * multiplyFactor.textIndexExpansionFactor)
+			}
+		} else {
+			if !multiplyFactor.TieredEvictionEnabled {
+				segMemoryLoadingSize += uint64(float64(textStats.GetMemorySize()) * multiplyFactor.textIndexExpansionFactor)
+			}
+		}
+	}
+
 	return &ResourceUsage{
-		MemorySize:         segMemoryLoadingSize + indexMemorySize,
+		MemorySize:         segMemoryLoadingSize + indexMemorySize + structArrayOffsetsSize,
 		DiskSize:           segDiskLoadingSize,
 		MmapFieldCount:     mmapFieldCount,
 		FieldGpuMemorySize: fieldGpuMemorySize,
@@ -2389,24 +2424,8 @@ func SupportInterimIndexDataType(dataType schemapb.DataType) bool {
 		dataType == schemapb.DataType_BFloat16Vector
 }
 
-func (loader *segmentLoader) getFieldType(collectionID, fieldID int64) (schemapb.DataType, error) {
-	collection := loader.manager.Collection.Get(collectionID)
-	if collection == nil {
-		return 0, merr.WrapErrCollectionNotFound(collectionID)
-	}
-
-	for _, field := range collection.Schema().GetFields() {
-		if field.GetFieldID() == fieldID {
-			return field.GetDataType(), nil
-		}
-	}
-	return 0, merr.WrapErrFieldNotFound(fieldID)
-}
-
-func (loader *segmentLoader) LoadIndex(ctx context.Context,
-	seg Segment,
-	loadInfo *querypb.SegmentLoadInfo,
-	version int64,
+func (loader *segmentLoader) ReopenSegments(ctx context.Context,
+	loadInfos []*querypb.SegmentLoadInfo,
 ) error {
 	// Filter out LOADING segments only
 	// use None to avoid loaded check

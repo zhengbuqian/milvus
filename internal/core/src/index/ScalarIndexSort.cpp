@@ -29,13 +29,32 @@
 #include <vector>
 
 #include "Meta.h"
-#include "common/Utils.h"
+#include "bitset/bitset.h"
+#include "common/Array.h"
+#include "common/EasyAssert.h"
+#include "common/FastMem.h"
+#include "common/FieldDataInterface.h"
+#include "common/File.h"
 #include "common/Slice.h"
+#include "common/Tracer.h"
 #include "common/Types.h"
-#include "index/Utils.h"
+#include "fmt/core.h"
+#include "glog/logging.h"
+#include "index/ScalarIndex.h"
 #include "index/ScalarIndexSort.h"
+#include "index/Utils.h"
+#include "knowhere/binaryset.h"
+#include "log/Log.h"
+#include "nlohmann/json.hpp"
 #include "pb/common.pb.h"
+#include "pb/schema.pb.h"
+#include "storage/DiskFileManagerImpl.h"
+#include "storage/FileWriter.h"
+#include "storage/IndexEntryReader.h"
+#include "storage/IndexEntryWriter.h"
+#include "storage/MemFileManagerImpl.h"
 #include "storage/ThreadPools.h"
+#include "storage/Types.h"
 #include "storage/Util.h"
 
 namespace milvus::index {
@@ -48,10 +67,26 @@ constexpr size_t ALIGNMENT = 32;  // 32-byte alignment
 
 const uint64_t MMAP_INDEX_PADDING = 1;
 
+namespace {
+
+bool
+IsArrayField(const storage::FileManagerContext& file_manager_context) {
+    return file_manager_context.Valid() &&
+           file_manager_context.fieldDataMeta.field_schema.data_type() ==
+               proto::schema::DataType::Array;
+}
+
+}  // namespace
+
 template <typename T>
 ScalarIndexSort<T>::ScalarIndexSort(
-    const storage::FileManagerContext& file_manager_context)
-    : ScalarIndex<T>(ASCENDING_SORT), is_built_(false), data_() {
+    const storage::FileManagerContext& file_manager_context,
+    bool is_nested_index)
+    : ScalarIndex<T>(ASCENDING_SORT),
+      is_nested_index_(is_nested_index),
+      is_array_field_(IsArrayField(file_manager_context)),
+      is_built_(false),
+      data_() {
     // not valid means we are in unit test
     if (file_manager_context.Valid()) {
         field_id_ = file_manager_context.fieldDataMeta.field_id;
@@ -117,6 +152,11 @@ ScalarIndexSort<T>::BuildWithFieldData(
     const std::vector<milvus::FieldDataPtr>& field_datas) {
     index_build_begin_ = std::chrono::system_clock::now();
 
+    if (is_nested_index_) {
+        BuildWithArrayDataNested(field_datas);
+        return;
+    }
+
     int64_t length = 0;
     for (const auto& data : field_datas) {
         total_num_rows_ += data->get_num_rows();
@@ -158,6 +198,59 @@ ScalarIndexSort<T>::BuildWithFieldData(
 }
 
 template <typename T>
+void
+ScalarIndexSort<T>::BuildWithArrayDataNested(
+    const std::vector<FieldDataPtr>& datas) {
+    // calculate total_num_rows_
+    for (const auto& data : datas) {
+        auto n = data->get_num_rows();
+        for (int64_t i = 0; i < n; i++) {
+            if (data->is_valid(i)) {
+                // RawValue maps logical->physical so compact nullable array
+                // FieldData is read correctly (Data()[i] would overrun).
+                total_num_rows_ +=
+                    reinterpret_cast<const Array*>(data->RawValue(i))->length();
+            }
+        }
+    }
+
+    if (total_num_rows_ == 0) {
+        ThrowInfo(DataIsEmpty, "ScalarIndexSort cannot build null values!");
+    }
+
+    data_.reserve(total_num_rows_);
+    // all values are valid for nested index because any given slot in a valid_bitset_ denotes one element in a valid row
+    valid_bitset_ = TargetBitmap(total_num_rows_, true);
+    int64_t offset = 0;
+    for (const auto& data : datas) {
+        auto n = data->get_num_rows();
+        for (int64_t i = 0; i < n; i++) {
+            if (!data->is_valid(i)) {
+                continue;
+            }
+            auto* array = reinterpret_cast<const Array*>(data->RawValue(i));
+            auto length = array->length();
+            for (int64_t j = 0; j < length; j++) {
+                data_.emplace_back(
+                    IndexStructure(array->get_data<T>(j), offset));
+                offset++;
+            }
+        }
+    }
+    std::sort(data_.begin(), data_.end());
+    idx_to_offsets_.resize(total_num_rows_);
+    for (size_t i = 0; i < total_num_rows_; ++i) {
+        idx_to_offsets_[data_[i].idx_] = i;
+    }
+    idx_to_offsets_ptr_ = idx_to_offsets_.data();
+    idx_to_offsets_size_ = idx_to_offsets_.size();
+    is_built_ = true;
+
+    setup_data_pointers();
+    ComputeByteSize();
+}
+
+template <typename T>
 BinarySet
 ScalarIndexSort<T>::Serialize(const Config& config) {
     AssertInfo(is_built_, "index has not been built");
@@ -176,10 +269,15 @@ ScalarIndexSort<T>::Serialize(const Config& config) {
     milvus::fastmem::FastMemcpy(
         index_num_rows.get(), &total_num_rows_, sizeof(size_t));
 
+    std::shared_ptr<uint8_t[]> is_nested_data(new uint8_t[sizeof(bool)]);
+    milvus::fastmem::FastMemcpy(
+        is_nested_data.get(), &is_nested_index_, sizeof(bool));
+
     BinarySet res_set;
     res_set.Append("index_data", index_data, index_data_size);
     res_set.Append("index_length", index_length, sizeof(size_t));
     res_set.Append("index_num_rows", index_num_rows, sizeof(size_t));
+    res_set.Append("is_nested_index", is_nested_data, sizeof(bool));
 
     milvus::Disassemble(res_set);
 
@@ -194,8 +292,11 @@ ScalarIndexSort<T>::Upload(const Config& config) {
             std::chrono::system_clock::now() - index_build_begin_)
             .count();
     LOG_INFO(
-        "index build done for ScalarIndexSort, field_id: {}, duration: {}ms",
+        "index build done for ScalarIndexSort, field_id: {}, is_nested_index: "
+        "{}, duration: "
+        "{}ms",
         field_id_,
+        is_nested_index_,
         index_build_duration);
 
     auto binary_set = Serialize(config);
@@ -267,6 +368,15 @@ ScalarIndexSort<T>::LoadWithoutAssemble(const BinarySet& index_binary,
     auto index_length = index_binary.GetByName("index_length");
     milvus::fastmem::FastMemcpy(
         &index_size, index_length->data.get(), (size_t)index_length->size);
+
+    auto is_nested_index = index_binary.GetByName("is_nested_index");
+    if (is_nested_index) {
+        bool loaded_is_nested_index = false;
+        milvus::fastmem::FastMemcpy(&loaded_is_nested_index,
+                                    is_nested_index->data.get(),
+                                    (size_t)is_nested_index->size);
+        is_nested_index_ = is_nested_index_ || loaded_is_nested_index;
+    }
 
     is_mmap_ = GetValueFromConfig<bool>(config, ENABLE_MMAP).value_or(true);
 
@@ -355,10 +465,12 @@ ScalarIndexSort<T>::In(const size_t n, const T* values) {
         auto lb = std::lower_bound(begin(), end(), target);
         auto ub = std::upper_bound(lb, end(), target);
         for (; lb < ub; ++lb) {
-            if (lb->a_ != *(values + i)) {
-                std::cout << "error happens in ScalarIndexSort<T>::In, "
-                             "experted value is: "
-                          << *(values + i) << ", but real value is: " << lb->a_;
+            if (lb->a_ != target.a_) {
+                LOG_ERROR(
+                    "error happens in ScalarIndexSort<T>::In, "
+                    "expected value is: {}, but real value is: {}",
+                    target.a_,
+                    lb->a_);
             }
             bitset[lb->idx_] = true;
         }
@@ -376,10 +488,12 @@ ScalarIndexSort<T>::NotIn(const size_t n, const T* values) {
         auto lb = std::lower_bound(begin(), end(), target);
         auto ub = std::upper_bound(lb, end(), target);
         for (; lb < ub; ++lb) {
-            if (lb->a_ != *(values + i)) {
-                std::cout << "error happens in ScalarIndexSort<T>::NotIn, "
-                             "experted value is: "
-                          << *(values + i) << ", but real value is: " << lb->a_;
+            if (lb->a_ != target.a_) {
+                LOG_ERROR(
+                    "error happens in ScalarIndexSort<T>::NotIn, "
+                    "expected value is: {}, but real value is: {}",
+                    target.a_,
+                    lb->a_);
             }
             bitset[lb->idx_] = false;
         }
@@ -602,7 +716,7 @@ ScalarIndexSort<T>::LoadEntries(storage::IndexEntryReader& reader,
                                 const Config& config) {
     size_t index_size = reader.GetMeta<size_t>("index_length");
     total_num_rows_ = reader.GetMeta<size_t>("num_rows");
-    is_nested_index_ = reader.GetMeta<bool>("is_nested");
+    is_nested_index_ = is_nested_index_ || reader.GetMeta<bool>("is_nested");
 
     is_mmap_ = GetValueFromConfig<bool>(config, ENABLE_MMAP).value_or(true);
 

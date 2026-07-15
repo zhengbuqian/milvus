@@ -40,6 +40,7 @@ SealedIndexTranslator::SealedIndexTranslator(
       index_load_info_({load_index_info->enable_mmap,
                         load_index_info->mmap_dir_path,
                         load_index_info->field_type,
+                        load_index_info->element_type,
                         load_index_info->index_params,
                         load_index_info->index_size,
                         load_index_info->index_engine_version,
@@ -133,17 +134,15 @@ std::pair<milvus::cachinglayer::ResourceUsage,
           milvus::cachinglayer::ResourceUsage>
 SealedIndexTranslator::estimated_byte_size_of_cell(
     milvus::cachinglayer::cid_t cid) const {
-    LoadResourceRequest request =
-        milvus::index::IndexFactory::GetInstance().IndexLoadResource(
-            index_load_info_.field_type,
-            index_load_info_.index_engine_version,
-            index_load_info_.index_size,
-            index_load_info_.index_params,
-            index_load_info_.enable_mmap);
-    // TODO(tiered storage 1), this is an estimation, error could be up to 20%.
-    int64_t memory_cost = request.final_memory_cost * 1024 * 1024 * 1024;
-    int64_t disk_cost = request.final_disk_cost * 1024 * 1024 * 1024;
-    return milvus::cachinglayer::ResourceUsage{memory_cost, disk_cost};
+    // this is an estimation, error could be up to 20%.
+    return {milvus::cachinglayer::ResourceUsage(
+                load_resource_request_.final_memory_cost,
+                load_resource_request_.final_disk_cost),
+            milvus::cachinglayer::ResourceUsage(
+                load_resource_request_.max_memory_cost -
+                    load_resource_request_.final_memory_cost,
+                load_resource_request_.max_disk_cost * 2 -
+                    load_resource_request_.final_disk_cost)};
 }
 
 const std::string&
@@ -174,6 +173,8 @@ SealedIndexTranslator::get_cells(milvus::OpContext* ctx,
         config_[milvus::index::MMAP_FILE_PATH] = (base_path / "index").string();
         config_[milvus::index::EMB_LIST_META_PATH] =
             (base_path / index::EMB_LIST_META_FILE_NAME).string();
+        config_[milvus::index::EMB_LIST_RAW_INDEX_PATH] =
+            (base_path / index::EMB_LIST_RAW_INDEX_FILE_NAME).string();
     } else {
         config_[milvus::index::ENABLE_MMAP] = "false";
     }

@@ -62,6 +62,8 @@ class ExecPlanNodeVisitor : public PlanNodeVisitor {
     void
     visit(RetrievePlanNode& node) override;
 
+    // no extra visit for vector types
+
  public:
     ExecPlanNodeVisitor(const segcore::SegmentInterface& segment,
                         Timestamp timestamp,
@@ -168,11 +170,13 @@ class ExecPlanNodeVisitor : public PlanNodeVisitor {
                 std::shared_ptr<milvus::exec::QueryContext> query_context);
 
     void
-    setupRetrieveResult(const RowVectorPtr& result,
-                        const OpContext& op_context,
-                        const RetrievePlanNode& node,
-                        RetrieveResult& tmp_retrieve_result,
-                        const segcore::SegmentInternalInterface* segment);
+    setupRetrieveResult(
+        const RowVectorPtr& result,
+        const OpContext& op_context,
+        const RetrievePlanNode& node,
+        RetrieveResult& tmp_retrieve_result,
+        const segcore::SegmentInternalInterface* segment,
+        std::shared_ptr<milvus::exec::QueryContext> query_context);
 
  private:
     const segcore::SegmentInterface& segment_;

@@ -174,11 +174,83 @@ func ConstructSearchRequest(
 	params map[string]any,
 	nq, dim int, topk, roundDecimal int,
 ) *milvuspb.SearchRequest {
+	return constructSearchRequest(dbName, collectionName, expr, vecField, false, vectorType, outputFields, metricType, params, nq, dim, topk, roundDecimal)
+}
+
+func ConstructEmbeddingListSearchRequest(
+	dbName, collectionName string,
+	expr string,
+	vecField string,
+	vectorType schemapb.DataType,
+	outputFields []string,
+	metricType string,
+	params map[string]any,
+	nq, dim int, topk, roundDecimal int,
+) *milvuspb.SearchRequest {
+	return constructSearchRequest(dbName, collectionName, expr, vecField, true, vectorType, outputFields, metricType, params, nq, dim, topk, roundDecimal)
+}
+
+// ConstructElementLevelSearchRequest builds a search request that runs
+// element-level search against a VECTOR_ARRAY field. The placeholder carries
+// a single query vector per nq row with element_level=true.
+func ConstructElementLevelSearchRequest(
+	dbName, collectionName string,
+	expr string,
+	vecField string,
+	vectorType schemapb.DataType,
+	outputFields []string,
+	metricType string,
+	params map[string]any,
+	nq, dim int, topk, roundDecimal int,
+) *milvuspb.SearchRequest {
 	b, err := json.Marshal(params)
 	if err != nil {
 		panic(err)
 	}
-	plg := constructPlaceholderGroup(nq, dim, vectorType)
+	plg := constructPlaceholderGroup(nq, dim, vectorType, false)
+	for _, ph := range plg.Placeholders {
+		ph.ElementLevel = true
+	}
+	plgBs, err := proto.Marshal(plg)
+	if err != nil {
+		panic(err)
+	}
+	return &milvuspb.SearchRequest{
+		DbName:         dbName,
+		CollectionName: collectionName,
+		Dsl:            expr,
+		SearchInput: &milvuspb.SearchRequest_PlaceholderGroup{
+			PlaceholderGroup: plgBs,
+		},
+		DslType:      commonpb.DslType_BoolExprV1,
+		OutputFields: outputFields,
+		SearchParams: []*commonpb.KeyValuePair{
+			{Key: common.MetricTypeKey, Value: metricType},
+			{Key: proxy.ParamsKey, Value: string(b)},
+			{Key: AnnsFieldKey, Value: vecField},
+			{Key: common.TopKKey, Value: strconv.Itoa(topk)},
+			{Key: RoundDecimalKey, Value: strconv.Itoa(roundDecimal)},
+		},
+		Nq: int64(nq),
+	}
+}
+
+func constructSearchRequest(
+	dbName, collectionName string,
+	expr string,
+	vecField string,
+	isEmbeddingList bool,
+	vectorType schemapb.DataType,
+	outputFields []string,
+	metricType string,
+	params map[string]any,
+	nq, dim int, topk, roundDecimal int,
+) *milvuspb.SearchRequest {
+	b, err := json.Marshal(params)
+	if err != nil {
+		panic(err)
+	}
+	plg := constructPlaceholderGroup(nq, dim, vectorType, isEmbeddingList)
 	plgBs, err := proto.Marshal(plg)
 	if err != nil {
 		panic(err)
@@ -239,7 +311,7 @@ func ConstructSearchRequestWithConsistencyLevel(
 	if err != nil {
 		panic(err)
 	}
-	plg := constructPlaceholderGroup(nq, dim, vectorType)
+	plg := constructPlaceholderGroup(nq, dim, vectorType, false)
 	plgBs, err := proto.Marshal(plg)
 	if err != nil {
 		panic(err)
@@ -285,15 +357,25 @@ func ConstructSearchRequestWithConsistencyLevel(
 	}
 }
 
-func constructPlaceholderGroup(nq, dim int, vectorType schemapb.DataType) *commonpb.PlaceholderGroup {
+func constructPlaceholderGroup(nq, dim int, vectorType schemapb.DataType, isEmbeddingList bool) *commonpb.PlaceholderGroup {
 	values := make([][]byte, 0, nq)
 	var placeholderType commonpb.PlaceholderType
 	switch vectorType {
 	case schemapb.DataType_FloatVector:
-		placeholderType = commonpb.PlaceholderType_FloatVector
+		if !isEmbeddingList {
+			placeholderType = commonpb.PlaceholderType_FloatVector
+		} else {
+			placeholderType = commonpb.PlaceholderType_EmbListFloatVector
+		}
 		for i := 0; i < nq; i++ {
-			bs := make([]byte, 0, dim*4)
-			for j := 0; j < dim; j++ {
+			vecCount := dim
+			// generate some embedding lists with random number of vectors
+			if isEmbeddingList {
+				vecCount = vecCount * (rand.Intn(10) + 3)
+			}
+
+			bs := make([]byte, 0, vecCount*4)
+			for j := 0; j < vecCount; j++ {
 				var buffer bytes.Buffer
 				f := rand.Float32()
 				err := binary.Write(&buffer, common.Endian, f)
@@ -305,9 +387,16 @@ func constructPlaceholderGroup(nq, dim int, vectorType schemapb.DataType) *commo
 			values = append(values, bs)
 		}
 	case schemapb.DataType_BinaryVector:
-		placeholderType = commonpb.PlaceholderType_BinaryVector
+		if !isEmbeddingList {
+			placeholderType = commonpb.PlaceholderType_BinaryVector
+		} else {
+			placeholderType = commonpb.PlaceholderType_EmbListBinaryVector
+		}
 		for i := 0; i < nq; i++ {
 			total := dim / 8
+			if isEmbeddingList {
+				total = total * (rand.Intn(10) + 3)
+			}
 			ret := make([]byte, total)
 			_, err := rand.Read(ret)
 			if err != nil {
@@ -316,17 +405,33 @@ func constructPlaceholderGroup(nq, dim int, vectorType schemapb.DataType) *commo
 			values = append(values, ret)
 		}
 	case schemapb.DataType_Float16Vector:
-		placeholderType = commonpb.PlaceholderType_Float16Vector
-		data := testutils.GenerateFloat16Vectors(nq, dim)
+		if !isEmbeddingList {
+			placeholderType = commonpb.PlaceholderType_Float16Vector
+		} else {
+			placeholderType = commonpb.PlaceholderType_EmbListFloat16Vector
+		}
+		vecCount := dim
+		if isEmbeddingList {
+			vecCount = vecCount * (rand.Intn(10) + 3)
+		}
+		data := testutils.GenerateFloat16Vectors(nq, vecCount)
 		for i := 0; i < nq; i++ {
-			rowBytes := dim * 2
+			rowBytes := vecCount * 2
 			values = append(values, data[rowBytes*i:rowBytes*(i+1)])
 		}
 	case schemapb.DataType_BFloat16Vector:
-		placeholderType = commonpb.PlaceholderType_BFloat16Vector
-		data := testutils.GenerateBFloat16Vectors(nq, dim)
+		if !isEmbeddingList {
+			placeholderType = commonpb.PlaceholderType_BFloat16Vector
+		} else {
+			placeholderType = commonpb.PlaceholderType_EmbListBFloat16Vector
+		}
+		vecCount := dim
+		if isEmbeddingList {
+			vecCount = vecCount * (rand.Intn(10) + 3)
+		}
+		data := testutils.GenerateBFloat16Vectors(nq, vecCount)
 		for i := 0; i < nq; i++ {
-			rowBytes := dim * 2
+			rowBytes := vecCount * 2
 			values = append(values, data[rowBytes*i:rowBytes*(i+1)])
 		}
 	case schemapb.DataType_SparseFloatVector:
@@ -336,10 +441,18 @@ func constructPlaceholderGroup(nq, dim int, vectorType schemapb.DataType) *commo
 		sparseVecs := GenerateSparseFloatArray(nq)
 		values = append(values, sparseVecs.Contents...)
 	case schemapb.DataType_Int8Vector:
-		placeholderType = commonpb.PlaceholderType_Int8Vector
-		data := testutils.GenerateInt8Vectors(nq, dim)
+		if !isEmbeddingList {
+			placeholderType = commonpb.PlaceholderType_Int8Vector
+		} else {
+			placeholderType = commonpb.PlaceholderType_EmbListInt8Vector
+		}
+		vecCount := dim
+		if isEmbeddingList {
+			vecCount = vecCount * (rand.Intn(10) + 3)
+		}
+		data := testutils.GenerateInt8Vectors(nq, vecCount)
 		for i := 0; i < nq; i++ {
-			rowBytes := dim
+			rowBytes := vecCount
 			values = append(values, typeutil.Int8ArrayToBytes(data[rowBytes*i:rowBytes*(i+1)]))
 		}
 	default:

@@ -35,27 +35,36 @@ import (
 )
 
 const (
-	CollectionID           = 1
-	PartitionID            = 1
-	SegmentID              = 1
-	RowIDField             = 0
-	TimestampField         = 1
-	BoolField              = 100
-	Int8Field              = 101
-	Int16Field             = 102
-	Int32Field             = 103
-	Int64Field             = 104
-	FloatField             = 105
-	DoubleField            = 106
-	StringField            = 107
-	BinaryVectorField      = 108
-	FloatVectorField       = 109
-	ArrayField             = 110
-	JSONField              = 111
-	Float16VectorField     = 112
-	BFloat16VectorField    = 113
-	SparseFloatVectorField = 114
-	Int8VectorField        = 115
+	CollectionID                   = 1
+	PartitionID                    = 1
+	SegmentID                      = 1
+	RowIDField                     = 0
+	TimestampField                 = 1
+	BoolField                      = 100
+	Int8Field                      = 101
+	Int16Field                     = 102
+	Int32Field                     = 103
+	Int64Field                     = 104
+	FloatField                     = 105
+	DoubleField                    = 106
+	StringField                    = 107
+	BinaryVectorField              = 108
+	FloatVectorField               = 109
+	ArrayField                     = 110
+	JSONField                      = 111
+	Float16VectorField             = 112
+	BFloat16VectorField            = 113
+	SparseFloatVectorField         = 114
+	Int8VectorField                = 115
+	StructField                    = 116
+	StructSubInt32Field            = 117
+	StructSubFloatVectorField      = 118
+	NullableFloatVectorField       = 119
+	NullableBinaryVectorField      = 120
+	NullableFloat16VectorField     = 121
+	NullableBFloat16VectorField    = 122
+	NullableInt8VectorField        = 123
+	NullableSparseFloatVectorField = 124
 )
 
 func assertTestData(t *testing.T, i int, value *Value) {
@@ -696,6 +705,34 @@ func genTestCollectionMeta() *etcdpb.CollectionMeta {
 					TypeParams:  []*commonpb.KeyValuePair{},
 				},
 			},
+			StructArrayFields: []*schemapb.StructArrayFieldSchema{
+				{
+					FieldID: StructField,
+					Name:    "field_struct",
+					Fields: []*schemapb.FieldSchema{
+						{
+							FieldID:     StructSubInt32Field,
+							Name:        "field_sub_int",
+							Description: "int",
+							DataType:    schemapb.DataType_Array,
+							ElementType: schemapb.DataType_Int32,
+						},
+						{
+							FieldID:     StructSubFloatVectorField,
+							Name:        "field_sub_float_vector",
+							Description: "float_vector",
+							DataType:    schemapb.DataType_ArrayOfVector,
+							ElementType: schemapb.DataType_FloatVector,
+							TypeParams: []*commonpb.KeyValuePair{
+								{
+									Key:   common.DimKey,
+									Value: "2",
+								},
+							},
+						},
+					},
+				},
+			},
 		},
 	}
 }
@@ -799,6 +836,69 @@ func TestInsertCodec(t *testing.T) {
 				Dim:       4,
 				Nullable:  false,
 			},
+			StructSubInt32Field: &ArrayFieldData{
+				ElementType: schemapb.DataType_Int32,
+				Data: []*schemapb.ScalarField{
+					{
+						Data: &schemapb.ScalarField_IntData{
+							IntData: &schemapb.IntArray{Data: []int32{3, 2, 1, 0}},
+						},
+					},
+					{
+						Data: &schemapb.ScalarField_IntData{
+							IntData: &schemapb.IntArray{Data: []int32{6, 5, 4, 3}},
+						},
+					},
+				},
+			},
+			StructSubFloatVectorField: &VectorArrayFieldData{
+				Dim:         2,
+				ElementType: schemapb.DataType_FloatVector,
+				Data: []*schemapb.VectorField{
+					{
+						Dim: 2,
+						Data: &schemapb.VectorField_FloatVector{
+							FloatVector: &schemapb.FloatArray{Data: []float32{3, 2, 1, 0}},
+						},
+					},
+					{
+						Dim: 2,
+						Data: &schemapb.VectorField_FloatVector{
+							FloatVector: &schemapb.FloatArray{Data: []float32{6, 5, 4, 3}},
+						},
+					},
+				},
+			},
+			NullableFloatVectorField: &FloatVectorFieldData{
+				Data:      []float32{4.0, 5.0, 6.0, 7.0},
+				ValidData: []bool{true, false},
+				Dim:       4,
+				Nullable:  true,
+			},
+			NullableBinaryVectorField: &BinaryVectorFieldData{
+				Data:      []byte{255},
+				ValidData: []bool{true, false},
+				Dim:       8,
+				Nullable:  true,
+			},
+			NullableFloat16VectorField: &Float16VectorFieldData{
+				Data:      []byte{255, 0, 255, 0, 255, 0, 255, 0},
+				ValidData: []bool{true, false},
+				Dim:       4,
+				Nullable:  true,
+			},
+			NullableBFloat16VectorField: &BFloat16VectorFieldData{
+				Data:      []byte{255, 0, 255, 0, 255, 0, 255, 0},
+				ValidData: []bool{true, false},
+				Dim:       4,
+				Nullable:  true,
+			},
+			NullableInt8VectorField: &Int8VectorFieldData{
+				Data:      []int8{-4, -5, -6, -7},
+				ValidData: []bool{true, false},
+				Dim:       4,
+				Nullable:  true,
+			},
 		},
 	}
 
@@ -876,6 +976,79 @@ func TestInsertCodec(t *testing.T) {
 				ValidData: nil,
 				Dim:       4,
 				Nullable:  false,
+			},
+			StructSubInt32Field: &ArrayFieldData{
+				ElementType: schemapb.DataType_Int32,
+				Data: []*schemapb.ScalarField{
+					{
+						Data: &schemapb.ScalarField_IntData{
+							IntData: &schemapb.IntArray{Data: []int32{33, 22, 11, 0}},
+						},
+					},
+					{
+						Data: &schemapb.ScalarField_IntData{
+							IntData: &schemapb.IntArray{Data: []int32{66, 55, 44, 33}},
+						},
+					},
+				},
+			},
+			StructSubFloatVectorField: &VectorArrayFieldData{
+				Dim:         2,
+				ElementType: schemapb.DataType_FloatVector,
+				Data: []*schemapb.VectorField{
+					{
+						Dim: 2,
+						Data: &schemapb.VectorField_FloatVector{
+							FloatVector: &schemapb.FloatArray{Data: []float32{33, 22, 11, 0}},
+						},
+					},
+					{
+						Dim: 2,
+						Data: &schemapb.VectorField_FloatVector{
+							FloatVector: &schemapb.FloatArray{Data: []float32{66, 55, 44, 33}},
+						},
+					},
+				},
+			},
+			NullableFloatVectorField: &FloatVectorFieldData{
+				Data:      []float32{0.0, 1.0, 2.0, 3.0},
+				ValidData: []bool{true, false},
+				Dim:       4,
+				Nullable:  true,
+			},
+			NullableBinaryVectorField: &BinaryVectorFieldData{
+				Data:      []byte{0},
+				ValidData: []bool{true, false},
+				Dim:       8,
+				Nullable:  true,
+			},
+			NullableFloat16VectorField: &Float16VectorFieldData{
+				Data:      []byte{0, 255, 0, 255, 0, 255, 0, 255},
+				ValidData: []bool{true, false},
+				Dim:       4,
+				Nullable:  true,
+			},
+			NullableBFloat16VectorField: &BFloat16VectorFieldData{
+				Data:      []byte{0, 255, 0, 255, 0, 255, 0, 255},
+				ValidData: []bool{true, false},
+				Dim:       4,
+				Nullable:  true,
+			},
+			NullableInt8VectorField: &Int8VectorFieldData{
+				Data:      []int8{0, 1, 2, 3},
+				ValidData: []bool{true, false},
+				Dim:       4,
+				Nullable:  true,
+			},
+			NullableSparseFloatVectorField: &SparseFloatVectorFieldData{
+				SparseFloatArray: schemapb.SparseFloatArray{
+					Dim: 300,
+					Contents: [][]byte{
+						typeutil.CreateSparseFloatRow([]uint32{0, 1, 2}, []float32{4, 5, 6}),
+					},
+				},
+				ValidData: []bool{true, false},
+				Nullable:  true,
 			},
 			ArrayField: &ArrayFieldData{
 				ElementType: schemapb.DataType_Int32,
@@ -981,9 +1154,10 @@ func TestInsertCodec(t *testing.T) {
 				Dim:       4,
 				Nullable:  true,
 			},
-			Int8VectorField: &Int8VectorFieldData{[]int8{}, 4},
-			ArrayField:      &ArrayFieldData{schemapb.DataType_Int32, []*schemapb.ScalarField{}, nil, false},
-			JSONField:       &JSONFieldData{[][]byte{}, nil, false},
+			StructSubInt32Field:       &ArrayFieldData{schemapb.DataType_Int32, []*schemapb.ScalarField{}, nil, false},
+			ArrayField:                &ArrayFieldData{schemapb.DataType_Int32, []*schemapb.ScalarField{}, nil, false},
+			JSONField:                 &JSONFieldData{[][]byte{}, nil, false},
+			StructSubFloatVectorField: &VectorArrayFieldData{Dim: 0, ElementType: schemapb.DataType_FloatVector, Data: []*schemapb.VectorField{}},
 		},
 	}
 	b, err := insertCodec.Serialize(PartitionID, SegmentID, insertDataEmpty)
@@ -1057,6 +1231,20 @@ func TestInsertCodec(t *testing.T) {
 		resultArrayList = append(resultArrayList, v.GetIntData().GetData())
 	}
 	assert.EqualValues(t, int32ArrayList, resultArrayList)
+
+	structInt32ArrayList := [][]int32{{33, 22, 11, 0}, {66, 55, 44, 33}, {3, 2, 1, 0}, {6, 5, 4, 3}}
+	resultStructInt32ArrayList := [][]int32{}
+	for _, v := range resultData.Data[StructSubInt32Field].(*ArrayFieldData).Data {
+		resultStructInt32ArrayList = append(resultStructInt32ArrayList, v.GetIntData().GetData())
+	}
+	assert.EqualValues(t, structInt32ArrayList, resultStructInt32ArrayList)
+
+	structFloatVectorArrayList := [][]float32{{33, 22, 11, 0}, {66, 55, 44, 33}, {3, 2, 1, 0}, {6, 5, 4, 3}}
+	resultStructFloatVectorArrayList := [][]float32{}
+	for _, v := range resultData.Data[StructSubFloatVectorField].(*VectorArrayFieldData).Data {
+		resultStructFloatVectorArrayList = append(resultStructFloatVectorArrayList, v.GetFloatVector().GetData())
+	}
+	assert.EqualValues(t, structFloatVectorArrayList, resultStructFloatVectorArrayList)
 
 	assert.Equal(t,
 		[][]byte{
@@ -1392,6 +1580,28 @@ func TestMemorySize(t *testing.T) {
 					},
 				},
 			},
+			StructSubInt32Field: &ArrayFieldData{
+				ElementType: schemapb.DataType_Int32,
+				Data: []*schemapb.ScalarField{
+					{
+						Data: &schemapb.ScalarField_IntData{
+							IntData: &schemapb.IntArray{Data: []int32{3, 2, 1, 0}},
+						},
+					},
+				},
+			},
+			StructSubFloatVectorField: &VectorArrayFieldData{
+				Dim:         2,
+				ElementType: schemapb.DataType_FloatVector,
+				Data: []*schemapb.VectorField{
+					{
+						Dim: 2,
+						Data: &schemapb.VectorField_FloatVector{
+							FloatVector: &schemapb.FloatArray{Data: []float32{3, 2, 1, 0}},
+						},
+					},
+				},
+			},
 			JSONField: &JSONFieldData{
 				Data: [][]byte{
 					[]byte(`{"batch":1}`),
@@ -1409,13 +1619,21 @@ func TestMemorySize(t *testing.T) {
 	assert.Equal(t, insertData1.Data[FloatField].GetMemorySize(), 5)
 	assert.Equal(t, insertData1.Data[DoubleField].GetMemorySize(), 9)
 	assert.Equal(t, insertData1.Data[StringField].GetMemorySize(), 18)
-	assert.Equal(t, insertData1.Data[BinaryVectorField].GetMemorySize(), 5)
-	assert.Equal(t, insertData1.Data[FloatVectorField].GetMemorySize(), 20)
-	assert.Equal(t, insertData1.Data[Float16VectorField].GetMemorySize(), 12)
-	assert.Equal(t, insertData1.Data[BFloat16VectorField].GetMemorySize(), 12)
-	assert.Equal(t, insertData1.Data[Int8VectorField].GetMemorySize(), 8)
-	assert.Equal(t, insertData1.Data[ArrayField].GetMemorySize(), 3*4+1)
-	assert.Equal(t, insertData1.Data[JSONField].GetMemorySize(), len([]byte(`{"batch":1}`))+16+1)
+	assert.Equal(t, insertData1.Data[BinaryVectorField].GetMemorySize(), 14)
+	assert.Equal(t, insertData1.Data[FloatVectorField].GetMemorySize(), 29)
+	assert.Equal(t, insertData1.Data[Float16VectorField].GetMemorySize(), 21)
+	assert.Equal(t, insertData1.Data[BFloat16VectorField].GetMemorySize(), 21)
+	assert.Equal(t, insertData1.Data[Int8VectorField].GetMemorySize(), 17)
+	assert.Equal(t, insertData1.Data[NullableFloatVectorField].GetMemorySize(), 30)
+	assert.Equal(t, insertData1.Data[NullableBinaryVectorField].GetMemorySize(), 15)
+	assert.Equal(t, insertData1.Data[NullableFloat16VectorField].GetMemorySize(), 22)
+	assert.Equal(t, insertData1.Data[NullableBFloat16VectorField].GetMemorySize(), 22)
+	assert.Equal(t, insertData1.Data[NullableInt8VectorField].GetMemorySize(), 18)
+	assert.Equal(t, insertData1.Data[NullableSparseFloatVectorField].GetMemorySize(), 39)
+	assert.Equal(t, insertData1.Data[ArrayField].GetMemorySize(), 13)
+	assert.Equal(t, insertData1.Data[JSONField].GetMemorySize(), 28)
+	assert.Equal(t, insertData1.Data[StructSubInt32Field].GetMemorySize(), 17)
+	assert.Equal(t, insertData1.Data[StructSubFloatVectorField].GetMemorySize(), 20+1)
 
 	insertData2 := &InsertData{
 		Data: map[int64]FieldData{
@@ -1557,21 +1775,97 @@ func TestMemorySize(t *testing.T) {
 
 	insertDataEmpty := &InsertData{
 		Data: map[int64]FieldData{
-			RowIDField:          &Int64FieldData{[]int64{}, nil, false},
-			TimestampField:      &Int64FieldData{[]int64{}, nil, false},
-			BoolField:           &BoolFieldData{[]bool{}, nil, false},
-			Int8Field:           &Int8FieldData{[]int8{}, nil, false},
-			Int16Field:          &Int16FieldData{[]int16{}, nil, false},
-			Int32Field:          &Int32FieldData{[]int32{}, nil, false},
-			Int64Field:          &Int64FieldData{[]int64{}, nil, false},
-			FloatField:          &FloatFieldData{[]float32{}, nil, false},
-			DoubleField:         &DoubleFieldData{[]float64{}, nil, false},
-			StringField:         &StringFieldData{[]string{}, schemapb.DataType_VarChar, nil, false},
-			BinaryVectorField:   &BinaryVectorFieldData{[]byte{}, 8},
-			FloatVectorField:    &FloatVectorFieldData{[]float32{}, 4},
-			Float16VectorField:  &Float16VectorFieldData{[]byte{}, 4},
-			BFloat16VectorField: &BFloat16VectorFieldData{[]byte{}, 4},
-			Int8VectorField:     &Int8VectorFieldData{[]int8{}, 4},
+			RowIDField:     &Int64FieldData{[]int64{}, nil, false},
+			TimestampField: &Int64FieldData{[]int64{}, nil, false},
+			BoolField:      &BoolFieldData{[]bool{}, nil, false},
+			Int8Field:      &Int8FieldData{[]int8{}, nil, false},
+			Int16Field:     &Int16FieldData{[]int16{}, nil, false},
+			Int32Field:     &Int32FieldData{[]int32{}, nil, false},
+			Int64Field:     &Int64FieldData{[]int64{}, nil, false},
+			FloatField:     &FloatFieldData{[]float32{}, nil, false},
+			DoubleField:    &DoubleFieldData{[]float64{}, nil, false},
+			StringField:    &StringFieldData{[]string{}, schemapb.DataType_VarChar, nil, false},
+			BinaryVectorField: &BinaryVectorFieldData{
+				Data:      []byte{},
+				ValidData: nil,
+				Dim:       8,
+				Nullable:  false,
+			},
+			FloatVectorField: &FloatVectorFieldData{
+				Data:      []float32{},
+				ValidData: nil,
+				Dim:       4,
+				Nullable:  false,
+			},
+			Float16VectorField: &Float16VectorFieldData{
+				Data:      []byte{},
+				ValidData: nil,
+				Dim:       4,
+				Nullable:  false,
+			},
+			BFloat16VectorField: &BFloat16VectorFieldData{
+				Data:      []byte{},
+				ValidData: nil,
+				Dim:       4,
+				Nullable:  false,
+			},
+			Int8VectorField: &Int8VectorFieldData{
+				Data:      []int8{},
+				ValidData: nil,
+				Dim:       4,
+				Nullable:  false,
+			},
+			SparseFloatVectorField: &SparseFloatVectorFieldData{
+				SparseFloatArray: schemapb.SparseFloatArray{
+					Dim:      0,
+					Contents: [][]byte{},
+				},
+				ValidData: nil,
+				Nullable:  false,
+			},
+			NullableFloatVectorField: &FloatVectorFieldData{
+				Data:      []float32{},
+				ValidData: []bool{},
+				Dim:       4,
+				Nullable:  true,
+			},
+			NullableBinaryVectorField: &BinaryVectorFieldData{
+				Data:      []byte{},
+				ValidData: []bool{},
+				Dim:       8,
+				Nullable:  true,
+			},
+			NullableFloat16VectorField: &Float16VectorFieldData{
+				Data:      []byte{},
+				ValidData: []bool{},
+				Dim:       4,
+				Nullable:  true,
+			},
+			NullableBFloat16VectorField: &BFloat16VectorFieldData{
+				Data:      []byte{},
+				ValidData: []bool{},
+				Dim:       4,
+				Nullable:  true,
+			},
+			NullableInt8VectorField: &Int8VectorFieldData{
+				Data:      []int8{},
+				ValidData: []bool{},
+				Dim:       4,
+				Nullable:  true,
+			},
+			NullableSparseFloatVectorField: &SparseFloatVectorFieldData{
+				SparseFloatArray: schemapb.SparseFloatArray{
+					Dim:      0,
+					Contents: [][]byte{},
+				},
+				ValidData: []bool{},
+				Nullable:  true,
+			},
+			StructSubFloatVectorField: &VectorArrayFieldData{
+				Dim:         2,
+				ElementType: schemapb.DataType_FloatVector,
+				Data:        []*schemapb.VectorField{},
+			},
 		},
 	}
 
@@ -1585,11 +1879,19 @@ func TestMemorySize(t *testing.T) {
 	assert.Equal(t, insertDataEmpty.Data[FloatField].GetMemorySize(), 1)
 	assert.Equal(t, insertDataEmpty.Data[DoubleField].GetMemorySize(), 1)
 	assert.Equal(t, insertDataEmpty.Data[StringField].GetMemorySize(), 1)
-	assert.Equal(t, insertDataEmpty.Data[BinaryVectorField].GetMemorySize(), 4)
-	assert.Equal(t, insertDataEmpty.Data[FloatVectorField].GetMemorySize(), 4)
-	assert.Equal(t, insertDataEmpty.Data[Float16VectorField].GetMemorySize(), 4)
-	assert.Equal(t, insertDataEmpty.Data[BFloat16VectorField].GetMemorySize(), 4)
-	assert.Equal(t, insertDataEmpty.Data[Int8VectorField].GetMemorySize(), 4)
+	assert.Equal(t, insertDataEmpty.Data[BinaryVectorField].GetMemorySize(), 13)
+	assert.Equal(t, insertDataEmpty.Data[FloatVectorField].GetMemorySize(), 13)
+	assert.Equal(t, insertDataEmpty.Data[Float16VectorField].GetMemorySize(), 13)
+	assert.Equal(t, insertDataEmpty.Data[BFloat16VectorField].GetMemorySize(), 13)
+	assert.Equal(t, insertDataEmpty.Data[Int8VectorField].GetMemorySize(), 13)
+	assert.Equal(t, insertDataEmpty.Data[SparseFloatVectorField].GetMemorySize(), 9)
+	assert.Equal(t, insertDataEmpty.Data[NullableFloatVectorField].GetMemorySize(), 13)
+	assert.Equal(t, insertDataEmpty.Data[NullableBinaryVectorField].GetMemorySize(), 13)
+	assert.Equal(t, insertDataEmpty.Data[NullableFloat16VectorField].GetMemorySize(), 13)
+	assert.Equal(t, insertDataEmpty.Data[NullableBFloat16VectorField].GetMemorySize(), 13)
+	assert.Equal(t, insertDataEmpty.Data[NullableInt8VectorField].GetMemorySize(), 13)
+	assert.Equal(t, insertDataEmpty.Data[NullableSparseFloatVectorField].GetMemorySize(), 9)
+	assert.Equal(t, insertDataEmpty.Data[StructSubFloatVectorField].GetMemorySize(), 0+1)
 }
 
 func TestDeleteData(t *testing.T) {
@@ -1712,4 +2014,77 @@ func TestAddFieldDataToPayload(t *testing.T) {
 		Nullable:  false,
 	})
 	assert.Error(t, err)
+	err = AddFieldDataToPayload(e, schemapb.DataType_ArrayOfVector, &VectorArrayFieldData{
+		Dim:         2,
+		ElementType: schemapb.DataType_FloatVector,
+		Data: []*schemapb.VectorField{
+			{
+				Dim: 2,
+				Data: &schemapb.VectorField_FloatVector{
+					FloatVector: &schemapb.FloatArray{Data: []float32{1, 2, 3, 4}},
+				},
+			},
+		},
+	})
+	assert.Error(t, err)
+}
+
+func TestAddFieldDataToPayload_BanNullableArrayOfVector(t *testing.T) {
+	data := &VectorArrayFieldData{
+		Dim:         4,
+		ElementType: schemapb.DataType_FloatVector,
+		Data:        []*schemapb.VectorField{makeFloatVec(4, 1, 2, 3, 4)},
+		ValidData:   []bool{true, false},
+		Nullable:    true,
+	}
+
+	w, err := newInsertEventWriter(schemapb.DataType_ArrayOfVector, WithDim(4), WithElementType(schemapb.DataType_FloatVector))
+	require.NoError(t, err)
+	defer w.Close()
+
+	err = AddFieldDataToPayload(w, schemapb.DataType_ArrayOfVector, data)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "nullable ArrayOfVector is not supported in V1 storage format")
+}
+
+func TestAddInsertData_BanNullableArrayOfVector(t *testing.T) {
+	insertData := &InsertData{Data: make(map[FieldID]FieldData)}
+
+	singleData := []*schemapb.VectorField{makeFloatVec(4, 1, 2, 3, 4)}
+	validData := []bool{true, false}
+
+	_, err := AddInsertData(
+		schemapb.DataType_ArrayOfVector,
+		singleData,
+		insertData,
+		100,
+		2,
+		nil,
+		4,
+		validData,
+	)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "nullable ArrayOfVector is not supported in V1 storage format")
+}
+
+func TestAddInsertData_NonNullableArrayOfVector(t *testing.T) {
+	insertData := &InsertData{Data: make(map[FieldID]FieldData)}
+
+	singleData := []*schemapb.VectorField{makeFloatVec(4, 1, 2, 3, 4)}
+
+	n, err := AddInsertData(
+		schemapb.DataType_ArrayOfVector,
+		singleData,
+		insertData,
+		100,
+		1,
+		nil,
+		4,
+		nil,
+	)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	fd := insertData.Data[100].(*VectorArrayFieldData)
+	assert.Equal(t, 1, len(fd.Data))
 }

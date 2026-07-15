@@ -81,6 +81,37 @@ func (suite *RowParserSuite) createArrayFieldSchema(id int64, name string, eleme
 }
 
 func (suite *RowParserSuite) createAllTypesSchema() *schemapb.CollectionSchema {
+	structArray := &schemapb.StructArrayFieldSchema{
+		FieldID: 1000,
+		Name:    "struct_array",
+		Fields: []*schemapb.FieldSchema{
+			suite.createArrayFieldSchema(1001, "struct_array[sub_bool]", schemapb.DataType_Bool, false),
+			suite.createArrayFieldSchema(1002, "struct_array[sub_int8]", schemapb.DataType_Int8, false),
+			suite.createArrayFieldSchema(1003, "struct_array[sub_int16]", schemapb.DataType_Int16, false),
+			suite.createArrayFieldSchema(1004, "struct_array[sub_int32]", schemapb.DataType_Int32, false),
+			suite.createArrayFieldSchema(1005, "struct_array[sub_int64]", schemapb.DataType_Int64, false),
+			suite.createArrayFieldSchema(1006, "struct_array[sub_float]", schemapb.DataType_Float, false),
+			suite.createArrayFieldSchema(1007, "struct_array[sub_double]", schemapb.DataType_Double, false),
+			suite.createArrayFieldSchema(1008, "struct_array[sub_str]", schemapb.DataType_VarChar, false),
+			{
+				FieldID:     1009,
+				Name:        "struct_array[sub_float_vector]",
+				DataType:    schemapb.DataType_ArrayOfVector,
+				ElementType: schemapb.DataType_FloatVector,
+				TypeParams: []*commonpb.KeyValuePair{
+					{
+						Key:   common.MaxCapacityKey,
+						Value: "4",
+					},
+					{
+						Key:   common.DimKey,
+						Value: "2",
+					},
+				},
+			},
+		},
+	}
+
 	schema := &schemapb.CollectionSchema{
 		EnableDynamicField: suite.hasDynamic,
 		Fields: []*schemapb.FieldSchema{
@@ -221,6 +252,7 @@ func (suite *RowParserSuite) createAllTypesSchema() *schemapb.CollectionSchema {
 				Nullable: suite.hasNullable,
 			},
 		},
+		StructArrayFields: []*schemapb.StructArrayFieldSchema{structArray},
 	}
 
 	if suite.hasDynamic {
@@ -489,8 +521,95 @@ func (suite *RowParserSuite) runValid(c *testCase) {
 			default:
 				continue
 			}
+		case schemapb.DataType_ArrayOfVector:
+			// Handle ArrayOfVector validation
+			vf, _ := val.(*schemapb.VectorField)
+			if vf.GetFloatVector() != nil {
+				// Parse expected vectors from raw string
+				var expectedVectors [][]float32
+				err := json.Unmarshal([]byte(rawVal), &expectedVectors)
+				suite.NoError(err)
+
+				// Flatten expected vectors
+				var expectedFlat []float32
+				for _, vec := range expectedVectors {
+					expectedFlat = append(expectedFlat, vec...)
+				}
+
+				suite.Equal(expectedFlat, vf.GetFloatVector().GetData())
+			}
+		case schemapb.DataType_Geometry:
+			wkbValue, err := common.ConvertWKTToWKB(rawVal)
+			suite.NoError(err)
+			suite.Equal(wkbValue, val)
 		default:
 			continue
+		}
+	}
+
+	// Validate struct array sub-fields
+	for _, structArray := range schema.GetStructArrayFields() {
+		// Check if struct_array was provided in the test data
+		if structArrayRaw, ok := c.content[structArray.GetName()]; ok {
+			// Parse the struct array JSON
+			var structArrayData []map[string]any
+			dec := json.NewDecoder(strings.NewReader(structArrayRaw))
+			dec.UseNumber()
+			err := dec.Decode(&structArrayData)
+			suite.NoError(err)
+
+			// For each sub-field in the struct array
+			for _, subField := range structArray.GetFields() {
+				subFieldName := subField.GetName()
+				originalSubFieldName := subFieldName[len(structArray.GetName())+1 : len(subFieldName)-1]
+				val, ok := row[subField.GetFieldID()]
+				suite.True(ok, "Sub-field %s should exist in row", subFieldName)
+
+				// Validate based on sub-field type
+				switch subField.GetDataType() {
+				case schemapb.DataType_ArrayOfVector:
+					vf, ok := val.(*schemapb.VectorField)
+					suite.True(ok, "Sub-field %s should be a VectorField", subFieldName)
+
+					// Extract expected vectors from struct array data
+					var expectedVectors [][]any
+					for _, elem := range structArrayData {
+						if vec, ok := elem[originalSubFieldName].([]any); ok {
+							expectedVectors = append(expectedVectors, vec)
+						}
+					}
+
+					// Flatten and compare
+					var expectedFlat []float32
+					for _, vec := range expectedVectors {
+						var vecFlat []float32
+						for _, val := range vec {
+							jval := val.(json.Number)
+							fval, _ := jval.Float64()
+							vecFlat = append(vecFlat, float32(fval))
+						}
+						expectedFlat = append(expectedFlat, vecFlat...)
+					}
+					suite.Equal(expectedFlat, vf.GetFloatVector().GetData())
+
+				case schemapb.DataType_Array:
+					sf, ok := val.(*schemapb.ScalarField)
+					suite.True(ok, "Sub-field %s should be a ScalarField", subFieldName)
+
+					// Extract expected values from struct array data
+					var expectedValues []string
+					for _, elem := range structArrayData {
+						if v, ok := elem[originalSubFieldName].(string); ok {
+							expectedValues = append(expectedValues, v)
+						}
+					}
+
+					// Compare based on element type
+					if subField.GetElementType() == schemapb.DataType_VarChar {
+						suite.Equal(expectedValues, sf.GetStringData().GetData())
+					}
+				}
+			}
 		}
 	}
 
@@ -537,6 +656,9 @@ func (suite *RowParserSuite) TestValid() {
 	suite.runValid(&testCase{name: "A/N/D nullable field bf16_vector is nil", content: suite.genAllTypesRowData("bf16_vector", suite.nullKey)})
 	suite.runValid(&testCase{name: "A/N/D nullable field int8_vector is nil", content: suite.genAllTypesRowData("int8_vector", suite.nullKey)})
 
+	// Test struct array parsing
+	suite.runValid(&testCase{name: "A/N/D struct array valid", content: suite.genAllTypesRowData("x", "2")})
+
 	suite.nullKey = "ABCDEF"
 	suite.runValid(&testCase{name: "A/N/D null key 1", content: suite.genAllTypesRowData("int64", suite.nullKey)})
 	suite.runValid(&testCase{name: "A/N/D null key 2", content: suite.genAllTypesRowData("double", suite.nullKey)})
@@ -554,6 +676,103 @@ func (suite *RowParserSuite) TestValid() {
 
 	suite.setSchema(false, false, false)
 	suite.runValid(&testCase{name: "_ valid parse", content: suite.genAllTypesRowData("x", "2")})
+}
+
+func (suite *RowParserSuite) TestNullableStructArrayNullKey() {
+	suite.nullKey = "NULL"
+	schema := suite.createAllTypesSchema()
+	structArray := schema.GetStructArrayFields()[0]
+	structArray.Nullable = true
+	for _, subField := range structArray.GetFields() {
+		subField.Nullable = true
+	}
+
+	content := suite.genAllTypesRowData("x", "2")
+	content[structArray.GetName()] = suite.nullKey
+	header, rowContent := suite.genRowContent(schema, content)
+	parser, err := NewRowParser(schema, header, suite.nullKey)
+	suite.NoError(err)
+
+	row, err := parser.Parse(rowContent)
+	suite.NoError(err)
+	for _, subField := range structArray.GetFields() {
+		value, ok := row[subField.GetFieldID()]
+		suite.True(ok)
+		suite.Nil(value)
+	}
+}
+
+func (suite *RowParserSuite) TestNonNullableStructArrayNullKey() {
+	suite.nullKey = "NULL"
+	schema := suite.createAllTypesSchema()
+	structArray := schema.GetStructArrayFields()[0]
+
+	content := suite.genAllTypesRowData("x", "2")
+	content[structArray.GetName()] = suite.nullKey
+	header, rowContent := suite.genRowContent(schema, content)
+	parser, err := NewRowParser(schema, header, suite.nullKey)
+	suite.NoError(err)
+
+	_, err = parser.Parse(rowContent)
+	suite.Error(err)
+}
+
+func (suite *RowParserSuite) TestNullableStructArrayJSONNull() {
+	suite.nullKey = "NULL"
+	schema := suite.createAllTypesSchema()
+	structArray := schema.GetStructArrayFields()[0]
+	structArray.Nullable = true
+	for _, subField := range structArray.GetFields() {
+		subField.Nullable = true
+	}
+
+	content := suite.genAllTypesRowData("x", "2")
+	content[structArray.GetName()] = "null"
+	header, rowContent := suite.genRowContent(schema, content)
+	parser, err := NewRowParser(schema, header, suite.nullKey)
+	suite.NoError(err)
+
+	row, err := parser.Parse(rowContent)
+	suite.NoError(err)
+	for _, subField := range structArray.GetFields() {
+		value, ok := row[subField.GetFieldID()]
+		suite.True(ok)
+		suite.Nil(value)
+	}
+}
+
+func (suite *RowParserSuite) TestNonNullableStructArrayJSONNull() {
+	suite.nullKey = "NULL"
+	schema := suite.createAllTypesSchema()
+	structArray := schema.GetStructArrayFields()[0]
+
+	content := suite.genAllTypesRowData("x", "2")
+	content[structArray.GetName()] = "null"
+	header, rowContent := suite.genRowContent(schema, content)
+	parser, err := NewRowParser(schema, header, suite.nullKey)
+	suite.NoError(err)
+
+	_, err = parser.Parse(rowContent)
+	suite.Error(err)
+}
+
+func (suite *RowParserSuite) TestMissingStructArrayColumn() {
+	schema := suite.createAllTypesSchema()
+	structArray := schema.GetStructArrayFields()[0]
+
+	content := suite.genAllTypesRowData("x", "2", structArray.GetName())
+	header, _ := suite.genRowContent(schema, content)
+	parser, err := NewRowParser(schema, header, suite.nullKey)
+	suite.Error(err)
+	suite.Nil(parser)
+
+	structArray.Nullable = true
+	for _, subField := range structArray.GetFields() {
+		subField.Nullable = true
+	}
+	parser, err = NewRowParser(schema, header, suite.nullKey)
+	suite.NoError(err)
+	suite.NotNil(parser)
 }
 
 func (suite *RowParserSuite) runParseError(c *testCase) {
@@ -732,6 +951,175 @@ func (suite *RowParserSuite) TestFunctionOutputField() {
 
 func TestCsvRowParser(t *testing.T) {
 	suite.Run(t, new(RowParserSuite))
+}
+
+func TestArrayOfVectorToFieldData_NonFloatElementTypes(t *testing.T) {
+	makeField := func(elementType schemapb.DataType, dim string) *schemapb.FieldSchema {
+		return &schemapb.FieldSchema{
+			FieldID:     100,
+			Name:        "test_vec",
+			DataType:    schemapb.DataType_ArrayOfVector,
+			ElementType: elementType,
+			TypeParams: []*commonpb.KeyValuePair{
+				{Key: common.DimKey, Value: dim},
+			},
+		}
+	}
+
+	tests := []struct {
+		name    string
+		field   *schemapb.FieldSchema
+		dim     int
+		vectors []any
+		verify  func(*schemapb.VectorField)
+	}{
+		{
+			name:    "binary",
+			field:   makeField(schemapb.DataType_BinaryVector, "16"),
+			dim:     16,
+			vectors: []any{[]any{json.Number("3"), json.Number("11")}},
+			verify: func(field *schemapb.VectorField) {
+				assert.Equal(t, []byte{3, 11}, field.GetBinaryVector())
+			},
+		},
+		{
+			name:    "float16",
+			field:   makeField(schemapb.DataType_Float16Vector, "2"),
+			dim:     2,
+			vectors: []any{[]any{json.Number("0.25"), json.Number("0.5")}},
+			verify: func(field *schemapb.VectorField) {
+				expected := append(typeutil.Float32ToFloat16Bytes(0.25), typeutil.Float32ToFloat16Bytes(0.5)...)
+				assert.Equal(t, expected, field.GetFloat16Vector())
+			},
+		},
+		{
+			name:    "bfloat16",
+			field:   makeField(schemapb.DataType_BFloat16Vector, "2"),
+			dim:     2,
+			vectors: []any{[]any{json.Number("0.25"), json.Number("0.5")}},
+			verify: func(field *schemapb.VectorField) {
+				expected := append(typeutil.Float32ToBFloat16Bytes(0.25), typeutil.Float32ToBFloat16Bytes(0.5)...)
+				assert.Equal(t, expected, field.GetBfloat16Vector())
+			},
+		},
+		{
+			name:    "int8",
+			field:   makeField(schemapb.DataType_Int8Vector, "2"),
+			dim:     2,
+			vectors: []any{[]any{json.Number("1"), json.Number("-2")}},
+			verify: func(field *schemapb.VectorField) {
+				assert.Equal(t, typeutil.Int8ArrayToBytes([]int8{1, -2}), field.GetInt8Vector())
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parser := &rowParser{name2Dim: map[string]int{tt.field.GetName(): tt.dim}}
+			result, err := parser.arrayOfVectorToFieldData(tt.vectors, tt.field)
+			assert.NoError(t, err)
+			assert.Equal(t, int64(tt.dim), result.GetDim())
+			tt.verify(result)
+		})
+	}
+}
+
+func TestParseStructArrayArrayOfVector_NonFloatElementTypes(t *testing.T) {
+	makeSchema := func(elementType schemapb.DataType, dim string) *schemapb.CollectionSchema {
+		return &schemapb.CollectionSchema{
+			Fields: []*schemapb.FieldSchema{
+				{
+					FieldID:      1,
+					Name:         "id",
+					IsPrimaryKey: true,
+					DataType:     schemapb.DataType_Int64,
+				},
+			},
+			StructArrayFields: []*schemapb.StructArrayFieldSchema{
+				{
+					FieldID: 200,
+					Name:    "struct_array",
+					Fields: []*schemapb.FieldSchema{
+						{
+							FieldID:     201,
+							Name:        "struct_array[vec]",
+							DataType:    schemapb.DataType_ArrayOfVector,
+							ElementType: elementType,
+							TypeParams: []*commonpb.KeyValuePair{
+								{Key: common.DimKey, Value: dim},
+								{Key: common.MaxCapacityKey, Value: "4"},
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name        string
+		elementType schemapb.DataType
+		dim         string
+		raw         string
+		verify      func(*schemapb.VectorField)
+	}{
+		{
+			name:        "binary",
+			elementType: schemapb.DataType_BinaryVector,
+			dim:         "16",
+			raw:         `[{"vec":[3,11]},{"vec":[5,7]}]`,
+			verify: func(field *schemapb.VectorField) {
+				assert.Equal(t, []byte{3, 11, 5, 7}, field.GetBinaryVector())
+			},
+		},
+		{
+			name:        "float16",
+			elementType: schemapb.DataType_Float16Vector,
+			dim:         "2",
+			raw:         `[{"vec":[0.25,0.5]},{"vec":[0.75,1.0]}]`,
+			verify: func(field *schemapb.VectorField) {
+				expected := append(typeutil.Float32ToFloat16Bytes(0.25), typeutil.Float32ToFloat16Bytes(0.5)...)
+				expected = append(expected, typeutil.Float32ToFloat16Bytes(0.75)...)
+				expected = append(expected, typeutil.Float32ToFloat16Bytes(1.0)...)
+				assert.Equal(t, expected, field.GetFloat16Vector())
+			},
+		},
+		{
+			name:        "bfloat16",
+			elementType: schemapb.DataType_BFloat16Vector,
+			dim:         "2",
+			raw:         `[{"vec":[0.25,0.5]},{"vec":[0.75,1.0]}]`,
+			verify: func(field *schemapb.VectorField) {
+				expected := append(typeutil.Float32ToBFloat16Bytes(0.25), typeutil.Float32ToBFloat16Bytes(0.5)...)
+				expected = append(expected, typeutil.Float32ToBFloat16Bytes(0.75)...)
+				expected = append(expected, typeutil.Float32ToBFloat16Bytes(1.0)...)
+				assert.Equal(t, expected, field.GetBfloat16Vector())
+			},
+		},
+		{
+			name:        "int8",
+			elementType: schemapb.DataType_Int8Vector,
+			dim:         "2",
+			raw:         `[{"vec":[1,-2]},{"vec":[3,-4]}]`,
+			verify: func(field *schemapb.VectorField) {
+				assert.Equal(t, typeutil.Int8ArrayToBytes([]int8{1, -2, 3, -4}), field.GetInt8Vector())
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parser, err := NewRowParser(makeSchema(tt.elementType, tt.dim), []string{"id", "struct_array"}, "")
+			assert.NoError(t, err)
+
+			row, err := parser.Parse([]string{"1", tt.raw})
+			assert.NoError(t, err)
+			vectorField, ok := row[201].(*schemapb.VectorField)
+			assert.True(t, ok)
+			assert.Equal(t, tt.dim, strconv.FormatInt(vectorField.GetDim(), 10))
+			tt.verify(vectorField)
+		})
+	}
 }
 
 func TestParseTextFieldValue(t *testing.T) {

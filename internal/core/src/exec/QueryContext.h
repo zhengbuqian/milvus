@@ -28,6 +28,7 @@
 #include "common/Common.h"
 #include "common/Types.h"
 #include "common/Exception.h"
+#include "common/ArrayOffsets.h"
 #include "common/OpContext.h"
 #include "segcore/SegmentInterface.h"
 #include "segcore/Utils.h"
@@ -316,6 +317,97 @@ class QueryContext : public Context {
         return plan_options_;
     }
 
+    void
+    set_struct_name(const std::string& field_name) {
+        struct_name_ = field_name;
+    }
+
+    const std::string&
+    get_struct_name() const {
+        return struct_name_;
+    }
+
+    void
+    set_array_offsets(std::shared_ptr<const IArrayOffsets> offsets) {
+        array_offsets_ = std::move(offsets);
+    }
+
+    std::shared_ptr<const IArrayOffsets>
+    get_array_offsets() const {
+        return array_offsets_;
+    }
+
+    void
+    set_active_element_count(int64_t count) {
+        active_element_count_ = count;
+    }
+
+    int64_t
+    get_active_element_count() const {
+        return active_element_count_;
+    }
+
+    void
+    set_element_level_bitset(TargetBitmap&& bitset) {
+        element_level_bitset_ = std::move(bitset);
+    }
+
+    std::optional<TargetBitmap>
+    get_element_level_bitset() {
+        if (element_level_bitset_.has_value()) {
+            return std::move(element_level_bitset_.value());
+        }
+        return std::nullopt;
+    }
+
+    bool
+    has_element_level_bitset() const {
+        return element_level_bitset_.has_value();
+    }
+
+    void
+    set_bitset_is_element_level(bool is_element_level) {
+        bitset_is_element_level_ = is_element_level;
+    }
+
+    bool
+    bitset_is_element_level() const {
+        return bitset_is_element_level_;
+    }
+
+    // Set by MvccNode when no filtering is needed (sealed, no filter,
+    // no deletes, no TTL). VectorSearchNode checks this to pass empty
+    // BitsetView to Knowhere (IDSelectorAll fast path).
+    void
+    set_all_rows_visible(bool v) {
+        all_rows_visible_ = v;
+    }
+
+    bool
+    get_all_rows_visible() const {
+        return all_rows_visible_;
+    }
+
+    void
+    set_enable_expr_cache(bool enable) {
+        enable_expr_cache_ = enable;
+    }
+
+    bool
+    get_enable_expr_cache() const {
+        return enable_expr_cache_;
+    }
+
+    void
+    set_enable_sub_expr_cache_write(bool enable) {
+        enable_sub_expr_cache_write_ = enable;
+    }
+
+    bool
+    get_enable_sub_expr_cache_write() const {
+        return enable_sub_expr_cache_write_;
+    }
+
  private:
     folly::Executor* executor_;
     //folly::Executor::KeepAlive<> executor_keepalive_;
@@ -347,6 +439,26 @@ class QueryContext : public Context {
     int32_t consistency_level_ = 0;
 
     query::PlanOptions plan_options_;
+
+    std::string struct_name_;
+    std::shared_ptr<const IArrayOffsets> array_offsets_{nullptr};
+    int64_t active_element_count_{0};  // Total elements in active documents
+    std::optional<TargetBitmap> element_level_bitset_;
+    // Whether the current bitset has been converted to element-level.
+    // Set by element-level filter/search operators after row-to-element
+    // conversion.
+    bool bitset_is_element_level_{false};
+
+    // MVCC fast path: set true when sealed + no-filter + no-delete + no-TTL
+    bool all_rows_visible_{false};
+
+    // Expression filter cache for two-stage search
+    bool enable_expr_cache_ = false;
+    // Allow sub-expression results (for example TextMatch/PhraseMatch) to be
+    // inserted into ExprResCacheManager. Two-stage search disables this to
+    // avoid duplicating the cached full-filter bitmap with cached child
+    // bitmaps in the same request path.
+    bool enable_sub_expr_cache_write_ = true;
 };
 
 // Represent the state of one thread of query execution.
