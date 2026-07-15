@@ -13,34 +13,12 @@ type HYBRIDChecker struct {
 	scalarIndexChecker
 }
 
-var validHYBRIDJSONCastTypes = []string{"BOOL", "DOUBLE", "VARCHAR"}
-
-func (c *HYBRIDChecker) CheckTrain(dataType schemapb.DataType, elementType schemapb.DataType, params map[string]string) error {
-	if typeutil.IsJSONType(dataType) {
-		castType, exist := params[common.JSONCastTypeKey]
-		if !exist {
-			return merr.WrapErrParameterMissing(common.JSONCastTypeKey, "json index must specify cast type")
-		}
-		if !lo.Contains(validHYBRIDJSONCastTypes, castType) {
-			return merr.WrapErrParameterInvalidMsg("json_cast_type %v is not supported for HYBRID index", castType)
-		}
-		if _, exist := params[common.JSONPathKey]; !exist {
-			return merr.WrapErrParameterMissing(common.JSONPathKey, "json index must specify json path")
-		}
-		// For JSON, bitmap_cardinality_limit is optional — validate only if present
-		if _, exist := params[common.BitmapCardinalityLimitKey]; exist {
-			if !CheckIntByRange(params, common.BitmapCardinalityLimitKey, 1, MaxBitmapCardinalityLimit) {
-				return merr.WrapErrParameterInvalidMsg("failed to check bitmap cardinality limit, should be larger than 0 and smaller than %d",
-					MaxBitmapCardinalityLimit)
-			}
-		}
-		return nil
-	}
+func (c *HYBRIDChecker) CheckTrain(dataType schemapb.DataType, params map[string]string) error {
 	if !CheckIntByRange(params, common.BitmapCardinalityLimitKey, 1, MaxBitmapCardinalityLimit) {
 		return merr.WrapErrParameterInvalidMsg("failed to check bitmap cardinality limit, should be larger than 0 and smaller than %d",
 			MaxBitmapCardinalityLimit)
 	}
-	return c.scalarIndexChecker.CheckTrain(dataType, elementType, params)
+	return c.scalarIndexChecker.CheckTrain(dataType, params)
 }
 
 func (c *HYBRIDChecker) CheckValidDataType(indexType IndexType, field *schemapb.FieldSchema) error {

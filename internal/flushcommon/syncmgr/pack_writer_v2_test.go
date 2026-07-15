@@ -94,23 +94,6 @@ func (s *PackWriterV2Suite) SetupTest() {
 				},
 			},
 		},
-		StructArrayFields: []*schemapb.StructArrayFieldSchema{
-			{
-				FieldID: 102,
-				Name:    "struct_array",
-				Fields: []*schemapb.FieldSchema{
-					{
-						FieldID:     103,
-						Name:        "vector_array",
-						DataType:    schemapb.DataType_ArrayOfVector,
-						ElementType: schemapb.DataType_FloatVector,
-						TypeParams: []*commonpb.KeyValuePair{
-							{Key: common.DimKey, Value: "128"},
-						},
-					},
-				},
-			},
-		},
 	}
 	allFields := typeutil.GetAllFieldSchemas(s.schema)
 	s.currentSplit = storagecommon.SplitColumns(allFields, map[int64]storagecommon.ColumnStats{}, storagecommon.NewSelectedDataTypePolicy(), storagecommon.NewRemanentShortPolicy(-1))
@@ -248,27 +231,10 @@ func genInsertData(size int, schema *schemapb.CollectionSchema) []*storage.Inser
 		data[common.RowIDField] = int64(i + 1)
 		data[common.TimeStampField] = int64(i + 1)
 		data[100] = int64(i + 1)
-
 		vector := lo.RepeatBy(128, func(_ int) float32 {
 			return rand.Float32()
 		})
 		data[101] = vector
-
-		arraySize := rand.Intn(3) + 2
-		vectorData := lo.RepeatBy(arraySize*128, func(_ int) float32 {
-			return rand.Float32()
-		})
-		vectorArray := &schemapb.VectorField{
-			Dim: 128,
-			Data: &schemapb.VectorField_FloatVector{
-				FloatVector: &schemapb.FloatArray{
-					Data: vectorData,
-				},
-			},
-		}
-
-		data[103] = vectorArray
-
 		buf.Append(data)
 	}
 	return []*storage.InsertData{buf}

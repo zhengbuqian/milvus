@@ -35,8 +35,7 @@ import (
 	"github.com/bytedance/mockey"
 	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/proto"
+	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/v3/hook"
@@ -773,346 +772,6 @@ func TestBinlogSerializeWriter(t *testing.T) {
 	})
 }
 
-func TestValueSerializer_NullArrayOfVectorRoundTrip(t *testing.T) {
-	const (
-		pkFieldID          FieldID = common.StartOfUserFieldID
-		vectorArrayFieldID FieldID = common.StartOfUserFieldID + 1
-	)
-
-	schema := &schemapb.CollectionSchema{
-		Fields: []*schemapb.FieldSchema{
-			{
-				FieldID:  common.RowIDField,
-				Name:     common.RowIDFieldName,
-				DataType: schemapb.DataType_Int64,
-			},
-			{
-				FieldID:  common.TimeStampField,
-				Name:     common.TimeStampFieldName,
-				DataType: schemapb.DataType_Int64,
-			},
-			{
-				FieldID:      pkFieldID,
-				Name:         "pk",
-				DataType:     schemapb.DataType_Int64,
-				IsPrimaryKey: true,
-			},
-			{
-				FieldID:     vectorArrayFieldID,
-				Name:        "vec_array",
-				DataType:    schemapb.DataType_ArrayOfVector,
-				ElementType: schemapb.DataType_FloatVector,
-				Nullable:    true,
-				TypeParams: []*commonpb.KeyValuePair{
-					{Key: "dim", Value: "4"},
-				},
-			},
-		},
-	}
-
-	values := []*Value{
-		{
-			Value: map[FieldID]any{
-				common.RowIDField:     int64(11),
-				common.TimeStampField: int64(101),
-				pkFieldID:             int64(1),
-				vectorArrayFieldID:    makeFloatVec(4, 1, 2, 3, 4),
-			},
-		},
-		{
-			Value: map[FieldID]any{
-				common.RowIDField:     int64(12),
-				common.TimeStampField: int64(102),
-				pkFieldID:             int64(2),
-				vectorArrayFieldID:    nil,
-			},
-		},
-	}
-
-	record, err := ValueSerializer(values, schema)
-	require.NoError(t, err)
-	defer record.Release()
-	assert.True(t, record.Column(vectorArrayFieldID).IsNull(1))
-
-	roundTripValues := make([]*Value, record.Len())
-	err = ValueDeserializerWithSchema(record, roundTripValues, schema, true)
-	require.NoError(t, err)
-	assert.Nil(t, roundTripValues[1].Value.(map[FieldID]interface{})[vectorArrayFieldID])
-
-	rewrittenRecord, err := ValueSerializer(roundTripValues, schema)
-	require.NoError(t, err)
-	defer rewrittenRecord.Release()
-	assert.True(t, rewrittenRecord.Column(vectorArrayFieldID).IsNull(1))
-}
-
-func TestValueDeserializerNullableDenseVectorBinaryRecord(t *testing.T) {
-	for _, tc := range nullableDenseVectorSerdeCases() {
-		t.Run(tc.name, func(t *testing.T) {
-			schema := nullableDenseVectorSerdeSchema(tc.dataType, tc.dim)
-			insertData := nullableDenseVectorSerdeInsertData(t, tc, schema)
-
-			arrowSchema, err := ConvertToArrowSchema(schema, false)
-			require.NoError(t, err)
-			builder := array.NewRecordBuilder(memory.DefaultAllocator, arrowSchema)
-			defer builder.Release()
-			require.NoError(t, BuildRecord(builder, insertData, schema))
-			record := NewSimpleArrowRecord(builder.NewRecord(), map[FieldID]int{
-				common.RowIDField:          0,
-				common.TimeStampField:      1,
-				nullableSerdePKFieldID:     2,
-				nullableSerdeVectorFieldID: 3,
-			})
-			defer record.Release()
-
-			require.IsType(t, &array.Binary{}, record.Column(nullableSerdeVectorFieldID))
-			require.True(t, record.Column(nullableSerdeVectorFieldID).IsNull(1))
-
-			values := make([]*Value, record.Len())
-			err = ValueDeserializerWithSchema(record, values, schema, true)
-			require.NoError(t, err)
-
-			got := values[0].Value.(map[FieldID]interface{})[nullableSerdeVectorFieldID]
-			assert.Equal(t, tc.row0, got)
-			assert.Nil(t, values[1].Value.(map[FieldID]interface{})[nullableSerdeVectorFieldID])
-			got = values[2].Value.(map[FieldID]interface{})[nullableSerdeVectorFieldID]
-			assert.Equal(t, tc.row2, got)
-		})
-	}
-}
-
-func TestValueSerializerNullableDenseVectorUsesBinaryArrow(t *testing.T) {
-	for _, tc := range nullableDenseVectorSerdeCases() {
-		t.Run(tc.name, func(t *testing.T) {
-			schema := nullableDenseVectorSerdeSchema(tc.dataType, tc.dim)
-			values := []*Value{
-				{Value: map[FieldID]any{
-					common.RowIDField:          int64(11),
-					common.TimeStampField:      int64(101),
-					nullableSerdePKFieldID:     int64(1),
-					nullableSerdeVectorFieldID: tc.row0,
-				}},
-				{Value: map[FieldID]any{
-					common.RowIDField:          int64(12),
-					common.TimeStampField:      int64(102),
-					nullableSerdePKFieldID:     int64(2),
-					nullableSerdeVectorFieldID: nil,
-				}},
-				{Value: map[FieldID]any{
-					common.RowIDField:          int64(13),
-					common.TimeStampField:      int64(103),
-					nullableSerdePKFieldID:     int64(3),
-					nullableSerdeVectorFieldID: tc.row2,
-				}},
-			}
-
-			record, err := ValueSerializer(values, schema)
-			require.NoError(t, err)
-			defer record.Release()
-
-			require.IsType(t, &array.Binary{}, record.Column(nullableSerdeVectorFieldID))
-			require.True(t, record.Column(nullableSerdeVectorFieldID).IsNull(1))
-			simpleRecord := record.(*simpleArrowRecord)
-			dim, ok := simpleRecord.r.Schema().Field(3).Metadata.GetValue(common.DimKey)
-			require.True(t, ok)
-			assert.Equal(t, strconv.FormatInt(tc.dim, 10), dim)
-
-			roundTrip := make([]*Value, record.Len())
-			err = ValueDeserializerWithSchema(record, roundTrip, schema, true)
-			require.NoError(t, err)
-			assert.Equal(t, tc.row0, roundTrip[0].Value.(map[FieldID]interface{})[nullableSerdeVectorFieldID])
-			assert.Nil(t, roundTrip[1].Value.(map[FieldID]interface{})[nullableSerdeVectorFieldID])
-			assert.Equal(t, tc.row2, roundTrip[2].Value.(map[FieldID]interface{})[nullableSerdeVectorFieldID])
-		})
-	}
-}
-
-func TestValueDeserializerSerializerTextLobRefUsesBinaryArrow(t *testing.T) {
-	const (
-		pkFieldID   FieldID = 100
-		textFieldID FieldID = 101
-	)
-	schema := &schemapb.CollectionSchema{
-		Name: "text_lob_ref",
-		Fields: []*schemapb.FieldSchema{
-			{FieldID: common.RowIDField, Name: "row_id", DataType: schemapb.DataType_Int64},
-			{FieldID: common.TimeStampField, Name: "Timestamp", DataType: schemapb.DataType_Int64},
-			{FieldID: pkFieldID, Name: "pk", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
-			{FieldID: textFieldID, Name: "content", DataType: schemapb.DataType_Text},
-		},
-	}
-	arrowSchema := arrow.NewSchema([]arrow.Field{
-		{Name: "row_id", Type: arrow.PrimitiveTypes.Int64},
-		{Name: "Timestamp", Type: arrow.PrimitiveTypes.Int64},
-		{Name: "pk", Type: arrow.PrimitiveTypes.Int64},
-		{Name: "content", Type: arrow.BinaryTypes.Binary},
-	}, nil)
-	builder := array.NewRecordBuilder(memory.DefaultAllocator, arrowSchema)
-	defer builder.Release()
-	builder.Field(0).(*array.Int64Builder).Append(11)
-	builder.Field(1).(*array.Int64Builder).Append(101)
-	builder.Field(2).(*array.Int64Builder).Append(1)
-	builder.Field(3).(*array.BinaryBuilder).Append([]byte("lob-ref"))
-
-	record := NewSimpleArrowRecord(builder.NewRecord(), map[FieldID]int{
-		common.RowIDField:     0,
-		common.TimeStampField: 1,
-		pkFieldID:             2,
-		textFieldID:           3,
-	})
-	defer record.Release()
-
-	values := make([]*Value, record.Len())
-	err := ValueDeserializerWithSchema(record, values, schema, true)
-	require.NoError(t, err)
-	textValue := values[0].Value.(map[FieldID]interface{})[textFieldID]
-	require.IsType(t, TextLobRef{}, textValue)
-	require.Equal(t, TextLobRef("lob-ref"), textValue)
-
-	rewrittenRecord, err := ValueSerializer(values, schema)
-	require.NoError(t, err)
-	defer rewrittenRecord.Release()
-	textColumn := rewrittenRecord.Column(textFieldID)
-	require.IsType(t, &array.Binary{}, textColumn)
-	require.Equal(t, []byte("lob-ref"), textColumn.(*array.Binary).Value(0))
-}
-
-func TestValueSerializerTextRejectsRawBytes(t *testing.T) {
-	const (
-		pkFieldID   FieldID = 100
-		textFieldID FieldID = 101
-	)
-	schema := &schemapb.CollectionSchema{
-		Name: "text_raw_bytes",
-		Fields: []*schemapb.FieldSchema{
-			{FieldID: common.RowIDField, Name: "row_id", DataType: schemapb.DataType_Int64},
-			{FieldID: common.TimeStampField, Name: "Timestamp", DataType: schemapb.DataType_Int64},
-			{FieldID: pkFieldID, Name: "pk", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
-			{FieldID: textFieldID, Name: "content", DataType: schemapb.DataType_Text},
-		},
-	}
-	values := []*Value{
-		{
-			PK:        NewInt64PrimaryKey(1),
-			Timestamp: 101,
-			Value: map[FieldID]interface{}{
-				common.RowIDField:     int64(11),
-				common.TimeStampField: int64(101),
-				pkFieldID:             int64(1),
-				textFieldID:           []byte("raw-text-bytes"),
-			},
-		},
-	}
-
-	_, err := ValueSerializer(values, schema)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "expected string value")
-}
-
-type nullableDenseVectorSerdeCase struct {
-	name     string
-	dataType schemapb.DataType
-	dim      int64
-	row0     any
-	row2     any
-}
-
-const (
-	nullableSerdePKFieldID     FieldID = common.StartOfUserFieldID
-	nullableSerdeVectorFieldID FieldID = common.StartOfUserFieldID + 1
-)
-
-func nullableDenseVectorSerdeCases() []nullableDenseVectorSerdeCase {
-	return []nullableDenseVectorSerdeCase{
-		{
-			name:     "FloatVector",
-			dataType: schemapb.DataType_FloatVector,
-			dim:      2,
-			row0:     []float32{1, 2},
-			row2:     []float32{3, 4},
-		},
-		{
-			name:     "BinaryVector",
-			dataType: schemapb.DataType_BinaryVector,
-			dim:      16,
-			row0:     []byte{0x11, 0x12},
-			row2:     []byte{0x21, 0x22},
-		},
-		{
-			name:     "Float16Vector",
-			dataType: schemapb.DataType_Float16Vector,
-			dim:      2,
-			row0:     []byte{1, 2, 3, 4},
-			row2:     []byte{5, 6, 7, 8},
-		},
-		{
-			name:     "BFloat16Vector",
-			dataType: schemapb.DataType_BFloat16Vector,
-			dim:      2,
-			row0:     []byte{11, 12, 13, 14},
-			row2:     []byte{15, 16, 17, 18},
-		},
-		{
-			name:     "Int8Vector",
-			dataType: schemapb.DataType_Int8Vector,
-			dim:      2,
-			row0:     []int8{1, 2},
-			row2:     []int8{3, 4},
-		},
-	}
-}
-
-func nullableDenseVectorSerdeSchema(dataType schemapb.DataType, dim int64) *schemapb.CollectionSchema {
-	return &schemapb.CollectionSchema{
-		Fields: []*schemapb.FieldSchema{
-			{
-				FieldID:  common.RowIDField,
-				Name:     common.RowIDFieldName,
-				DataType: schemapb.DataType_Int64,
-			},
-			{
-				FieldID:  common.TimeStampField,
-				Name:     common.TimeStampFieldName,
-				DataType: schemapb.DataType_Int64,
-			},
-			{
-				FieldID:      nullableSerdePKFieldID,
-				Name:         "pk",
-				DataType:     schemapb.DataType_Int64,
-				IsPrimaryKey: true,
-			},
-			{
-				FieldID:  nullableSerdeVectorFieldID,
-				Name:     "nullable_vector",
-				DataType: dataType,
-				Nullable: true,
-				TypeParams: []*commonpb.KeyValuePair{
-					{Key: common.DimKey, Value: strconv.FormatInt(dim, 10)},
-				},
-			},
-		},
-	}
-}
-
-func nullableDenseVectorSerdeInsertData(t *testing.T, tc nullableDenseVectorSerdeCase, schema *schemapb.CollectionSchema) *InsertData {
-	t.Helper()
-
-	vectorField := schema.GetFields()[3]
-	vectorData, err := NewFieldData(tc.dataType, vectorField, 3)
-	require.NoError(t, err)
-	require.NoError(t, vectorData.AppendRow(tc.row0))
-	require.NoError(t, vectorData.AppendRow(nil))
-	require.NoError(t, vectorData.AppendRow(tc.row2))
-
-	return &InsertData{
-		Data: map[FieldID]FieldData{
-			common.RowIDField:          &Int64FieldData{Data: []int64{11, 12, 13}},
-			common.TimeStampField:      &Int64FieldData{Data: []int64{101, 102, 103}},
-			nullableSerdePKFieldID:     &Int64FieldData{Data: []int64{1, 2, 3}},
-			nullableSerdeVectorFieldID: vectorData,
-		},
-	}
-}
-
 func TestCompositeBinlogRecordWriter_TTLFieldCollection(t *testing.T) {
 	ttlFieldID := FieldID(100)
 	w := &CompositeBinlogRecordWriter{
@@ -1191,7 +850,7 @@ func TestBinlogValueWriter(t *testing.T) {
 
 		schema := generateTestSchema()
 		// Copy write the generated data
-		writers := NewBinlogStreamWriters(0, 0, 0, schema)
+		writers := NewBinlogStreamWriters(0, 0, 0, schema.Fields)
 		writer, err := NewBinlogSerializeWriter(schema, 0, 0, writers, 7)
 		assert.NoError(t, err)
 
@@ -1256,7 +915,7 @@ func TestSize(t *testing.T) {
 			},
 		}}
 
-		writers := NewBinlogStreamWriters(0, 0, 0, schema)
+		writers := NewBinlogStreamWriters(0, 0, 0, schema.Fields)
 		writer, err := NewBinlogSerializeWriter(schema, 0, 0, writers, 7)
 		assert.NoError(t, err)
 
@@ -1294,7 +953,7 @@ func TestSize(t *testing.T) {
 			},
 		}}
 
-		writers := NewBinlogStreamWriters(0, 0, 0, schema)
+		writers := NewBinlogStreamWriters(0, 0, 0, schema.Fields)
 		writer, err := NewBinlogSerializeWriter(schema, 0, 0, writers, 7)
 		assert.NoError(t, err)
 
@@ -1381,7 +1040,7 @@ func BenchmarkSerializeWriter(b *testing.B) {
 	for _, s := range sizes {
 		b.Run(fmt.Sprintf("batch size=%d", s), func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
-				writers := NewBinlogStreamWriters(0, 0, 0, schema)
+				writers := NewBinlogStreamWriters(0, 0, 0, schema.Fields)
 				writer, err := NewBinlogSerializeWriter(schema, 0, 0, writers, s)
 				assert.NoError(b, err)
 				for _, v := range values {
@@ -1398,7 +1057,7 @@ func TestNull(t *testing.T) {
 	t.Run("test null", func(t *testing.T) {
 		schema := generateTestSchema()
 		// Copy write the generated data
-		writers := NewBinlogStreamWriters(0, 0, 0, schema)
+		writers := NewBinlogStreamWriters(0, 0, 0, schema.Fields)
 		writer, err := NewBinlogSerializeWriter(schema, 0, 0, writers, 1024)
 		assert.NoError(t, err)
 

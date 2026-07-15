@@ -179,8 +179,7 @@ void
 VectorFieldIndexing::recreate_index(DataType data_type,
                                     const VectorBase* field_raw_data) {
     if (IsSparseFloatVectorDataType(data_type)) {
-        index_ = std::make_unique<index::VectorMemIndex<sparse_u32_f32>>(
-            DataType::NONE,
+        index_ = std::make_unique<index::VectorMemIndex<float>>(
             config_->GetIndexType(),
             config_->GetMetricType(),
             knowhere::Version::GetCurrentVersion().VersionNumber());
@@ -196,7 +195,6 @@ VectorFieldIndexing::recreate_index(DataType data_type,
             return (const void*)field_raw_data_ptr->get_physical_element(id);
         };
         index_ = std::make_unique<index::VectorMemIndex<float>>(
-            DataType::NONE,
             config_->GetIndexType(),
             config_->GetMetricType(),
             knowhere::Version::GetCurrentVersion().VersionNumber(),
@@ -213,7 +211,6 @@ VectorFieldIndexing::recreate_index(DataType data_type,
             return (const void*)field_raw_data_ptr->get_physical_element(id);
         };
         index_ = std::make_unique<index::VectorMemIndex<float16>>(
-            DataType::NONE,
             config_->GetIndexType(),
             config_->GetMetricType(),
             knowhere::Version::GetCurrentVersion().VersionNumber(),
@@ -230,7 +227,6 @@ VectorFieldIndexing::recreate_index(DataType data_type,
             return (const void*)field_raw_data_ptr->get_physical_element(id);
         };
         index_ = std::make_unique<index::VectorMemIndex<bfloat16>>(
-            DataType::NONE,
             config_->GetIndexType(),
             config_->GetMetricType(),
             knowhere::Version::GetCurrentVersion().VersionNumber(),

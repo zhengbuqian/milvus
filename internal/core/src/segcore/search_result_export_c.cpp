@@ -605,7 +605,8 @@ BuildSearchResultBatch(
 
     // Build $element_indices column when element-level search is active.
     // element_indices_ is int32 and aligned with seg_offsets_ after compaction.
-    if (search_result->element_level_) {
+    if (search_result->element_level_ &&
+        !search_result->element_indices_.empty()) {
         AssertInfo(
             search_result->element_indices_.size() == total_valid,
             "element_indices_ size {} does not match seg_offsets_ size {}",

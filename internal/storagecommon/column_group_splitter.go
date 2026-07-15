@@ -101,8 +101,7 @@ func IsVectorDataType(dataType schemapb.DataType) bool {
 		schemapb.DataType_BFloat16Vector,
 		schemapb.DataType_Int8Vector,
 		schemapb.DataType_FloatVector,
-		schemapb.DataType_SparseFloatVector,
-		schemapb.DataType_ArrayOfVector:
+		schemapb.DataType_SparseFloatVector:
 		return true
 	}
 	return false

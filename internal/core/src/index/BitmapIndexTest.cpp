@@ -130,8 +130,7 @@ class BitmapIndexTest : public testing::Test {
             data_.push_back(x);
         }
 
-        auto field_data =
-            storage::CreateFieldData(type_, DataType::NONE, nullable_);
+        auto field_data = storage::CreateFieldData(type_, nullable_);
         if (nullable_) {
             valid_data_.reserve(nb_);
             uint8_t* ptr = new uint8_t[(nb_ + 7) / 8];

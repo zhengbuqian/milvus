@@ -48,12 +48,8 @@ class IndexFactory {
         return instance;
     }
 
-    static bool
-    CanUseIndexRawDataForField(DataType field_type, bool has_raw_data);
-
     LoadResourceRequest
     IndexLoadResource(DataType field_type,
-                      DataType element_type,
                       IndexVersion index_version,
                       uint64_t index_size_in_bytes,
                       const std::map<std::string, std::string>& index_params,
@@ -75,7 +71,6 @@ class IndexFactory {
 
     LoadResourceRequest
     VecIndexLoadResource(DataType field_type,
-                         DataType element_type,
                          IndexVersion index_version,
                          uint64_t index_size_in_bytes,
                          const std::map<std::string, std::string>& index_params,
@@ -143,37 +138,13 @@ class IndexFactory {
             storage::FileManagerContext());
 
     IndexBasePtr
-    CreateJsonIndex(const CreateIndexInfo& create_index_info,
+    CreateJsonIndex(IndexType index_type,
+                    JsonCastType cast_dtype,
+                    const std::string& nested_path,
                     const storage::FileManagerContext& file_manager_context =
-                        storage::FileManagerContext());
-
-    IndexBasePtr
-    CreateGeometryIndex(
-        IndexType index_type,
-        const storage::FileManagerContext& file_manager_context =
-            storage::FileManagerContext());
-
-    IndexBasePtr
-    CreateNestedIndex(IndexType index_type,
-                      int32_t tantivy_index_version,
-                      const storage::FileManagerContext& file_manager_context =
-                          storage::FileManagerContext());
-
-    IndexBasePtr
-    CreateNestedIndexInverted(
-        int32_t tantivy_index_version,
-        const storage::FileManagerContext& file_manager_context =
-            storage::FileManagerContext());
-
-    IndexBasePtr
-    CreateNestedIndexScalarIndexSort(
-        const storage::FileManagerContext& file_manager_context =
-            storage::FileManagerContext());
-
-    IndexBasePtr
-    CreateNestedIndexBitmap(
-        const storage::FileManagerContext& file_manager_context =
-            storage::FileManagerContext());
+                        storage::FileManagerContext(),
+                    const std::string& json_cast_function =
+                        UNKNOW_CAST_FUNCTION_NAME);
 
     IndexBasePtr
     CreateScalarIndex(const CreateIndexInfo& create_index_info,

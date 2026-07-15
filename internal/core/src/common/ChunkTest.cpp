@@ -55,8 +55,8 @@ using namespace milvus;
 
 TEST(chunk, test_int64_field) {
     FixedVector<int64_t> data = {1, 2, 3, 4, 5};
-    auto field_data = milvus::storage::CreateFieldData(storage::DataType::INT64,
-                                                       DataType::NONE);
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::INT64);
     field_data->FillFieldData(data.data(), data.size());
     storage::InsertEventData event_data;
     auto payload_reader =
@@ -98,7 +98,7 @@ TEST(chunk, test_timestmamptz_field) {
     FixedVector<int64_t> data = {
         1, 2, 3, 4, 5};  // Timestamptz is stored as int64
     auto field_data =
-        milvus::storage::CreateFieldData(DataType::TIMESTAMPTZ, DataType::NONE);
+        milvus::storage::CreateFieldData(storage::DataType::TIMESTAMPTZ);
     field_data->FillFieldData(data.data(), data.size());
     storage::InsertEventData event_data;
     auto payload_reader =
@@ -139,8 +139,8 @@ TEST(chunk, test_timestmamptz_field) {
 TEST(chunk, test_variable_field) {
     FixedVector<std::string> data = {
         "test1", "test2", "test3", "test4", "test5"};
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::VARCHAR, DataType::NONE);
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::VARCHAR);
     field_data->FillFieldData(data.data(), data.size());
 
     storage::InsertEventData event_data;
@@ -182,8 +182,8 @@ TEST(chunk, test_variable_field_nullable) {
         "test1", "test2", "test3", "test4", "test5"};
     FixedVector<bool> validity = {true, false, true, false, true};
 
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::VARCHAR, DataType::NONE, true);
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::VARCHAR, true);
     uint8_t* valid_data = new uint8_t[1]{0x15};  // 10101 in binary
     field_data->FillFieldData(data.data(), valid_data, data.size(), 0);
     delete[] valid_data;
@@ -234,8 +234,7 @@ TEST(chunk, test_json_field) {
         auto json = Json(json_str.data(), json_str.size());
         data.push_back(std::move(json));
     }
-    auto field_data = milvus::storage::CreateFieldData(storage::DataType::JSON,
-                                                       DataType::NONE);
+    auto field_data = milvus::storage::CreateFieldData(storage::DataType::JSON);
     field_data->FillFieldData(data.data(), data.size());
 
     storage::InsertEventData event_data;
@@ -347,8 +346,8 @@ TEST(chunk, test_json_field) {
 
 TEST(chunk, test_null_int64) {
     FixedVector<int64_t> data = {1, 2, 3, 4, 5};
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::INT64, DataType::NONE, true);
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::INT64, true);
 
     // Set up validity bitmap: 10011 (1st, 4th, and 5th are valid)
     uint8_t* valid_data = new uint8_t[1]{0x13};  // 10011 in binary
@@ -412,8 +411,8 @@ TEST(chunk, test_array) {
     field_string_data.mutable_string_data()->add_data("test_array5");
     auto string_array = Array(field_string_data);
     FixedVector<Array> data = {string_array};
-    auto field_data = milvus::storage::CreateFieldData(storage::DataType::ARRAY,
-                                                       DataType::NONE);
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::ARRAY);
     field_data->FillFieldData(data.data(), data.size());
     storage::InsertEventData event_data;
     auto payload_reader =
@@ -470,8 +469,8 @@ TEST(chunk, test_null_array) {
         data.emplace_back(string_array);
     }
 
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::ARRAY, DataType::NONE, true);
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::ARRAY, true);
 
     // Set up validity bitmap: 10101 (1st, 3rd, and 5th are valid)
     uint8_t* valid_data = new uint8_t[1]{0x15};  // 10101 in binary
@@ -549,8 +548,8 @@ TEST(chunk, test_array_views) {
         data.emplace_back(string_array);
     }
 
-    auto field_data = milvus::storage::CreateFieldData(storage::DataType::ARRAY,
-                                                       DataType::NONE);
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::ARRAY);
     field_data->FillFieldData(data.data(), data.size());
     storage::InsertEventData event_data;
     auto payload_reader =
@@ -629,12 +628,11 @@ TEST(chunk, test_sparse_float) {
     auto n_rows = 100;
     auto vecs = milvus::segcore::GenerateRandomSparseFloatVector(
         n_rows, kTestSparseDim, kTestSparseVectorDensity);
-    auto field_data =
-        milvus::storage::CreateFieldData(DataType::VECTOR_SPARSE_U32_F32,
-                                         DataType::NONE,
-                                         false,
-                                         kTestSparseDim,
-                                         n_rows);
+    auto field_data = milvus::storage::CreateFieldData(
+        storage::DataType::VECTOR_SPARSE_U32_F32,
+        false,
+        kTestSparseDim,
+        n_rows);
     field_data->FillFieldData(vecs.get(), n_rows);
 
     storage::InsertEventData event_data;
@@ -691,8 +689,8 @@ TEST(chunk, test_lower_bound_string) {
                                      "kiwi",
                                      "lemon"};
 
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::VARCHAR, DataType::NONE);
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::VARCHAR);
     field_data->FillFieldData(data.data(), data.size());
 
     storage::InsertEventData event_data;
@@ -767,8 +765,8 @@ TEST(chunk, test_upper_bound_string) {
                                      "kiwi",
                                      "lemon"};
 
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::VARCHAR, DataType::NONE);
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::VARCHAR);
     field_data->FillFieldData(data.data(), data.size());
 
     storage::InsertEventData event_data;
@@ -836,8 +834,8 @@ TEST(chunk, test_binary_search_methods_edge_cases) {
     // Test with single element
     FixedVector<std::string> single_data = {"middle"};
 
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::VARCHAR, DataType::NONE);
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::VARCHAR);
     field_data->FillFieldData(single_data.data(), single_data.size());
 
     storage::InsertEventData event_data;
@@ -883,8 +881,8 @@ TEST(chunk, test_binary_search_methods_duplicates) {
     FixedVector<std::string> data = {
         "apple", "apple", "banana", "banana", "banana", "cherry"};
 
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::VARCHAR, DataType::NONE);
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::VARCHAR);
     field_data->FillFieldData(data.data(), data.size());
 
     storage::InsertEventData event_data;
@@ -933,8 +931,8 @@ TEST(chunk, test_binary_search_methods_comparison) {
     FixedVector<std::string> data = {
         "a", "b", "c", "d", "e", "f", "g", "h", "i", "j"};
 
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::VARCHAR, DataType::NONE);
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::VARCHAR);
     field_data->FillFieldData(data.data(), data.size());
 
     storage::InsertEventData event_data;

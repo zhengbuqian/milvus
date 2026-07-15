@@ -147,8 +147,7 @@ func packLoadSegmentRequest(
 		loadScope = querypb.LoadScope_Delta
 	}
 
-	finalSchema := applyCollectionSettings(schema, collectionProperties)
-	applyIndexWarmupSetting(loadInfo, finalSchema, collectionProperties)
+	schema = applyCollectionMmapSetting(schema, collectionProperties)
 
 	return &querypb.LoadSegmentsRequest{
 		Base: commonpbutil.NewMsgBase(
@@ -299,43 +298,6 @@ func applyCollectionMmapSetting(schema *schemapb.CollectionSchema,
 				Key:   common.MmapEnabledKey,
 				Value: strconv.FormatBool(collectionMmapEnabled),
 			})
-		}
-	}
-	for _, structField := range schema.GetStructArrayFields() {
-		structTypeParams := structField.GetTypeParams()
-		structMmapEnabled, structExist := common.IsMmapDataEnabled(structTypeParams...)
-
-		// If struct field itself doesn't have mmap setting, inherit from collection
-		if !structExist && exist &&
-			!common.FieldHasMmapKey(schema, structField.GetFieldID()) {
-			structField.TypeParams = append(structField.TypeParams, &commonpb.KeyValuePair{
-				Key:   common.MmapEnabledKey,
-				Value: strconv.FormatBool(collectionMmapEnabled),
-			})
-			// Update struct's mmap state since we just set it
-			structMmapEnabled = collectionMmapEnabled
-			structExist = true
-		}
-
-		// Apply mmap setting to fields inside struct
-		for _, field := range structField.GetFields() {
-			// Skip if field already has mmap setting
-			if common.FieldHasMmapKey(schema, field.GetFieldID()) {
-				continue
-			}
-
-			// Priority: struct field setting > collection setting
-			if structExist {
-				field.TypeParams = append(field.TypeParams, &commonpb.KeyValuePair{
-					Key:   common.MmapEnabledKey,
-					Value: strconv.FormatBool(structMmapEnabled),
-				})
-			} else if exist {
-				field.TypeParams = append(field.TypeParams, &commonpb.KeyValuePair{
-					Key:   common.MmapEnabledKey,
-					Value: strconv.FormatBool(collectionMmapEnabled),
-				})
-			}
 		}
 	}
 	return schema

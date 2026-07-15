@@ -89,11 +89,11 @@ class PlanNode {
 };
 
 using PlanNodePtr = std::shared_ptr<PlanNode>;
-class IterativeFilterNode : public PlanNode {
+class FilterNode : public PlanNode {
  public:
-    IterativeFilterNode(const PlanNodeId& id,
-                        expr::TypedExprPtr filter,
-                        std::vector<PlanNodePtr> sources)
+    FilterNode(const PlanNodeId& id,
+               expr::TypedExprPtr filter,
+               std::vector<PlanNodePtr> sources)
         : PlanNode(id),
           sources_{std::move(sources)},
           filter_(std::move(filter)) {
@@ -120,7 +120,7 @@ class IterativeFilterNode : public PlanNode {
 
     std::string_view
     name() const override {
-        return "IterativeFilter";
+        return "Filter";
     }
 
     std::string
@@ -184,182 +184,6 @@ class FilterBitsNode : public PlanNode {
  private:
     const std::vector<PlanNodePtr> sources_;
     const expr::TypedExprPtr filter_;
-};
-
-class IterativeElementFilterNode : public PlanNode {
- public:
-    IterativeElementFilterNode(const PlanNodeId& id,
-                               expr::TypedExprPtr element_filter,
-                               std::string struct_name,
-                               std::vector<PlanNodePtr> sources,
-                               bool has_doc_predicate = true)
-        : PlanNode(id),
-          sources_{std::move(sources)},
-          element_filter_(std::move(element_filter)),
-          struct_name_(std::move(struct_name)),
-          has_doc_predicate_(has_doc_predicate) {
-        AssertInfo(
-            element_filter_->type() == DataType::BOOL,
-            fmt::format(
-                "Element filter expression must be of type BOOLEAN, Got {}",
-                element_filter_->type()));
-    }
-
-    RowTypePtr
-    output_type() const override {
-        return RowType::None;
-    }
-
-    std::vector<PlanNodePtr>
-    sources() const override {
-        return sources_;
-    }
-
-    const expr::TypedExprPtr&
-    element_filter() const {
-        return element_filter_;
-    }
-
-    const std::string&
-    struct_name() const {
-        return struct_name_;
-    }
-
-    bool
-    has_doc_predicate() const {
-        return has_doc_predicate_;
-    }
-
-    std::string_view
-    name() const override {
-        return "IterativeElementFilter";
-    }
-
-    std::string
-    ToString() const override {
-        return fmt::format(
-            "IterativeElementFilterNode:[struct_name:{}, element_filter:{}, "
-            "has_doc_predicate:{}]",
-            struct_name_,
-            element_filter_->ToString(),
-            has_doc_predicate_);
-    }
-
- private:
-    const std::vector<PlanNodePtr> sources_;
-    const expr::TypedExprPtr element_filter_;
-    const std::string struct_name_;
-    const bool has_doc_predicate_;
-};
-
-class ElementFilterBitsNode : public PlanNode {
- public:
-    ElementFilterBitsNode(
-        const PlanNodeId& id,
-        expr::TypedExprPtr element_filter,
-        std::string struct_name,
-        std::vector<PlanNodePtr> sources = std::vector<PlanNodePtr>{})
-        : PlanNode(id),
-          sources_{std::move(sources)},
-          element_filter_(std::move(element_filter)),
-          struct_name_(std::move(struct_name)) {
-        AssertInfo(
-            element_filter_->type() == DataType::BOOL,
-            fmt::format(
-                "Element filter expression must be of type BOOLEAN, Got {}",
-                element_filter_->type()));
-    }
-
-    RowTypePtr
-    output_type() const override {
-        return RowType::None;
-    }
-
-    std::vector<PlanNodePtr>
-    sources() const override {
-        return sources_;
-    }
-
-    const expr::TypedExprPtr&
-    element_filter() const {
-        return element_filter_;
-    }
-
-    const std::string&
-    struct_name() const {
-        return struct_name_;
-    }
-
-    std::string_view
-    name() const override {
-        return "ElementFilterBits";
-    }
-
-    std::string
-    ToString() const override {
-        return fmt::format(
-            "ElementFilterBitsNode:[struct_name:{}, element_filter:{}]",
-            struct_name_,
-            element_filter_->ToString());
-    }
-
-    expr::ExprInfo
-    GatherInfo() const override {
-        expr::ExprInfo info;
-        element_filter_->GatherInfo(info);
-        return info;
-    }
-
- private:
-    const std::vector<PlanNodePtr> sources_;
-    const expr::TypedExprPtr element_filter_;
-    const std::string struct_name_;
-};
-
-class ProjectNode : public PlanNode {
- public:
-    ProjectNode(const PlanNodeId& id,
-                std::vector<FieldId>&& field_ids,
-                std::vector<std::string>&& field_names,
-                std::vector<milvus::DataType>&& field_types,
-                std::vector<PlanNodePtr> sources = std::vector<PlanNodePtr>{})
-        : PlanNode(id),
-          sources_(std::move(sources)),
-          field_ids_(std::move(field_ids)),
-          output_type_(std::make_shared<RowType>(std::move(field_names),
-                                                 std::move(field_types))) {
-    }
-
-    std::vector<PlanNodePtr>
-    sources() const override {
-        return sources_;
-    }
-
-    RowTypePtr
-    output_type() const override {
-        return output_type_;
-    }
-
-    std::string_view
-    name() const override {
-        return "ProjectNode";
-    }
-
-    std::string
-    ToString() const override {
-        return fmt::format("ProjectNode:\n\t[source node:{}]",
-                           SourceToString());
-    }
-
-    const std::vector<FieldId>&
-    FieldsToProject() const {
-        return field_ids_;
-    }
-
- private:
-    const std::vector<PlanNodePtr> sources_;
-    const std::vector<FieldId> field_ids_;
-    const RowTypePtr output_type_;
 };
 
 class MvccNode : public PlanNode {

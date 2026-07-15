@@ -18,15 +18,8 @@ package metric
 
 import "strings"
 
-// PositivelyRelated returns true if the metric type is positively related,
-// meaning higher scores indicate better similarity.
+// PositivelyRelated return if metricType are "ip" or "IP"
 func PositivelyRelated(metricType string) bool {
 	mUpper := strings.ToUpper(metricType)
-	return mUpper == strings.ToUpper(IP) ||
-		mUpper == strings.ToUpper(COSINE) ||
-		mUpper == strings.ToUpper(BM25) ||
-		mUpper == strings.ToUpper(MHJACCARD) ||
-		mUpper == strings.ToUpper(MaxSim) ||
-		mUpper == strings.ToUpper(MaxSimIP) ||
-		mUpper == strings.ToUpper(MaxSimCosine)
+	return mUpper == strings.ToUpper(IP) || mUpper == strings.ToUpper(COSINE) || mUpper == strings.ToUpper(BM25) || mUpper == strings.ToUpper(MHJACCARD)
 }

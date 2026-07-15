@@ -176,17 +176,7 @@ func (v *validateUtil) Validate(data []*schemapb.FieldData, helper *typeutil.Sch
 			if err := v.checkArrayFieldData(field, fieldSchema); err != nil {
 				return err
 			}
-		case schemapb.DataType_ArrayOfVector:
-			if err := v.checkArrayOfVectorFieldData(field, fieldSchema); err != nil {
-				return err
-			}
 
-		case schemapb.DataType_ArrayOfStruct:
-			panic("unreachable, array of struct should have been flattened")
-		case schemapb.DataType_Timestamptz:
-			if err := v.checkTimestamptzFieldData(field, helper.GetTimezone()); err != nil {
-				return err
-			}
 		default:
 		}
 	}
@@ -398,37 +388,6 @@ func (v *validateUtil) checkAligned(data []*schemapb.FieldData, schema *typeutil
 			if n != expectedRows {
 				return errNumRowsMismatch(field.GetFieldName(), n)
 			}
-
-		case schemapb.DataType_ArrayOfVector:
-			f, err := schema.GetFieldFromName(field.GetFieldName())
-			if err != nil {
-				return err
-			}
-
-			// ArrayOfVector is dense after fillWithValue: null rows are filled with empty
-			// per-row VectorField placeholders, so Data length must equal numRows.
-			if field.GetVectors() == nil || field.GetVectors().GetVectorArray() == nil {
-				if numRows != 0 {
-					return errNumRowsMismatch(field.GetFieldName(), 0)
-				}
-				continue
-			}
-
-			dim, err := typeutil.GetDim(f)
-			if err != nil {
-				return err
-			}
-
-			dataDim := field.GetVectors().GetVectorArray().GetDim()
-			if dataDim != dim {
-				return errDimMismatch(field.GetFieldName(), dataDim, dim)
-			}
-
-			n := uint64(len(field.GetVectors().GetVectorArray().GetData()))
-			if n != numRows {
-				return errNumRowsMismatch(field.GetFieldName(), n)
-			}
-
 		default:
 			// error won't happen here.
 			n, err := funcutil.GetNumRowOfFieldDataWithSchema(field, schema)
@@ -489,41 +448,47 @@ func FillWithNullValue(field *schemapb.FieldData, fieldSchema *schemapb.FieldSch
 		return err
 	}
 
-	if !fieldSchema.GetNullable() {
-		return nil
-	}
-
 	switch field.Field.(type) {
 	case *schemapb.FieldData_Scalars:
 		switch sd := field.GetScalars().GetData().(type) {
 		case *schemapb.ScalarField_BoolData:
-			sd.BoolData.Data, err = fillWithNullValueImpl(sd.BoolData.Data, field.GetValidData())
-			if err != nil {
-				return err
+			if fieldSchema.GetNullable() {
+				sd.BoolData.Data, err = fillWithNullValueImpl(sd.BoolData.Data, field.GetValidData())
+				if err != nil {
+					return err
+				}
 			}
 
 		case *schemapb.ScalarField_IntData:
-			sd.IntData.Data, err = fillWithNullValueImpl(sd.IntData.Data, field.GetValidData())
-			if err != nil {
-				return err
+			if fieldSchema.GetNullable() {
+				sd.IntData.Data, err = fillWithNullValueImpl(sd.IntData.Data, field.GetValidData())
+				if err != nil {
+					return err
+				}
 			}
 
 		case *schemapb.ScalarField_LongData:
-			sd.LongData.Data, err = fillWithNullValueImpl(sd.LongData.Data, field.GetValidData())
-			if err != nil {
-				return err
+			if fieldSchema.GetNullable() {
+				sd.LongData.Data, err = fillWithNullValueImpl(sd.LongData.Data, field.GetValidData())
+				if err != nil {
+					return err
+				}
 			}
 
 		case *schemapb.ScalarField_FloatData:
-			sd.FloatData.Data, err = fillWithNullValueImpl(sd.FloatData.Data, field.GetValidData())
-			if err != nil {
-				return err
+			if fieldSchema.GetNullable() {
+				sd.FloatData.Data, err = fillWithNullValueImpl(sd.FloatData.Data, field.GetValidData())
+				if err != nil {
+					return err
+				}
 			}
 
 		case *schemapb.ScalarField_DoubleData:
-			sd.DoubleData.Data, err = fillWithNullValueImpl(sd.DoubleData.Data, field.GetValidData())
-			if err != nil {
-				return err
+			if fieldSchema.GetNullable() {
+				sd.DoubleData.Data, err = fillWithNullValueImpl(sd.DoubleData.Data, field.GetValidData())
+				if err != nil {
+					return err
+				}
 			}
 
 		case *schemapb.ScalarField_TimestamptzData:
@@ -532,20 +497,26 @@ func FillWithNullValue(field *schemapb.FieldData, fieldSchema *schemapb.FieldSch
 				return err
 			}
 		case *schemapb.ScalarField_StringData:
-			sd.StringData.Data, err = fillWithNullValueImpl(sd.StringData.Data, field.GetValidData())
-			if err != nil {
-				return err
+			if fieldSchema.GetNullable() {
+				sd.StringData.Data, err = fillWithNullValueImpl(sd.StringData.Data, field.GetValidData())
+				if err != nil {
+					return err
+				}
 			}
 		case *schemapb.ScalarField_ArrayData:
-			sd.ArrayData.Data, err = fillWithNullValueImpl(sd.ArrayData.Data, field.GetValidData())
-			if err != nil {
-				return err
+			if fieldSchema.GetNullable() {
+				sd.ArrayData.Data, err = fillWithNullValueImpl(sd.ArrayData.Data, field.GetValidData())
+				if err != nil {
+					return err
+				}
 			}
 
 		case *schemapb.ScalarField_JsonData:
-			sd.JsonData.Data, err = fillWithNullValueImpl(sd.JsonData.Data, field.GetValidData())
-			if err != nil {
-				return err
+			if fieldSchema.GetNullable() {
+				sd.JsonData.Data, err = fillWithNullValueImpl(sd.JsonData.Data, field.GetValidData())
+				if err != nil {
+					return err
+				}
 			}
 
 		case *schemapb.ScalarField_GeometryData:
@@ -564,52 +535,11 @@ func FillWithNullValue(field *schemapb.FieldData, fieldSchema *schemapb.FieldSch
 		}
 
 	case *schemapb.FieldData_Vectors:
-		// Only ArrayOfVector needs null-expansion. Regular vectors stay compact and
-		// rely on ValidData + isNullRow to carry null semantics downstream.
-		// ArrayOfVector is treated as a per-row array whose null rows are represented
-		// by an empty VectorField placeholder, so downstream consumers can read it
-		// uniformly as "row has zero vectors" without special null handling.
-		if field.Type == schemapb.DataType_ArrayOfVector {
-			vectorArray := field.GetVectors().GetVectorArray()
-			if vectorArray == nil {
-				return merr.WrapErrParameterInvalidMsg("array of vector data is nil, field: %s", field.GetFieldName())
-			}
-			expanded, err := fillVectorArrayNullValueImpl(vectorArray.GetData(), field.GetValidData(), vectorArray.GetDim(), vectorArray.GetElementType())
-			if err != nil {
-				return err
-			}
-			vectorArray.Data = expanded
-		}
 	default:
 		return merr.WrapErrParameterInvalidMsg("undefined data type:%s", field.Type.String())
 	}
 
 	return nil
-}
-
-func fillVectorArrayNullValueImpl(array []*schemapb.VectorField, validData []bool, dim int64, elementType schemapb.DataType) ([]*schemapb.VectorField, error) {
-	n := getValidNumber(validData)
-	if len(array) != n {
-		return nil, merr.WrapErrParameterInvalid(n, len(array), "the length of field is wrong")
-	}
-	if n == len(validData) {
-		return array, nil
-	}
-	res := make([]*schemapb.VectorField, len(validData))
-	srcIdx := 0
-	for i, v := range validData {
-		if v {
-			res[i] = array[srcIdx]
-			srcIdx++
-		} else {
-			emptyRow, err := typeutil.NewEmptyArrayOfVectorRow(dim, elementType)
-			if err != nil {
-				return nil, err
-			}
-			res[i] = emptyRow
-		}
-	}
-	return res, nil
 }
 
 func FillWithDefaultValue(field *schemapb.FieldData, fieldSchema *schemapb.FieldSchema, numRows int) error {
@@ -1171,187 +1101,6 @@ func (v *validateUtil) checkArrayFieldData(field *schemapb.FieldData, fieldSchem
 		}
 	}
 	return v.checkArrayElement(data, fieldSchema)
-}
-
-func (v *validateUtil) checkArrayOfVectorFieldData(field *schemapb.FieldData, fieldSchema *schemapb.FieldSchema) error {
-	data := field.GetVectors().GetVectorArray()
-	if data == nil {
-		elementTypeStr := fieldSchema.GetElementType().String()
-		msg := fmt.Sprintf("array of vector field '%v' is illegal, array type mismatch", field.GetFieldName())
-		expectStr := fmt.Sprintf("need %s array", elementTypeStr)
-		return merr.WrapErrParameterInvalid(expectStr, "got nil", msg)
-	}
-
-	dim, err := typeutil.GetDim(fieldSchema)
-	if err != nil {
-		return err
-	}
-
-	var maxCapacity int64
-	if v.checkMaxCap {
-		maxCapacity, err = parameterutil.GetMaxCapacity(fieldSchema)
-		if err != nil {
-			return err
-		}
-	}
-
-	checkCapacity := func(vectorCount int) error {
-		if !v.checkMaxCap || int64(vectorCount) <= maxCapacity {
-			return nil
-		}
-		msg := fmt.Sprintf("the length (%d) of array of vector field %s exceeds max capacity (%d)", vectorCount, field.GetFieldName(), maxCapacity)
-		return merr.WrapErrParameterInvalid("valid length array", "array length exceeds max capacity", msg)
-	}
-
-	validateVectorCount := func(payloadLength int, elementsPerVector int) (int, error) {
-		if elementsPerVector <= 0 {
-			return 0, merr.WrapErrParameterInvalidMsg("invalid dim %d for array of vector field %s", dim, field.GetFieldName())
-		}
-		if payloadLength%elementsPerVector != 0 {
-			msg := fmt.Sprintf("array of vector field %s has invalid payload length %d, should be divisible by vector width %d",
-				field.GetFieldName(), payloadLength, elementsPerVector)
-			return 0, merr.WrapErrParameterInvalid("valid array of vector payload length", "invalid payload length", msg)
-		}
-		return payloadLength / elementsPerVector, nil
-	}
-
-	switch fieldSchema.GetElementType() {
-	case schemapb.DataType_FloatVector:
-		for _, vector := range data.GetData() {
-			floatVector := vector.GetFloatVector()
-			if floatVector == nil {
-				msg := fmt.Sprintf("array of vector field '%v' is illegal, array type mismatch", field.GetFieldName())
-				return merr.WrapErrParameterInvalid("need float vector array", "got nil", msg)
-			}
-			vectorCount, err := validateVectorCount(len(floatVector.GetData()), int(dim))
-			if err != nil {
-				return err
-			}
-			if err := checkCapacity(vectorCount); err != nil {
-				return err
-			}
-			if v.checkNAN {
-				if err := typeutil.VerifyFloats32(floatVector.GetData()); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	case schemapb.DataType_BinaryVector:
-		for _, vector := range data.GetData() {
-			binaryVector := vector.GetBinaryVector()
-			if binaryVector == nil {
-				msg := fmt.Sprintf("array of vector field '%v' is illegal, array type mismatch", field.GetFieldName())
-				return merr.WrapErrParameterInvalid("need binary vector array", "got nil", msg)
-			}
-			vectorCount, err := validateVectorCount(len(binaryVector), int((dim+7)/8))
-			if err != nil {
-				return err
-			}
-			if err := checkCapacity(vectorCount); err != nil {
-				return err
-			}
-		}
-		return nil
-	case schemapb.DataType_Float16Vector:
-		for _, vector := range data.GetData() {
-			float16Vector := vector.GetFloat16Vector()
-			if float16Vector == nil {
-				msg := fmt.Sprintf("array of vector field '%v' is illegal, array type mismatch", field.GetFieldName())
-				return merr.WrapErrParameterInvalid("need float16 vector array", "got nil", msg)
-			}
-			vectorCount, err := validateVectorCount(len(float16Vector), int(dim)*2)
-			if err != nil {
-				return err
-			}
-			if err := checkCapacity(vectorCount); err != nil {
-				return err
-			}
-			if v.checkNAN {
-				if err := typeutil.VerifyFloats16(float16Vector); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	case schemapb.DataType_BFloat16Vector:
-		for _, vector := range data.GetData() {
-			bfloat16Vector := vector.GetBfloat16Vector()
-			if bfloat16Vector == nil {
-				msg := fmt.Sprintf("array of vector field '%v' is illegal, array type mismatch", field.GetFieldName())
-				return merr.WrapErrParameterInvalid("need bfloat16 vector array", "got nil", msg)
-			}
-			vectorCount, err := validateVectorCount(len(bfloat16Vector), int(dim)*2)
-			if err != nil {
-				return err
-			}
-			if err := checkCapacity(vectorCount); err != nil {
-				return err
-			}
-			if v.checkNAN {
-				if err := typeutil.VerifyBFloats16(bfloat16Vector); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	case schemapb.DataType_Int8Vector:
-		for _, vector := range data.GetData() {
-			int8Vector := vector.GetInt8Vector()
-			if int8Vector == nil {
-				msg := fmt.Sprintf("array of vector field '%v' is illegal, array type mismatch", field.GetFieldName())
-				return merr.WrapErrParameterInvalid("need int8 vector array", "got nil", msg)
-			}
-			vectorCount, err := validateVectorCount(len(int8Vector), int(dim))
-			if err != nil {
-				return err
-			}
-			if err := checkCapacity(vectorCount); err != nil {
-				return err
-			}
-		}
-		return nil
-	default:
-		msg := fmt.Sprintf("unsupported element type for ArrayOfVector: %v", fieldSchema.GetElementType())
-		return merr.WrapErrParameterInvalid("supported vector type", fieldSchema.GetElementType().String(), msg)
-	}
-}
-
-// checkTimestamptzFieldData validates the input string data for a Timestamptz field,
-// converts it into UTC Unix Microseconds (int64), and replaces the data in place.
-func (v *validateUtil) checkTimestamptzFieldData(field *schemapb.FieldData, timezone string) error {
-	// 1. Structural Check: Data must be present and must be a string array
-	scalarField := field.GetScalars()
-	if scalarField == nil || scalarField.GetStringData() == nil {
-		mlog.Warn(context.TODO(), "timestamptz field data is not string array", mlog.String("fieldName", field.GetFieldName()))
-		return merr.WrapErrParameterInvalidMsg("timestamptz field data must be a string array")
-	}
-
-	stringData := scalarField.GetStringData().GetData()
-	utcTimestamps := make([]int64, len(stringData))
-
-	// 2. Validation and Conversion Loop
-	for i, isoStr := range stringData {
-		// Use the centralized parser (timestamptz.ParseTimeTz) for validation and parsing.
-		t, err := timestamptz.ParseTimeTz(isoStr, timezone)
-		if err != nil {
-			mlog.Info(context.TODO(), "cannot parse timestamptz string", mlog.String("timestamp_string", isoStr), mlog.String("timezone", timezone), mlog.Err(err))
-			// Use the recommended refined error message structure
-			const invalidMsg = "invalid timezone name; must be a valid IANA Time Zone ID (e.g., 'Asia/Shanghai' or 'UTC')"
-			return merr.WrapErrParameterInvalidMsg("got invalid timestamptz string '%s': %s", isoStr, invalidMsg)
-		}
-
-		// Convert the time object to Unix Microseconds (int64)
-		utcTimestamps[i] = t.UnixMicro()
-	}
-
-	// 3. In-Place Data Replacement: Replace StringData with converted TimestamptzData (int64)
-	field.GetScalars().Data = &schemapb.ScalarField_TimestamptzData{
-		TimestamptzData: &schemapb.TimestamptzArray{
-			Data: utcTimestamps,
-		},
-	}
-	return nil
 }
 
 func verifyLengthPerRow[E interface{ ~string | ~[]byte }](strArr []E, maxLength int64) (int, bool) {

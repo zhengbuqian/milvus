@@ -60,12 +60,7 @@ PhyBinaryRangeFilterExpr::Eval(EvalCtx& context, VectorPtr& result) {
 
     auto input = context.get_offset_input();
     SetHasOffsetInput((input != nullptr));
-
-    auto data_type = expr_->column_.data_type_;
-    if (expr_->column_.element_level_) {
-        data_type = expr_->column_.element_type_;
-    }
-    switch (data_type) {
+    switch (expr_->column_.data_type_) {
         case DataType::BOOL: {
             result = ExecRangeVisitorImpl<bool>(context);
             break;
@@ -418,8 +413,7 @@ PhyBinaryRangeFilterExpr::ExecRangeVisitorImplForIndex() {
         return res;
     }
 
-    auto real_batch_size =
-        GetNextRealBatchSize(nullptr, expr_->column_.element_level_);
+    auto real_batch_size = GetNextBatchSize();
     if (real_batch_size == 0) {
         return nullptr;
     }
@@ -464,7 +458,7 @@ PhyBinaryRangeFilterExpr::ExecRangeVisitorImplForData(EvalCtx& context) {
     }
 
     auto real_batch_size =
-        GetNextRealBatchSize(input, expr_->column_.element_level_);
+        has_offset_input_ ? input->size() : GetNextBatchSize();
     if (real_batch_size == 0) {
         return nullptr;
     }
@@ -570,34 +564,16 @@ PhyBinaryRangeFilterExpr::ExecRangeVisitorImplForData(EvalCtx& context) {
         };
     int64_t processed_size;
     if (has_offset_input_) {
-        if (expr_->column_.element_level_) {
-            // For element-level filtering with offset input
-            processed_size = ProcessElementLevelByOffsets<T>(execute_sub_batch,
-                                                             skip_index_func,
-                                                             input,
-                                                             res,
-                                                             valid_res,
-                                                             val1,
-                                                             val2);
-        } else {
-            // For doc-level filtering
-            processed_size = ProcessDataByOffsets<T>(execute_sub_batch,
-                                                     skip_index_func,
-                                                     input,
-                                                     res,
-                                                     valid_res,
-                                                     val1,
-                                                     val2);
-        }
+        processed_size = ProcessDataByOffsets<T>(execute_sub_batch,
+                                                 skip_index_func,
+                                                 input,
+                                                 res,
+                                                 valid_res,
+                                                 val1,
+                                                 val2);
     } else {
-        if (expr_->column_.element_level_) {
-            // For element-level filtering without offset input (brute force)
-            processed_size = ProcessDataChunksForElementLevel<T>(
-                execute_sub_batch, skip_index_func, res, valid_res, val1, val2);
-        } else {
-            processed_size = ProcessDataChunks<T>(
-                execute_sub_batch, skip_index_func, res, valid_res, val1, val2);
-        }
+        processed_size = ProcessDataChunks<T>(
+            execute_sub_batch, skip_index_func, res, valid_res, val1, val2);
     }
     AssertInfo(processed_size == real_batch_size,
                "internal error: expr processed rows {} not equal "

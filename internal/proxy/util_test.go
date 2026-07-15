@@ -27,7 +27,7 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
-	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 
@@ -556,40 +556,15 @@ func TestValidateVectorFieldMetricType(t *testing.T) {
 }
 
 func TestValidateDuplicatedFieldName(t *testing.T) {
-	schema := &schemapb.CollectionSchema{
-		Fields: []*schemapb.FieldSchema{
-			{Name: "abc"},
-			{Name: "def"},
-		},
+	fields := []*schemapb.FieldSchema{
+		{Name: "abc"},
+		{Name: "def"},
 	}
-	assert.Nil(t, validateDuplicatedFieldName(schema))
-	schema.Fields = append(schema.Fields, &schemapb.FieldSchema{
+	assert.Nil(t, validateDuplicatedFieldName(fields))
+	fields = append(fields, &schemapb.FieldSchema{
 		Name: "abc",
 	})
-	assert.NotNil(t, validateDuplicatedFieldName(schema))
-}
-
-func TestValidateDuplicatedFieldNameWithStructArrayField(t *testing.T) {
-	schema := &schemapb.CollectionSchema{
-		Fields: []*schemapb.FieldSchema{
-			{Name: "abc"},
-			{Name: "def"},
-		},
-		StructArrayFields: []*schemapb.StructArrayFieldSchema{
-			{
-				Name: "struct1",
-				Fields: []*schemapb.FieldSchema{
-					{Name: "abc2"},
-					{Name: "def2"},
-				},
-			},
-		},
-	}
-	assert.Nil(t, validateDuplicatedFieldName(schema))
-	schema.StructArrayFields[0].Fields = append(schema.StructArrayFields[0].Fields, &schemapb.FieldSchema{
-		Name: "abc",
-	})
-	assert.NotNil(t, validateDuplicatedFieldName(schema))
+	assert.NotNil(t, validateDuplicatedFieldName(fields))
 }
 
 func TestValidatePrimaryKey(t *testing.T) {
@@ -808,19 +783,181 @@ func TestValidateFieldType(t *testing.T) {
 	}
 }
 
-func TestValidateFieldAllowsAnalyzerParamsWithoutEnableAnalyzer(t *testing.T) {
-	field := &schemapb.FieldSchema{
-		Name:     "text_field",
-		DataType: schemapb.DataType_VarChar,
-		TypeParams: []*commonpb.KeyValuePair{
-			{Key: common.MaxLengthKey, Value: "100"},
-			{Key: common.AnalyzerParamKey, Value: `{"tokenizer":"standard"}`},
+func TestValidateSchema(t *testing.T) {
+	coll := &schemapb.CollectionSchema{
+		Name:        "coll1",
+		Description: "",
+		AutoID:      false,
+		Fields:      nil,
+	}
+	assert.NotNil(t, validateSchema(coll))
+
+	pf1 := &schemapb.FieldSchema{
+		Name:         "f1",
+		FieldID:      100,
+		IsPrimaryKey: false,
+		Description:  "",
+		DataType:     schemapb.DataType_Int64,
+		TypeParams:   nil,
+		IndexParams:  nil,
+	}
+	coll.Fields = append(coll.Fields, pf1)
+	assert.NotNil(t, validateSchema(coll))
+
+	pf1.IsPrimaryKey = true
+	assert.Nil(t, validateSchema(coll))
+
+	pf1.DataType = schemapb.DataType_Int32
+	assert.NotNil(t, validateSchema(coll))
+
+	pf1.DataType = schemapb.DataType_Int64
+	assert.Nil(t, validateSchema(coll))
+
+	pf2 := &schemapb.FieldSchema{
+		Name:         "f2",
+		FieldID:      101,
+		IsPrimaryKey: true,
+		Description:  "",
+		DataType:     schemapb.DataType_Int64,
+		TypeParams:   nil,
+		IndexParams:  nil,
+	}
+	coll.Fields = append(coll.Fields, pf2)
+	assert.NotNil(t, validateSchema(coll))
+
+	pf2.IsPrimaryKey = false
+	assert.Nil(t, validateSchema(coll))
+
+	pf2.Name = "f1"
+	assert.NotNil(t, validateSchema(coll))
+	pf2.Name = "f2"
+	assert.Nil(t, validateSchema(coll))
+
+	pf2.FieldID = 100
+	assert.NotNil(t, validateSchema(coll))
+
+	pf2.FieldID = 101
+	assert.Nil(t, validateSchema(coll))
+
+	pf2.DataType = -1
+	assert.NotNil(t, validateSchema(coll))
+
+	pf2.DataType = schemapb.DataType_FloatVector
+	assert.NotNil(t, validateSchema(coll))
+
+	pf2.DataType = schemapb.DataType_Int64
+	assert.Nil(t, validateSchema(coll))
+
+	tp3Good := []*commonpb.KeyValuePair{
+		{
+			Key:   common.DimKey,
+			Value: "128",
 		},
 	}
-	schema := &schemapb.CollectionSchema{Name: "test_collection"}
 
-	err := ValidateField(field, schema)
-	require.NoError(t, err)
+	tp3Bad1 := []*commonpb.KeyValuePair{
+		{
+			Key:   common.DimKey,
+			Value: "asdfa",
+		},
+	}
+
+	tp3Bad2 := []*commonpb.KeyValuePair{
+		{
+			Key:   common.DimKey,
+			Value: "-1",
+		},
+	}
+
+	tp3Bad3 := []*commonpb.KeyValuePair{
+		{
+			Key:   "dimX",
+			Value: "128",
+		},
+	}
+
+	tp3Bad4 := []*commonpb.KeyValuePair{
+		{
+			Key:   common.DimKey,
+			Value: "128",
+		},
+		{
+			Key:   common.DimKey,
+			Value: "64",
+		},
+	}
+
+	ip3Good := []*commonpb.KeyValuePair{
+		{
+			Key:   common.MetricTypeKey,
+			Value: "IP",
+		},
+	}
+
+	ip3Bad1 := []*commonpb.KeyValuePair{
+		{
+			Key:   common.MetricTypeKey,
+			Value: "JACCARD",
+		},
+	}
+
+	ip3Bad2 := []*commonpb.KeyValuePair{
+		{
+			Key:   common.MetricTypeKey,
+			Value: "xxxxxx",
+		},
+	}
+
+	ip3Bad3 := []*commonpb.KeyValuePair{
+		{
+			Key:   common.MetricTypeKey,
+			Value: "L2",
+		},
+		{
+			Key:   common.MetricTypeKey,
+			Value: "IP",
+		},
+	}
+
+	pf3 := &schemapb.FieldSchema{
+		Name:         "f3",
+		FieldID:      102,
+		IsPrimaryKey: false,
+		Description:  "",
+		DataType:     schemapb.DataType_FloatVector,
+		TypeParams:   tp3Good,
+		IndexParams:  ip3Good,
+	}
+
+	coll.Fields = append(coll.Fields, pf3)
+	assert.Nil(t, validateSchema(coll))
+
+	pf3.TypeParams = tp3Bad1
+	assert.NotNil(t, validateSchema(coll))
+
+	pf3.TypeParams = tp3Bad2
+	assert.NotNil(t, validateSchema(coll))
+
+	pf3.TypeParams = tp3Bad3
+	assert.NotNil(t, validateSchema(coll))
+
+	pf3.TypeParams = tp3Bad4
+	assert.NotNil(t, validateSchema(coll))
+
+	pf3.TypeParams = tp3Good
+	assert.Nil(t, validateSchema(coll))
+
+	pf3.IndexParams = ip3Bad1
+	assert.NotNil(t, validateSchema(coll))
+
+	pf3.IndexParams = ip3Bad2
+	assert.NotNil(t, validateSchema(coll))
+
+	pf3.IndexParams = ip3Bad3
+	assert.NotNil(t, validateSchema(coll))
+
+	pf3.IndexParams = ip3Good
+	assert.Nil(t, validateSchema(coll))
 }
 
 func TestValidateMultipleVectorFields(t *testing.T) {
@@ -1342,7 +1479,7 @@ func Test_InsertTaskcheckFieldsDataBySchema(t *testing.T) {
 			},
 		}
 
-		err = checkFieldsDataBySchema(context.TODO(), task.schema.Fields, task.schema, task.insertMsg, true)
+		err = checkFieldsDataBySchema(task.schema, task.insertMsg, true)
 		assert.Equal(t, nil, err)
 		assert.Equal(t, len(task.insertMsg.FieldsData), 0)
 	})
@@ -1372,7 +1509,7 @@ func Test_InsertTaskcheckFieldsDataBySchema(t *testing.T) {
 			},
 		}
 
-		err = checkFieldsDataBySchema(context.TODO(), task.schema.Fields, task.schema, task.insertMsg, true)
+		err = checkFieldsDataBySchema(task.schema, task.insertMsg, true)
 		assert.ErrorIs(t, merr.ErrParameterInvalid, err)
 	})
 
@@ -1413,7 +1550,7 @@ func Test_InsertTaskcheckFieldsDataBySchema(t *testing.T) {
 			},
 		}
 
-		err = checkFieldsDataBySchema(context.TODO(), task.schema.Fields, task.schema, task.insertMsg, true)
+		err = checkFieldsDataBySchema(task.schema, task.insertMsg, true)
 		assert.Equal(t, nil, err)
 		assert.Equal(t, len(task.insertMsg.FieldsData), 2)
 	})
@@ -1443,7 +1580,7 @@ func Test_InsertTaskcheckFieldsDataBySchema(t *testing.T) {
 			},
 		}
 
-		err = checkFieldsDataBySchema(context.TODO(), task.schema.Fields, task.schema, task.insertMsg, true)
+		err = checkFieldsDataBySchema(task.schema, task.insertMsg, true)
 		assert.Equal(t, nil, err)
 		assert.Equal(t, len(task.insertMsg.FieldsData), 0)
 	})
@@ -1472,7 +1609,7 @@ func Test_InsertTaskcheckFieldsDataBySchema(t *testing.T) {
 			},
 		}
 
-		err = checkFieldsDataBySchema(context.TODO(), task.schema.Fields, task.schema, task.insertMsg, true)
+		err = checkFieldsDataBySchema(task.schema, task.insertMsg, true)
 		assert.ErrorIs(t, merr.ErrParameterInvalid, err)
 	})
 
@@ -1506,7 +1643,7 @@ func Test_InsertTaskcheckFieldsDataBySchema(t *testing.T) {
 			},
 		}
 
-		err = checkFieldsDataBySchema(context.TODO(), task.schema.Fields, task.schema, task.insertMsg, true)
+		err = checkFieldsDataBySchema(task.schema, task.insertMsg, true)
 		assert.ErrorIs(t, merr.ErrParameterInvalid, err)
 	})
 
@@ -1544,7 +1681,7 @@ func Test_InsertTaskcheckFieldsDataBySchema(t *testing.T) {
 			},
 		}
 
-		err = checkFieldsDataBySchema(context.TODO(), task.schema.Fields, task.schema, task.insertMsg, true)
+		err = checkFieldsDataBySchema(task.schema, task.insertMsg, true)
 		assert.ErrorIs(t, merr.ErrParameterInvalid, err)
 	})
 
@@ -1578,7 +1715,7 @@ func Test_InsertTaskcheckFieldsDataBySchema(t *testing.T) {
 			},
 		}
 
-		err = checkFieldsDataBySchema(context.TODO(), task.schema.Fields, task.schema, task.insertMsg, true)
+		err = checkFieldsDataBySchema(task.schema, task.insertMsg, true)
 		assert.ErrorIs(t, merr.ErrParameterInvalid, err)
 	})
 
@@ -1612,7 +1749,7 @@ func Test_InsertTaskcheckFieldsDataBySchema(t *testing.T) {
 			},
 		}
 
-		err = checkFieldsDataBySchema(context.TODO(), task.schema.Fields, task.schema, task.insertMsg, true)
+		err = checkFieldsDataBySchema(task.schema, task.insertMsg, true)
 		assert.ErrorIs(t, merr.ErrParameterInvalid, err)
 	})
 
@@ -1645,7 +1782,7 @@ func Test_InsertTaskcheckFieldsDataBySchema(t *testing.T) {
 			},
 		}
 
-		err = checkFieldsDataBySchema(context.TODO(), task.schema.Fields, task.schema, task.insertMsg, false)
+		err = checkFieldsDataBySchema(task.schema, task.insertMsg, false)
 		assert.ErrorIs(t, merr.ErrParameterInvalid, err)
 	})
 	t.Run("normal when upsert", func(t *testing.T) {
@@ -1688,7 +1825,7 @@ func Test_InsertTaskcheckFieldsDataBySchema(t *testing.T) {
 			},
 		}
 
-		err = checkFieldsDataBySchema(context.TODO(), task.schema.Fields, task.schema, task.insertMsg, false)
+		err = checkFieldsDataBySchema(task.schema, task.insertMsg, false)
 		assert.NoError(t, err)
 
 		task = insertTask{
@@ -1729,7 +1866,7 @@ func Test_InsertTaskcheckFieldsDataBySchema(t *testing.T) {
 				},
 			},
 		}
-		err = checkFieldsDataBySchema(context.TODO(), task.schema.Fields, task.schema, task.insertMsg, false)
+		err = checkFieldsDataBySchema(task.schema, task.insertMsg, false)
 		assert.NoError(t, err)
 	})
 
@@ -1772,7 +1909,7 @@ func Test_InsertTaskcheckFieldsDataBySchema(t *testing.T) {
 			},
 		}
 
-		err = checkFieldsDataBySchema(context.TODO(), task.schema.Fields, task.schema, task.insertMsg, true)
+		err = checkFieldsDataBySchema(task.schema, task.insertMsg, true)
 		assert.ErrorIs(t, merr.ErrParameterInvalid, err)
 		assert.Equal(t, len(task.insertMsg.FieldsData), 2)
 
@@ -1815,7 +1952,7 @@ func Test_InsertTaskcheckFieldsDataBySchema(t *testing.T) {
 			},
 		}
 
-		err = checkFieldsDataBySchema(context.TODO(), task.schema.Fields, task.schema, task.insertMsg, true)
+		err = checkFieldsDataBySchema(task.schema, task.insertMsg, true)
 		assert.NoError(t, err)
 		assert.Equal(t, len(task.insertMsg.FieldsData), 2)
 		paramtable.Get().Reset(Params.ProxyCfg.SkipAutoIDCheck.Key)
@@ -1847,7 +1984,7 @@ func Test_InsertTaskCheckPrimaryFieldData(t *testing.T) {
 		},
 	}
 
-	_, err := checkPrimaryFieldData(context.TODO(), case1.schema.Fields, case1.schema, case1.insertMsg)
+	_, err := checkPrimaryFieldData(case1.schema, case1.insertMsg)
 	assert.NotEqual(t, nil, err)
 
 	// the num of passed fields is less than needed
@@ -1888,7 +2025,7 @@ func Test_InsertTaskCheckPrimaryFieldData(t *testing.T) {
 			Status: merr.Success(),
 		},
 	}
-	_, err = checkPrimaryFieldData(context.TODO(), case2.schema.Fields, case2.schema, case2.insertMsg)
+	_, err = checkPrimaryFieldData(case2.schema, case2.insertMsg)
 	assert.NotEqual(t, nil, err)
 
 	// autoID == false, no primary field schema
@@ -1928,7 +2065,7 @@ func Test_InsertTaskCheckPrimaryFieldData(t *testing.T) {
 			Status: merr.Success(),
 		},
 	}
-	_, err = checkPrimaryFieldData(context.TODO(), case3.schema.Fields, case3.schema, case3.insertMsg)
+	_, err = checkPrimaryFieldData(case3.schema, case3.insertMsg)
 	assert.NotEqual(t, nil, err)
 
 	// autoID == true, has primary field schema, but primary field data exist
@@ -1975,7 +2112,7 @@ func Test_InsertTaskCheckPrimaryFieldData(t *testing.T) {
 	case4.schema.Fields[0].IsPrimaryKey = true
 	case4.schema.Fields[0].AutoID = true
 	case4.insertMsg.FieldsData[0] = newScalarFieldData(case4.schema.Fields[0], case4.schema.Fields[0].Name, 10)
-	_, err = checkPrimaryFieldData(context.TODO(), case4.schema.Fields, case4.schema, case4.insertMsg)
+	_, err = checkPrimaryFieldData(case4.schema, case4.insertMsg)
 	assert.NotEqual(t, nil, err)
 
 	// autoID == true, has primary field schema, but DataType don't match
@@ -1983,7 +2120,7 @@ func Test_InsertTaskCheckPrimaryFieldData(t *testing.T) {
 	case4.schema.Fields[0].IsPrimaryKey = false
 	case4.schema.Fields[1].IsPrimaryKey = true
 	case4.schema.Fields[1].AutoID = true
-	_, err = checkPrimaryFieldData(context.TODO(), case4.schema.Fields, case4.schema, case4.insertMsg)
+	_, err = checkPrimaryFieldData(case4.schema, case4.insertMsg)
 	assert.NotEqual(t, nil, err)
 }
 
@@ -2011,7 +2148,7 @@ func Test_UpsertTaskCheckPrimaryFieldData(t *testing.T) {
 				Status: merr.Success(),
 			},
 		}
-		_, _, err := checkUpsertPrimaryFieldData(context.TODO(), task.schema.Fields, task.schema, task.insertMsg)
+		_, _, err := checkUpsertPrimaryFieldData(task.schema, task.insertMsg)
 		assert.NotEqual(t, nil, err)
 	})
 
@@ -2055,7 +2192,7 @@ func Test_UpsertTaskCheckPrimaryFieldData(t *testing.T) {
 				Status: merr.Success(),
 			},
 		}
-		_, _, err := checkUpsertPrimaryFieldData(context.TODO(), task.schema.Fields, task.schema, task.insertMsg)
+		_, _, err := checkUpsertPrimaryFieldData(task.schema, task.insertMsg)
 		assert.NotEqual(t, nil, err)
 	})
 
@@ -2096,7 +2233,7 @@ func Test_UpsertTaskCheckPrimaryFieldData(t *testing.T) {
 				Status: merr.Success(),
 			},
 		}
-		_, _, err := checkUpsertPrimaryFieldData(context.TODO(), task.schema.Fields, task.schema, task.insertMsg)
+		_, _, err := checkUpsertPrimaryFieldData(task.schema, task.insertMsg)
 		assert.NotEqual(t, nil, err)
 	})
 
@@ -2141,7 +2278,7 @@ func Test_UpsertTaskCheckPrimaryFieldData(t *testing.T) {
 				Status: merr.Success(),
 			},
 		}
-		_, _, err := checkUpsertPrimaryFieldData(context.TODO(), task.schema.Fields, task.schema, task.insertMsg)
+		_, _, err := checkUpsertPrimaryFieldData(task.schema, task.insertMsg)
 		assert.NotEqual(t, nil, err)
 	})
 
@@ -2192,7 +2329,7 @@ func Test_UpsertTaskCheckPrimaryFieldData(t *testing.T) {
 				Status: merr.Success(),
 			},
 		}
-		_, _, err := checkUpsertPrimaryFieldData(context.TODO(), task.schema.Fields, task.schema, task.insertMsg)
+		_, _, err := checkUpsertPrimaryFieldData(task.schema, task.insertMsg)
 		assert.NotEqual(t, nil, err)
 	})
 
@@ -2233,7 +2370,7 @@ func Test_UpsertTaskCheckPrimaryFieldData(t *testing.T) {
 				Status: merr.Success(),
 			},
 		}
-		_, _, err := checkUpsertPrimaryFieldData(context.TODO(), task.schema.Fields, task.schema, task.insertMsg)
+		_, _, err := checkUpsertPrimaryFieldData(task.schema, task.insertMsg)
 		assert.NoError(t, nil, err)
 
 		// autoid==false
@@ -2272,7 +2409,7 @@ func Test_UpsertTaskCheckPrimaryFieldData(t *testing.T) {
 				Status: merr.Success(),
 			},
 		}
-		_, _, err = checkUpsertPrimaryFieldData(context.TODO(), task.schema.Fields, task.schema, task.insertMsg)
+		_, _, err = checkUpsertPrimaryFieldData(task.schema, task.insertMsg)
 		assert.NoError(t, nil, err)
 	})
 
@@ -2323,7 +2460,7 @@ func Test_UpsertTaskCheckPrimaryFieldData(t *testing.T) {
 				Status: merr.Success(),
 			},
 		}
-		_, _, err := checkUpsertPrimaryFieldData(context.TODO(), task.schema.Fields, task.schema, task.insertMsg)
+		_, _, err := checkUpsertPrimaryFieldData(task.schema, task.insertMsg)
 		newPK := task.insertMsg.FieldsData[0].GetScalars().GetLongData().GetData()
 		assert.Equal(t, newPK, task.insertMsg.RowIDs)
 		assert.NoError(t, nil, err)
@@ -3838,7 +3975,7 @@ func TestCheckVarcharFormat(t *testing.T) {
 		},
 	}
 
-	err := checkInputUtf8Compatiable(schema.Fields, data)
+	err := checkInputUtf8Compatiable(schema, data)
 	assert.NoError(t, err)
 
 	// invalid data
@@ -3860,7 +3997,7 @@ func TestCheckVarcharFormat(t *testing.T) {
 			}},
 		},
 	}
-	err = checkInputUtf8Compatiable(schema.Fields, data)
+	err = checkInputUtf8Compatiable(schema, data)
 	assert.Error(t, err)
 }
 
@@ -3903,2980 +4040,6 @@ func BenchmarkCheckVarcharFormat(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		checkInputUtf8Compatiable(schema.Fields, data)
+		checkInputUtf8Compatiable(schema, data)
 	}
-}
-
-func TestCheckAndFlattenStructFieldData(t *testing.T) {
-	createTestSchema := func(name string, structFields []*schemapb.StructArrayFieldSchema, normalFields []*schemapb.FieldSchema) *schemapb.CollectionSchema {
-		return &schemapb.CollectionSchema{
-			Name:              name,
-			Description:       "test collection with struct array fields",
-			StructArrayFields: structFields,
-			Fields:            normalFields,
-		}
-	}
-
-	createTestInsertMsg := func(collectionName string, fieldsData []*schemapb.FieldData) *msgstream.InsertMsg {
-		return &msgstream.InsertMsg{
-			BaseMsg: msgstream.BaseMsg{},
-			InsertRequest: &msgpb.InsertRequest{
-				Base: &commonpb.MsgBase{
-					MsgType: commonpb.MsgType_Insert,
-				},
-				CollectionName: collectionName,
-				FieldsData:     fieldsData,
-			},
-		}
-	}
-
-	createScalarArrayFieldData := func(fieldName string, data []*schemapb.ScalarField) *schemapb.FieldData {
-		return &schemapb.FieldData{
-			FieldName: fieldName,
-			Type:      schemapb.DataType_Array,
-			Field: &schemapb.FieldData_Scalars{
-				Scalars: &schemapb.ScalarField{
-					Data: &schemapb.ScalarField_ArrayData{
-						ArrayData: &schemapb.ArrayArray{
-							Data: data,
-						},
-					},
-				},
-			},
-		}
-	}
-
-	createVectorArrayFieldData := func(fieldName string, data []*schemapb.VectorField) *schemapb.FieldData {
-		return &schemapb.FieldData{
-			FieldName: fieldName,
-			Type:      schemapb.DataType_ArrayOfVector,
-			Field: &schemapb.FieldData_Vectors{
-				Vectors: &schemapb.VectorField{
-					Data: &schemapb.VectorField_VectorArray{
-						VectorArray: &schemapb.VectorArray{
-							Data: data,
-						},
-					},
-				},
-			},
-		}
-	}
-
-	createStructArrayFieldData := func(fieldName string, subFields []*schemapb.FieldData) *schemapb.FieldData {
-		return &schemapb.FieldData{
-			FieldName: fieldName,
-			Type:      schemapb.DataType_ArrayOfStruct,
-			Field: &schemapb.FieldData_StructArrays{
-				StructArrays: &schemapb.StructArrayField{
-					Fields: subFields,
-				},
-			},
-		}
-	}
-
-	createNormalFieldData := func(fieldName string, dataType schemapb.DataType) *schemapb.FieldData {
-		return &schemapb.FieldData{
-			FieldName: fieldName,
-			Type:      dataType,
-			Field: &schemapb.FieldData_Scalars{
-				Scalars: &schemapb.ScalarField{
-					Data: &schemapb.ScalarField_LongData{
-						LongData: &schemapb.LongArray{Data: []int64{1, 2, 3}},
-					},
-				},
-			},
-		}
-	}
-
-	t.Run("success - valid single struct array field", func(t *testing.T) {
-		structField := &schemapb.StructArrayFieldSchema{
-			Name: "user_info",
-			Fields: []*schemapb.FieldSchema{
-				{
-					Name:        "age_array",
-					DataType:    schemapb.DataType_Array,
-					ElementType: schemapb.DataType_Int32,
-				},
-				{
-					Name:        "score_array",
-					DataType:    schemapb.DataType_Array,
-					ElementType: schemapb.DataType_Float,
-				},
-			},
-		}
-		schema := createTestSchema("test_collection", []*schemapb.StructArrayFieldSchema{structField}, nil)
-
-		ageArrayData := createScalarArrayFieldData("age_array", []*schemapb.ScalarField{
-			{Data: &schemapb.ScalarField_IntData{IntData: &schemapb.IntArray{Data: []int32{20, 25}}}},
-			{Data: &schemapb.ScalarField_IntData{IntData: &schemapb.IntArray{Data: []int32{30, 35}}}},
-		})
-		scoreArrayData := createScalarArrayFieldData("score_array", []*schemapb.ScalarField{
-			{Data: &schemapb.ScalarField_FloatData{FloatData: &schemapb.FloatArray{Data: []float32{85.5, 90.0}}}},
-			{Data: &schemapb.ScalarField_FloatData{FloatData: &schemapb.FloatArray{Data: []float32{88.5, 92.0}}}},
-		})
-
-		structFieldData := createStructArrayFieldData("user_info", []*schemapb.FieldData{
-			ageArrayData, scoreArrayData,
-		})
-
-		insertMsg := createTestInsertMsg("test_collection", []*schemapb.FieldData{structFieldData})
-
-		err := checkAndFlattenStructFieldData(schema, insertMsg)
-
-		assert.NoError(t, err)
-		assert.Len(t, insertMsg.FieldsData, 2)
-		assert.Equal(t, "user_info[age_array]", insertMsg.FieldsData[0].FieldName)
-		assert.Equal(t, "user_info[score_array]", insertMsg.FieldsData[1].FieldName)
-	})
-
-	t.Run("success - valid struct array field with vector arrays", func(t *testing.T) {
-		structField := &schemapb.StructArrayFieldSchema{
-			Name: "embedding_info",
-			Fields: []*schemapb.FieldSchema{
-				{
-					Name:        "embeddings",
-					DataType:    schemapb.DataType_ArrayOfVector,
-					ElementType: schemapb.DataType_FloatVector,
-				},
-			},
-		}
-		schema := createTestSchema("test_collection", []*schemapb.StructArrayFieldSchema{structField}, nil)
-
-		vectorArrayData := createVectorArrayFieldData("embeddings", []*schemapb.VectorField{
-			{Data: &schemapb.VectorField_FloatVector{FloatVector: &schemapb.FloatArray{Data: []float32{1.0, 2.0}}}},
-			{Data: &schemapb.VectorField_FloatVector{FloatVector: &schemapb.FloatArray{Data: []float32{3.0, 4.0}}}},
-		})
-
-		structFieldData := createStructArrayFieldData("embedding_info", []*schemapb.FieldData{vectorArrayData})
-		insertMsg := createTestInsertMsg("test_collection", []*schemapb.FieldData{structFieldData})
-
-		err := checkAndFlattenStructFieldData(schema, insertMsg)
-
-		assert.NoError(t, err)
-		assert.Len(t, insertMsg.FieldsData, 1)
-		assert.Equal(t, "embedding_info[embeddings]", insertMsg.FieldsData[0].FieldName)
-		assert.Equal(t, schemapb.DataType_ArrayOfVector, insertMsg.FieldsData[0].Type)
-	})
-
-	t.Run("success - multiple struct array fields", func(t *testing.T) {
-		structField1 := &schemapb.StructArrayFieldSchema{
-			Name: "struct1",
-			Fields: []*schemapb.FieldSchema{
-				{Name: "field1", DataType: schemapb.DataType_Array},
-			},
-		}
-		structField2 := &schemapb.StructArrayFieldSchema{
-			Name: "struct2",
-			Fields: []*schemapb.FieldSchema{
-				{Name: "field2", DataType: schemapb.DataType_Array, ElementType: schemapb.DataType_Int32},
-				{
-					Name:        "field3",
-					DataType:    schemapb.DataType_ArrayOfVector,
-					ElementType: schemapb.DataType_FloatVector,
-					TypeParams:  []*commonpb.KeyValuePair{{Key: common.DimKey, Value: "1"}},
-				},
-			},
-		}
-		schema := createTestSchema("test_collection", []*schemapb.StructArrayFieldSchema{structField1, structField2}, nil)
-
-		field1Data := createScalarArrayFieldData("field1", []*schemapb.ScalarField{
-			{Data: &schemapb.ScalarField_IntData{IntData: &schemapb.IntArray{Data: []int32{1}}}},
-		})
-		field2Data := createScalarArrayFieldData("field2", []*schemapb.ScalarField{
-			{Data: &schemapb.ScalarField_IntData{IntData: &schemapb.IntArray{Data: []int32{2}}}},
-		})
-		field3Data := createVectorArrayFieldData("field3", []*schemapb.VectorField{
-			{Data: &schemapb.VectorField_FloatVector{FloatVector: &schemapb.FloatArray{Data: []float32{1.0}}}},
-		})
-
-		struct1Data := createStructArrayFieldData("struct1", []*schemapb.FieldData{field1Data})
-		struct2Data := createStructArrayFieldData("struct2", []*schemapb.FieldData{field2Data, field3Data})
-
-		insertMsg := createTestInsertMsg("test_collection", []*schemapb.FieldData{struct1Data, struct2Data})
-
-		err := checkAndFlattenStructFieldData(schema, insertMsg)
-
-		assert.NoError(t, err)
-		assert.Len(t, insertMsg.FieldsData, 3)
-		fieldNames := make([]string, len(insertMsg.FieldsData))
-		for i, field := range insertMsg.FieldsData {
-			fieldNames[i] = field.FieldName
-		}
-		assert.Contains(t, fieldNames, "struct1[field1]")
-		assert.Contains(t, fieldNames, "struct2[field2]")
-		assert.Contains(t, fieldNames, "struct2[field3]")
-	})
-
-	t.Run("success - mixed normal and struct fields", func(t *testing.T) {
-		normalField := &schemapb.FieldSchema{
-			Name:     "id",
-			DataType: schemapb.DataType_Int64,
-		}
-		structField := &schemapb.StructArrayFieldSchema{
-			Name: "metadata",
-			Fields: []*schemapb.FieldSchema{
-				{Name: "tags", DataType: schemapb.DataType_Array},
-			},
-		}
-		schema := createTestSchema("test_collection", []*schemapb.StructArrayFieldSchema{structField}, []*schemapb.FieldSchema{normalField})
-
-		normalFieldData := createNormalFieldData("id", schemapb.DataType_Int64)
-		tagsData := createScalarArrayFieldData("tags", []*schemapb.ScalarField{
-			{Data: &schemapb.ScalarField_StringData{StringData: &schemapb.StringArray{Data: []string{"tag1", "tag2"}}}},
-		})
-		structFieldData := createStructArrayFieldData("metadata", []*schemapb.FieldData{tagsData})
-
-		insertMsg := createTestInsertMsg("test_collection", []*schemapb.FieldData{normalFieldData, structFieldData})
-
-		err := checkAndFlattenStructFieldData(schema, insertMsg)
-
-		assert.NoError(t, err)
-		assert.Len(t, insertMsg.FieldsData, 2)
-		fieldNames := make([]string, len(insertMsg.FieldsData))
-		for i, field := range insertMsg.FieldsData {
-			fieldNames[i] = field.FieldName
-		}
-		assert.Contains(t, fieldNames, "id")
-		assert.Contains(t, fieldNames, "metadata[tags]")
-	})
-
-	t.Run("success - empty struct array fields", func(t *testing.T) {
-		normalField := &schemapb.FieldSchema{
-			Name:     "normal_field",
-			DataType: schemapb.DataType_Int64,
-		}
-		schema := createTestSchema("test_collection", []*schemapb.StructArrayFieldSchema{}, []*schemapb.FieldSchema{normalField})
-
-		normalFieldData := createNormalFieldData("normal_field", schemapb.DataType_Int64)
-		insertMsg := createTestInsertMsg("test_collection", []*schemapb.FieldData{normalFieldData})
-
-		err := checkAndFlattenStructFieldData(schema, insertMsg)
-
-		assert.NoError(t, err)
-		assert.Len(t, insertMsg.FieldsData, 1)
-		assert.Equal(t, "normal_field", insertMsg.FieldsData[0].FieldName)
-	})
-
-	t.Run("error - struct field not found in schema", func(t *testing.T) {
-		schema := createTestSchema("test_collection", []*schemapb.StructArrayFieldSchema{}, nil)
-
-		structFieldData := createStructArrayFieldData("non_existent_struct", []*schemapb.FieldData{})
-		insertMsg := createTestInsertMsg("test_collection", []*schemapb.FieldData{structFieldData})
-
-		err := checkAndFlattenStructFieldData(schema, insertMsg)
-
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "fieldName non_existent_struct not exist in collection schema")
-	})
-
-	t.Run("error - invalid field type conversion", func(t *testing.T) {
-		structField := &schemapb.StructArrayFieldSchema{
-			Name:   "valid_struct",
-			Fields: []*schemapb.FieldSchema{},
-		}
-		schema := createTestSchema("test_collection", []*schemapb.StructArrayFieldSchema{structField}, nil)
-
-		invalidFieldData := &schemapb.FieldData{
-			FieldName: "valid_struct",
-			Type:      schemapb.DataType_ArrayOfStruct,
-			Field: &schemapb.FieldData_Scalars{
-				Scalars: &schemapb.ScalarField{},
-			},
-		}
-		insertMsg := createTestInsertMsg("test_collection", []*schemapb.FieldData{invalidFieldData})
-
-		err := checkAndFlattenStructFieldData(schema, insertMsg)
-
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "field convert FieldData_StructArrays fail")
-		assert.Contains(t, err.Error(), "valid_struct")
-	})
-
-	t.Run("error - field count mismatch", func(t *testing.T) {
-		structField := &schemapb.StructArrayFieldSchema{
-			Name: "test_struct",
-			Fields: []*schemapb.FieldSchema{
-				{Name: "field1", DataType: schemapb.DataType_Array},
-				{Name: "field2", DataType: schemapb.DataType_Array},
-			},
-		}
-		schema := createTestSchema("test_collection", []*schemapb.StructArrayFieldSchema{structField}, nil)
-
-		field1Data := createScalarArrayFieldData("field1", []*schemapb.ScalarField{})
-		structFieldData := createStructArrayFieldData("test_struct", []*schemapb.FieldData{field1Data})
-		insertMsg := createTestInsertMsg("test_collection", []*schemapb.FieldData{structFieldData})
-
-		err := checkAndFlattenStructFieldData(schema, insertMsg)
-
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "length of fields of struct field mismatch")
-		assert.Contains(t, err.Error(), "fieldData fields length:1, schema fields length:2")
-	})
-
-	t.Run("error - scalar array data is nil", func(t *testing.T) {
-		structField := &schemapb.StructArrayFieldSchema{
-			Name: "test_struct",
-			Fields: []*schemapb.FieldSchema{
-				{Name: "field1", DataType: schemapb.DataType_Array},
-			},
-		}
-		schema := createTestSchema("test_collection", []*schemapb.StructArrayFieldSchema{structField}, nil)
-
-		nilScalarFieldData := &schemapb.FieldData{
-			FieldName: "field1",
-			Type:      schemapb.DataType_Array,
-			Field: &schemapb.FieldData_Scalars{
-				Scalars: &schemapb.ScalarField{
-					Data: &schemapb.ScalarField_ArrayData{
-						ArrayData: nil,
-					},
-				},
-			},
-		}
-		structFieldData := createStructArrayFieldData("test_struct", []*schemapb.FieldData{nilScalarFieldData})
-		insertMsg := createTestInsertMsg("test_collection", []*schemapb.FieldData{structFieldData})
-
-		err := checkAndFlattenStructFieldData(schema, insertMsg)
-
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "scalar array data is nil in struct field")
-		assert.Contains(t, err.Error(), "test_struct")
-		assert.Contains(t, err.Error(), "field1")
-	})
-
-	t.Run("error - vector array data is nil", func(t *testing.T) {
-		structField := &schemapb.StructArrayFieldSchema{
-			Name: "test_struct",
-			Fields: []*schemapb.FieldSchema{
-				{Name: "vectors", DataType: schemapb.DataType_ArrayOfVector},
-			},
-		}
-		schema := createTestSchema("test_collection", []*schemapb.StructArrayFieldSchema{structField}, nil)
-
-		nilVectorFieldData := &schemapb.FieldData{
-			FieldName: "vectors",
-			Type:      schemapb.DataType_ArrayOfVector,
-			Field: &schemapb.FieldData_Vectors{
-				Vectors: &schemapb.VectorField{
-					Data: &schemapb.VectorField_VectorArray{
-						VectorArray: nil,
-					},
-				},
-			},
-		}
-		structFieldData := createStructArrayFieldData("test_struct", []*schemapb.FieldData{nilVectorFieldData})
-		insertMsg := createTestInsertMsg("test_collection", []*schemapb.FieldData{structFieldData})
-
-		err := checkAndFlattenStructFieldData(schema, insertMsg)
-
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "vector array data is nil in struct field")
-		assert.Contains(t, err.Error(), "test_struct")
-		assert.Contains(t, err.Error(), "vectors")
-	})
-
-	t.Run("error - unsupported field data type with data", func(t *testing.T) {
-		structField := &schemapb.StructArrayFieldSchema{
-			Name: "test_struct",
-			Fields: []*schemapb.FieldSchema{
-				{Name: "field1", DataType: schemapb.DataType_Array},
-			},
-		}
-		schema := createTestSchema("test_collection", []*schemapb.StructArrayFieldSchema{structField}, nil)
-
-		// Use a Scalars field with non-ArrayData (e.g. LongData) to trigger "scalar array data is nil"
-		unsupportedFieldData := &schemapb.FieldData{
-			FieldName: "field1",
-			Type:      schemapb.DataType_Array,
-			Field: &schemapb.FieldData_Scalars{
-				Scalars: &schemapb.ScalarField{
-					Data: &schemapb.ScalarField_LongData{
-						LongData: &schemapb.LongArray{Data: []int64{1}},
-					},
-				},
-			},
-		}
-		structFieldData := createStructArrayFieldData("test_struct", []*schemapb.FieldData{unsupportedFieldData})
-		insertMsg := createTestInsertMsg("test_collection", []*schemapb.FieldData{structFieldData})
-
-		err := checkAndFlattenStructFieldData(schema, insertMsg)
-
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "scalar array data is nil")
-	})
-
-	t.Run("error - inconsistent array length", func(t *testing.T) {
-		structField := &schemapb.StructArrayFieldSchema{
-			Name: "test_struct",
-			Fields: []*schemapb.FieldSchema{
-				{Name: "field1", DataType: schemapb.DataType_Array},
-				{Name: "field2", DataType: schemapb.DataType_Array},
-			},
-		}
-		schema := createTestSchema("test_collection", []*schemapb.StructArrayFieldSchema{structField}, nil)
-
-		field1Data := createScalarArrayFieldData("field1", []*schemapb.ScalarField{
-			{Data: &schemapb.ScalarField_IntData{IntData: &schemapb.IntArray{Data: []int32{1, 2}}}},
-			{Data: &schemapb.ScalarField_IntData{IntData: &schemapb.IntArray{Data: []int32{3, 4}}}},
-		})
-		field2Data := createScalarArrayFieldData("field2", []*schemapb.ScalarField{
-			{Data: &schemapb.ScalarField_IntData{IntData: &schemapb.IntArray{Data: []int32{5, 6}}}},
-			{Data: &schemapb.ScalarField_IntData{IntData: &schemapb.IntArray{Data: []int32{7, 8}}}},
-			{Data: &schemapb.ScalarField_IntData{IntData: &schemapb.IntArray{Data: []int32{9, 10}}}},
-		})
-
-		structFieldData := createStructArrayFieldData("test_struct", []*schemapb.FieldData{field1Data, field2Data})
-		insertMsg := createTestInsertMsg("test_collection", []*schemapb.FieldData{structFieldData})
-
-		err := checkAndFlattenStructFieldData(schema, insertMsg)
-
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "inconsistent array length in struct field")
-		assert.Contains(t, err.Error(), "expected 2, got 3")
-		assert.Contains(t, err.Error(), "field2")
-	})
-
-	t.Run("error - struct field count mismatch", func(t *testing.T) {
-		structField1 := &schemapb.StructArrayFieldSchema{Name: "struct1", Fields: []*schemapb.FieldSchema{}}
-		structField2 := &schemapb.StructArrayFieldSchema{Name: "struct2", Fields: []*schemapb.FieldSchema{}}
-		schema := createTestSchema("test_collection", []*schemapb.StructArrayFieldSchema{structField1, structField2}, nil)
-
-		structFieldData := createStructArrayFieldData("struct1", []*schemapb.FieldData{})
-		insertMsg := createTestInsertMsg("test_collection", []*schemapb.FieldData{structFieldData})
-
-		err := checkAndFlattenStructFieldData(schema, insertMsg)
-
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "required struct array field")
-		assert.Contains(t, err.Error(), "struct2")
-	})
-
-	t.Run("edge case - empty struct fields", func(t *testing.T) {
-		structField := &schemapb.StructArrayFieldSchema{
-			Name:   "empty_struct",
-			Fields: []*schemapb.FieldSchema{},
-		}
-		schema := createTestSchema("test_collection", []*schemapb.StructArrayFieldSchema{structField}, nil)
-
-		structFieldData := createStructArrayFieldData("empty_struct", []*schemapb.FieldData{})
-		insertMsg := createTestInsertMsg("test_collection", []*schemapb.FieldData{structFieldData})
-
-		err := checkAndFlattenStructFieldData(schema, insertMsg)
-
-		assert.NoError(t, err)
-		assert.Len(t, insertMsg.FieldsData, 0)
-	})
-
-	t.Run("edge case - single element arrays", func(t *testing.T) {
-		structField := &schemapb.StructArrayFieldSchema{
-			Name: "single_element_struct",
-			Fields: []*schemapb.FieldSchema{
-				{Name: "single_field", DataType: schemapb.DataType_Array},
-			},
-		}
-		schema := createTestSchema("test_collection", []*schemapb.StructArrayFieldSchema{structField}, nil)
-
-		singleFieldData := createScalarArrayFieldData("single_field", []*schemapb.ScalarField{
-			{Data: &schemapb.ScalarField_IntData{IntData: &schemapb.IntArray{Data: []int32{42}}}},
-		})
-		structFieldData := createStructArrayFieldData("single_element_struct", []*schemapb.FieldData{singleFieldData})
-		insertMsg := createTestInsertMsg("test_collection", []*schemapb.FieldData{structFieldData})
-
-		err := checkAndFlattenStructFieldData(schema, insertMsg)
-
-		assert.NoError(t, err)
-		assert.Len(t, insertMsg.FieldsData, 1)
-		assert.Equal(t, "single_element_struct[single_field]", insertMsg.FieldsData[0].FieldName)
-	})
-}
-
-func TestValidateFieldsInStruct(t *testing.T) {
-	schema := &schemapb.CollectionSchema{
-		Name: "test_collection",
-	}
-
-	t.Run("valid array field", func(t *testing.T) {
-		field := &schemapb.FieldSchema{
-			Name:        "valid_array",
-			DataType:    schemapb.DataType_Array,
-			ElementType: schemapb.DataType_Int32,
-			TypeParams:  []*commonpb.KeyValuePair{{Key: common.MaxCapacityKey, Value: "100"}},
-		}
-		err := ValidateFieldsInStruct(field, schema)
-		assert.NoError(t, err)
-	})
-
-	t.Run("valid array of vector field", func(t *testing.T) {
-		field := &schemapb.FieldSchema{
-			Name:        "valid_array_vector",
-			DataType:    schemapb.DataType_ArrayOfVector,
-			ElementType: schemapb.DataType_FloatVector,
-			TypeParams: []*commonpb.KeyValuePair{
-				{Key: common.DimKey, Value: "128"},
-				{Key: common.MaxCapacityKey, Value: "100"},
-			},
-		}
-		err := ValidateFieldsInStruct(field, schema)
-		assert.NoError(t, err)
-	})
-
-	t.Run("invalid field name", func(t *testing.T) {
-		testCases := []struct {
-			name     string
-			expected string
-		}{
-			{"", "field name should not be empty"},
-			{"123abc", "The first character of a field name must be an underscore or letter"},
-			{"abc-def", "Field name can only contain numbers, letters, and underscores"},
-		}
-
-		for _, tc := range testCases {
-			field := &schemapb.FieldSchema{
-				Name:        tc.name,
-				DataType:    schemapb.DataType_Array,
-				ElementType: schemapb.DataType_Int32,
-			}
-			err := ValidateFieldsInStruct(field, schema)
-			assert.Error(t, err)
-			assert.Contains(t, err.Error(), tc.expected)
-		}
-	})
-
-	t.Run("invalid data type", func(t *testing.T) {
-		field := &schemapb.FieldSchema{
-			Name:     "invalid_type",
-			DataType: schemapb.DataType_Int32, // Not array or array of vector
-		}
-		err := ValidateFieldsInStruct(field, schema)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "fields in StructArrayField can only be array or array of struct")
-	})
-
-	t.Run("JSON not supported in struct", func(t *testing.T) {
-		field := &schemapb.FieldSchema{
-			Name:        "json_field",
-			DataType:    schemapb.DataType_Array,
-			ElementType: schemapb.DataType_JSON,
-		}
-		err := ValidateFieldsInStruct(field, schema)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "is not supported")
-	})
-
-	t.Run("nested array not supported", func(t *testing.T) {
-		testCases := []struct {
-			elementType schemapb.DataType
-		}{
-			{schemapb.DataType_ArrayOfStruct},
-			{schemapb.DataType_ArrayOfVector},
-			{schemapb.DataType_Array},
-		}
-
-		for _, tc := range testCases {
-			field := &schemapb.FieldSchema{
-				Name:        "nested_array",
-				DataType:    schemapb.DataType_Array,
-				ElementType: tc.elementType,
-			}
-			err := ValidateFieldsInStruct(field, schema)
-			assert.Error(t, err)
-			assert.Contains(t, err.Error(), "nested array is not supported")
-		}
-	})
-
-	t.Run("array field with vector element type", func(t *testing.T) {
-		field := &schemapb.FieldSchema{
-			Name:        "array_with_vector",
-			DataType:    schemapb.DataType_Array,
-			ElementType: schemapb.DataType_FloatVector,
-		}
-		err := ValidateFieldsInStruct(field, schema)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "element type FloatVector is not supported")
-	})
-
-	t.Run("array of vector field with non-vector element type", func(t *testing.T) {
-		field := &schemapb.FieldSchema{
-			Name:        "array_vector_with_scalar",
-			DataType:    schemapb.DataType_ArrayOfVector,
-			ElementType: schemapb.DataType_Int32,
-		}
-		err := ValidateFieldsInStruct(field, schema)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "only fixed dimension vector types are supported")
-	})
-
-	t.Run("array of vector missing dimension", func(t *testing.T) {
-		field := &schemapb.FieldSchema{
-			Name:        "array_vector_no_dim",
-			DataType:    schemapb.DataType_ArrayOfVector,
-			ElementType: schemapb.DataType_FloatVector,
-			TypeParams:  []*commonpb.KeyValuePair{}, // No dimension specified
-		}
-		err := ValidateFieldsInStruct(field, schema)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "dimension is not defined in field")
-	})
-
-	t.Run("array of vector with invalid dimension", func(t *testing.T) {
-		field := &schemapb.FieldSchema{
-			Name:        "array_vector_invalid_dim",
-			DataType:    schemapb.DataType_ArrayOfVector,
-			ElementType: schemapb.DataType_FloatVector,
-			TypeParams: []*commonpb.KeyValuePair{
-				{Key: common.DimKey, Value: "not_a_number"},
-			},
-		}
-		err := ValidateFieldsInStruct(field, schema)
-		assert.Error(t, err)
-	})
-
-	t.Run("varchar array without max_length", func(t *testing.T) {
-		field := &schemapb.FieldSchema{
-			Name:        "varchar_array_no_max_length",
-			DataType:    schemapb.DataType_Array,
-			ElementType: schemapb.DataType_VarChar,
-			TypeParams:  []*commonpb.KeyValuePair{}, // No max_length specified
-		}
-		err := ValidateFieldsInStruct(field, schema)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "type param(max_length) should be specified")
-	})
-
-	t.Run("varchar array with valid max_length", func(t *testing.T) {
-		field := &schemapb.FieldSchema{
-			Name:        "varchar_array_valid",
-			DataType:    schemapb.DataType_Array,
-			ElementType: schemapb.DataType_VarChar,
-			TypeParams: []*commonpb.KeyValuePair{
-				{Key: common.MaxLengthKey, Value: "100"},
-				{Key: common.MaxCapacityKey, Value: "100"},
-			},
-		}
-		err := ValidateFieldsInStruct(field, schema)
-		assert.NoError(t, err)
-	})
-
-	t.Run("varchar array with invalid max_length", func(t *testing.T) {
-		// Test with max_length exceeding limit
-		field := &schemapb.FieldSchema{
-			Name:        "varchar_array_invalid_length",
-			DataType:    schemapb.DataType_Array,
-			ElementType: schemapb.DataType_VarChar,
-			TypeParams: []*commonpb.KeyValuePair{
-				{Key: common.MaxLengthKey, Value: "99999999"}, // Exceeds limit
-			},
-		}
-		err := ValidateFieldsInStruct(field, schema)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "the maximum length specified for the field")
-	})
-
-	t.Run("nullable field in struct is allowed", func(t *testing.T) {
-		field := &schemapb.FieldSchema{
-			Name:        "nullable_field",
-			DataType:    schemapb.DataType_Array,
-			ElementType: schemapb.DataType_Int32,
-			Nullable:    true,
-			TypeParams:  []*commonpb.KeyValuePair{{Key: "max_capacity", Value: "100"}},
-		}
-		err := ValidateFieldsInStruct(field, schema)
-		assert.NoError(t, err)
-	})
-
-	// t.Run("sparse float vector in array of vector", func(t *testing.T) {
-	// 	// Note: ArrayOfVector with sparse vector element type still requires dimension
-	// 	// because validateDimension checks the field's DataType (ArrayOfVector), not ElementType
-	// 	field := &schemapb.FieldSchema{
-	// 		Name:        "sparse_vector_array",
-	// 		DataType:    schemapb.DataType_ArrayOfVector,
-	// 		ElementType: schemapb.DataType_SparseFloatVector,
-	// 		TypeParams:  []*commonpb.KeyValuePair{},
-	// 	}
-	// 	err := ValidateFieldsInStruct(field, schema)
-	// 	assert.Error(t, err)
-	// 	assert.Contains(t, err.Error(), "dimension is not defined")
-	// })
-
-	t.Run("array with various scalar element types", func(t *testing.T) {
-		validScalarTypes := []schemapb.DataType{
-			schemapb.DataType_Bool,
-			schemapb.DataType_Int8,
-			schemapb.DataType_Int16,
-			schemapb.DataType_Int32,
-			schemapb.DataType_Int64,
-			schemapb.DataType_Float,
-			schemapb.DataType_Double,
-		}
-
-		for _, dt := range validScalarTypes {
-			field := &schemapb.FieldSchema{
-				Name:        "array_" + dt.String(),
-				DataType:    schemapb.DataType_Array,
-				ElementType: dt,
-				TypeParams:  []*commonpb.KeyValuePair{{Key: common.MaxCapacityKey, Value: "100"}},
-			}
-			err := ValidateFieldsInStruct(field, schema)
-			assert.NoError(t, err)
-		}
-	})
-
-	t.Run("array of vector with various vector types", func(t *testing.T) {
-		validVectorTypes := []schemapb.DataType{
-			schemapb.DataType_FloatVector,
-			// schemapb.DataType_BinaryVector,
-			// schemapb.DataType_Float16Vector,
-			// schemapb.DataType_BFloat16Vector,
-			// Note: SparseFloatVector is excluded because validateDimension checks
-			// the field's DataType (ArrayOfVector), not ElementType, so it still requires dimension
-		}
-
-		for _, vt := range validVectorTypes {
-			field := &schemapb.FieldSchema{
-				Name:        "vector_array_" + vt.String(),
-				DataType:    schemapb.DataType_ArrayOfVector,
-				ElementType: vt,
-				TypeParams: []*commonpb.KeyValuePair{
-					{Key: common.DimKey, Value: "128"},
-					{Key: common.MaxCapacityKey, Value: "100"},
-				},
-			}
-			err := ValidateFieldsInStruct(field, schema)
-			assert.NoError(t, err)
-		}
-	})
-}
-
-func TestValidateStructArrayField_MaxCapacity(t *testing.T) {
-	schema := &schemapb.CollectionSchema{
-		Name: "test_collection",
-	}
-
-	t.Run("missing max_capacity is rejected", func(t *testing.T) {
-		structField := &schemapb.StructArrayFieldSchema{
-			Name: "my_struct",
-			Fields: []*schemapb.FieldSchema{
-				{
-					Name:        "sub_a",
-					DataType:    schemapb.DataType_Array,
-					ElementType: schemapb.DataType_Int32,
-				},
-			},
-		}
-
-		err := ValidateStructArrayField(structField, schema)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "type param(max_capacity) should be specified")
-		assert.Contains(t, err.Error(), "sub_a")
-	})
-
-	t.Run("different max_capacity values in same struct are rejected", func(t *testing.T) {
-		structField := &schemapb.StructArrayFieldSchema{
-			Name: "my_struct",
-			Fields: []*schemapb.FieldSchema{
-				{
-					Name:        "sub_a",
-					DataType:    schemapb.DataType_Array,
-					ElementType: schemapb.DataType_Int32,
-					TypeParams:  []*commonpb.KeyValuePair{{Key: common.MaxCapacityKey, Value: "100"}},
-				},
-				{
-					Name:        "sub_b",
-					DataType:    schemapb.DataType_ArrayOfVector,
-					ElementType: schemapb.DataType_FloatVector,
-					TypeParams: []*commonpb.KeyValuePair{
-						{Key: common.DimKey, Value: "128"},
-						{Key: common.MaxCapacityKey, Value: "200"},
-					},
-				},
-			},
-		}
-
-		err := ValidateStructArrayField(structField, schema)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "same max_capacity")
-		assert.Contains(t, err.Error(), "my_struct")
-		assert.Contains(t, err.Error(), "sub_b")
-	})
-}
-
-func Test_reconstructStructFieldData(t *testing.T) {
-	t.Run("count(*) query - should return early", func(t *testing.T) {
-		fieldsData := []*schemapb.FieldData{
-			{
-				FieldName: "count(*)",
-				FieldId:   0,
-				Type:      schemapb.DataType_Int64,
-			},
-		}
-		outputFields := []string{"count(*)"}
-
-		schema := &schemapb.CollectionSchema{
-			StructArrayFields: []*schemapb.StructArrayFieldSchema{
-				{
-					FieldID: 102,
-					Name:    "test_struct",
-					Fields: []*schemapb.FieldSchema{
-						{
-							FieldID:     1021,
-							Name:        "test_struct[sub_field]",
-							DataType:    schemapb.DataType_Array,
-							ElementType: schemapb.DataType_Int32,
-						},
-					},
-				},
-			},
-		}
-
-		originalFieldsData := make([]*schemapb.FieldData, len(fieldsData))
-		copy(originalFieldsData, fieldsData)
-		originalOutputFields := make([]string, len(outputFields))
-		copy(originalOutputFields, outputFields)
-
-		resultFieldsData, resultOutputFields := reconstructStructFieldData(fieldsData, outputFields, schema)
-
-		// Should not modify anything for count(*) query
-		assert.Equal(t, originalFieldsData, resultFieldsData)
-		assert.Equal(t, originalOutputFields, resultOutputFields)
-	})
-
-	t.Run("group by with count(*) should preserve aggregate field", func(t *testing.T) {
-		fieldsData := []*schemapb.FieldData{
-			{
-				FieldName: "id",
-				FieldId:   100,
-				Type:      schemapb.DataType_Int64,
-				Field: &schemapb.FieldData_Scalars{
-					Scalars: &schemapb.ScalarField{
-						Data: &schemapb.ScalarField_LongData{
-							LongData: &schemapb.LongArray{Data: []int64{1, 2}},
-						},
-					},
-				},
-			},
-			{
-				FieldName: "count(*)",
-				FieldId:   0,
-				Type:      schemapb.DataType_Int64,
-				Field: &schemapb.FieldData_Scalars{
-					Scalars: &schemapb.ScalarField{
-						Data: &schemapb.ScalarField_LongData{
-							LongData: &schemapb.LongArray{Data: []int64{3, 4}},
-						},
-					},
-				},
-			},
-		}
-		outputFields := []string{"id", "count(*)"}
-
-		schema := &schemapb.CollectionSchema{
-			Fields: []*schemapb.FieldSchema{
-				{
-					FieldID:      100,
-					Name:         "id",
-					IsPrimaryKey: true,
-					DataType:     schemapb.DataType_Int64,
-				},
-			},
-			StructArrayFields: []*schemapb.StructArrayFieldSchema{
-				{
-					FieldID: 102,
-					Name:    "test_struct",
-					Fields: []*schemapb.FieldSchema{
-						{
-							FieldID:     1021,
-							Name:        "test_struct[sub_field]",
-							DataType:    schemapb.DataType_Array,
-							ElementType: schemapb.DataType_Int32,
-						},
-					},
-				},
-			},
-		}
-
-		resultFieldsData, resultOutputFields := reconstructStructFieldData(fieldsData, outputFields, schema)
-
-		assert.Len(t, resultFieldsData, 2)
-		assert.Equal(t, "id", resultFieldsData[0].FieldName)
-		assert.Equal(t, int64(100), resultFieldsData[0].FieldId)
-		assert.Equal(t, "count(*)", resultFieldsData[1].FieldName)
-		assert.Equal(t, int64(0), resultFieldsData[1].FieldId)
-		assert.Equal(t, []string{"id", "count(*)"}, resultOutputFields)
-		assert.Equal(t, []int64{3, 4}, resultFieldsData[1].GetScalars().GetLongData().GetData())
-	})
-
-	t.Run("struct field query - should reconstruct struct field", func(t *testing.T) {
-		fieldsData := []*schemapb.FieldData{
-			{
-				FieldName: "test_struct[sub_field]",
-				FieldId:   1021, // Use the correct field ID that matches the schema
-				Type:      schemapb.DataType_Array,
-				Field: &schemapb.FieldData_Scalars{
-					Scalars: &schemapb.ScalarField{
-						Data: &schemapb.ScalarField_ArrayData{
-							ArrayData: &schemapb.ArrayArray{
-								ElementType: schemapb.DataType_Int32,
-								Data: []*schemapb.ScalarField{
-									{
-										Data: &schemapb.ScalarField_IntData{
-											IntData: &schemapb.IntArray{Data: []int32{1, 2, 3}},
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		}
-		outputFields := []string{"test_struct[sub_field]"}
-
-		schema := &schemapb.CollectionSchema{
-			StructArrayFields: []*schemapb.StructArrayFieldSchema{
-				{
-					FieldID: 102,
-					Name:    "test_struct",
-					Fields: []*schemapb.FieldSchema{
-						{
-							FieldID:     1021,
-							Name:        "test_struct[sub_field]",
-							DataType:    schemapb.DataType_Array,
-							ElementType: schemapb.DataType_Int32,
-						},
-					},
-				},
-			},
-		}
-
-		resultFieldsData, resultOutputFields := reconstructStructFieldData(fieldsData, outputFields, schema)
-
-		// Should reconstruct the struct field with the restored field name
-		assert.Len(t, resultFieldsData, 1)
-		assert.Equal(t, "test_struct", resultFieldsData[0].FieldName)
-		assert.Equal(t, int64(102), resultFieldsData[0].FieldId)
-		assert.Equal(t, schemapb.DataType_ArrayOfStruct, resultFieldsData[0].Type)
-
-		// Check that the sub-field name has been restored
-		structArrayField := resultFieldsData[0].GetStructArrays()
-		assert.NotNil(t, structArrayField)
-		assert.Len(t, structArrayField.Fields, 1)
-		assert.Equal(t, "sub_field", structArrayField.Fields[0].FieldName) // Name should be restored
-
-		assert.Equal(t, []string{"test_struct"}, resultOutputFields)
-	})
-
-	t.Run("no struct array fields - should return early", func(t *testing.T) {
-		fieldsData := []*schemapb.FieldData{
-			{
-				FieldName: "field1",
-				FieldId:   100,
-				Type:      schemapb.DataType_Int64,
-			},
-			{
-				FieldName: "field2",
-				FieldId:   101,
-				Type:      schemapb.DataType_VarChar,
-			},
-		}
-		outputFields := []string{"field1", "field2"}
-
-		schema := &schemapb.CollectionSchema{
-			StructArrayFields: []*schemapb.StructArrayFieldSchema{},
-		}
-
-		originalFieldsData := make([]*schemapb.FieldData, len(fieldsData))
-		copy(originalFieldsData, fieldsData)
-		originalOutputFields := make([]string, len(outputFields))
-		copy(originalOutputFields, outputFields)
-
-		resultFieldsData, resultOutputFields := reconstructStructFieldData(fieldsData, outputFields, schema)
-
-		// Should not modify anything when no struct array fields
-		assert.Equal(t, originalFieldsData, resultFieldsData)
-		assert.Equal(t, originalOutputFields, resultOutputFields)
-	})
-
-	t.Run("reconstruct single struct field", func(t *testing.T) {
-		// Create mock data with transformed field names (as they would be internally)
-		subField1Data := &schemapb.FieldData{
-			FieldName: "test_struct[sub_int_array]",
-			FieldId:   1021,
-			Type:      schemapb.DataType_Array,
-			Field: &schemapb.FieldData_Scalars{
-				Scalars: &schemapb.ScalarField{
-					Data: &schemapb.ScalarField_ArrayData{
-						ArrayData: &schemapb.ArrayArray{
-							ElementType: schemapb.DataType_Int32,
-							Data: []*schemapb.ScalarField{
-								{
-									Data: &schemapb.ScalarField_IntData{
-										IntData: &schemapb.IntArray{Data: []int32{1, 2, 3}},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		}
-
-		subField2Data := &schemapb.FieldData{
-			FieldName: "test_struct[sub_text_array]",
-			FieldId:   1022,
-			Type:      schemapb.DataType_Array,
-			Field: &schemapb.FieldData_Scalars{
-				Scalars: &schemapb.ScalarField{
-					Data: &schemapb.ScalarField_ArrayData{
-						ArrayData: &schemapb.ArrayArray{
-							ElementType: schemapb.DataType_VarChar,
-							Data: []*schemapb.ScalarField{
-								{
-									Data: &schemapb.ScalarField_StringData{
-										StringData: &schemapb.StringArray{Data: []string{"hello", "world"}},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		}
-
-		fieldsData := []*schemapb.FieldData{subField1Data, subField2Data}
-		outputFields := []string{"test_struct[sub_int_array]", "test_struct[sub_text_array]"}
-
-		schema := &schemapb.CollectionSchema{
-			Fields: []*schemapb.FieldSchema{
-				{
-					FieldID:      100,
-					Name:         "pk",
-					IsPrimaryKey: true,
-					DataType:     schemapb.DataType_Int64,
-				},
-			},
-			StructArrayFields: []*schemapb.StructArrayFieldSchema{
-				{
-					FieldID: 102,
-					Name:    "test_struct",
-					Fields: []*schemapb.FieldSchema{
-						{
-							FieldID:     1021,
-							Name:        "test_struct[sub_int_array]",
-							DataType:    schemapb.DataType_Array,
-							ElementType: schemapb.DataType_Int32,
-						},
-						{
-							FieldID:     1022,
-							Name:        "test_struct[sub_text_array]",
-							DataType:    schemapb.DataType_Array,
-							ElementType: schemapb.DataType_VarChar,
-						},
-					},
-				},
-			},
-		}
-
-		resultFieldsData, resultOutputFields := reconstructStructFieldData(fieldsData, outputFields, schema)
-
-		// Check result
-		assert.Len(t, resultFieldsData, 1, "Should only have one reconstructed struct field")
-		assert.Len(t, resultOutputFields, 1, "Output fields should only have one")
-
-		structField := resultFieldsData[0]
-		assert.Equal(t, "test_struct", structField.FieldName)
-		assert.Equal(t, int64(102), structField.FieldId)
-		assert.Equal(t, schemapb.DataType_ArrayOfStruct, structField.Type)
-		assert.Equal(t, "test_struct", resultOutputFields[0])
-
-		// Check fields inside struct
-		structArrays := structField.GetStructArrays()
-		assert.NotNil(t, structArrays)
-		assert.Len(t, structArrays.Fields, 2, "Struct should contain 2 sub fields")
-
-		// Check sub fields
-		var foundIntField, foundTextField bool
-		for _, field := range structArrays.Fields {
-			switch field.FieldId {
-			case 1021:
-				assert.Equal(t, "sub_int_array", field.FieldName)
-				assert.Equal(t, schemapb.DataType_Array, field.Type)
-				foundIntField = true
-			case 1022:
-				assert.Equal(t, "sub_text_array", field.FieldName)
-				assert.Equal(t, schemapb.DataType_Array, field.Type)
-				foundTextField = true
-			}
-		}
-		assert.True(t, foundIntField, "Should find int array field")
-		assert.True(t, foundTextField, "Should find text array field")
-	})
-
-	t.Run("mixed regular and struct fields", func(t *testing.T) {
-		// Create regular field data
-		regularField := &schemapb.FieldData{
-			FieldName: "regular_field",
-			FieldId:   100,
-			Type:      schemapb.DataType_Int64,
-			Field: &schemapb.FieldData_Scalars{
-				Scalars: &schemapb.ScalarField{
-					Data: &schemapb.ScalarField_LongData{
-						LongData: &schemapb.LongArray{Data: []int64{1, 2, 3}},
-					},
-				},
-			},
-		}
-
-		// Create struct sub field data with transformed name
-		subFieldData := &schemapb.FieldData{
-			FieldName: "test_struct[sub_field]",
-			FieldId:   1021,
-			Type:      schemapb.DataType_Array,
-			Field: &schemapb.FieldData_Scalars{
-				Scalars: &schemapb.ScalarField{
-					Data: &schemapb.ScalarField_ArrayData{
-						ArrayData: &schemapb.ArrayArray{
-							ElementType: schemapb.DataType_Int32,
-							Data: []*schemapb.ScalarField{
-								{
-									Data: &schemapb.ScalarField_IntData{
-										IntData: &schemapb.IntArray{Data: []int32{10, 20}},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		}
-
-		fieldsData := []*schemapb.FieldData{regularField, subFieldData}
-		outputFields := []string{"regular_field", "test_struct[sub_field]"}
-
-		schema := &schemapb.CollectionSchema{
-			Fields: []*schemapb.FieldSchema{
-				{
-					FieldID:  100,
-					Name:     "regular_field",
-					DataType: schemapb.DataType_Int64,
-				},
-			},
-			StructArrayFields: []*schemapb.StructArrayFieldSchema{
-				{
-					FieldID: 102,
-					Name:    "test_struct",
-					Fields: []*schemapb.FieldSchema{
-						{
-							FieldID:     1021,
-							Name:        "test_struct[sub_field]",
-							DataType:    schemapb.DataType_Array,
-							ElementType: schemapb.DataType_Int32,
-						},
-					},
-				},
-			},
-		}
-
-		resultFieldsData, resultOutputFields := reconstructStructFieldData(fieldsData, outputFields, schema)
-
-		// Check result: should have 2 fields (1 regular + 1 reconstructed struct)
-		assert.Len(t, resultFieldsData, 2)
-		assert.Len(t, resultOutputFields, 2)
-
-		// Check regular and struct fields both exist
-		var foundRegularField, foundStructField bool
-		for i, field := range resultFieldsData {
-			switch field.FieldId {
-			case 100:
-				assert.Equal(t, "regular_field", field.FieldName)
-				assert.Equal(t, schemapb.DataType_Int64, field.Type)
-				assert.Equal(t, "regular_field", resultOutputFields[i])
-				foundRegularField = true
-			case 102:
-				assert.Equal(t, "test_struct", field.FieldName)
-				assert.Equal(t, schemapb.DataType_ArrayOfStruct, field.Type)
-				assert.Equal(t, "test_struct", resultOutputFields[i])
-				foundStructField = true
-			}
-		}
-		assert.True(t, foundRegularField, "Should find regular field")
-		assert.True(t, foundStructField, "Should find reconstructed struct field")
-	})
-
-	t.Run("multiple struct fields", func(t *testing.T) {
-		// Create sub field for first struct
-		struct1SubField := &schemapb.FieldData{
-			FieldName: "struct1[struct1_sub]",
-			FieldId:   1021,
-			Type:      schemapb.DataType_Array,
-			Field: &schemapb.FieldData_Scalars{
-				Scalars: &schemapb.ScalarField{
-					Data: &schemapb.ScalarField_ArrayData{
-						ArrayData: &schemapb.ArrayArray{
-							ElementType: schemapb.DataType_Int32,
-							Data:        []*schemapb.ScalarField{},
-						},
-					},
-				},
-			},
-		}
-
-		// Create sub fields for second struct
-		struct2SubField1 := &schemapb.FieldData{
-			FieldName: "struct2[struct2_sub1]",
-			FieldId:   1031,
-			Type:      schemapb.DataType_Array,
-			Field: &schemapb.FieldData_Scalars{
-				Scalars: &schemapb.ScalarField{
-					Data: &schemapb.ScalarField_ArrayData{
-						ArrayData: &schemapb.ArrayArray{
-							ElementType: schemapb.DataType_Int32,
-							Data:        []*schemapb.ScalarField{},
-						},
-					},
-				},
-			},
-		}
-
-		struct2SubField2 := &schemapb.FieldData{
-			FieldName: "struct2[struct2_sub2]",
-			FieldId:   1032,
-			Type:      schemapb.DataType_VarChar,
-			Field: &schemapb.FieldData_Scalars{
-				Scalars: &schemapb.ScalarField{
-					Data: &schemapb.ScalarField_StringData{
-						StringData: &schemapb.StringArray{Data: []string{"test"}},
-					},
-				},
-			},
-		}
-
-		fieldsData := []*schemapb.FieldData{struct1SubField, struct2SubField1, struct2SubField2}
-		outputFields := []string{"struct1[struct1_sub]", "struct2[struct2_sub1]", "struct2[struct2_sub2]"}
-
-		schema := &schemapb.CollectionSchema{
-			Fields: []*schemapb.FieldSchema{
-				{
-					FieldID:      100,
-					Name:         "pk",
-					IsPrimaryKey: true,
-					DataType:     schemapb.DataType_Int64,
-				},
-			},
-			StructArrayFields: []*schemapb.StructArrayFieldSchema{
-				{
-					FieldID: 102,
-					Name:    "struct1",
-					Fields: []*schemapb.FieldSchema{
-						{
-							FieldID:     1021,
-							Name:        "struct1[struct1_sub]",
-							DataType:    schemapb.DataType_Array,
-							ElementType: schemapb.DataType_Int32,
-						},
-					},
-				},
-				{
-					FieldID: 103,
-					Name:    "struct2",
-					Fields: []*schemapb.FieldSchema{
-						{
-							FieldID:     1031,
-							Name:        "struct2[struct2_sub1]",
-							DataType:    schemapb.DataType_Array,
-							ElementType: schemapb.DataType_Int32,
-						},
-						{
-							FieldID:  1032,
-							Name:     "struct2[struct2_sub2]",
-							DataType: schemapb.DataType_VarChar,
-						},
-					},
-				},
-			},
-		}
-
-		resultFieldsData, resultOutputFields := reconstructStructFieldData(fieldsData, outputFields, schema)
-
-		// Check result: should have 2 struct fields
-		assert.Len(t, resultFieldsData, 2)
-		assert.Len(t, resultOutputFields, 2)
-
-		// Check both struct fields
-		var foundStruct1, foundStruct2 bool
-		for _, field := range resultFieldsData {
-			switch field.FieldId {
-			case 102:
-				assert.Equal(t, "struct1", field.FieldName)
-				assert.Equal(t, schemapb.DataType_ArrayOfStruct, field.Type)
-				foundStruct1 = true
-				structArrays := field.GetStructArrays()
-				assert.NotNil(t, structArrays)
-				assert.Len(t, structArrays.Fields, 1)
-			case 103:
-				assert.Equal(t, "struct2", field.FieldName)
-				assert.Equal(t, schemapb.DataType_ArrayOfStruct, field.Type)
-				foundStruct2 = true
-				structArrays := field.GetStructArrays()
-				assert.NotNil(t, structArrays)
-				assert.Len(t, structArrays.Fields, 2)
-			}
-		}
-		assert.True(t, foundStruct1, "Should find struct1")
-		assert.True(t, foundStruct2, "Should find struct2")
-	})
-
-	t.Run("partial struct fields query - only return queried fields", func(t *testing.T) {
-		// Create a struct with 3 fields, but only query 2 of them
-		// This tests that we only return what the user requested
-
-		// Create mock data for only 2 out of 3 struct fields
-		clipStrData := &schemapb.FieldData{
-			FieldName: "clip[str]",
-			FieldId:   2001,
-			Type:      schemapb.DataType_VarChar,
-			Field: &schemapb.FieldData_Scalars{
-				Scalars: &schemapb.ScalarField{
-					Data: &schemapb.ScalarField_StringData{
-						StringData: &schemapb.StringArray{Data: []string{"text1", "text2"}},
-					},
-				},
-			},
-		}
-
-		clipIntData := &schemapb.FieldData{
-			FieldName: "clip[int]",
-			FieldId:   2002,
-			Type:      schemapb.DataType_Int32,
-			Field: &schemapb.FieldData_Scalars{
-				Scalars: &schemapb.ScalarField{
-					Data: &schemapb.ScalarField_IntData{
-						IntData: &schemapb.IntArray{Data: []int32{100, 200}},
-					},
-				},
-			},
-		}
-
-		// Note: clip[embedding] is NOT included in query results
-		fieldsData := []*schemapb.FieldData{clipStrData, clipIntData}
-		outputFields := []string{"clip[str]", "clip[int]"}
-
-		schema := &schemapb.CollectionSchema{
-			Fields: []*schemapb.FieldSchema{
-				{
-					FieldID:      100,
-					Name:         "pk",
-					IsPrimaryKey: true,
-					DataType:     schemapb.DataType_Int64,
-				},
-			},
-			StructArrayFields: []*schemapb.StructArrayFieldSchema{
-				{
-					FieldID: 200,
-					Name:    "clip",
-					Fields: []*schemapb.FieldSchema{
-						{
-							FieldID:  2001,
-							Name:     "clip[str]",
-							DataType: schemapb.DataType_VarChar,
-						},
-						{
-							FieldID:  2002,
-							Name:     "clip[int]",
-							DataType: schemapb.DataType_Int32,
-						},
-						{
-							FieldID:  2003,
-							Name:     "clip[embedding]",
-							DataType: schemapb.DataType_FloatVector,
-							TypeParams: []*commonpb.KeyValuePair{
-								{Key: "dim", Value: "128"},
-							},
-						},
-					},
-				},
-			},
-		}
-
-		resultFieldsData, resultOutputFields := reconstructStructFieldData(fieldsData, outputFields, schema)
-
-		// Check result
-		assert.Len(t, resultFieldsData, 1, "Should have one reconstructed struct field")
-		assert.Len(t, resultOutputFields, 1, "Output fields should have one")
-
-		structField := resultFieldsData[0]
-		assert.Equal(t, "clip", structField.FieldName)
-		assert.Equal(t, int64(200), structField.FieldId)
-		assert.Equal(t, schemapb.DataType_ArrayOfStruct, structField.Type)
-		assert.Equal(t, "clip", resultOutputFields[0])
-
-		// Check that struct only contains the 2 queried fields, NOT the embedding field
-		structArrays := structField.GetStructArrays()
-		assert.NotNil(t, structArrays)
-		assert.Len(t, structArrays.Fields, 2, "Struct should only contain 2 queried fields, not 3")
-
-		// Verify the field names have been restored to original names
-		var foundStr, foundInt bool
-		for _, field := range structArrays.Fields {
-			switch field.FieldId {
-			case 2001:
-				assert.Equal(t, "str", field.FieldName, "Field name should be restored to original")
-				assert.Equal(t, schemapb.DataType_VarChar, field.Type)
-				foundStr = true
-			case 2002:
-				assert.Equal(t, "int", field.FieldName, "Field name should be restored to original")
-				assert.Equal(t, schemapb.DataType_Int32, field.Type)
-				foundInt = true
-			case 2003:
-				assert.Fail(t, "Should not include embedding field as it was not queried")
-			}
-		}
-		assert.True(t, foundStr, "Should find str field")
-		assert.True(t, foundInt, "Should find int field")
-	})
-}
-
-func TestLackOfFieldsDataBySchema(t *testing.T) {
-	schema := &schemapb.CollectionSchema{
-		Fields: []*schemapb.FieldSchema{
-			{FieldID: 100, Name: "pk_field", IsPrimaryKey: true, DataType: schemapb.DataType_Int64, AutoID: true},
-			{FieldID: 101, Name: "required_field", DataType: schemapb.DataType_Float},
-			{FieldID: 102, Name: "nullable_field", DataType: schemapb.DataType_VarChar, Nullable: true},
-			{FieldID: 103, Name: "default_value_field", DataType: schemapb.DataType_JSON, DefaultValue: &schemapb.ValueField{Data: &schemapb.ValueField_StringData{StringData: "{}"}}},
-		},
-	}
-
-	tests := []struct {
-		name             string
-		fieldsData       []*schemapb.FieldData
-		skipPkFieldCheck bool
-		expectErr        bool
-	}{
-		{
-			name: "all required fields present",
-			fieldsData: []*schemapb.FieldData{
-				{FieldName: "pk_field"},
-				{FieldName: "required_field"},
-				{FieldName: "nullable_field"},
-				{FieldName: "default_value_field"},
-			},
-			skipPkFieldCheck: false,
-			expectErr:        false,
-		},
-		{
-			name: "missing required field",
-			fieldsData: []*schemapb.FieldData{
-				{FieldName: "pk_field"},
-			},
-			skipPkFieldCheck: false,
-			expectErr:        true,
-		},
-		{
-			name: "missing nullable field is ok",
-			fieldsData: []*schemapb.FieldData{
-				{FieldName: "pk_field"},
-				{FieldName: "required_field"},
-				{FieldName: "default_value_field"},
-			},
-			skipPkFieldCheck: false,
-			expectErr:        false,
-		},
-		{
-			name: "missing default value field is ok",
-			fieldsData: []*schemapb.FieldData{
-				{FieldName: "pk_field"},
-				{FieldName: "required_field"},
-				{FieldName: "nullable_field"},
-			},
-			skipPkFieldCheck: false,
-			expectErr:        false,
-		},
-		{
-			name: "missing nullable and default value field is ok",
-			fieldsData: []*schemapb.FieldData{
-				{FieldName: "pk_field"},
-				{FieldName: "required_field"},
-			},
-			skipPkFieldCheck: false,
-			expectErr:        false,
-		},
-		{
-			name:             "empty fields data",
-			fieldsData:       []*schemapb.FieldData{},
-			skipPkFieldCheck: false,
-			expectErr:        true,
-		},
-		{
-			name: "skip pk check",
-			fieldsData: []*schemapb.FieldData{
-				{FieldName: "required_field"},
-			},
-			skipPkFieldCheck: true,
-			expectErr:        false,
-		},
-		{
-			name: "missing pk without skip",
-			fieldsData: []*schemapb.FieldData{
-				{FieldName: "required_field"},
-			},
-			skipPkFieldCheck: false,
-			expectErr:        true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := LackOfFieldsDataBySchema(schema, tt.fieldsData, tt.skipPkFieldCheck, false)
-			if tt.expectErr {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-			}
-		})
-	}
-}
-
-func TestGetStorageCost(t *testing.T) {
-	// nil and empty cases
-	t.Run("nil or empty status", func(t *testing.T) {
-		{
-			remote, total, ratio, ok := GetStorageCost(nil)
-			assert.Equal(t, int64(0), remote)
-			assert.Equal(t, int64(0), total)
-			assert.Equal(t, 0.0, ratio)
-			assert.False(t, ok)
-		}
-		{
-			remote, total, ratio, ok := GetStorageCost(&commonpb.Status{})
-			assert.Equal(t, int64(0), remote)
-			assert.Equal(t, int64(0), total)
-			assert.Equal(t, 0.0, ratio)
-			assert.False(t, ok)
-		}
-	})
-
-	// missing keys should result in zeros
-	t.Run("missing keys", func(t *testing.T) {
-		st := &commonpb.Status{ExtraInfo: map[string]string{
-			"scanned_remote_bytes": "100",
-		}}
-		remote, total, ratio, ok := GetStorageCost(st)
-		assert.Equal(t, int64(0), remote)
-		assert.Equal(t, int64(0), total)
-		assert.Equal(t, 0.0, ratio)
-		assert.False(t, ok)
-	})
-
-	// invalid number formats should result in zeros
-	t.Run("invalid formats", func(t *testing.T) {
-		st := &commonpb.Status{ExtraInfo: map[string]string{
-			"scanned_remote_bytes": "x",
-			"scanned_total_bytes":  "200",
-			"cache_hit_ratio":      "0.5",
-		}}
-		remote, total, ratio, ok := GetStorageCost(st)
-		assert.Equal(t, int64(0), remote)
-		assert.Equal(t, int64(0), total)
-		assert.Equal(t, 0.0, ratio)
-		assert.False(t, ok)
-
-		st = &commonpb.Status{ExtraInfo: map[string]string{
-			"scanned_remote_bytes": "100",
-			"scanned_total_bytes":  "y",
-			"cache_hit_ratio":      "0.5",
-		}}
-		remote, total, ratio, ok = GetStorageCost(st)
-		assert.Equal(t, int64(0), remote)
-		assert.Equal(t, int64(0), total)
-		assert.Equal(t, 0.0, ratio)
-		assert.False(t, ok)
-
-		st = &commonpb.Status{ExtraInfo: map[string]string{
-			"scanned_remote_bytes": "100",
-			"scanned_total_bytes":  "200",
-			"cache_hit_ratio":      "abc",
-		}}
-		remote, total, ratio, ok = GetStorageCost(st)
-		assert.Equal(t, int64(0), remote)
-		assert.Equal(t, int64(0), total)
-		assert.Equal(t, 0.0, ratio)
-		assert.False(t, ok)
-	})
-
-	// success case
-	t.Run("success", func(t *testing.T) {
-		st := &commonpb.Status{ExtraInfo: map[string]string{
-			"scanned_remote_bytes": "123",
-			"scanned_total_bytes":  "456",
-			"cache_hit_ratio":      "0.27",
-		}}
-		remote, total, ratio, ok := GetStorageCost(st)
-		assert.Equal(t, int64(123), remote)
-		assert.Equal(t, int64(456), total)
-		assert.InDelta(t, 0.27, ratio, 1e-9)
-		assert.True(t, ok)
-	})
-}
-
-func TestMinHashFunction(t *testing.T) {
-	t.Run("MinHash function without permutations ", func(t *testing.T) {
-		schema := &schemapb.CollectionSchema{
-			Fields: []*schemapb.FieldSchema{
-				{Name: "text_field", DataType: schemapb.DataType_VarChar, Nullable: true},
-				{
-					Name:     "minhash_output",
-					DataType: schemapb.DataType_BinaryVector,
-					TypeParams: []*commonpb.KeyValuePair{
-						{
-							Key:   common.DimKey,
-							Value: "4096",
-						},
-					},
-				},
-			},
-			Functions: []*schemapb.FunctionSchema{
-				{
-					Name:             "text_to_minhash",
-					Type:             schemapb.FunctionType_MinHash,
-					InputFieldNames:  []string{"text_field"},
-					OutputFieldNames: []string{"minhash_output"},
-					Params: []*commonpb.KeyValuePair{
-						{Key: "num_hashes", Value: "128"},
-						{Key: "shingle_size", Value: "3"},
-						{Key: "hash_function", Value: "xxhash64"},
-						{Key: "seed", Value: "42"},
-					},
-				},
-			},
-		}
-
-		err := validator.ValidateFunction(schema, "", false)
-		assert.NoError(t, err)
-	})
-
-	t.Run("create schema allows nullable mismatch", func(t *testing.T) {
-		schema := &schemapb.CollectionSchema{
-			Fields: []*schemapb.FieldSchema{
-				{Name: "text_field", DataType: schemapb.DataType_VarChar, Nullable: true},
-				{
-					Name:     "minhash_output",
-					DataType: schemapb.DataType_BinaryVector,
-					TypeParams: []*commonpb.KeyValuePair{
-						{Key: common.DimKey, Value: "4096"},
-					},
-				},
-			},
-			Functions: []*schemapb.FunctionSchema{
-				{
-					Name:             "text_to_minhash",
-					Type:             schemapb.FunctionType_MinHash,
-					InputFieldNames:  []string{"text_field"},
-					OutputFieldNames: []string{"minhash_output"},
-					Params: []*commonpb.KeyValuePair{
-						{Key: "num_hashes", Value: "128"},
-						{Key: "shingle_size", Value: "3"},
-					},
-				},
-			},
-		}
-
-		err := validator.ValidateFunction(schema, "", false)
-		assert.NoError(t, err)
-	})
-
-	t.Run("miss num_hashes", func(t *testing.T) {
-		createSchema := func() *schemapb.CollectionSchema {
-			return &schemapb.CollectionSchema{
-				Fields: []*schemapb.FieldSchema{
-					{Name: "text_field", DataType: schemapb.DataType_VarChar},
-					{Name: "minhash_output", DataType: schemapb.DataType_BinaryVector, TypeParams: []*commonpb.KeyValuePair{
-						{Key: common.DimKey, Value: "4096"},
-					}},
-				},
-				Functions: []*schemapb.FunctionSchema{
-					{
-						Name:             "text_to_minhash",
-						Type:             schemapb.FunctionType_MinHash,
-						InputFieldNames:  []string{"text_field"},
-						OutputFieldNames: []string{"minhash_output"},
-						Params: []*commonpb.KeyValuePair{
-							{Key: "seed", Value: "999"},
-						},
-					},
-				},
-			}
-		}
-
-		schema1 := createSchema()
-
-		// Inject permutations in both schemas
-		err := validator.ValidateFunction(schema1, "", false)
-		assert.NoError(t, err)
-	})
-
-	t.Run("num_hashes * 32 != dim", func(t *testing.T) {
-		createSchema := func() *schemapb.CollectionSchema {
-			return &schemapb.CollectionSchema{
-				Fields: []*schemapb.FieldSchema{
-					{Name: "text_field", DataType: schemapb.DataType_VarChar},
-					{Name: "minhash_output", DataType: schemapb.DataType_BinaryVector, TypeParams: []*commonpb.KeyValuePair{
-						{Key: common.DimKey, Value: "4096"},
-					}},
-				},
-				Functions: []*schemapb.FunctionSchema{
-					{
-						Name:             "text_to_minhash",
-						Type:             schemapb.FunctionType_MinHash,
-						InputFieldNames:  []string{"text_field"},
-						OutputFieldNames: []string{"minhash_output"},
-						Params: []*commonpb.KeyValuePair{
-							{Key: "num_hashes", Value: "9999"},
-							{Key: "seed", Value: "999"},
-						},
-					},
-				},
-			}
-		}
-
-		schema1 := createSchema()
-
-		// Inject permutations in both schemas
-		err := validator.ValidateFunction(schema1, "", false)
-		assert.Error(t, err)
-	})
-
-	t.Run("invalid num_hashes string value", func(t *testing.T) {
-		schema := &schemapb.CollectionSchema{
-			Fields: []*schemapb.FieldSchema{
-				{Name: "text_field", DataType: schemapb.DataType_VarChar},
-				{Name: "minhash_output", DataType: schemapb.DataType_BinaryVector, TypeParams: []*commonpb.KeyValuePair{
-					{Key: common.DimKey, Value: "4096"},
-				}},
-			},
-			Functions: []*schemapb.FunctionSchema{
-				{
-					Name:             "text_to_minhash",
-					Type:             schemapb.FunctionType_MinHash,
-					InputFieldNames:  []string{"text_field"},
-					OutputFieldNames: []string{"minhash_output"},
-					Params: []*commonpb.KeyValuePair{
-						{Key: "num_hashes", Value: "abc"},
-					},
-				},
-			},
-		}
-		err := validator.ValidateFunction(schema, "", false)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "num_hashes")
-		assert.Contains(t, err.Error(), "not a number")
-	})
-
-	t.Run("invalid num_hashes negative value", func(t *testing.T) {
-		schema := &schemapb.CollectionSchema{
-			Fields: []*schemapb.FieldSchema{
-				{Name: "text_field", DataType: schemapb.DataType_VarChar},
-				{Name: "minhash_output", DataType: schemapb.DataType_BinaryVector, TypeParams: []*commonpb.KeyValuePair{
-					{Key: common.DimKey, Value: "4096"},
-				}},
-			},
-			Functions: []*schemapb.FunctionSchema{
-				{
-					Name:             "text_to_minhash",
-					Type:             schemapb.FunctionType_MinHash,
-					InputFieldNames:  []string{"text_field"},
-					OutputFieldNames: []string{"minhash_output"},
-					Params: []*commonpb.KeyValuePair{
-						{Key: "num_hashes", Value: "-1"},
-					},
-				},
-			},
-		}
-		err := validator.ValidateFunction(schema, "", false)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "num_hashes")
-		assert.Contains(t, err.Error(), "positive")
-	})
-
-	t.Run("invalid shingle_size string value", func(t *testing.T) {
-		schema := &schemapb.CollectionSchema{
-			Fields: []*schemapb.FieldSchema{
-				{Name: "text_field", DataType: schemapb.DataType_VarChar},
-				{Name: "minhash_output", DataType: schemapb.DataType_BinaryVector, TypeParams: []*commonpb.KeyValuePair{
-					{Key: common.DimKey, Value: "4096"},
-				}},
-			},
-			Functions: []*schemapb.FunctionSchema{
-				{
-					Name:             "text_to_minhash",
-					Type:             schemapb.FunctionType_MinHash,
-					InputFieldNames:  []string{"text_field"},
-					OutputFieldNames: []string{"minhash_output"},
-					Params: []*commonpb.KeyValuePair{
-						{Key: "shingle_size", Value: "abc"},
-					},
-				},
-			},
-		}
-		err := validator.ValidateFunction(schema, "", false)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "shingle_size")
-		assert.Contains(t, err.Error(), "not a number")
-	})
-
-	t.Run("invalid shingle_size zero value", func(t *testing.T) {
-		schema := &schemapb.CollectionSchema{
-			Fields: []*schemapb.FieldSchema{
-				{Name: "text_field", DataType: schemapb.DataType_VarChar},
-				{Name: "minhash_output", DataType: schemapb.DataType_BinaryVector, TypeParams: []*commonpb.KeyValuePair{
-					{Key: common.DimKey, Value: "4096"},
-				}},
-			},
-			Functions: []*schemapb.FunctionSchema{
-				{
-					Name:             "text_to_minhash",
-					Type:             schemapb.FunctionType_MinHash,
-					InputFieldNames:  []string{"text_field"},
-					OutputFieldNames: []string{"minhash_output"},
-					Params: []*commonpb.KeyValuePair{
-						{Key: "shingle_size", Value: "0"},
-					},
-				},
-			},
-		}
-		err := validator.ValidateFunction(schema, "", false)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "shingle_size")
-		assert.Contains(t, err.Error(), "positive")
-	})
-
-	t.Run("invalid hash_function value", func(t *testing.T) {
-		schema := &schemapb.CollectionSchema{
-			Fields: []*schemapb.FieldSchema{
-				{Name: "text_field", DataType: schemapb.DataType_VarChar},
-				{Name: "minhash_output", DataType: schemapb.DataType_BinaryVector, TypeParams: []*commonpb.KeyValuePair{
-					{Key: common.DimKey, Value: "4096"},
-				}},
-			},
-			Functions: []*schemapb.FunctionSchema{
-				{
-					Name:             "text_to_minhash",
-					Type:             schemapb.FunctionType_MinHash,
-					InputFieldNames:  []string{"text_field"},
-					OutputFieldNames: []string{"minhash_output"},
-					Params: []*commonpb.KeyValuePair{
-						{Key: "hash_function", Value: "md5"},
-					},
-				},
-			},
-		}
-		err := validator.ValidateFunction(schema, "", false)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "unknown hash function")
-	})
-
-	t.Run("invalid hash_function empty value", func(t *testing.T) {
-		schema := &schemapb.CollectionSchema{
-			Fields: []*schemapb.FieldSchema{
-				{Name: "text_field", DataType: schemapb.DataType_VarChar},
-				{Name: "minhash_output", DataType: schemapb.DataType_BinaryVector, TypeParams: []*commonpb.KeyValuePair{
-					{Key: common.DimKey, Value: "4096"},
-				}},
-			},
-			Functions: []*schemapb.FunctionSchema{
-				{
-					Name:             "text_to_minhash",
-					Type:             schemapb.FunctionType_MinHash,
-					InputFieldNames:  []string{"text_field"},
-					OutputFieldNames: []string{"minhash_output"},
-					Params: []*commonpb.KeyValuePair{
-						{Key: "hash_function", Value: ""},
-					},
-				},
-			},
-		}
-		err := validator.ValidateFunction(schema, "", false)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "unknown hash function")
-	})
-
-	t.Run("invalid token_level value", func(t *testing.T) {
-		schema := &schemapb.CollectionSchema{
-			Fields: []*schemapb.FieldSchema{
-				{Name: "text_field", DataType: schemapb.DataType_VarChar},
-				{Name: "minhash_output", DataType: schemapb.DataType_BinaryVector, TypeParams: []*commonpb.KeyValuePair{
-					{Key: common.DimKey, Value: "4096"},
-				}},
-			},
-			Functions: []*schemapb.FunctionSchema{
-				{
-					Name:             "text_to_minhash",
-					Type:             schemapb.FunctionType_MinHash,
-					InputFieldNames:  []string{"text_field"},
-					OutputFieldNames: []string{"minhash_output"},
-					Params: []*commonpb.KeyValuePair{
-						{Key: "token_level", Value: "sentence"},
-					},
-				},
-			},
-		}
-		err := validator.ValidateFunction(schema, "", false)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "unknown token_level")
-	})
-
-	t.Run("invalid token_level empty value", func(t *testing.T) {
-		schema := &schemapb.CollectionSchema{
-			Fields: []*schemapb.FieldSchema{
-				{Name: "text_field", DataType: schemapb.DataType_VarChar},
-				{Name: "minhash_output", DataType: schemapb.DataType_BinaryVector, TypeParams: []*commonpb.KeyValuePair{
-					{Key: common.DimKey, Value: "4096"},
-				}},
-			},
-			Functions: []*schemapb.FunctionSchema{
-				{
-					Name:             "text_to_minhash",
-					Type:             schemapb.FunctionType_MinHash,
-					InputFieldNames:  []string{"text_field"},
-					OutputFieldNames: []string{"minhash_output"},
-					Params: []*commonpb.KeyValuePair{
-						{Key: "token_level", Value: ""},
-					},
-				},
-			},
-		}
-		err := validator.ValidateFunction(schema, "", false)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "unknown token_level")
-	})
-
-	t.Run("invalid seed string value", func(t *testing.T) {
-		schema := &schemapb.CollectionSchema{
-			Fields: []*schemapb.FieldSchema{
-				{Name: "text_field", DataType: schemapb.DataType_VarChar},
-				{Name: "minhash_output", DataType: schemapb.DataType_BinaryVector, TypeParams: []*commonpb.KeyValuePair{
-					{Key: common.DimKey, Value: "4096"},
-				}},
-			},
-			Functions: []*schemapb.FunctionSchema{
-				{
-					Name:             "text_to_minhash",
-					Type:             schemapb.FunctionType_MinHash,
-					InputFieldNames:  []string{"text_field"},
-					OutputFieldNames: []string{"minhash_output"},
-					Params: []*commonpb.KeyValuePair{
-						{Key: "seed", Value: "abc"},
-					},
-				},
-			},
-		}
-		err := validator.ValidateFunction(schema, "", false)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "seed")
-		assert.Contains(t, err.Error(), "not a number")
-	})
-
-	t.Run("valid token_level char", func(t *testing.T) {
-		schema := &schemapb.CollectionSchema{
-			Fields: []*schemapb.FieldSchema{
-				{Name: "text_field", DataType: schemapb.DataType_VarChar},
-				{Name: "minhash_output", DataType: schemapb.DataType_BinaryVector, TypeParams: []*commonpb.KeyValuePair{
-					{Key: common.DimKey, Value: "4096"},
-				}},
-			},
-			Functions: []*schemapb.FunctionSchema{
-				{
-					Name:             "text_to_minhash",
-					Type:             schemapb.FunctionType_MinHash,
-					InputFieldNames:  []string{"text_field"},
-					OutputFieldNames: []string{"minhash_output"},
-					Params: []*commonpb.KeyValuePair{
-						{Key: "token_level", Value: "char"},
-					},
-				},
-			},
-		}
-		err := validator.ValidateFunction(schema, "", false)
-		assert.NoError(t, err)
-	})
-
-	t.Run("valid hash_function sha1", func(t *testing.T) {
-		schema := &schemapb.CollectionSchema{
-			Fields: []*schemapb.FieldSchema{
-				{Name: "text_field", DataType: schemapb.DataType_VarChar},
-				{Name: "minhash_output", DataType: schemapb.DataType_BinaryVector, TypeParams: []*commonpb.KeyValuePair{
-					{Key: common.DimKey, Value: "4096"},
-				}},
-			},
-			Functions: []*schemapb.FunctionSchema{
-				{
-					Name:             "text_to_minhash",
-					Type:             schemapb.FunctionType_MinHash,
-					InputFieldNames:  []string{"text_field"},
-					OutputFieldNames: []string{"minhash_output"},
-					Params: []*commonpb.KeyValuePair{
-						{Key: "hash_function", Value: "sha1"},
-					},
-				},
-			},
-		}
-		err := validator.ValidateFunction(schema, "", false)
-		assert.NoError(t, err)
-	})
-}
-
-func TestValidateStructArrayField_NullablePropagation(t *testing.T) {
-	schema := &schemapb.CollectionSchema{
-		Name: "test_collection",
-		Fields: []*schemapb.FieldSchema{
-			{FieldID: 100, Name: "pk", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
-		},
-	}
-
-	t.Run("nullable struct propagates to sub-fields", func(t *testing.T) {
-		structField := &schemapb.StructArrayFieldSchema{
-			Name:     "my_struct",
-			Nullable: true,
-			Fields: []*schemapb.FieldSchema{
-				{
-					Name:        "sub_a",
-					DataType:    schemapb.DataType_Array,
-					ElementType: schemapb.DataType_Int32,
-					TypeParams:  []*commonpb.KeyValuePair{{Key: "max_capacity", Value: "100"}},
-				},
-				{
-					Name:        "sub_b",
-					DataType:    schemapb.DataType_Array,
-					ElementType: schemapb.DataType_VarChar,
-					TypeParams:  []*commonpb.KeyValuePair{{Key: "max_capacity", Value: "100"}, {Key: "max_length", Value: "256"}},
-				},
-			},
-		}
-
-		err := ValidateStructArrayField(structField, schema)
-		require.NoError(t, err)
-
-		for _, subField := range structField.Fields {
-			assert.True(t, subField.GetNullable(), "sub-field %s should be nullable after propagation", subField.Name)
-		}
-	})
-
-	t.Run("non-nullable struct rejects nullable sub-fields", func(t *testing.T) {
-		structField := &schemapb.StructArrayFieldSchema{
-			Name:     "my_struct",
-			Nullable: false,
-			Fields: []*schemapb.FieldSchema{
-				{
-					Name:        "sub_a",
-					DataType:    schemapb.DataType_Array,
-					ElementType: schemapb.DataType_Int32,
-					Nullable:    true,
-					TypeParams:  []*commonpb.KeyValuePair{{Key: "max_capacity", Value: "100"}},
-				},
-			},
-		}
-
-		err := ValidateStructArrayField(structField, schema)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "cannot be nullable individually")
-	})
-
-	t.Run("non-nullable struct with non-nullable sub-fields passes", func(t *testing.T) {
-		structField := &schemapb.StructArrayFieldSchema{
-			Name:     "my_struct",
-			Nullable: false,
-			Fields: []*schemapb.FieldSchema{
-				{
-					Name:        "sub_a",
-					DataType:    schemapb.DataType_Array,
-					ElementType: schemapb.DataType_Int32,
-					TypeParams:  []*commonpb.KeyValuePair{{Key: "max_capacity", Value: "100"}},
-				},
-			},
-		}
-
-		err := ValidateStructArrayField(structField, schema)
-		assert.NoError(t, err)
-	})
-}
-
-func TestCheckAndFlattenStructFieldData_ValidDataCopied(t *testing.T) {
-	structName := "my_struct"
-	subFieldName := "sub_a"
-	transformedName := typeutil.ConcatStructFieldName(structName, subFieldName)
-
-	schema := &schemapb.CollectionSchema{
-		Name: "test_collection",
-		Fields: []*schemapb.FieldSchema{
-			{FieldID: 100, Name: "pk", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
-		},
-		StructArrayFields: []*schemapb.StructArrayFieldSchema{
-			{
-				FieldID:  200,
-				Name:     structName,
-				Nullable: true,
-				Fields: []*schemapb.FieldSchema{
-					{
-						FieldID:     201,
-						Name:        transformedName,
-						DataType:    schemapb.DataType_Array,
-						ElementType: schemapb.DataType_Int32,
-						Nullable:    true,
-					},
-				},
-			},
-		},
-	}
-
-	validData := []bool{true, false, true}
-	insertMsg := &msgstream.InsertMsg{
-		InsertRequest: &msgpb.InsertRequest{
-			FieldsData: []*schemapb.FieldData{
-				{
-					FieldName: "pk",
-					Type:      schemapb.DataType_Int64,
-					Field: &schemapb.FieldData_Scalars{
-						Scalars: &schemapb.ScalarField{
-							Data: &schemapb.ScalarField_LongData{
-								LongData: &schemapb.LongArray{Data: []int64{1, 2, 3}},
-							},
-						},
-					},
-				},
-				{
-					FieldName: structName,
-					Type:      schemapb.DataType_ArrayOfStruct,
-					Field: &schemapb.FieldData_StructArrays{
-						StructArrays: &schemapb.StructArrayField{
-							Fields: []*schemapb.FieldData{
-								{
-									FieldName: subFieldName,
-									FieldId:   201,
-									Type:      schemapb.DataType_Array,
-									ValidData: validData,
-									Field: &schemapb.FieldData_Scalars{
-										Scalars: &schemapb.ScalarField{
-											Data: &schemapb.ScalarField_ArrayData{
-												ArrayData: &schemapb.ArrayArray{
-													Data: []*schemapb.ScalarField{
-														{Data: &schemapb.ScalarField_IntData{IntData: &schemapb.IntArray{Data: []int32{1}}}},
-														{Data: &schemapb.ScalarField_IntData{IntData: &schemapb.IntArray{Data: []int32{}}}},
-														{Data: &schemapb.ScalarField_IntData{IntData: &schemapb.IntArray{Data: []int32{3}}}},
-													},
-													ElementType: schemapb.DataType_Int32,
-												},
-											},
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	err := checkAndFlattenStructFieldData(schema, insertMsg)
-	require.NoError(t, err)
-
-	found := false
-	for _, fd := range insertMsg.GetFieldsData() {
-		if fd.FieldName == transformedName {
-			found = true
-			assert.Equal(t, validData, fd.GetValidData(), "ValidData should be preserved in flattened sub-field")
-			break
-		}
-	}
-	assert.True(t, found, "flattened sub-field should exist")
-}
-
-func TestCheckAndFlattenStructFieldData_NullableStructCanBeOmitted(t *testing.T) {
-	schema := &schemapb.CollectionSchema{
-		Name: "test_collection",
-		Fields: []*schemapb.FieldSchema{
-			{FieldID: 100, Name: "pk", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
-		},
-		StructArrayFields: []*schemapb.StructArrayFieldSchema{
-			{
-				FieldID:  200,
-				Name:     "nullable_struct",
-				Nullable: true,
-				Fields: []*schemapb.FieldSchema{
-					{
-						FieldID:     201,
-						Name:        "nullable_struct[sub_a]",
-						DataType:    schemapb.DataType_Array,
-						ElementType: schemapb.DataType_Int32,
-						Nullable:    true,
-					},
-				},
-			},
-		},
-	}
-
-	insertMsg := &msgstream.InsertMsg{
-		InsertRequest: &msgpb.InsertRequest{
-			FieldsData: []*schemapb.FieldData{
-				{
-					FieldName: "pk",
-					Type:      schemapb.DataType_Int64,
-					Field: &schemapb.FieldData_Scalars{
-						Scalars: &schemapb.ScalarField{
-							Data: &schemapb.ScalarField_LongData{
-								LongData: &schemapb.LongArray{Data: []int64{1, 2}},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	err := checkAndFlattenStructFieldData(schema, insertMsg)
-	assert.NoError(t, err)
-}
-
-func TestCheckAndFlattenStructFieldData_RequiredStructMustBePresent(t *testing.T) {
-	schema := &schemapb.CollectionSchema{
-		Name: "test_collection",
-		Fields: []*schemapb.FieldSchema{
-			{FieldID: 100, Name: "pk", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
-		},
-		StructArrayFields: []*schemapb.StructArrayFieldSchema{
-			{
-				FieldID:  200,
-				Name:     "required_struct",
-				Nullable: false,
-				Fields: []*schemapb.FieldSchema{
-					{
-						FieldID:     201,
-						Name:        "required_struct[sub_a]",
-						DataType:    schemapb.DataType_Array,
-						ElementType: schemapb.DataType_Int32,
-					},
-				},
-			},
-		},
-	}
-
-	insertMsg := &msgstream.InsertMsg{
-		InsertRequest: &msgpb.InsertRequest{
-			FieldsData: []*schemapb.FieldData{
-				{
-					FieldName: "pk",
-					Type:      schemapb.DataType_Int64,
-					Field: &schemapb.FieldData_Scalars{
-						Scalars: &schemapb.ScalarField{
-							Data: &schemapb.ScalarField_LongData{
-								LongData: &schemapb.LongArray{Data: []int64{1, 2}},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	err := checkAndFlattenStructFieldData(schema, insertMsg)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "required struct array field")
-}
-
-func TestCheckAndFlattenStructFieldData_RequiredMissingButNullablePresent(t *testing.T) {
-	// Regression: required struct A missing while nullable struct B is present.
-	// Previously the count-based guard (requiredCount > structFieldCount) would
-	// pass because structFieldCount included the nullable struct.
-	schema := &schemapb.CollectionSchema{
-		Name: "test_collection",
-		Fields: []*schemapb.FieldSchema{
-			{FieldID: 100, Name: "pk", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
-		},
-		StructArrayFields: []*schemapb.StructArrayFieldSchema{
-			{
-				FieldID:  200,
-				Name:     "required_struct",
-				Nullable: false,
-				Fields: []*schemapb.FieldSchema{
-					{
-						FieldID:     201,
-						Name:        "required_struct[sub_a]",
-						DataType:    schemapb.DataType_Array,
-						ElementType: schemapb.DataType_Int32,
-					},
-				},
-			},
-			{
-				FieldID:  300,
-				Name:     "nullable_struct",
-				Nullable: true,
-				Fields: []*schemapb.FieldSchema{
-					{
-						FieldID:     301,
-						Name:        "nullable_struct[sub_b]",
-						DataType:    schemapb.DataType_Array,
-						ElementType: schemapb.DataType_Int32,
-						Nullable:    true,
-					},
-				},
-			},
-		},
-	}
-
-	// Only provide nullable_struct, omit required_struct
-	insertMsg := &msgstream.InsertMsg{
-		InsertRequest: &msgpb.InsertRequest{
-			FieldsData: []*schemapb.FieldData{
-				{
-					FieldName: "pk",
-					Type:      schemapb.DataType_Int64,
-					Field: &schemapb.FieldData_Scalars{
-						Scalars: &schemapb.ScalarField{
-							Data: &schemapb.ScalarField_LongData{
-								LongData: &schemapb.LongArray{Data: []int64{1, 2}},
-							},
-						},
-					},
-				},
-				{
-					FieldName: "nullable_struct",
-					Type:      schemapb.DataType_ArrayOfStruct,
-					Field: &schemapb.FieldData_StructArrays{
-						StructArrays: &schemapb.StructArrayField{
-							Fields: []*schemapb.FieldData{
-								{
-									FieldName: "sub_b",
-									FieldId:   301,
-									Type:      schemapb.DataType_Array,
-									ValidData: []bool{true, false},
-									Field: &schemapb.FieldData_Scalars{
-										Scalars: &schemapb.ScalarField{
-											Data: &schemapb.ScalarField_ArrayData{
-												ArrayData: &schemapb.ArrayArray{
-													Data: []*schemapb.ScalarField{
-														{Data: &schemapb.ScalarField_IntData{IntData: &schemapb.IntArray{Data: []int32{1}}}},
-														{Data: &schemapb.ScalarField_IntData{IntData: &schemapb.IntArray{Data: []int32{}}}},
-													},
-													ElementType: schemapb.DataType_Int32,
-												},
-											},
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	err := checkAndFlattenStructFieldData(schema, insertMsg)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "required struct array field")
-	assert.Contains(t, err.Error(), "required_struct")
-}
-
-func TestCheckAndFlattenStructFieldData_AllNullWithInitializedVectorsOneof(t *testing.T) {
-	schema := &schemapb.CollectionSchema{
-		Name: "test_collection",
-		Fields: []*schemapb.FieldSchema{
-			{FieldID: 100, Name: "pk", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
-		},
-		StructArrayFields: []*schemapb.StructArrayFieldSchema{
-			{
-				FieldID:  200,
-				Name:     "nullable_struct",
-				Nullable: true,
-				Fields: []*schemapb.FieldSchema{
-					{
-						FieldID:     201,
-						Name:        "nullable_struct[tag]",
-						DataType:    schemapb.DataType_Array,
-						ElementType: schemapb.DataType_VarChar,
-						Nullable:    true,
-					},
-					{
-						FieldID:     202,
-						Name:        "nullable_struct[vec]",
-						DataType:    schemapb.DataType_ArrayOfVector,
-						ElementType: schemapb.DataType_FloatVector,
-						Nullable:    true,
-						TypeParams:  []*commonpb.KeyValuePair{{Key: "dim", Value: "4"}},
-					},
-				},
-			},
-		},
-	}
-
-	insertMsg := &msgstream.InsertMsg{
-		InsertRequest: &msgpb.InsertRequest{
-			FieldsData: []*schemapb.FieldData{
-				{
-					FieldName: "pk",
-					Type:      schemapb.DataType_Int64,
-					Field: &schemapb.FieldData_Scalars{
-						Scalars: &schemapb.ScalarField{
-							Data: &schemapb.ScalarField_LongData{
-								LongData: &schemapb.LongArray{Data: []int64{1, 2}},
-							},
-						},
-					},
-				},
-				{
-					FieldName: "nullable_struct",
-					Type:      schemapb.DataType_ArrayOfStruct,
-					Field: &schemapb.FieldData_StructArrays{
-						StructArrays: &schemapb.StructArrayField{
-							Fields: []*schemapb.FieldData{
-								{
-									FieldName: "tag",
-									FieldId:   201,
-									Type:      schemapb.DataType_Array,
-									ValidData: []bool{false, false},
-								},
-								{
-									FieldName: "vec",
-									FieldId:   202,
-									Type:      schemapb.DataType_ArrayOfVector,
-									ValidData: []bool{false, false},
-									Field: &schemapb.FieldData_Vectors{
-										Vectors: &schemapb.VectorField{
-											Dim: 4,
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	err := checkAndFlattenStructFieldData(schema, insertMsg)
-	assert.NoError(t, err)
-}
-
-// TestCheckAndFlattenStructFieldData_OmittedVsAllNullSubfieldsEquivalent verifies
-// that "nullable struct omitted entirely" and "nullable struct present but all
-// sub-fields empty" produce the same flattened FieldsData shape: neither adds
-// any sub-field entry, and both rely on downstream checkFieldsDataBySchema to
-// backfill empty FieldData for the missing nullable sub-fields.
-func TestCheckAndFlattenStructFieldData_OmittedVsAllNullSubfieldsEquivalent(t *testing.T) {
-	schema := &schemapb.CollectionSchema{
-		Name: "test_collection",
-		Fields: []*schemapb.FieldSchema{
-			{FieldID: 100, Name: "pk", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
-		},
-		StructArrayFields: []*schemapb.StructArrayFieldSchema{
-			{
-				FieldID:  200,
-				Name:     "my_struct",
-				Nullable: true,
-				Fields: []*schemapb.FieldSchema{
-					{FieldID: 201, Name: "my_struct[tag]", DataType: schemapb.DataType_Array, ElementType: schemapb.DataType_VarChar, Nullable: true},
-					{FieldID: 202, Name: "my_struct[vec]", DataType: schemapb.DataType_ArrayOfVector, ElementType: schemapb.DataType_FloatVector, Nullable: true, TypeParams: []*commonpb.KeyValuePair{{Key: "dim", Value: "4"}}},
-				},
-			},
-		},
-	}
-
-	pkField := func() *schemapb.FieldData {
-		return &schemapb.FieldData{
-			FieldName: "pk",
-			Type:      schemapb.DataType_Int64,
-			Field: &schemapb.FieldData_Scalars{
-				Scalars: &schemapb.ScalarField{
-					Data: &schemapb.ScalarField_LongData{LongData: &schemapb.LongArray{Data: []int64{1, 2}}},
-				},
-			},
-		}
-	}
-
-	// Scenario A: struct entry completely omitted from FieldsData.
-	msgA := &msgstream.InsertMsg{
-		InsertRequest: &msgpb.InsertRequest{
-			NumRows:    2,
-			FieldsData: []*schemapb.FieldData{pkField()},
-		},
-	}
-
-	// Scenario B: struct entry present, but every sub-field has empty payload
-	// (e.g. what pymilvus sends when the user omits the struct key).
-	msgB := &msgstream.InsertMsg{
-		InsertRequest: &msgpb.InsertRequest{
-			NumRows: 2,
-			FieldsData: []*schemapb.FieldData{
-				pkField(),
-				{
-					FieldName: "my_struct",
-					Type:      schemapb.DataType_ArrayOfStruct,
-					Field: &schemapb.FieldData_StructArrays{
-						StructArrays: &schemapb.StructArrayField{
-							Fields: []*schemapb.FieldData{
-								{FieldName: "tag", FieldId: 201, Type: schemapb.DataType_Array},
-								{
-									FieldName: "vec", FieldId: 202, Type: schemapb.DataType_ArrayOfVector,
-									Field: &schemapb.FieldData_Vectors{Vectors: &schemapb.VectorField{Dim: 4}},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	require.NoError(t, checkAndFlattenStructFieldData(schema, msgA))
-	require.NoError(t, checkAndFlattenStructFieldData(schema, msgB))
-
-	// Both scenarios leave FieldsData with only the pk entry — no sub-field
-	// entry is added during flatten. Downstream checkFieldsDataBySchema is
-	// responsible for backfilling.
-	assertOnlyPK := func(name string, fields []*schemapb.FieldData) {
-		require.Equal(t, 1, len(fields), "%s: expected only pk, got %d entries", name, len(fields))
-		assert.Equal(t, "pk", fields[0].FieldName, "%s", name)
-	}
-	assertOnlyPK("scenario A", msgA.GetFieldsData())
-	assertOnlyPK("scenario B", msgB.GetFieldsData())
-}
-
-func TestSubFieldHasData(t *testing.T) {
-	t.Run("scalars with data", func(t *testing.T) {
-		fd := &schemapb.FieldData{
-			Field: &schemapb.FieldData_Scalars{
-				Scalars: &schemapb.ScalarField{
-					Data: &schemapb.ScalarField_LongData{
-						LongData: &schemapb.LongArray{Data: []int64{1}},
-					},
-				},
-			},
-		}
-		assert.True(t, subFieldHasData(fd))
-	})
-
-	t.Run("scalars without data", func(t *testing.T) {
-		fd := &schemapb.FieldData{
-			Field: &schemapb.FieldData_Scalars{
-				Scalars: &schemapb.ScalarField{},
-			},
-		}
-		assert.False(t, subFieldHasData(fd))
-	})
-
-	t.Run("vectors with data", func(t *testing.T) {
-		fd := &schemapb.FieldData{
-			Field: &schemapb.FieldData_Vectors{
-				Vectors: &schemapb.VectorField{
-					Data: &schemapb.VectorField_FloatVector{
-						FloatVector: &schemapb.FloatArray{Data: []float32{1, 2, 3, 4}},
-					},
-				},
-			},
-		}
-		assert.True(t, subFieldHasData(fd))
-	})
-
-	t.Run("vectors initialized but no data (pymilvus dim-only case)", func(t *testing.T) {
-		fd := &schemapb.FieldData{
-			Field: &schemapb.FieldData_Vectors{
-				Vectors: &schemapb.VectorField{
-					Dim: 4,
-				},
-			},
-		}
-		assert.False(t, subFieldHasData(fd))
-	})
-
-	t.Run("nil field", func(t *testing.T) {
-		fd := &schemapb.FieldData{}
-		assert.False(t, subFieldHasData(fd))
-	})
-}
-
-func TestCheckAndFlattenStructFieldData_InconsistentSubFields(t *testing.T) {
-	schema := &schemapb.CollectionSchema{
-		Name: "test_collection",
-		Fields: []*schemapb.FieldSchema{
-			{FieldID: 100, Name: "pk", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
-		},
-		StructArrayFields: []*schemapb.StructArrayFieldSchema{
-			{
-				FieldID:  200,
-				Name:     "my_struct",
-				Nullable: true,
-				Fields: []*schemapb.FieldSchema{
-					{FieldID: 201, Name: "my_struct[a]", DataType: schemapb.DataType_Array, ElementType: schemapb.DataType_Int32, Nullable: true},
-					{FieldID: 202, Name: "my_struct[b]", DataType: schemapb.DataType_Array, ElementType: schemapb.DataType_Int32, Nullable: true},
-				},
-			},
-		},
-	}
-
-	insertMsg := &msgstream.InsertMsg{
-		InsertRequest: &msgpb.InsertRequest{
-			FieldsData: []*schemapb.FieldData{
-				{
-					FieldName: "pk",
-					Type:      schemapb.DataType_Int64,
-					Field: &schemapb.FieldData_Scalars{
-						Scalars: &schemapb.ScalarField{
-							Data: &schemapb.ScalarField_LongData{LongData: &schemapb.LongArray{Data: []int64{1}}},
-						},
-					},
-				},
-				{
-					FieldName: "my_struct",
-					Type:      schemapb.DataType_ArrayOfStruct,
-					Field: &schemapb.FieldData_StructArrays{
-						StructArrays: &schemapb.StructArrayField{
-							Fields: []*schemapb.FieldData{
-								{
-									FieldName: "a",
-									Type:      schemapb.DataType_Array,
-									Field: &schemapb.FieldData_Scalars{
-										Scalars: &schemapb.ScalarField{
-											Data: &schemapb.ScalarField_ArrayData{
-												ArrayData: &schemapb.ArrayArray{
-													Data:        []*schemapb.ScalarField{{Data: &schemapb.ScalarField_IntData{IntData: &schemapb.IntArray{Data: []int32{1}}}}},
-													ElementType: schemapb.DataType_Int32,
-												},
-											},
-										},
-									},
-								},
-								{
-									FieldName: "b",
-									Type:      schemapb.DataType_Array,
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	err := checkAndFlattenStructFieldData(schema, insertMsg)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "inconsistent sub-field data")
-}
-
-func TestCheckAndFlattenStructFieldData_ValidDataMaskMismatch(t *testing.T) {
-	schema := &schemapb.CollectionSchema{
-		Name: "test_collection",
-		Fields: []*schemapb.FieldSchema{
-			{FieldID: 100, Name: "pk", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
-		},
-		StructArrayFields: []*schemapb.StructArrayFieldSchema{
-			{
-				FieldID:  200,
-				Name:     "my_struct",
-				Nullable: true,
-				Fields: []*schemapb.FieldSchema{
-					{FieldID: 201, Name: "my_struct[a]", DataType: schemapb.DataType_Array, ElementType: schemapb.DataType_Int32, Nullable: true},
-					{FieldID: 202, Name: "my_struct[b]", DataType: schemapb.DataType_Array, ElementType: schemapb.DataType_Int32, Nullable: true},
-				},
-			},
-		},
-	}
-
-	// Sub-field "a" valid at row 0, "b" valid at row 1 — violates struct-level null semantics
-	insertMsg := &msgstream.InsertMsg{
-		InsertRequest: &msgpb.InsertRequest{
-			FieldsData: []*schemapb.FieldData{
-				{
-					FieldName: "pk",
-					Type:      schemapb.DataType_Int64,
-					Field: &schemapb.FieldData_Scalars{
-						Scalars: &schemapb.ScalarField{
-							Data: &schemapb.ScalarField_LongData{LongData: &schemapb.LongArray{Data: []int64{1, 2}}},
-						},
-					},
-				},
-				{
-					FieldName: "my_struct",
-					Type:      schemapb.DataType_ArrayOfStruct,
-					Field: &schemapb.FieldData_StructArrays{
-						StructArrays: &schemapb.StructArrayField{
-							Fields: []*schemapb.FieldData{
-								{
-									FieldName: "a",
-									Type:      schemapb.DataType_Array,
-									ValidData: []bool{true, false},
-									Field: &schemapb.FieldData_Scalars{
-										Scalars: &schemapb.ScalarField{
-											Data: &schemapb.ScalarField_ArrayData{
-												ArrayData: &schemapb.ArrayArray{
-													Data: []*schemapb.ScalarField{
-														{Data: &schemapb.ScalarField_IntData{IntData: &schemapb.IntArray{Data: []int32{1}}}},
-														{Data: &schemapb.ScalarField_IntData{IntData: &schemapb.IntArray{Data: []int32{}}}},
-													},
-													ElementType: schemapb.DataType_Int32,
-												},
-											},
-										},
-									},
-								},
-								{
-									FieldName: "b",
-									Type:      schemapb.DataType_Array,
-									ValidData: []bool{false, true},
-									Field: &schemapb.FieldData_Scalars{
-										Scalars: &schemapb.ScalarField{
-											Data: &schemapb.ScalarField_ArrayData{
-												ArrayData: &schemapb.ArrayArray{
-													Data: []*schemapb.ScalarField{
-														{Data: &schemapb.ScalarField_IntData{IntData: &schemapb.IntArray{Data: []int32{}}}},
-														{Data: &schemapb.ScalarField_IntData{IntData: &schemapb.IntArray{Data: []int32{2}}}},
-													},
-													ElementType: schemapb.DataType_Int32,
-												},
-											},
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	err := checkAndFlattenStructFieldData(schema, insertMsg)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "ValidData mismatch")
-}
-
-func TestCheckAndFlattenStructFieldData_ValidDataNilVsNonNil(t *testing.T) {
-	schema := &schemapb.CollectionSchema{
-		Name: "test_collection",
-		Fields: []*schemapb.FieldSchema{
-			{FieldID: 100, Name: "pk", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
-		},
-		StructArrayFields: []*schemapb.StructArrayFieldSchema{
-			{
-				FieldID:  200,
-				Name:     "my_struct",
-				Nullable: true,
-				Fields: []*schemapb.FieldSchema{
-					{FieldID: 201, Name: "my_struct[a]", DataType: schemapb.DataType_Array, ElementType: schemapb.DataType_Int32, Nullable: true},
-					{FieldID: 202, Name: "my_struct[b]", DataType: schemapb.DataType_Array, ElementType: schemapb.DataType_Int32, Nullable: true},
-				},
-			},
-		},
-	}
-
-	// Sub-field "a" has nil ValidData (len=0), "b" has non-nil ValidData (len=2).
-	// Before the fix, refValidData=nil caused all subsequent fields to hit the
-	// "initialize ref" branch, so this mismatch was silently ignored.
-	insertMsg := &msgstream.InsertMsg{
-		InsertRequest: &msgpb.InsertRequest{
-			FieldsData: []*schemapb.FieldData{
-				{
-					FieldName: "pk",
-					Type:      schemapb.DataType_Int64,
-					Field: &schemapb.FieldData_Scalars{
-						Scalars: &schemapb.ScalarField{
-							Data: &schemapb.ScalarField_LongData{LongData: &schemapb.LongArray{Data: []int64{1, 2}}},
-						},
-					},
-				},
-				{
-					FieldName: "my_struct",
-					Type:      schemapb.DataType_ArrayOfStruct,
-					Field: &schemapb.FieldData_StructArrays{
-						StructArrays: &schemapb.StructArrayField{
-							Fields: []*schemapb.FieldData{
-								{
-									FieldName: "a",
-									Type:      schemapb.DataType_Array,
-									ValidData: nil, // no ValidData
-									Field: &schemapb.FieldData_Scalars{
-										Scalars: &schemapb.ScalarField{
-											Data: &schemapb.ScalarField_ArrayData{
-												ArrayData: &schemapb.ArrayArray{
-													Data: []*schemapb.ScalarField{
-														{Data: &schemapb.ScalarField_IntData{IntData: &schemapb.IntArray{Data: []int32{1}}}},
-														{Data: &schemapb.ScalarField_IntData{IntData: &schemapb.IntArray{Data: []int32{2}}}},
-													},
-													ElementType: schemapb.DataType_Int32,
-												},
-											},
-										},
-									},
-								},
-								{
-									FieldName: "b",
-									Type:      schemapb.DataType_Array,
-									ValidData: []bool{true, false}, // has ValidData
-									Field: &schemapb.FieldData_Scalars{
-										Scalars: &schemapb.ScalarField{
-											Data: &schemapb.ScalarField_ArrayData{
-												ArrayData: &schemapb.ArrayArray{
-													Data: []*schemapb.ScalarField{
-														{Data: &schemapb.ScalarField_IntData{IntData: &schemapb.IntArray{Data: []int32{3}}}},
-														{Data: &schemapb.ScalarField_IntData{IntData: &schemapb.IntArray{Data: []int32{}}}},
-													},
-													ElementType: schemapb.DataType_Int32,
-												},
-											},
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	err := checkAndFlattenStructFieldData(schema, insertMsg)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "ValidData length mismatch")
-}
-
-func TestCheckAndFlattenStructFieldData_ValidDataWithoutPayload(t *testing.T) {
-	schema := &schemapb.CollectionSchema{
-		Name: "test_collection",
-		Fields: []*schemapb.FieldSchema{
-			{FieldID: 100, Name: "pk", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
-		},
-		StructArrayFields: []*schemapb.StructArrayFieldSchema{
-			{
-				FieldID:  200,
-				Name:     "my_struct",
-				Nullable: true,
-				Fields: []*schemapb.FieldSchema{
-					{FieldID: 201, Name: "my_struct[a]", DataType: schemapb.DataType_Array, ElementType: schemapb.DataType_Int32, Nullable: true},
-				},
-			},
-		},
-	}
-
-	// ValidData says row 0 is valid, but there's no actual data payload. This is
-	// self-contradictory input — reject it at flatten time instead of deferring to
-	// downstream, where a ValidData=all-false backfill would silently absorb it.
-	insertMsg := &msgstream.InsertMsg{
-		InsertRequest: &msgpb.InsertRequest{
-			NumRows: 2,
-			FieldsData: []*schemapb.FieldData{
-				{
-					FieldName: "pk",
-					Type:      schemapb.DataType_Int64,
-					Field: &schemapb.FieldData_Scalars{
-						Scalars: &schemapb.ScalarField{
-							Data: &schemapb.ScalarField_LongData{LongData: &schemapb.LongArray{Data: []int64{1, 2}}},
-						},
-					},
-				},
-				{
-					FieldName: "my_struct",
-					Type:      schemapb.DataType_ArrayOfStruct,
-					Field: &schemapb.FieldData_StructArrays{
-						StructArrays: &schemapb.StructArrayField{
-							Fields: []*schemapb.FieldData{
-								{
-									FieldName: "a",
-									FieldId:   201,
-									Type:      schemapb.DataType_Array,
-									ValidData: []bool{true, false}, // claims row 0 is valid
-									// but no Field/payload
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	err := checkAndFlattenStructFieldData(schema, insertMsg)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "no payload is provided")
-}
-
-func TestInjectVirtualPKForExternalCollection(t *testing.T) {
-	t.Run("NoPKExists_InjectsVirtualPK", func(t *testing.T) {
-		schema := &schemapb.CollectionSchema{
-			Name:           "test_ext_coll",
-			ExternalSource: "s3://bucket/data",
-			Fields: []*schemapb.FieldSchema{
-				{Name: "text", DataType: schemapb.DataType_VarChar, ExternalField: "text_col"},
-				{Name: "vec", DataType: schemapb.DataType_FloatVector, ExternalField: "vec_col"},
-			},
-		}
-
-		err := injectVirtualPKForExternalCollection(schema)
-		assert.NoError(t, err)
-
-		// Virtual PK should be prepended as first field
-		assert.Len(t, schema.Fields, 3)
-		vpk := schema.Fields[0]
-		assert.Equal(t, common.VirtualPKFieldName, vpk.Name)
-		assert.Equal(t, schemapb.DataType_Int64, vpk.DataType)
-		assert.True(t, vpk.IsPrimaryKey)
-		assert.True(t, vpk.AutoID)
-
-		// Original fields remain unchanged
-		assert.Equal(t, "text", schema.Fields[1].Name)
-		assert.Equal(t, "vec", schema.Fields[2].Name)
-	})
-
-	t.Run("PKAlreadyExists_NoInjection", func(t *testing.T) {
-		schema := &schemapb.CollectionSchema{
-			Fields: []*schemapb.FieldSchema{
-				{Name: "my_pk", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
-				{Name: "vec", DataType: schemapb.DataType_FloatVector},
-			},
-		}
-
-		err := injectVirtualPKForExternalCollection(schema)
-		assert.NoError(t, err)
-
-		// No virtual PK injected — only 2 fields remain
-		assert.Len(t, schema.Fields, 2)
-		assert.Equal(t, "my_pk", schema.Fields[0].Name)
-	})
-
-	t.Run("EmptyFields_InjectsVirtualPK", func(t *testing.T) {
-		schema := &schemapb.CollectionSchema{
-			Fields: []*schemapb.FieldSchema{},
-		}
-
-		err := injectVirtualPKForExternalCollection(schema)
-		assert.NoError(t, err)
-
-		assert.Len(t, schema.Fields, 1)
-		assert.Equal(t, common.VirtualPKFieldName, schema.Fields[0].Name)
-		assert.True(t, schema.Fields[0].IsPrimaryKey)
-	})
-
-	t.Run("VirtualPKFieldID_IsZero", func(t *testing.T) {
-		schema := &schemapb.CollectionSchema{
-			Fields: []*schemapb.FieldSchema{
-				{Name: "vec", DataType: schemapb.DataType_FloatVector, ExternalField: "vec_col"},
-			},
-		}
-
-		err := injectVirtualPKForExternalCollection(schema)
-		assert.NoError(t, err)
-
-		// FieldID should be 0 (assigned by RootCoord later)
-		assert.Equal(t, int64(0), schema.Fields[0].FieldID)
-	})
-}
-
-func TestFailMetricLabel(t *testing.T) {
-	// untyped / nil errors must take the conservative system bucket
-	assert.Equal(t, metrics.FailSystemLabel, failMetricLabel(nil))
-	assert.Equal(t, metrics.FailSystemLabel, failMetricLabel(errors.New("plain error")))
-	assert.Equal(t, metrics.FailSystemLabel, failMetricLabel(merr.WrapErrServiceInternalMsg("internal failure")))
-	// input-classified merr errors go to the user bucket, also through wrapping
-	assert.Equal(t, metrics.FailInputLabel, failMetricLabel(merr.WrapErrParameterInvalidMsg("bad parameter")))
-	assert.Equal(t, metrics.FailInputLabel, failMetricLabel(merr.Wrap(merr.WrapErrParameterInvalidMsg("bad parameter"), "context")))
-	// client cancellation is neither party's failure
-	assert.Equal(t, metrics.CancelLabel, failMetricLabel(context.Canceled))
-	assert.Equal(t, metrics.CancelLabel, failMetricLabel(errors.Wrap(context.Canceled, "rpc aborted")))
 }

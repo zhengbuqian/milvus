@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/cockroachdb/errors"
+	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
@@ -242,12 +243,10 @@ func (cit *createIndexTask) parseIndexParams(ctx context.Context) error {
 
 	specifyIndexType, exist := indexParamsMap[common.IndexTypeKey]
 	if exist && specifyIndexType != "" {
-		// todo(SpadeA): mmap check for struct array index
 		if err := indexparamcheck.ValidateMmapIndexParams(specifyIndexType, indexParamsMap); err != nil {
 			mlog.Warn(ctx, "Invalid mmap type params", mlog.String(common.IndexTypeKey, specifyIndexType), mlog.Err(err))
 			return merr.WrapErrParameterInvalidMsg("invalid mmap type params: %s", err.Error())
 		}
-		// todo(SpadeA): check for struct array index
 		checker, err := indexparamcheck.GetIndexCheckerMgrInstance().GetChecker(specifyIndexType)
 		// not enable hybrid index for user, used in milvus internally
 		if err != nil || indexparamcheck.IsHYBRIDChecker(checker) {
@@ -413,29 +412,16 @@ func (cit *createIndexTask) parseIndexParams(ctx context.Context) error {
 			}
 
 			var config map[string]string
-			if typeutil.IsDenseFloatVectorType(cit.fieldSchema.DataType) ||
-				(typeutil.IsArrayOfVectorType(cit.fieldSchema.DataType) && typeutil.IsDenseFloatVectorType(cit.fieldSchema.ElementType)) {
-				config = getDenseFloatAutoIndexParams(cit.collectionProperties)
-				// filter incompatible refine_type for fp16/bf16 vectors
-				dataType := cit.fieldSchema.DataType
-				if typeutil.IsArrayOfVectorType(cit.fieldSchema.DataType) {
-					dataType = cit.fieldSchema.ElementType
-				}
-				config = adjustAutoIndexParamsByDataType(config, dataType)
-			} else if typeutil.IsSparseFloatVectorType(cit.fieldSchema.DataType) ||
-				(typeutil.IsArrayOfVectorType(cit.fieldSchema.DataType) && typeutil.IsSparseFloatVectorType(cit.fieldSchema.ElementType)) {
+			if typeutil.IsDenseFloatVectorType(cit.fieldSchema.DataType) {
+				// override float vector index params by autoindex
+				config = Params.AutoIndexConfig.IndexParams.GetAsJSONMap()
+			} else if typeutil.IsSparseFloatVectorType(cit.fieldSchema.DataType) {
 				// override sparse float vector index params by autoindex
 				config = Params.AutoIndexConfig.SparseIndexParams.GetAsJSONMap()
-			} else if typeutil.IsBinaryVectorType(cit.fieldSchema.DataType) ||
-				(typeutil.IsArrayOfVectorType(cit.fieldSchema.DataType) && typeutil.IsBinaryVectorType(cit.fieldSchema.ElementType)) {
-				if metricTypeExist && funcutil.SliceContain(indexparamcheck.DeduplicateMetrics, metricType) {
-					config = Params.AutoIndexConfig.DeduplicateIndexParams.GetAsJSONMap()
-				} else {
-					// override binary vector index params by autoindex
-					config = Params.AutoIndexConfig.BinaryIndexParams.GetAsJSONMap()
-				}
-			} else if typeutil.IsIntVectorType(cit.fieldSchema.DataType) ||
-				(typeutil.IsArrayOfVectorType(cit.fieldSchema.DataType) && typeutil.IsIntVectorType(cit.fieldSchema.ElementType)) {
+			} else if typeutil.IsBinaryVectorType(cit.fieldSchema.DataType) {
+				// override binary vector index params by autoindex
+				config = Params.AutoIndexConfig.BinaryIndexParams.GetAsJSONMap()
+			} else if typeutil.IsIntVectorType(cit.fieldSchema.DataType) {
 				// override int vector index params by autoindex
 				config = Params.AutoIndexConfig.IntVectorIndexParams.GetAsJSONMap()
 			}
@@ -501,10 +487,6 @@ func (cit *createIndexTask) parseIndexParams(ctx context.Context) error {
 		} else if typeutil.IsIntVectorType(cit.fieldSchema.DataType) {
 			if !funcutil.SliceContain(indexparamcheck.IntVectorMetrics, metricType) {
 				return merr.WrapErrParameterInvalid("valid index params", "invalid index params", "int vector index does not support metric type: "+metricType)
-			}
-		} else if typeutil.IsArrayOfVectorType(cit.fieldSchema.DataType) {
-			if err := indexparamcheck.ValidateArrayOfVectorMetricType(cit.fieldSchema.ElementType, metricType); err != nil {
-				return merr.WrapErrParameterInvalid("valid index params", "invalid index params", err.Error())
 			}
 		}
 	}
@@ -600,27 +582,28 @@ func checkTrain(ctx context.Context, field *schemapb.FieldSchema, indexParams ma
 		return merr.WrapErrParameterInvalidMsg("invalid index type: %s", indexType)
 	}
 
-	// For ArrayOfVector with non-EmbList metrics (e.g., COSINE, L2, IP), each embedding
-	// in the array is indexed independently as a regular vector. The index only needs to
-	// support the element vector type, not the EmbeddingList capability.
-	// Resolve the effective data type used for index compatibility checks.
-	effectiveDataType := field.DataType
-	effectiveElementType := field.ElementType
-	if typeutil.IsArrayOfVectorType(field.DataType) &&
-		!funcutil.SliceContain(indexparamcheck.EmbListMetrics, indexParams[common.MetricTypeKey]) {
-		effectiveDataType = field.ElementType
-		effectiveElementType = schemapb.DataType_None
-	}
-
 	if typeutil.IsVectorType(field.DataType) && indexType != indexparamcheck.AutoIndex {
-		exist := CheckVecIndexWithDataTypeExist(indexType, effectiveDataType, effectiveElementType)
+		exist := CheckVecIndexWithDataTypeExist(indexType, field.DataType)
 		if !exist {
 			return merr.WrapErrParameterInvalidMsg("data type %s can't build with this index %s", schemapb.DataType_name[int32(field.GetDataType())], indexType)
 		}
 	}
 
-	if err := indexparamcheck.ValidateFieldIndexParams(field, indexParams); err != nil {
-		mlog.Info(ctx, "create index with invalid parameters", mlog.Err(err), mlog.String("data_type", field.GetDataType().String()))
+	isSparse := typeutil.IsSparseFloatVectorType(field.DataType)
+
+	if !isSparse {
+		if err := fillDimension(field, indexParams); err != nil {
+			return err
+		}
+	}
+
+	if err := checker.CheckValidDataType(indexType, field); err != nil {
+		log.Ctx(ctx).Info("create index with invalid data type", zap.Error(err), zap.String("data_type", field.GetDataType().String()))
+		return err
+	}
+
+	if err := checker.CheckTrain(field.DataType, indexParams); err != nil {
+		log.Ctx(ctx).Info("create index with invalid parameters", zap.Error(err))
 		return err
 	}
 

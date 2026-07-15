@@ -18,7 +18,7 @@ var validJSONCastTypes = []string{"BOOL", "DOUBLE", "VARCHAR", "ARRAY_BOOL", "AR
 
 var validJSONCastFunctions = []string{"STRING_TO_DOUBLE"}
 
-func (c *INVERTEDChecker) CheckTrain(dataType schemapb.DataType, elementType schemapb.DataType, params map[string]string) error {
+func (c *INVERTEDChecker) CheckTrain(dataType schemapb.DataType, params map[string]string) error {
 	// check json index params
 	isJSONIndex := typeutil.IsJSONType(dataType)
 	if isJSONIndex {
@@ -42,7 +42,7 @@ func (c *INVERTEDChecker) CheckTrain(dataType schemapb.DataType, elementType sch
 			}
 		}
 	}
-	return c.scalarIndexChecker.CheckTrain(dataType, elementType, params)
+	return c.scalarIndexChecker.CheckTrain(dataType, params)
 }
 
 func (c *INVERTEDChecker) CheckValidDataType(indexType IndexType, field *schemapb.FieldSchema) error {

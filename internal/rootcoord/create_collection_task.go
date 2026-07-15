@@ -184,67 +184,14 @@ func (t *createCollectionTask) validateSchema(ctx context.Context, schema *schem
 		return err
 	}
 
-	// Validate default
-	if err := timestamptz.CheckAndRewriteTimestampTzDefaultValue(schema); err != nil {
-		return err
-	}
-
-	if err := checkStructArrayFieldSchema(schema.GetStructArrayFields()); err != nil {
-		return err
-	}
-
-	// Note: this call mutates schema (sets nullable=true on every user field).
-	// See NormalizeAndValidateExternalCollectionSchema for the rationale.
-	if err := typeutil.NormalizeAndValidateExternalCollectionSchema(schema); err != nil {
-		return err
-	}
-	if err := typeutil.ValidateTextRequiresStorageV3(schema, Params.CommonCfg.UseLoonFFI.GetAsBool()); err != nil {
-		return merr.WrapErrParameterInvalidMsg("%s", err.Error())
-	}
-
-	// For external collections, validate the source URL scheme allowlist and
-	// the JSON spec structure (extfs allowlist + format whitelist) at the
-	// RootCoord side as well — defense in depth in case a request bypasses
-	// proxy-side validation.
-	// Skip validation for empty ExternalSource — IsExternalCollection allows
-	// it (external fields without a concrete source), so the validator must
-	// too. When a source is eventually supplied via alter/refresh, validation
-	// runs there.
-	if typeutil.IsExternalCollection(schema) && schema.GetExternalSource() != "" {
-		if err := externalspec.ValidateSourceAndSpec(schema.GetExternalSource(), schema.GetExternalSpec()); err != nil {
-			return err
-		}
-	}
-
-	if hasSystemFields(schema, []string{RowIDFieldName, TimeStampFieldName, MetaFieldName, NamespaceFieldName}) {
-		mlog.Error(ctx, "schema contains system field",
-			mlog.String("RowIDFieldName", RowIDFieldName),
-			mlog.String("TimeStampFieldName", TimeStampFieldName),
-			mlog.String("MetaFieldName", MetaFieldName),
-			mlog.String("NamespaceFieldName", NamespaceFieldName))
-		msg := fmt.Sprintf("schema contains system field: %s, %s, %s, %s", RowIDFieldName, TimeStampFieldName, MetaFieldName, NamespaceFieldName)
+	if hasSystemFields(schema, []string{RowIDFieldName, TimeStampFieldName, MetaFieldName}) {
+		log.Ctx(ctx).Error("schema contains system field",
+			zap.String("RowIDFieldName", RowIDFieldName),
+			zap.String("TimeStampFieldName", TimeStampFieldName),
+			zap.String("MetaFieldName", MetaFieldName))
+		msg := fmt.Sprintf("schema contains system field: %s, %s, %s", RowIDFieldName, TimeStampFieldName, MetaFieldName)
 		return merr.WrapErrParameterInvalid("schema don't contains system field", "contains", msg)
 	}
-
-	if err := validateStructArrayFieldDataType(schema.GetStructArrayFields()); err != nil {
-		return err
-	}
-
-	fileResourceIds, err := t.validateSchemaAnalyzerFileResources(ctx, schema)
-	if err != nil {
-		return err
-	}
-	schema.FileResourceIds = fileResourceIds
-
-	if len(schema.FileResourceIds) > 0 {
-		// Bind file resources to collection lifecycle: refCnt++ now, refCnt-- on
-		// drop. Under ddLock, atomic with RemoveFileResource. See #48612.
-		if err := reserveFileResourceRefs(t.meta, schema.FileResourceIds); err != nil {
-			return err
-		}
-		t.heldFileResourceIds = schema.FileResourceIds
-	}
-
 	return validateFieldDataType(schema.GetFields())
 }
 
@@ -290,36 +237,10 @@ func (c *Core) validateAnalyzerInfos(ctx context.Context, analyzerInfos []*query
 }
 
 func (t *createCollectionTask) assignFieldAndFunctionID(schema *schemapb.CollectionSchema) error {
-	idx := 0
-	for _, field := range schema.GetFields() {
-		field.FieldID = int64(idx + StartOfUserFieldID)
-		idx++
-	}
-
-	for _, structArrayField := range schema.GetStructArrayFields() {
-		structArrayField.FieldID = int64(idx + StartOfUserFieldID)
-		idx++
-
-		for _, field := range structArrayField.GetFields() {
-			field.FieldID = int64(idx + StartOfUserFieldID)
-			idx++
-		}
-	}
-
-	return assignFunctionIDsFromFieldNames(schema)
-}
-
-// assignFunctionIDsFromFieldNames resolves function input/output field IDs
-// after field IDs have been assigned or aligned from a source snapshot.
-func assignFunctionIDsFromFieldNames(schema *schemapb.CollectionSchema) error {
 	name2id := map[string]int64{}
-	for _, field := range schema.GetFields() {
+	for idx, field := range schema.GetFields() {
+		field.FieldID = int64(idx + StartOfUserFieldID)
 		name2id[field.GetName()] = field.GetFieldID()
-	}
-	for _, structArrayField := range schema.GetStructArrayFields() {
-		for _, field := range structArrayField.GetFields() {
-			name2id[field.GetName()] = field.GetFieldID()
-		}
 	}
 
 	for fidx, function := range schema.GetFunctions() {
@@ -342,7 +263,6 @@ func assignFunctionIDsFromFieldNames(schema *schemapb.CollectionSchema) error {
 			function.OutputFieldIds[idx] = fieldId
 		}
 	}
-
 	return nil
 }
 
@@ -835,8 +755,43 @@ func (t *createCollectionTask) Prepare(ctx context.Context) error {
 		return err
 	}
 
-	return t.validateIfCollectionExists(ctx)
-}
+	vchanNames := t.channels.virtualChannels
+	chanNames := t.channels.physicalChannels
+
+	partitions := make([]*model.Partition, len(partIDs))
+	for i, partID := range partIDs {
+		partitions[i] = &model.Partition{
+			PartitionID:               partID,
+			PartitionName:             t.partitionNames[i],
+			PartitionCreatedTimestamp: ts,
+			CollectionID:              collID,
+			State:                     pb.PartitionState_PartitionCreated,
+		}
+	}
+	ConsistencyLevel := t.Req.ConsistencyLevel
+	if ok, level := getConsistencyLevel(t.Req.Properties...); ok {
+		ConsistencyLevel = level
+	}
+	collInfo := model.Collection{
+		CollectionID:         collID,
+		DBID:                 t.dbID,
+		Name:                 t.schema.Name,
+		DBName:               t.Req.GetDbName(),
+		Description:          t.schema.Description,
+		AutoID:               t.schema.AutoID,
+		Fields:               model.UnmarshalFieldModels(t.schema.Fields),
+		Functions:            model.UnmarshalFunctionModels(t.schema.Functions),
+		VirtualChannelNames:  vchanNames,
+		PhysicalChannelNames: chanNames,
+		ShardsNum:            t.Req.ShardsNum,
+		ConsistencyLevel:     ConsistencyLevel,
+		CreateTime:           ts,
+		State:                pb.CollectionState_CollectionCreating,
+		Partitions:           partitions,
+		Properties:           t.Req.Properties,
+		EnableDynamicField:   t.schema.EnableDynamicField,
+		UpdateTimestamp:      ts,
+	}
 
 func (t *createCollectionTask) validateIfCollectionExists(ctx context.Context) error {
 	// Check if the collection name duplicates an alias.
@@ -941,37 +896,70 @@ func collectAnalyzerInfos(collSchema *schemapb.CollectionSchema) ([]*querypb.Ana
 	return analyzerInfos, nil
 }
 
-// validateAnalyzer validates active match/BM25 fields and fields with
-// enable_analyzer=true. Analyzer params are ignored while analyzer is disabled.
-func validateAnalyzer(collSchema *schemapb.CollectionSchema, fieldSchema *schemapb.FieldSchema, analyzerInfos *[]*querypb.AnalyzerInfo) error {
-	h := typeutil.CreateFieldSchemaHelper(fieldSchema)
-	active := h.EnableMatch() || typeutil.IsBm25FunctionInputField(collSchema, fieldSchema)
-	if active && !h.EnableAnalyzer() {
-		return merr.WrapErrParameterInvalidMsg("field %s which has enable_match or is input of BM25 function must also enable_analyzer", fieldSchema.Name)
-	}
-	if !h.EnableAnalyzer() {
-		return nil
-	}
-
-	if params, ok := h.GetMultiAnalyzerParams(); ok {
-		if h.EnableMatch() {
-			return merr.WrapErrParameterInvalidMsg("multi analyzer now only support for bm25, but now field %s enable match", fieldSchema.Name)
-		}
-		if h.HasAnalyzerParams() {
-			return merr.WrapErrParameterInvalidMsg("field %s analyzer params should be none if has multi analyzer params", fieldSchema.Name)
-		}
-
-		return validateMultiAnalyzerParams(params, collSchema, fieldSchema, analyzerInfos)
-	}
-
-	for _, kv := range fieldSchema.GetTypeParams() {
-		if kv.GetKey() == "analyzer_params" {
-			*analyzerInfos = append(*analyzerInfos, &querypb.AnalyzerInfo{
-				Field:  fieldSchema.GetName(),
-				Params: kv.GetValue(),
-			})
-		}
-	}
-	// return nil when use default analyzer
-	return nil
+func executeCreateCollectionTaskSteps(ctx context.Context,
+	core *Core,
+	col *model.Collection,
+	dbName string,
+	dbProperties []*commonpb.KeyValuePair,
+	ts Timestamp,
+) error {
+	undoTask := newBaseUndoTask(core.stepExecutor)
+	collID := col.CollectionID
+	undoTask.AddStep(&expireCacheStep{
+		baseStep:        baseStep{core: core},
+		dbName:          dbName,
+		collectionNames: []string{col.Name},
+		collectionID:    collID,
+		ts:              ts,
+		opts:            []proxyutil.ExpireCacheOpt{proxyutil.SetMsgType(commonpb.MsgType_DropCollection)},
+	}, &nullStep{})
+	undoTask.AddStep(&nullStep{}, &removeDmlChannelsStep{
+		baseStep:  baseStep{core: core},
+		pChannels: col.PhysicalChannelNames,
+	}) // remove dml channels if any error occurs.
+	undoTask.AddStep(&addCollectionMetaStep{
+		baseStep: baseStep{core: core},
+		coll:     col,
+	}, &deleteCollectionMetaStep{
+		baseStep:     baseStep{core: core},
+		collectionID: collID,
+		// When we undo createCollectionTask, this ts may be less than the ts when unwatch channels.
+		ts: ts,
+	})
+	// serve for this case: watching channels succeed in datacoord but failed due to network failure.
+	undoTask.AddStep(&nullStep{}, &unwatchChannelsStep{
+		baseStep:     baseStep{core: core},
+		collectionID: collID,
+		channels: collectionChannels{
+			virtualChannels:  col.VirtualChannelNames,
+			physicalChannels: col.PhysicalChannelNames,
+		},
+		isSkip: !Params.CommonCfg.TTMsgEnabled.GetAsBool(),
+	})
+	undoTask.AddStep(&watchChannelsStep{
+		baseStep: baseStep{core: core},
+		info: &watchInfo{
+			ts:             ts,
+			collectionID:   collID,
+			vChannels:      col.VirtualChannelNames,
+			startPositions: col.StartPositions,
+			schema: &schemapb.CollectionSchema{
+				Name:        col.Name,
+				DbName:      col.DBName,
+				Description: col.Description,
+				AutoID:      col.AutoID,
+				Fields:      model.MarshalFieldModels(col.Fields),
+				Properties:  col.Properties,
+				Functions:   model.MarshalFunctionModels(col.Functions),
+			},
+			dbProperties: dbProperties,
+		},
+	}, &nullStep{})
+	undoTask.AddStep(&changeCollectionStateStep{
+		baseStep:     baseStep{core: core},
+		collectionID: collID,
+		state:        pb.CollectionState_CollectionCreated,
+		ts:           ts,
+	}, &nullStep{}) // We'll remove the whole collection anyway.
+	return undoTask.Execute(ctx)
 }

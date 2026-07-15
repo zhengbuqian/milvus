@@ -55,17 +55,10 @@ func (s *Server) serverID() int64 {
 	return 0
 }
 
-func (s *Server) defaultIndexNameByID(schema *schemapb.CollectionSchema, fieldID int64) (string, error) {
+func (s *Server) getFieldNameByID(schema *schemapb.CollectionSchema, fieldID int64) (string, error) {
 	for _, field := range schema.GetFields() {
 		if field.FieldID == fieldID {
 			return field.Name, nil
-		}
-	}
-	for _, structField := range schema.GetStructArrayFields() {
-		for _, subField := range structField.GetFields() {
-			if subField.FieldID == fieldID {
-				return subField.Name, nil
-			}
 		}
 	}
 	return "", nil
@@ -79,29 +72,13 @@ func (s *Server) getSchema(ctx context.Context, collID int64) (*schemapb.Collect
 	return resp.GetSchema(), nil
 }
 
-func FieldExists(schema *schemapb.CollectionSchema, fieldID int64) bool {
+func isJsonField(schema *schemapb.CollectionSchema, fieldID int64) (bool, error) {
 	for _, f := range schema.Fields {
 		if f.FieldID == fieldID {
-			return true
+			return typeutil.IsJSONType(f.DataType), nil
 		}
 	}
-	for _, structField := range schema.StructArrayFields {
-		for _, f := range structField.Fields {
-			if f.FieldID == fieldID {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func isJSONField(schema *schemapb.CollectionSchema, fieldID int64) bool {
-	for _, f := range schema.Fields {
-		if f.FieldID == fieldID {
-			return typeutil.IsJSONType(f.DataType)
-		}
-	}
-	return false
+	return false, merr.WrapErrFieldNotFound(fieldID)
 }
 
 func getIndexParam(indexParams []*commonpb.KeyValuePair, key string) (string, error) {
@@ -144,20 +121,12 @@ func (s *Server) CreateIndex(ctx context.Context, req *indexpb.CreateIndexReques
 	if err != nil {
 		return merr.Status(err), nil
 	}
-	defer broadcaster.Close()
-
-	coll, err := s.broker.DescribeCollectionInternal(ctx, req.GetCollectionID())
-	if err := merr.CheckRPCCall(coll, err); err != nil {
+	isJson, err := isJsonField(schema, req.GetFieldID())
+	if err != nil {
 		return merr.Status(err), nil
 	}
-	schema := coll.GetSchema()
 
-	if !FieldExists(schema, req.GetFieldID()) {
-		return merr.Status(merr.WrapErrFieldNotFound(req.GetFieldID())), nil
-	}
-
-	isJSON := isJSONField(schema, req.GetFieldID())
-	if isJSON {
+	if isJson {
 		// check json_path and json_cast_type exist
 		jsonPath, err := getIndexParam(req.GetIndexParams(), common.JSONPathKey)
 		if err != nil {
@@ -211,7 +180,7 @@ func (s *Server) CreateIndex(ctx context.Context, req *indexpb.CreateIndexReques
 
 	if req.GetIndexName() == "" {
 		indexes := s.meta.indexMeta.GetFieldIndexes(req.GetCollectionID(), req.GetFieldID(), req.GetIndexName())
-		fieldName, err := s.defaultIndexNameByID(schema, req.GetFieldID())
+		fieldName, err := s.getFieldNameByID(schema, req.GetFieldID())
 		if err != nil {
 			mlog.Warn(context.TODO(), "get field name from schema failed", mlog.Int64("fieldID", req.GetFieldID()))
 			return merr.Status(err), nil

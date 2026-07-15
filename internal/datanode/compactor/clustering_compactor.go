@@ -642,8 +642,8 @@ func (t *clusteringCompactionTask) mappingSegment(
 		}
 
 		vs := make([]*storage.Value, r.Len())
-		if err = storage.ValueDeserializerWithSchema(r, vs, t.plan.Schema, true); err != nil {
-			mlog.Warn(context.TODO(), "compact wrong, failed to deserialize data", mlog.Err(err))
+		if err = storage.ValueDeserializer(r, vs, t.plan.Schema.Fields, false); err != nil {
+			log.Warn("compact wrong, failed to deserialize data", zap.Error(err))
 			return err
 		}
 
@@ -929,7 +929,7 @@ func (t *clusteringCompactionTask) scalarAnalyzeSegment(
 	}
 
 	pkIter := storage.NewDeserializeReader(rr, func(r storage.Record, v []*storage.Value) error {
-		return storage.ValueDeserializerWithSelectedFields(r, v, selectedFields, true)
+		return storage.ValueDeserializer(r, v, selectedFields, true)
 	})
 	defer pkIter.Close()
 	analyzeResult, remained, err := t.iterAndGetScalarAnalyzeResult(pkIter, expiredFilter)

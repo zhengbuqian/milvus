@@ -15,7 +15,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
-#include <limits>
 #include <map>
 #include <ratio>
 #include <type_traits>
@@ -242,17 +241,6 @@ SegmentInternalInterface::Retrieve(tracer::TraceContext* trace_ctx,
     results->mutable_offset()->Add(retrieve_results.result_offsets_.begin(),
                                    retrieve_results.result_offsets_.end());
 
-    // Element-level query support: serialize element_level flag and element_indices
-    if (retrieve_results.element_level_) {
-        results->set_element_level(true);
-        // element_indices_ is vector<vector<int32_t>>, serialize each doc's indices
-        for (const auto& indices : retrieve_results.element_indices_) {
-            auto* elem_indices = results->add_element_indices();
-            elem_indices->mutable_indices()->Add(indices.begin(),
-                                                 indices.end());
-        }
-    }
-
     std::chrono::high_resolution_clock::time_point get_target_entry_start =
         std::chrono::high_resolution_clock::now();
     // Carry the upstream cancel_token down into FillTargetEntry so the
@@ -270,11 +258,10 @@ SegmentInternalInterface::Retrieve(tracer::TraceContext* trace_ctx,
                         &fte_op_ctx);
     } else if (!plan->plan_node_->pipeline_field_ids_.empty()) {
         // Non-aggregation ORDER BY (single-project or two-project mode):
-        // Pipeline output contains [pk, sort_cols, ..., hidden columns].
-        // FillOrderByResult strips hidden columns, sets field_id on each
+        // Pipeline output contains [pk, sort_cols, ..., SegmentOffsetFieldID].
+        // FillOrderByResult strips the offset column, sets field_id on each
         // DataArray, bulk-fetches deferred fields (if any), populates system
-        // fields, restores element indices when present, and fills PK-based
-        // IDs for proxy reduce.
+        // fields, and fills PK-based IDs for proxy reduce.
         //
         // Aggregation + ORDER BY does NOT set pipeline_field_ids_ and produces
         // final columns directly, falling through to FillTargetEntryDirectly.
@@ -315,10 +302,7 @@ SegmentInternalInterface::FillOrderByResult(
     auto fields_data = results->mutable_fields_data();
     auto& deferred = plan->plan_node_->deferred_field_ids_;
 
-    // Pipeline layout:
-    //   row-level:     [...user_columns..., SegmentOffsetFieldID]
-    //   element-level: [...user_columns..., ElementIndexFieldID,
-    //                   SegmentOffsetFieldID]
+    // Pipeline layout: [...user_columns..., SegmentOffsetFieldID].
     // The last column is always SegmentOffsetFieldID carrying segment offsets.
     auto total_cols = retrieveResult.field_data_.size();
     AssertInfo(total_cols >= 2,
@@ -326,7 +310,7 @@ SegmentInternalInterface::FillOrderByResult(
                "(pk + SegmentOffsetFieldID), got: {}",
                total_cols);
 
-    // Move all non-hidden columns to results.
+    // Move all columns except the last (SegmentOffsetFieldID) to results.
     // Set field_id on each DataArray so QN-side AppendFieldData can match
     // fields correctly (pipeline-produced DataArrays have field_id=0 by default).
     auto& pipeline_ids = plan->plan_node_->pipeline_field_ids_;
@@ -335,58 +319,20 @@ SegmentInternalInterface::FillOrderByResult(
                "count ({})",
                pipeline_ids.size(),
                total_cols);
-
-    size_t segment_offset_col_idx = total_cols;
-    size_t element_index_col_idx = total_cols;
-    for (size_t i = 0; i < pipeline_ids.size(); i++) {
-        if (pipeline_ids[i] == SegmentOffsetFieldID) {
-            segment_offset_col_idx = i;
-        } else if (pipeline_ids[i] == ElementIndexFieldID) {
-            element_index_col_idx = i;
-        }
-    }
-    AssertInfo(segment_offset_col_idx != total_cols,
-               "ORDER BY pipeline must contain SegmentOffsetFieldID");
-
-    for (size_t i = 0; i < total_cols; i++) {
-        if (i == segment_offset_col_idx || i == element_index_col_idx) {
-            continue;
-        }
+    for (size_t i = 0; i + 1 < total_cols; i++) {
         auto* data = new DataArray(std::move(retrieveResult.field_data_[i]));
         data->set_field_id(pipeline_ids[i].get());
         fields_data->AddAllocated(data);
     }
 
-    // Extract segment offsets from the hidden SegmentOffsetFieldID column.
-    auto& offset_col = retrieveResult.field_data_[segment_offset_col_idx];
+    // Extract segment offsets from the last column.
+    auto& offset_col = retrieveResult.field_data_.back();
     auto& offset_data = offset_col.scalars().long_data().data();
     auto topk_count = offset_data.size();
 
     // Populate results->offset() so QN-side MergeSegcoreRetrieveResults
     // won't filter out this result (it checks len(r.GetOffset()) == 0).
     results->mutable_offset()->Add(offset_data.begin(), offset_data.end());
-
-    if (element_index_col_idx != total_cols) {
-        auto& element_index_col =
-            retrieveResult.field_data_[element_index_col_idx];
-        auto& element_index_data =
-            element_index_col.scalars().long_data().data();
-        AssertInfo(element_index_data.size() == topk_count,
-                   "element index column size ({}) must match offset column "
-                   "size ({})",
-                   element_index_data.size(),
-                   topk_count);
-        results->set_element_level(true);
-        results->clear_element_indices();
-        for (auto element_index : element_index_data) {
-            AssertInfo(element_index >= 0 &&
-                           element_index <= std::numeric_limits<int32_t>::max(),
-                       "invalid element index: {}",
-                       element_index);
-            auto* elem_indices = results->add_element_indices();
-            elem_indices->add_indices(static_cast<int32_t>(element_index));
-        }
-    }
 
     milvus::OpContext op_ctx;
 
@@ -565,7 +511,6 @@ SegmentInternalInterface::FillTargetEntry(
         } else {
             col = bulk_subscript(&local_ctx, field_id, offsets, size);
         }
-        // todo(SpadeA): consider vector array?
         if (field_meta.get_data_type() == DataType::ARRAY) {
             col->mutable_scalars()->mutable_array_data()->set_element_type(
                 proto::schema::DataType(field_meta.get_element_type()));
@@ -822,8 +767,7 @@ SegmentInternalInterface::bulk_subscript_not_exist_field(
         AssertInfo(field_meta.is_nullable(),
                    "Non-nullable vector field should not reach here");
 
-        auto create_count = IsVectorArrayDataType(data_type) ? count : 0;
-        auto result = CreateEmptyVectorDataArray(create_count, field_meta);
+        auto result = CreateEmptyVectorDataArray(0, field_meta);
 
         auto valid_data = result->mutable_valid_data();
         for (int64_t i = 0; i < count; ++i) {
@@ -831,8 +775,7 @@ SegmentInternalInterface::bulk_subscript_not_exist_field(
         }
         return result;
     }
-
-    auto result = CreateEmptyScalarDataArray(count, field_meta);
+    auto result = CreateScalarDataArray(count, field_meta);
     if (field_meta.default_value().has_value()) {
         if (field_meta.is_nullable()) {
             auto res = result->mutable_valid_data()->mutable_data();

@@ -248,14 +248,7 @@ func getFieldSchema(schema *schemapb.CollectionSchema, fieldID int64) (*schemapb
 			return field, nil
 		}
 	}
-	for _, structArrayField := range schema.StructArrayFields {
-		for _, subField := range structArrayField.Fields {
-			if subField.FieldID == fieldID {
-				return subField, nil
-			}
-		}
-	}
-	return nil, merr.WrapErrFieldNotFound(fieldID, "not in schema")
+	return nil, fmt.Errorf("field %d not found in schema", fieldID)
 }
 
 func isIndexMmapEnable(fieldSchema *schemapb.FieldSchema, indexInfo *querypb.FieldIndexInfo) bool {

@@ -36,16 +36,6 @@ VecIndexCreator::VecIndexCreator(
     Config& config,
     const storage::FileManagerContext& file_manager_context)
     : config_(config), data_type_(data_type) {
-    if (data_type == DataType::VECTOR_ARRAY) {
-        // TODO(SpadeA): record dim in config as there's the dim cannot be inferred in
-        // parquet due to the serialize method of vector array.
-        // This should be a temp solution.
-        config_[DIM_KEY] = file_manager_context.indexMeta.dim;
-    }
-
-    config_["build_id"] =
-        std::to_string(file_manager_context.indexMeta.build_id);
-
     index::CreateIndexInfo index_info;
     index_info.field_type = data_type_;
     index_info.index_type = index::GetIndexTypeFromConfig(config_);

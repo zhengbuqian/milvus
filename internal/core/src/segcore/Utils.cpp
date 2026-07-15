@@ -310,47 +310,6 @@ GetRawDataSizeOfDataArray(const DataArray* data,
                 result += data->vectors().sparse_float_vector().ByteSizeLong();
                 break;
             }
-            case DataType::VECTOR_ARRAY: {
-                auto& obj = data->vectors().vector_array().data();
-                switch (field_meta.get_element_type()) {
-                    case DataType::VECTOR_FLOAT: {
-                        for (auto& e : obj) {
-                            result += e.float_vector().ByteSizeLong();
-                        }
-                        break;
-                    }
-                    case DataType::VECTOR_FLOAT16: {
-                        for (auto& e : obj) {
-                            result += e.float16_vector().size();
-                        }
-                        break;
-                    }
-                    case DataType::VECTOR_BFLOAT16: {
-                        for (auto& e : obj) {
-                            result += e.bfloat16_vector().size();
-                        }
-                        break;
-                    }
-                    case DataType::VECTOR_INT8: {
-                        for (auto& e : obj) {
-                            result += e.int8_vector().size();
-                        }
-                        break;
-                    }
-                    case DataType::VECTOR_BINARY: {
-                        for (auto& e : obj) {
-                            result += e.binary_vector().size();
-                        }
-                        break;
-                    }
-                    default: {
-                        ThrowInfo(NotImplemented,
-                                  fmt::format("not implemented vector type {}",
-                                              field_meta.get_element_type()));
-                    }
-                }
-                break;
-            }
             default: {
                 ThrowInfo(
                     DataTypeInvalid,
@@ -366,7 +325,7 @@ GetRawDataSizeOfDataArray(const DataArray* data,
 // modify bulk script implement to make process more clear
 
 std::unique_ptr<DataArray>
-CreateEmptyScalarDataArray(int64_t count, const FieldMeta& field_meta) {
+CreateScalarDataArray(int64_t count, const FieldMeta& field_meta) {
     auto data_type = field_meta.get_data_type();
     auto data_array = std::make_unique<DataArray>();
     data_array->set_field_id(field_meta.get_id().get());
@@ -488,7 +447,7 @@ SetUpScalarFieldData(milvus::proto::schema::ScalarField*& scalar_array,
 }
 
 std::unique_ptr<DataArray>
-CreateEmptyVectorDataArray(int64_t count, const FieldMeta& field_meta) {
+CreateVectorDataArray(int64_t count, const FieldMeta& field_meta) {
     auto data_type = field_meta.get_data_type();
     auto data_array = std::make_unique<DataArray>();
     data_array->set_field_id(field_meta.get_id().get());
@@ -538,19 +497,6 @@ CreateEmptyVectorDataArray(int64_t count, const FieldMeta& field_meta) {
             obj->resize(length);
             break;
         }
-        case DataType::VECTOR_ARRAY: {
-            auto obj = vector_array->mutable_vector_array();
-            obj->set_dim(dim);
-            obj->set_element_type(static_cast<milvus::proto::schema::DataType>(
-                field_meta.get_element_type()));
-            obj->mutable_data()->Reserve(count);
-            for (int i = 0; i < count; i++) {
-                auto* row = obj->mutable_data()->Add();
-                row->set_dim(dim);
-                InitEmptyVectorArrayRow(row, field_meta.get_element_type());
-            }
-            break;
-        }
         default: {
             ThrowInfo(DataTypeInvalid,
                       fmt::format("unsupported datatype {}", data_type));
@@ -564,8 +510,7 @@ CreateEmptyVectorDataArray(int64_t count,
                            int64_t valid_count,
                            const void* valid_data,
                            const FieldMeta& field_meta) {
-    int64_t data_count = (field_meta.is_nullable() && valid_data != nullptr &&
-                          field_meta.get_data_type() != DataType::VECTOR_ARRAY)
+    int64_t data_count = (field_meta.is_nullable() && valid_data != nullptr)
                              ? valid_count
                              : count;
     auto data_array = CreateEmptyVectorDataArray(data_count, field_meta);
@@ -676,7 +621,7 @@ CreateScalarDataArrayFrom(const void* data_raw,
             break;
         }
         case DataType::ARRAY: {
-            auto data = reinterpret_cast<const ScalarFieldProto*>(data_raw);
+            auto data = reinterpret_cast<const ScalarArray*>(data_raw);
             auto obj = scalar_array->mutable_array_data();
             obj->set_element_type(static_cast<milvus::proto::schema::DataType>(
                 field_meta.get_element_type()));
@@ -760,46 +705,6 @@ CreateVectorDataArrayFrom(const void* data_raw,
             obj->assign(data, length * sizeof(int8));
             break;
         }
-        case DataType::VECTOR_ARRAY: {
-            auto data = reinterpret_cast<const VectorFieldProto*>(data_raw);
-            auto vector_type = field_meta.get_element_type();
-            auto obj = vector_array->mutable_vector_array();
-            obj->set_dim(dim);
-
-            // Set element type based on vector type
-            switch (vector_type) {
-                case DataType::VECTOR_FLOAT:
-                    obj->set_element_type(
-                        milvus::proto::schema::DataType::FloatVector);
-                    break;
-                case DataType::VECTOR_FLOAT16:
-                    obj->set_element_type(
-                        milvus::proto::schema::DataType::Float16Vector);
-                    break;
-                case DataType::VECTOR_BFLOAT16:
-                    obj->set_element_type(
-                        milvus::proto::schema::DataType::BFloat16Vector);
-                    break;
-                case DataType::VECTOR_BINARY:
-                    obj->set_element_type(
-                        milvus::proto::schema::DataType::BinaryVector);
-                    break;
-                case DataType::VECTOR_INT8:
-                    obj->set_element_type(
-                        milvus::proto::schema::DataType::Int8Vector);
-                    break;
-                default:
-                    ThrowInfo(NotImplemented,
-                              fmt::format("not implemented vector type {}",
-                                          vector_type));
-            }
-
-            // Add all vector data
-            for (auto i = 0; i < count; i++) {
-                *(obj->mutable_data()->Add()) = data[i];
-            }
-            break;
-        }
         default: {
             ThrowInfo(DataTypeInvalid,
                       fmt::format("unsupported datatype {}", data_type));
@@ -849,7 +754,7 @@ CreateDataArrayFrom(const void* data_raw,
                     const FieldMeta& field_meta) {
     auto data_type = field_meta.get_data_type();
 
-    if (!IsVectorDataType(data_type) && data_type != DataType::VECTOR_ARRAY) {
+    if (!IsVectorDataType(data_type)) {
         return CreateScalarDataArrayFrom(
             data_raw, valid_data, count, field_meta);
     }
@@ -963,15 +868,7 @@ MergeDataArray(std::vector<MergeBase>& merge_bases,
             } else if (field_meta.get_data_type() == DataType::VECTOR_INT8) {
                 auto data = VEC_FIELD_DATA(src_field_data, int8);
                 auto obj = vector_array->mutable_int8_vector();
-                obj->append(data + physical_offset * dim * sizeof(int8),
-                            dim * sizeof(int8));
-            } else if (field_meta.get_data_type() == DataType::VECTOR_ARRAY) {
-                auto& data = src_field_data->vectors().vector_array();
-                auto obj = vector_array->mutable_vector_array();
-                obj->set_dim(dim);
-                obj->set_element_type(
-                    proto::schema::DataType(field_meta.get_element_type()));
-                *(obj->mutable_data()->Add()) = data.data(physical_offset);
+                obj->assign(data, dim * sizeof(int8));
             } else {
                 ThrowInfo(DataTypeInvalid,
                           fmt::format("unsupported datatype {}", data_type));
@@ -1479,7 +1376,6 @@ LoadIndexData(milvus::tracer::TraceContext& ctx,
 
     milvus::index::CreateIndexInfo index_info;
     index_info.field_type = load_index_info->field_type;
-    index_info.field_name = load_index_info->schema.name();
     index_info.index_engine_version = engine_version;
 
     auto config = milvus::index::ParseConfigFromIndexParams(

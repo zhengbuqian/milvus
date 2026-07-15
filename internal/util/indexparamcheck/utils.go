@@ -25,7 +25,6 @@ import (
 	"github.com/milvus-io/milvus/pkg/v3/util/funcutil"
 	"github.com/milvus-io/milvus/pkg/v3/util/merr"
 	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 // CheckIntByRange check if the data corresponding to the key is in the range of [min, max].
@@ -64,30 +63,6 @@ func CheckStrByValues(params map[string]string, key string, container []string) 
 	return funcutil.SliceContain(container, value)
 }
 
-// ValidateArrayOfVectorMetricType validates both element-level and EmbList metrics
-// against the ArrayOfVector element type.
-func ValidateArrayOfVectorMetricType(elementType schemapb.DataType, metricType string) error {
-	if typeutil.IsDenseFloatVectorType(elementType) {
-		if !funcutil.SliceContain(ArrayOfVectorFloatMetrics, metricType) {
-			return merr.WrapErrParameterInvalidMsg("array of vector with float element type does not support metric type: %s, supported: %v", metricType, ArrayOfVectorFloatMetrics)
-		}
-		return nil
-	}
-	if typeutil.IsBinaryVectorType(elementType) {
-		if !funcutil.SliceContain(ArrayOfVectorBinaryMetrics, metricType) {
-			return merr.WrapErrParameterInvalidMsg("array of vector with binary element type does not support metric type: %s, supported: %v", metricType, ArrayOfVectorBinaryMetrics)
-		}
-		return nil
-	}
-	if typeutil.IsIntVectorType(elementType) {
-		if !funcutil.SliceContain(ArrayOfVectorIntMetrics, metricType) {
-			return merr.WrapErrParameterInvalidMsg("array of vector with int element type does not support metric type: %s, supported: %v", metricType, ArrayOfVectorIntMetrics)
-		}
-		return nil
-	}
-	return merr.WrapErrParameterInvalidMsg("array of vector index does not support element type: %s", elementType.String())
-}
-
 func errOutOfRange(x interface{}, lb interface{}, ub interface{}) error {
 	return merr.WrapErrParameterInvalidMsg("%v out of range: [%v, %v]", x, lb, ub)
 }
@@ -110,7 +85,7 @@ func CheckAutoIndexHelper(key string, m map[string]string, dtype schemapb.DataTy
 		panic(fmt.Sprintf("%s invalid, unsupported index type: %s", key, indexType))
 	}
 
-	if err := checker.StaticCheck(dtype, schemapb.DataType_None, m); err != nil {
+	if err := checker.StaticCheck(dtype, m); err != nil {
 		panic(fmt.Sprintf("%s invalid, parameters invalid, error: %s", key, err.Error()))
 	}
 }

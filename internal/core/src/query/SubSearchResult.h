@@ -18,8 +18,6 @@
 #include "common/Types.h"
 #include "common/Utils.h"
 #include "knowhere/index/index_node.h"
-#include "common/ArrayOffsets.h"
-#include "query/Utils.h"
 
 namespace milvus::query {
 class SubSearchResult {
@@ -33,7 +31,7 @@ class SubSearchResult {
           topk_(topk),
           round_decimal_(round_decimal),
           metric_type_(metric_type),
-          offsets_(num_queries * topk, INVALID_SEG_OFFSET),
+          seg_offsets_(num_queries * topk, INVALID_SEG_OFFSET),
           distances_(num_queries * topk, init_value(metric_type)),
           chunk_iterators_(std::move(iters)) {
     }
@@ -54,7 +52,7 @@ class SubSearchResult {
           topk_(other.topk_),
           round_decimal_(other.round_decimal_),
           metric_type_(std::move(other.metric_type_)),
-          offsets_(std::move(other.offsets_)),
+          seg_offsets_(std::move(other.seg_offsets_)),
           distances_(std::move(other.distances_)),
           chunk_iterators_(std::move(other.chunk_iterators_)) {
     }
@@ -79,12 +77,12 @@ class SubSearchResult {
 
     const int64_t*
     get_ids() const {
-        return offsets_.data();
+        return seg_offsets_.data();
     }
 
     int64_t*
-    get_offsets() {
-        return offsets_.data();
+    get_seg_offsets() {
+        return seg_offsets_.data();
     }
 
     const float*
@@ -98,8 +96,8 @@ class SubSearchResult {
     }
 
     auto&
-    mutable_offsets() {
-        return offsets_;
+    mutable_seg_offsets() {
+        return seg_offsets_;
     }
 
     auto&
@@ -118,11 +116,6 @@ class SubSearchResult {
         return this->chunk_iterators_;
     }
 
-    std::pair<std::vector<int64_t>, std::vector<int32_t>>
-    convert_to_element_offsets(const IArrayOffsets* array_offsets) {
-        return milvus::query::ApplyElementIDMapping(offsets_, *array_offsets);
-    }
-
  private:
     template <bool is_desc>
     void
@@ -133,7 +126,7 @@ class SubSearchResult {
     int64_t topk_;
     int64_t round_decimal_;
     knowhere::MetricType metric_type_;
-    std::vector<int64_t> offsets_;
+    std::vector<int64_t> seg_offsets_;
     std::vector<float> distances_;
     std::vector<knowhere::IndexNode::IteratorPtr> chunk_iterators_;
 };

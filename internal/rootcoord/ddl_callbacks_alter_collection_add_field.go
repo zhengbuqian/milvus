@@ -53,20 +53,11 @@ func (c *Core) broadcastAlterCollectionForAddField(ctx context.Context, req *mil
 		}
 	}
 	// check if the field already exists
-	fieldNames := typeutil.NewSet[string]()
 	for _, field := range coll.Fields {
-		fieldNames.Insert(field.Name)
-	}
-	for _, structField := range coll.StructArrayFields {
-		fieldNames.Insert(structField.Name)
-		for _, field := range structField.Fields {
-			fieldNames.Insert(field.Name)
-			fieldNames.Insert(storedRootStructSubFieldName(structField.Name, field.Name))
+		if field.Name == fieldSchema.Name {
+			// TODO: idempotency check here.
+			return merr.WrapErrParameterInvalidMsg("field already exists, name: %s", fieldSchema.Name)
 		}
-	}
-	if fieldNames.Contain(fieldSchema.Name) {
-		// TODO: idempotency check here.
-		return merr.WrapErrParameterInvalidMsg("field already exists, name: %s", fieldSchema.Name)
 	}
 
 	// build new collection schema.

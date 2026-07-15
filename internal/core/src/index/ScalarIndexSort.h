@@ -26,13 +26,8 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <vector>
+#include <map>
 
-#include "common/FieldData.h"
-#include "common/Tracer.h"
-#include "common/Types.h"
-#include "common/protobuf_utils.h"
-#include "index/IndexStats.h"
 #include "index/IndexStructure.h"
 #include "index/ScalarIndex.h"
 #include "storage/DiskFileManagerImpl.h"
@@ -57,8 +52,7 @@ class ScalarIndexSort : public ScalarIndex<T> {
  public:
     explicit ScalarIndexSort(
         const storage::FileManagerContext& file_manager_context =
-            storage::FileManagerContext(),
-        bool is_nested_index = false);
+            storage::FileManagerContext());
 
     ~ScalarIndexSort() {
         if (is_mmap_ && mmap_data_ != nullptr && mmap_data_ != MAP_FAILED) {
@@ -88,11 +82,6 @@ class ScalarIndexSort : public ScalarIndex<T> {
     ScalarIndexType
     GetIndexType() const override {
         return ScalarIndexType::STLSORT;
-    }
-
-    bool
-    IsNestedIndex() const override {
-        return is_nested_index_;
     }
 
     void
@@ -166,16 +155,13 @@ class ScalarIndexSort : public ScalarIndex<T> {
 
     const bool
     HasRawData() const override {
-        return !is_nested_index_ && !is_array_field_;
+        return true;
     }
 
     void
     BuildWithFieldData(const std::vector<FieldDataPtr>& datas) override;
 
  private:
-    void
-    BuildWithArrayDataNested(const std::vector<FieldDataPtr>& datas);
-
     bool
     ShouldSkip(const T lower_value, const T upper_value, const OpType op);
 
@@ -252,8 +238,6 @@ class ScalarIndexSort : public ScalarIndex<T> {
 
     int64_t field_id_ = 0;
 
-    bool is_nested_index_ = false;
-    bool is_array_field_ = false;
     bool is_built_ = false;
     Config config_;
     // idx_to_offsets: maps row_id → sorted offset.
@@ -301,9 +285,7 @@ namespace milvus::index {
 template <typename T>
 inline ScalarIndexSortPtr<T>
 CreateScalarIndexSort(const storage::FileManagerContext& file_manager_context =
-                          storage::FileManagerContext(),
-                      bool is_nested_index = false) {
-    return std::make_unique<ScalarIndexSort<T>>(file_manager_context,
-                                                is_nested_index);
+                          storage::FileManagerContext()) {
+    return std::make_unique<ScalarIndexSort<T>>(file_manager_context);
 }
 }  // namespace milvus::index

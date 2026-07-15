@@ -44,11 +44,7 @@ PhyNullExpr::Eval(EvalCtx& context, VectorPtr& result) {
                                  static_cast<int>(expr_->column_.data_type_));
 
     auto input = context.get_offset_input();
-    auto data_type = expr_->column_.data_type_;
-    if (expr_->column_.element_level_) {
-        data_type = expr_->column_.element_type_;
-    }
-    switch (data_type) {
+    switch (expr_->column_.data_type_) {
         case DataType::BOOL: {
             result = ExecVisitorImpl<bool>(input);
             break;
@@ -100,10 +96,6 @@ PhyNullExpr::Eval(EvalCtx& context, VectorPtr& result) {
             result = ExecVisitorImpl<ArrayView>(input);
             break;
         }
-        case DataType::VECTOR_ARRAY: {
-            result = ExecVisitorImpl<VectorArray>(input);
-            break;
-        }
         case DataType::GEOMETRY: {
             if (segment_->type() == SegmentType::Growing &&
                 !storage::MmapManager::GetInstance()
@@ -119,21 +111,6 @@ PhyNullExpr::Eval(EvalCtx& context, VectorPtr& result) {
             ThrowInfo(DataTypeInvalid,
                       "unsupported data type: {}",
                       expr_->column_.data_type_);
-    }
-}
-
-void
-PhyNullExpr::DetermineExecPath() {
-    if (expr_->column_.data_type_ == DataType::VECTOR_ARRAY) {
-        exec_path_ = ExprExecPath::RawData;
-        return;
-    }
-
-    SegmentExpr::DetermineExecPath();
-    if (PinnedIndexIsNested()) {
-        exec_path_ = ExprExecPath::RawData;
-        pinned_index_.clear();
-        num_index_chunk_ = 0;
     }
 }
 

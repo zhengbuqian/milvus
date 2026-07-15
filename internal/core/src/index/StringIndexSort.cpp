@@ -29,32 +29,21 @@
 #include <limits>
 #include <memory>
 #include <utility>
-
-#include "bitset/bitset.h"
-#include "bitset/detail/element_vectorized.h"
-#include "common/Array.h"
-#include "common/EasyAssert.h"
-#include "common/FieldDataInterface.h"
-#include "common/RegexQuery.h"
-#include "common/Slice.h"
-#include "common/Tracer.h"
-#include "common/Types.h"
-#include "fmt/core.h"
-#include "folly/small_vector.h"
-#include "glog/logging.h"
-#include "index/Meta.h"
-#include "index/Utils.h"
-#include "knowhere/binaryset.h"
-#include "log/Log.h"
-#include "nlohmann/json.hpp"
-#include "pb/common.pb.h"
-#include "pb/schema.pb.h"
+#include <fcntl.h>
+#include <unistd.h>
+#include <unordered_map>
+#include <sys/stat.h>
+#include <filesystem>
 #include "storage/FileWriter.h"
-#include "storage/IndexEntryReader.h"
-#include "storage/IndexEntryWriter.h"
-#include "storage/MemFileManagerImpl.h"
+#include "common/CDataType.h"
+#include "common/RegexQuery.h"
+#include "knowhere/log.h"
+#include "index/Meta.h"
+#include "common/Utils.h"
+#include "common/Slice.h"
+#include "common/Types.h"
+#include "index/Utils.h"
 #include "storage/ThreadPools.h"
-#include "storage/Types.h"
 #include "storage/Util.h"
 
 namespace milvus::index {
@@ -72,13 +61,6 @@ SetIdxToOffset(std::vector<int32_t>& idx_to_offsets,
                               idx_to_offsets.size()));
     }
     idx_to_offsets[row_id] = unique_idx;
-}
-
-bool
-IsArrayField(const storage::FileManagerContext& file_manager_context) {
-    return file_manager_context.Valid() &&
-           file_manager_context.fieldDataMeta.field_schema.data_type() ==
-               proto::schema::DataType::Array;
 }
 
 }  // namespace
@@ -145,12 +127,8 @@ constexpr size_t ALIGNMENT = 32;  // 32-byte alignment
 const uint64_t MMAP_INDEX_PADDING = 1;
 
 StringIndexSort::StringIndexSort(
-    const storage::FileManagerContext& file_manager_context,
-    bool is_nested_index)
-    : StringIndex(ASCENDING_SORT),
-      is_built_(false),
-      is_nested_index_(is_nested_index),
-      is_array_field_(IsArrayField(file_manager_context)) {
+    const storage::FileManagerContext& file_manager_context)
+    : StringIndex(ASCENDING_SORT), is_built_(false) {
     if (file_manager_context.Valid()) {
         field_id_ = file_manager_context.fieldDataMeta.field_id;
         this->file_manager_ =
@@ -226,23 +204,8 @@ StringIndexSort::BuildWithFieldData(
 
     // Calculate total number of rows
     total_num_rows_ = 0;
-    if (is_nested_index_) {
-        for (const auto& data : field_datas) {
-            auto n = data->get_num_rows();
-            for (int64_t i = 0; i < n; i++) {
-                if (data->is_valid(i)) {
-                    // RawValue maps logical->physical so compact nullable array
-                    // FieldData is read correctly (Data()[i] would overrun).
-                    total_num_rows_ +=
-                        reinterpret_cast<const Array*>(data->RawValue(i))
-                            ->length();
-                }
-            }
-        }
-    } else {
-        for (const auto& data : field_datas) {
-            total_num_rows_ += data->get_num_rows();
-        }
+    for (const auto& data : field_datas) {
+        total_num_rows_ += data->get_num_rows();
     }
 
     if (total_num_rows_ == 0) {
@@ -255,17 +218,9 @@ StringIndexSort::BuildWithFieldData(
 
     // Create MemoryImpl and build directly from field data
     impl_ = std::make_unique<StringIndexSortMemoryImpl>();
-    if (is_nested_index_) {
-        static_cast<StringIndexSortMemoryImpl*>(impl_.get())
-            ->BuildFromArrayDataNested(
-                field_datas, total_num_rows_, valid_bitset_, idx_to_offsets_);
-    } else {
-        static_cast<StringIndexSortMemoryImpl*>(impl_.get())
-            ->BuildFromFieldData(
-                field_datas, total_num_rows_, valid_bitset_, idx_to_offsets_);
-    }
-    idx_to_offsets_ptr_ = idx_to_offsets_.data();
-    idx_to_offsets_size_ = idx_to_offsets_.size();
+    static_cast<StringIndexSortMemoryImpl*>(impl_.get())
+        ->BuildFromFieldData(
+            field_datas, total_num_rows_, valid_bitset_, idx_to_offsets_);
 
     is_built_ = true;
     total_size_ = CalculateTotalSize();
@@ -312,12 +267,6 @@ StringIndexSort::Serialize(const Config& config) {
         }
     }
     res_set.Append("valid_bitset", valid_bitset_data, valid_bitset_size);
-
-    // Serialize is_nested_index
-    std::shared_ptr<uint8_t[]> is_nested_data(new uint8_t[sizeof(bool)]);
-    milvus::fastmem::FastMemcpy(
-        is_nested_data.get(), &is_nested_index_, sizeof(bool));
-    res_set.Append("is_nested_index", is_nested_data, sizeof(bool));
 
     milvus::Disassemble(res_set);
     return res_set;
@@ -394,15 +343,6 @@ StringIndexSort::LoadWithoutAssemble(const BinarySet& binary_set,
         if (byte & (1 << (i % 8))) {
             valid_bitset_.set(i);
         }
-    }
-
-    // Deserialize is_nested_index (optional for backward compatibility)
-    auto is_nested_data = binary_set.GetByName("is_nested_index");
-    if (is_nested_data != nullptr) {
-        bool loaded_is_nested_index = false;
-        milvus::fastmem::FastMemcpy(
-            &loaded_is_nested_index, is_nested_data->data.get(), sizeof(bool));
-        is_nested_index_ = is_nested_index_ || loaded_is_nested_index;
     }
 
     auto version_data = binary_set.GetByName("version");
@@ -620,7 +560,7 @@ StringIndexSort::LoadEntries(storage::IndexEntryReader& reader,
                               SERIALIZATION_VERSION));
     }
     total_num_rows_ = reader.GetMeta<size_t>("num_rows");
-    is_nested_index_ = is_nested_index_ || reader.GetMeta<bool>("is_nested");
+    is_nested_index_ = reader.GetMeta<bool>("is_nested");
 
     // valid_bitset is small (num_rows/8 bytes), keep as ReadEntry
     auto valid_bitset_entry = reader.ReadEntry("valid_bitset");
@@ -837,35 +777,6 @@ StringIndexSortMemoryImpl::BuildFromFieldData(
         }
     }
 
-    BuildFromMap(std::move(map), total_num_rows, idx_to_offsets);
-}
-
-void
-StringIndexSortMemoryImpl::BuildFromArrayDataNested(
-    const std::vector<FieldDataPtr>& field_datas,
-    size_t total_num_rows,
-    TargetBitmap& valid_bitset,
-    std::vector<int32_t>& idx_to_offsets) {
-    // Use map to collect unique values and their posting lists
-    // std::map is sorted
-    std::map<std::string, PostingList> map;
-    size_t element_id = 0;
-    for (const auto& field_data : field_datas) {
-        auto n = field_data->get_num_rows();
-        for (int64_t i = 0; i < n; i++) {
-            if (!field_data->is_valid(i)) {
-                continue;
-            }
-            auto* array =
-                reinterpret_cast<const Array*>(field_data->RawValue(i));
-            for (int64_t j = 0; j < array->length(); j++) {
-                auto value = array->get_data<std::string>(j);
-                map[value].push_back(static_cast<int32_t>(element_id));
-                valid_bitset.set(element_id);
-                element_id++;
-            }
-        }
-    }
     BuildFromMap(std::move(map), total_num_rows, idx_to_offsets);
 }
 

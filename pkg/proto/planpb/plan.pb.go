@@ -189,46 +189,31 @@ func (ArithOpType) EnumDescriptor() ([]byte, []int) {
 type VectorType int32
 
 const (
-	VectorType_BinaryVector          VectorType = 0
-	VectorType_FloatVector           VectorType = 1
-	VectorType_Float16Vector         VectorType = 2
-	VectorType_BFloat16Vector        VectorType = 3
-	VectorType_SparseFloatVector     VectorType = 4
-	VectorType_Int8Vector            VectorType = 5
-	VectorType_EmbListFloatVector    VectorType = 6
-	VectorType_EmbListFloat16Vector  VectorType = 7
-	VectorType_EmbListBFloat16Vector VectorType = 8
-	VectorType_EmbListInt8Vector     VectorType = 9
-	VectorType_EmbListBinaryVector   VectorType = 10
+	VectorType_BinaryVector      VectorType = 0
+	VectorType_FloatVector       VectorType = 1
+	VectorType_Float16Vector     VectorType = 2
+	VectorType_BFloat16Vector    VectorType = 3
+	VectorType_SparseFloatVector VectorType = 4
+	VectorType_Int8Vector        VectorType = 5
 )
 
 // Enum value maps for VectorType.
 var (
 	VectorType_name = map[int32]string{
-		0:  "BinaryVector",
-		1:  "FloatVector",
-		2:  "Float16Vector",
-		3:  "BFloat16Vector",
-		4:  "SparseFloatVector",
-		5:  "Int8Vector",
-		6:  "EmbListFloatVector",
-		7:  "EmbListFloat16Vector",
-		8:  "EmbListBFloat16Vector",
-		9:  "EmbListInt8Vector",
-		10: "EmbListBinaryVector",
+		0: "BinaryVector",
+		1: "FloatVector",
+		2: "Float16Vector",
+		3: "BFloat16Vector",
+		4: "SparseFloatVector",
+		5: "Int8Vector",
 	}
 	VectorType_value = map[string]int32{
-		"BinaryVector":          0,
-		"FloatVector":           1,
-		"Float16Vector":         2,
-		"BFloat16Vector":        3,
-		"SparseFloatVector":     4,
-		"Int8Vector":            5,
-		"EmbListFloatVector":    6,
-		"EmbListFloat16Vector":  7,
-		"EmbListBFloat16Vector": 8,
-		"EmbListInt8Vector":     9,
-		"EmbListBinaryVector":   10,
+		"BinaryVector":      0,
+		"FloatVector":       1,
+		"Float16Vector":     2,
+		"BFloat16Vector":    3,
+		"SparseFloatVector": 4,
+		"Int8Vector":        5,
 	}
 )
 
@@ -1231,7 +1216,6 @@ type ColumnInfo struct {
 	ElementType     schemapb.DataType `protobuf:"varint,7,opt,name=element_type,json=elementType,proto3,enum=milvus.proto.schema.DataType" json:"element_type,omitempty"`
 	IsClusteringKey bool              `protobuf:"varint,8,opt,name=is_clustering_key,json=isClusteringKey,proto3" json:"is_clustering_key,omitempty"`
 	Nullable        bool              `protobuf:"varint,9,opt,name=nullable,proto3" json:"nullable,omitempty"`
-	IsElementLevel  bool              `protobuf:"varint,10,opt,name=is_element_level,json=isElementLevel,proto3" json:"is_element_level,omitempty"`
 }
 
 func (x *ColumnInfo) Reset() {
@@ -1325,13 +1309,6 @@ func (x *ColumnInfo) GetIsClusteringKey() bool {
 func (x *ColumnInfo) GetNullable() bool {
 	if x != nil {
 		return x.Nullable
-	}
-	return false
-}
-
-func (x *ColumnInfo) GetIsElementLevel() bool {
-	if x != nil {
-		return x.IsElementLevel
 	}
 	return false
 }
@@ -2447,140 +2424,6 @@ func (x *RandomSampleExpr) GetPredicate() *Expr {
 	return nil
 }
 
-type ElementFilterExpr struct {
-	state         protoimpl.MessageState
-	sizeCache     protoimpl.SizeCache
-	unknownFields protoimpl.UnknownFields
-
-	ElementExpr *Expr  `protobuf:"bytes,1,opt,name=element_expr,json=elementExpr,proto3" json:"element_expr,omitempty"`
-	StructName  string `protobuf:"bytes,2,opt,name=struct_name,json=structName,proto3" json:"struct_name,omitempty"`
-	Predicate   *Expr  `protobuf:"bytes,3,opt,name=predicate,proto3" json:"predicate,omitempty"`
-}
-
-func (x *ElementFilterExpr) Reset() {
-	*x = ElementFilterExpr{}
-	if protoimpl.UnsafeEnabled {
-		mi := &file_plan_proto_msgTypes[22]
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		ms.StoreMessageInfo(mi)
-	}
-}
-
-func (x *ElementFilterExpr) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ElementFilterExpr) ProtoMessage() {}
-
-func (x *ElementFilterExpr) ProtoReflect() protoreflect.Message {
-	mi := &file_plan_proto_msgTypes[22]
-	if protoimpl.UnsafeEnabled && x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ElementFilterExpr.ProtoReflect.Descriptor instead.
-func (*ElementFilterExpr) Descriptor() ([]byte, []int) {
-	return file_plan_proto_rawDescGZIP(), []int{22}
-}
-
-func (x *ElementFilterExpr) GetElementExpr() *Expr {
-	if x != nil {
-		return x.ElementExpr
-	}
-	return nil
-}
-
-func (x *ElementFilterExpr) GetStructName() string {
-	if x != nil {
-		return x.StructName
-	}
-	return ""
-}
-
-func (x *ElementFilterExpr) GetPredicate() *Expr {
-	if x != nil {
-		return x.Predicate
-	}
-	return nil
-}
-
-type MatchExpr struct {
-	state         protoimpl.MessageState
-	sizeCache     protoimpl.SizeCache
-	unknownFields protoimpl.UnknownFields
-
-	StructName string    `protobuf:"bytes,1,opt,name=struct_name,json=structName,proto3" json:"struct_name,omitempty"`                                // The struct array field name (e.g., struct_array)
-	Predicate  *Expr     `protobuf:"bytes,2,opt,name=predicate,proto3" json:"predicate,omitempty"`                                                    // The condition expression using $[field] syntax (e.g., $[intField] == 1 && $[strField] == "aaa")
-	MatchType  MatchType `protobuf:"varint,3,opt,name=match_type,json=matchType,proto3,enum=milvus.proto.plan.MatchType" json:"match_type,omitempty"` // Type of match operation
-	Count      int64     `protobuf:"varint,4,opt,name=count,proto3" json:"count,omitempty"`                                                           // For MatchLeast/MatchMost: the count parameter (N)
-}
-
-func (x *MatchExpr) Reset() {
-	*x = MatchExpr{}
-	if protoimpl.UnsafeEnabled {
-		mi := &file_plan_proto_msgTypes[23]
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		ms.StoreMessageInfo(mi)
-	}
-}
-
-func (x *MatchExpr) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*MatchExpr) ProtoMessage() {}
-
-func (x *MatchExpr) ProtoReflect() protoreflect.Message {
-	mi := &file_plan_proto_msgTypes[23]
-	if protoimpl.UnsafeEnabled && x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use MatchExpr.ProtoReflect.Descriptor instead.
-func (*MatchExpr) Descriptor() ([]byte, []int) {
-	return file_plan_proto_rawDescGZIP(), []int{23}
-}
-
-func (x *MatchExpr) GetStructName() string {
-	if x != nil {
-		return x.StructName
-	}
-	return ""
-}
-
-func (x *MatchExpr) GetPredicate() *Expr {
-	if x != nil {
-		return x.Predicate
-	}
-	return nil
-}
-
-func (x *MatchExpr) GetMatchType() MatchType {
-	if x != nil {
-		return x.MatchType
-	}
-	return MatchType_MatchAll
-}
-
-func (x *MatchExpr) GetCount() int64 {
-	if x != nil {
-		return x.Count
-	}
-	return 0
-}
-
 type AlwaysTrueExpr struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -2590,7 +2433,7 @@ type AlwaysTrueExpr struct {
 func (x *AlwaysTrueExpr) Reset() {
 	*x = AlwaysTrueExpr{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_plan_proto_msgTypes[24]
+		mi := &file_plan_proto_msgTypes[22]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -2603,7 +2446,7 @@ func (x *AlwaysTrueExpr) String() string {
 func (*AlwaysTrueExpr) ProtoMessage() {}
 
 func (x *AlwaysTrueExpr) ProtoReflect() protoreflect.Message {
-	mi := &file_plan_proto_msgTypes[24]
+	mi := &file_plan_proto_msgTypes[22]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2616,7 +2459,7 @@ func (x *AlwaysTrueExpr) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AlwaysTrueExpr.ProtoReflect.Descriptor instead.
 func (*AlwaysTrueExpr) Descriptor() ([]byte, []int) {
-	return file_plan_proto_rawDescGZIP(), []int{24}
+	return file_plan_proto_rawDescGZIP(), []int{22}
 }
 
 type Interval struct {
@@ -2635,7 +2478,7 @@ type Interval struct {
 func (x *Interval) Reset() {
 	*x = Interval{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_plan_proto_msgTypes[25]
+		mi := &file_plan_proto_msgTypes[23]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -2648,7 +2491,7 @@ func (x *Interval) String() string {
 func (*Interval) ProtoMessage() {}
 
 func (x *Interval) ProtoReflect() protoreflect.Message {
-	mi := &file_plan_proto_msgTypes[25]
+	mi := &file_plan_proto_msgTypes[23]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2661,7 +2504,7 @@ func (x *Interval) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Interval.ProtoReflect.Descriptor instead.
 func (*Interval) Descriptor() ([]byte, []int) {
-	return file_plan_proto_rawDescGZIP(), []int{25}
+	return file_plan_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *Interval) GetYears() int64 {
@@ -2722,7 +2565,7 @@ type TimestamptzArithCompareExpr struct {
 func (x *TimestamptzArithCompareExpr) Reset() {
 	*x = TimestamptzArithCompareExpr{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_plan_proto_msgTypes[26]
+		mi := &file_plan_proto_msgTypes[24]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -2735,7 +2578,7 @@ func (x *TimestamptzArithCompareExpr) String() string {
 func (*TimestamptzArithCompareExpr) ProtoMessage() {}
 
 func (x *TimestamptzArithCompareExpr) ProtoReflect() protoreflect.Message {
-	mi := &file_plan_proto_msgTypes[26]
+	mi := &file_plan_proto_msgTypes[24]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2748,7 +2591,7 @@ func (x *TimestamptzArithCompareExpr) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TimestamptzArithCompareExpr.ProtoReflect.Descriptor instead.
 func (*TimestamptzArithCompareExpr) Descriptor() ([]byte, []int) {
-	return file_plan_proto_rawDescGZIP(), []int{26}
+	return file_plan_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *TimestamptzArithCompareExpr) GetTimestamptzColumn() *ColumnInfo {
@@ -2811,8 +2654,6 @@ type Expr struct {
 	//	*Expr_RandomSampleExpr
 	//	*Expr_GisfunctionFilterExpr
 	//	*Expr_TimestamptzArithCompareExpr
-	//	*Expr_ElementFilterExpr
-	//	*Expr_MatchExpr
 	Expr       isExpr_Expr `protobuf_oneof:"expr"`
 	IsTemplate bool        `protobuf:"varint,20,opt,name=is_template,json=isTemplate,proto3" json:"is_template,omitempty"`
 }
@@ -2820,7 +2661,7 @@ type Expr struct {
 func (x *Expr) Reset() {
 	*x = Expr{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_plan_proto_msgTypes[27]
+		mi := &file_plan_proto_msgTypes[25]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -2833,7 +2674,7 @@ func (x *Expr) String() string {
 func (*Expr) ProtoMessage() {}
 
 func (x *Expr) ProtoReflect() protoreflect.Message {
-	mi := &file_plan_proto_msgTypes[27]
+	mi := &file_plan_proto_msgTypes[25]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2846,7 +2687,7 @@ func (x *Expr) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Expr.ProtoReflect.Descriptor instead.
 func (*Expr) Descriptor() ([]byte, []int) {
-	return file_plan_proto_rawDescGZIP(), []int{27}
+	return file_plan_proto_rawDescGZIP(), []int{25}
 }
 
 func (m *Expr) GetExpr() isExpr_Expr {
@@ -2982,20 +2823,6 @@ func (x *Expr) GetTimestamptzArithCompareExpr() *TimestamptzArithCompareExpr {
 	return nil
 }
 
-func (x *Expr) GetElementFilterExpr() *ElementFilterExpr {
-	if x, ok := x.GetExpr().(*Expr_ElementFilterExpr); ok {
-		return x.ElementFilterExpr
-	}
-	return nil
-}
-
-func (x *Expr) GetMatchExpr() *MatchExpr {
-	if x, ok := x.GetExpr().(*Expr_MatchExpr); ok {
-		return x.MatchExpr
-	}
-	return nil
-}
-
 func (x *Expr) GetIsTemplate() bool {
 	if x != nil {
 		return x.IsTemplate
@@ -3079,14 +2906,6 @@ type Expr_TimestamptzArithCompareExpr struct {
 	TimestamptzArithCompareExpr *TimestamptzArithCompareExpr `protobuf:"bytes,18,opt,name=timestamptz_arith_compare_expr,json=timestamptzArithCompareExpr,proto3,oneof"`
 }
 
-type Expr_ElementFilterExpr struct {
-	ElementFilterExpr *ElementFilterExpr `protobuf:"bytes,19,opt,name=element_filter_expr,json=elementFilterExpr,proto3,oneof"`
-}
-
-type Expr_MatchExpr struct {
-	MatchExpr *MatchExpr `protobuf:"bytes,21,opt,name=match_expr,json=matchExpr,proto3,oneof"`
-}
-
 func (*Expr_TermExpr) isExpr_Expr() {}
 
 func (*Expr_UnaryExpr) isExpr_Expr() {}
@@ -3123,10 +2942,6 @@ func (*Expr_GisfunctionFilterExpr) isExpr_Expr() {}
 
 func (*Expr_TimestamptzArithCompareExpr) isExpr_Expr() {}
 
-func (*Expr_ElementFilterExpr) isExpr_Expr() {}
-
-func (*Expr_MatchExpr) isExpr_Expr() {}
-
 type VectorANNS struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -3142,7 +2957,7 @@ type VectorANNS struct {
 func (x *VectorANNS) Reset() {
 	*x = VectorANNS{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_plan_proto_msgTypes[28]
+		mi := &file_plan_proto_msgTypes[26]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -3155,7 +2970,7 @@ func (x *VectorANNS) String() string {
 func (*VectorANNS) ProtoMessage() {}
 
 func (x *VectorANNS) ProtoReflect() protoreflect.Message {
-	mi := &file_plan_proto_msgTypes[28]
+	mi := &file_plan_proto_msgTypes[26]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3168,7 +2983,7 @@ func (x *VectorANNS) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorANNS.ProtoReflect.Descriptor instead.
 func (*VectorANNS) Descriptor() ([]byte, []int) {
-	return file_plan_proto_rawDescGZIP(), []int{28}
+	return file_plan_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *VectorANNS) GetVectorType() VectorType {
@@ -3330,13 +3145,12 @@ type QueryPlanNode struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	Predicates          *Expr                `protobuf:"bytes,1,opt,name=predicates,proto3" json:"predicates,omitempty"`
-	IsCount             bool                 `protobuf:"varint,2,opt,name=is_count,json=isCount,proto3" json:"is_count,omitempty"`
-	Limit               int64                `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
-	GroupByFieldIds     []int64              `protobuf:"varint,4,rep,packed,name=group_by_field_ids,json=groupByFieldIds,proto3" json:"group_by_field_ids,omitempty"`
-	Aggregates          []*Aggregate         `protobuf:"bytes,5,rep,name=aggregates,proto3" json:"aggregates,omitempty"`
-	OrderByFields       []*OrderByField      `protobuf:"bytes,6,rep,name=order_by_fields,json=orderByFields,proto3" json:"order_by_fields,omitempty"` // ORDER BY specifications
-	QueryIteratorCursor *QueryIteratorCursor `protobuf:"bytes,7,opt,name=query_iterator_cursor,json=queryIteratorCursor,proto3,oneof" json:"query_iterator_cursor,omitempty"`
+	Predicates      *Expr           `protobuf:"bytes,1,opt,name=predicates,proto3" json:"predicates,omitempty"`
+	IsCount         bool            `protobuf:"varint,2,opt,name=is_count,json=isCount,proto3" json:"is_count,omitempty"`
+	Limit           int64           `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	GroupByFieldIds []int64         `protobuf:"varint,4,rep,packed,name=group_by_field_ids,json=groupByFieldIds,proto3" json:"group_by_field_ids,omitempty"`
+	Aggregates      []*Aggregate    `protobuf:"bytes,5,rep,name=aggregates,proto3" json:"aggregates,omitempty"`
+	OrderByFields   []*OrderByField `protobuf:"bytes,6,rep,name=order_by_fields,json=orderByFields,proto3" json:"order_by_fields,omitempty"` // ORDER BY specifications
 }
 
 func (x *QueryPlanNode) Reset() {
@@ -3413,76 +3227,6 @@ func (x *QueryPlanNode) GetOrderByFields() []*OrderByField {
 	return nil
 }
 
-func (x *QueryPlanNode) GetQueryIteratorCursor() *QueryIteratorCursor {
-	if x != nil {
-		return x.QueryIteratorCursor
-	}
-	return nil
-}
-
-type QueryIteratorCursor struct {
-	state         protoimpl.MessageState
-	sizeCache     protoimpl.SizeCache
-	unknownFields protoimpl.UnknownFields
-
-	LastIntPk         *int64  `protobuf:"varint,1,opt,name=last_int_pk,json=lastIntPk,proto3,oneof" json:"last_int_pk,omitempty"`
-	LastStrPk         *string `protobuf:"bytes,2,opt,name=last_str_pk,json=lastStrPk,proto3,oneof" json:"last_str_pk,omitempty"`
-	LastElementOffset int64   `protobuf:"varint,3,opt,name=last_element_offset,json=lastElementOffset,proto3" json:"last_element_offset,omitempty"`
-}
-
-func (x *QueryIteratorCursor) Reset() {
-	*x = QueryIteratorCursor{}
-	if protoimpl.UnsafeEnabled {
-		mi := &file_plan_proto_msgTypes[32]
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		ms.StoreMessageInfo(mi)
-	}
-}
-
-func (x *QueryIteratorCursor) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*QueryIteratorCursor) ProtoMessage() {}
-
-func (x *QueryIteratorCursor) ProtoReflect() protoreflect.Message {
-	mi := &file_plan_proto_msgTypes[32]
-	if protoimpl.UnsafeEnabled && x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use QueryIteratorCursor.ProtoReflect.Descriptor instead.
-func (*QueryIteratorCursor) Descriptor() ([]byte, []int) {
-	return file_plan_proto_rawDescGZIP(), []int{32}
-}
-
-func (x *QueryIteratorCursor) GetLastIntPk() int64 {
-	if x != nil && x.LastIntPk != nil {
-		return *x.LastIntPk
-	}
-	return 0
-}
-
-func (x *QueryIteratorCursor) GetLastStrPk() string {
-	if x != nil && x.LastStrPk != nil {
-		return *x.LastStrPk
-	}
-	return ""
-}
-
-func (x *QueryIteratorCursor) GetLastElementOffset() int64 {
-	if x != nil {
-		return x.LastElementOffset
-	}
-	return 0
-}
-
 type ScoreFunction struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -3497,7 +3241,7 @@ type ScoreFunction struct {
 func (x *ScoreFunction) Reset() {
 	*x = ScoreFunction{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_plan_proto_msgTypes[33]
+		mi := &file_plan_proto_msgTypes[32]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -3510,7 +3254,7 @@ func (x *ScoreFunction) String() string {
 func (*ScoreFunction) ProtoMessage() {}
 
 func (x *ScoreFunction) ProtoReflect() protoreflect.Message {
-	mi := &file_plan_proto_msgTypes[33]
+	mi := &file_plan_proto_msgTypes[32]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3523,7 +3267,7 @@ func (x *ScoreFunction) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScoreFunction.ProtoReflect.Descriptor instead.
 func (*ScoreFunction) Descriptor() ([]byte, []int) {
-	return file_plan_proto_rawDescGZIP(), []int{33}
+	return file_plan_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ScoreFunction) GetFilter() *Expr {
@@ -3566,7 +3310,7 @@ type ScoreOption struct {
 func (x *ScoreOption) Reset() {
 	*x = ScoreOption{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_plan_proto_msgTypes[34]
+		mi := &file_plan_proto_msgTypes[33]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -3579,7 +3323,7 @@ func (x *ScoreOption) String() string {
 func (*ScoreOption) ProtoMessage() {}
 
 func (x *ScoreOption) ProtoReflect() protoreflect.Message {
-	mi := &file_plan_proto_msgTypes[34]
+	mi := &file_plan_proto_msgTypes[33]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3592,7 +3336,7 @@ func (x *ScoreOption) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScoreOption.ProtoReflect.Descriptor instead.
 func (*ScoreOption) Descriptor() ([]byte, []int) {
-	return file_plan_proto_rawDescGZIP(), []int{34}
+	return file_plan_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ScoreOption) GetBoostMode() BoostMode {
@@ -3620,7 +3364,7 @@ type PlanOption struct {
 func (x *PlanOption) Reset() {
 	*x = PlanOption{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_plan_proto_msgTypes[35]
+		mi := &file_plan_proto_msgTypes[34]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -3633,7 +3377,7 @@ func (x *PlanOption) String() string {
 func (*PlanOption) ProtoMessage() {}
 
 func (x *PlanOption) ProtoReflect() protoreflect.Message {
-	mi := &file_plan_proto_msgTypes[35]
+	mi := &file_plan_proto_msgTypes[34]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3646,7 +3390,7 @@ func (x *PlanOption) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlanOption.ProtoReflect.Descriptor instead.
 func (*PlanOption) Descriptor() ([]byte, []int) {
-	return file_plan_proto_rawDescGZIP(), []int{35}
+	return file_plan_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *PlanOption) GetExprUseJsonStats() bool {
@@ -3679,7 +3423,7 @@ type PlanNode struct {
 func (x *PlanNode) Reset() {
 	*x = PlanNode{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_plan_proto_msgTypes[36]
+		mi := &file_plan_proto_msgTypes[35]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -3692,7 +3436,7 @@ func (x *PlanNode) String() string {
 func (*PlanNode) ProtoMessage() {}
 
 func (x *PlanNode) ProtoReflect() protoreflect.Message {
-	mi := &file_plan_proto_msgTypes[36]
+	mi := &file_plan_proto_msgTypes[35]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3705,7 +3449,7 @@ func (x *PlanNode) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlanNode.ProtoReflect.Descriptor instead.
 func (*PlanNode) Descriptor() ([]byte, []int) {
-	return file_plan_proto_rawDescGZIP(), []int{36}
+	return file_plan_proto_rawDescGZIP(), []int{35}
 }
 
 func (m *PlanNode) GetNode() isPlanNode_Node {
@@ -4339,7 +4083,7 @@ var file_plan_proto_rawDesc = []byte{
 	0x67, 0x18, 0x02, 0x20, 0x01, 0x28, 0x08, 0x52, 0x09, 0x61, 0x73, 0x63, 0x65, 0x6e, 0x64, 0x69,
 	0x6e, 0x67, 0x12, 0x1f, 0x0a, 0x0b, 0x6e, 0x75, 0x6c, 0x6c, 0x73, 0x5f, 0x66, 0x69, 0x72, 0x73,
 	0x74, 0x18, 0x03, 0x20, 0x01, 0x28, 0x08, 0x52, 0x0a, 0x6e, 0x75, 0x6c, 0x6c, 0x73, 0x46, 0x69,
-	0x72, 0x73, 0x74, 0x22, 0xa8, 0x03, 0x0a, 0x0d, 0x51, 0x75, 0x65, 0x72, 0x79, 0x50, 0x6c, 0x61,
+	0x72, 0x73, 0x74, 0x22, 0xad, 0x02, 0x0a, 0x0d, 0x51, 0x75, 0x65, 0x72, 0x79, 0x50, 0x6c, 0x61,
 	0x6e, 0x4e, 0x6f, 0x64, 0x65, 0x12, 0x37, 0x0a, 0x0a, 0x70, 0x72, 0x65, 0x64, 0x69, 0x63, 0x61,
 	0x74, 0x65, 0x73, 0x18, 0x01, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x17, 0x2e, 0x6d, 0x69, 0x6c, 0x76,
 	0x75, 0x73, 0x2e, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x2e, 0x70, 0x6c, 0x61, 0x6e, 0x2e, 0x45, 0x78,
@@ -4522,7 +4266,7 @@ func file_plan_proto_rawDescGZIP() []byte {
 }
 
 var file_plan_proto_enumTypes = make([]protoimpl.EnumInfo, 13)
-var file_plan_proto_msgTypes = make([]protoimpl.MessageInfo, 37)
+var file_plan_proto_msgTypes = make([]protoimpl.MessageInfo, 36)
 var file_plan_proto_goTypes = []interface{}{
 	(OpType)(0),                         // 0: milvus.proto.plan.OpType
 	(ArithOpType)(0),                    // 1: milvus.proto.plan.ArithOpType
@@ -4581,11 +4325,11 @@ var file_plan_proto_goTypes = []interface{}{
 var file_plan_proto_depIdxs = []int32{
 	14, // 0: milvus.proto.plan.GenericValue.array_val:type_name -> milvus.proto.plan.Array
 	13, // 1: milvus.proto.plan.Array.array:type_name -> milvus.proto.plan.GenericValue
-	50, // 2: milvus.proto.plan.Array.element_type:type_name -> milvus.proto.schema.DataType
+	49, // 2: milvus.proto.plan.Array.element_type:type_name -> milvus.proto.schema.DataType
 	15, // 3: milvus.proto.plan.QueryInfo.search_iterator_v2_info:type_name -> milvus.proto.plan.SearchIteratorV2Info
-	50, // 4: milvus.proto.plan.QueryInfo.json_type:type_name -> milvus.proto.schema.DataType
-	50, // 5: milvus.proto.plan.ColumnInfo.data_type:type_name -> milvus.proto.schema.DataType
-	50, // 6: milvus.proto.plan.ColumnInfo.element_type:type_name -> milvus.proto.schema.DataType
+	49, // 4: milvus.proto.plan.QueryInfo.json_type:type_name -> milvus.proto.schema.DataType
+	49, // 5: milvus.proto.plan.ColumnInfo.data_type:type_name -> milvus.proto.schema.DataType
+	49, // 6: milvus.proto.plan.ColumnInfo.element_type:type_name -> milvus.proto.schema.DataType
 	17, // 7: milvus.proto.plan.ColumnExpr.info:type_name -> milvus.proto.plan.ColumnInfo
 	17, // 8: milvus.proto.plan.ExistsExpr.info:type_name -> milvus.proto.plan.ColumnInfo
 	13, // 9: milvus.proto.plan.ValueExpr.value:type_name -> milvus.proto.plan.GenericValue
@@ -4953,30 +4697,6 @@ func file_plan_proto_init() {
 			}
 		}
 		file_plan_proto_msgTypes[22].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*ElementFilterExpr); i {
-			case 0:
-				return &v.state
-			case 1:
-				return &v.sizeCache
-			case 2:
-				return &v.unknownFields
-			default:
-				return nil
-			}
-		}
-		file_plan_proto_msgTypes[23].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*MatchExpr); i {
-			case 0:
-				return &v.state
-			case 1:
-				return &v.sizeCache
-			case 2:
-				return &v.unknownFields
-			default:
-				return nil
-			}
-		}
-		file_plan_proto_msgTypes[24].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*AlwaysTrueExpr); i {
 			case 0:
 				return &v.state
@@ -4988,7 +4708,7 @@ func file_plan_proto_init() {
 				return nil
 			}
 		}
-		file_plan_proto_msgTypes[25].Exporter = func(v interface{}, i int) interface{} {
+		file_plan_proto_msgTypes[23].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*Interval); i {
 			case 0:
 				return &v.state
@@ -5000,7 +4720,7 @@ func file_plan_proto_init() {
 				return nil
 			}
 		}
-		file_plan_proto_msgTypes[26].Exporter = func(v interface{}, i int) interface{} {
+		file_plan_proto_msgTypes[24].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*TimestamptzArithCompareExpr); i {
 			case 0:
 				return &v.state
@@ -5012,7 +4732,7 @@ func file_plan_proto_init() {
 				return nil
 			}
 		}
-		file_plan_proto_msgTypes[27].Exporter = func(v interface{}, i int) interface{} {
+		file_plan_proto_msgTypes[25].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*Expr); i {
 			case 0:
 				return &v.state
@@ -5024,7 +4744,7 @@ func file_plan_proto_init() {
 				return nil
 			}
 		}
-		file_plan_proto_msgTypes[28].Exporter = func(v interface{}, i int) interface{} {
+		file_plan_proto_msgTypes[26].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*VectorANNS); i {
 			case 0:
 				return &v.state
@@ -5073,18 +4793,6 @@ func file_plan_proto_init() {
 			}
 		}
 		file_plan_proto_msgTypes[32].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*QueryIteratorCursor); i {
-			case 0:
-				return &v.state
-			case 1:
-				return &v.sizeCache
-			case 2:
-				return &v.unknownFields
-			default:
-				return nil
-			}
-		}
-		file_plan_proto_msgTypes[33].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*ScoreFunction); i {
 			case 0:
 				return &v.state
@@ -5096,7 +4804,7 @@ func file_plan_proto_init() {
 				return nil
 			}
 		}
-		file_plan_proto_msgTypes[34].Exporter = func(v interface{}, i int) interface{} {
+		file_plan_proto_msgTypes[33].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*ScoreOption); i {
 			case 0:
 				return &v.state
@@ -5108,7 +4816,7 @@ func file_plan_proto_init() {
 				return nil
 			}
 		}
-		file_plan_proto_msgTypes[35].Exporter = func(v interface{}, i int) interface{} {
+		file_plan_proto_msgTypes[34].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*PlanOption); i {
 			case 0:
 				return &v.state
@@ -5120,7 +4828,7 @@ func file_plan_proto_init() {
 				return nil
 			}
 		}
-		file_plan_proto_msgTypes[36].Exporter = func(v interface{}, i int) interface{} {
+		file_plan_proto_msgTypes[35].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*PlanNode); i {
 			case 0:
 				return &v.state
@@ -5142,7 +4850,7 @@ func file_plan_proto_init() {
 	}
 	file_plan_proto_msgTypes[2].OneofWrappers = []interface{}{}
 	file_plan_proto_msgTypes[3].OneofWrappers = []interface{}{}
-	file_plan_proto_msgTypes[27].OneofWrappers = []interface{}{
+	file_plan_proto_msgTypes[25].OneofWrappers = []interface{}{
 		(*Expr_TermExpr)(nil),
 		(*Expr_UnaryExpr)(nil),
 		(*Expr_BinaryExpr)(nil),
@@ -5161,12 +4869,8 @@ func file_plan_proto_init() {
 		(*Expr_RandomSampleExpr)(nil),
 		(*Expr_GisfunctionFilterExpr)(nil),
 		(*Expr_TimestamptzArithCompareExpr)(nil),
-		(*Expr_ElementFilterExpr)(nil),
-		(*Expr_MatchExpr)(nil),
 	}
-	file_plan_proto_msgTypes[31].OneofWrappers = []interface{}{}
-	file_plan_proto_msgTypes[32].OneofWrappers = []interface{}{}
-	file_plan_proto_msgTypes[36].OneofWrappers = []interface{}{
+	file_plan_proto_msgTypes[35].OneofWrappers = []interface{}{
 		(*PlanNode_VectorAnns)(nil),
 		(*PlanNode_Predicates)(nil),
 		(*PlanNode_Query)(nil),
@@ -5177,7 +4881,7 @@ func file_plan_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: file_plan_proto_rawDesc,
 			NumEnums:      13,
-			NumMessages:   37,
+			NumMessages:   36,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

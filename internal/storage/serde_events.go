@@ -41,6 +41,150 @@ import (
 	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
+var _ RecordReader = (*CompositeBinlogRecordReader)(nil)
+
+// ChunkedBlobsReader returns a chunk composed of blobs, or io.EOF if no more data
+type ChunkedBlobsReader func() ([]*Blob, error)
+
+type CompositeBinlogRecordReader struct {
+	BlobsReader ChunkedBlobsReader
+	schema      *schemapb.CollectionSchema
+	index       map[FieldID]int16
+
+	brs    []*BinlogReader
+	bropts []BinlogReaderOption
+	rrs    []array.RecordReader
+}
+
+func (crr *CompositeBinlogRecordReader) iterateNextBatch() error {
+	if crr.brs != nil {
+		for _, er := range crr.brs {
+			if er != nil {
+				er.Close()
+			}
+		}
+	}
+	if crr.rrs != nil {
+		for _, rr := range crr.rrs {
+			if rr != nil {
+				rr.Release()
+			}
+		}
+	}
+
+	blobs, err := crr.BlobsReader()
+	if err != nil {
+		return err
+	}
+
+	crr.rrs = make([]array.RecordReader, len(crr.schema.Fields))
+	crr.brs = make([]*BinlogReader, len(crr.schema.Fields))
+
+	for _, b := range blobs {
+		reader, err := NewBinlogReader(b.Value, crr.bropts...)
+		if err != nil {
+			return err
+		}
+
+		er, err := reader.NextEventReader()
+		if err != nil {
+			return err
+		}
+		i := crr.index[reader.FieldID]
+		rr, err := er.GetArrowRecordReader()
+		if err != nil {
+			return err
+		}
+		crr.rrs[i] = rr
+		crr.brs[i] = reader
+	}
+	return nil
+}
+
+func (crr *CompositeBinlogRecordReader) Next() (Record, error) {
+	if crr.rrs == nil {
+		if err := crr.iterateNextBatch(); err != nil {
+			return nil, err
+		}
+	}
+
+	composeRecord := func() (Record, error) {
+		recs := make([]arrow.Array, len(crr.schema.Fields))
+
+		for i, f := range crr.schema.Fields {
+			if crr.rrs[i] != nil {
+				if ok := crr.rrs[i].Next(); !ok {
+					return nil, io.EOF
+				}
+				recs[i] = crr.rrs[i].Record().Column(0)
+			} else {
+				// If the field is not in the current batch, fill with null array
+				// Note that we're intentionally not filling default value here, because the
+				// deserializer will fill them later.
+				numRows := int(crr.rrs[0].Record().NumRows())
+				arr, err := GenerateEmptyArrayFromSchema(f, numRows)
+				if err != nil {
+					return nil, err
+				}
+				recs[i] = arr
+			}
+		}
+		return &compositeRecord{
+			index: crr.index,
+			recs:  recs,
+		}, nil
+	}
+
+	// Try compose records
+	r, err := composeRecord()
+	if err == io.EOF {
+		// if EOF, try iterate next batch (blob)
+		if err := crr.iterateNextBatch(); err != nil {
+			return nil, err
+		}
+		r, err = composeRecord() // try compose again
+	}
+	if err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+func (crr *CompositeBinlogRecordReader) SetNeededFields(neededFields typeutil.Set[int64]) {
+	if neededFields == nil {
+		return
+	}
+
+	crr.schema = &schemapb.CollectionSchema{
+		Fields: lo.Filter(crr.schema.GetFields(), func(field *schemapb.FieldSchema, _ int) bool {
+			return neededFields.Contain(field.GetFieldID())
+		}),
+	}
+	index := make(map[FieldID]int16)
+	for i, f := range crr.schema.Fields {
+		index[f.FieldID] = int16(i)
+	}
+	crr.index = index
+}
+
+func (crr *CompositeBinlogRecordReader) Close() error {
+	if crr.brs != nil {
+		for _, er := range crr.brs {
+			if er != nil {
+				er.Close()
+			}
+		}
+	}
+	if crr.rrs != nil {
+		for _, rr := range crr.rrs {
+			if rr != nil {
+				rr.Release()
+			}
+		}
+	}
+	return nil
+}
+
 func parseBlobKey(blobKey string) (colId FieldID, logId UniqueID) {
 	if _, _, _, colId, logId, ok := metautil.ParseInsertLogPath(blobKey); ok {
 		return colId, logId
@@ -83,47 +227,10 @@ func MakeBlobsReader(blobs []*Blob) ChunkedBlobsReader {
 	}
 }
 
-func newCompositeBinlogRecordReader(
-	schema *schemapb.CollectionSchema,
-	neededFields typeutil.Set[int64],
-	blobs []*Blob,
-	opts ...BinlogReaderOption,
-) (*CompositeBinlogRecordReader, error) {
-	allFields := typeutil.GetAllFieldSchemas(schema)
-	if neededFields != nil {
-		allFields = lo.Filter(allFields, func(field *schemapb.FieldSchema, _ int) bool {
-			return neededFields.Contain(field.GetFieldID())
-		})
-	}
-
-	idx := 0
+func newCompositeBinlogRecordReader(schema *schemapb.CollectionSchema, blobsReader ChunkedBlobsReader) (*CompositeBinlogRecordReader, error) {
 	index := make(map[FieldID]int16)
-	fields := make(map[FieldID]*schemapb.FieldSchema)
-	for _, f := range allFields {
-		index[f.FieldID] = int16(idx)
-		fields[f.FieldID] = f
-		idx++
-	}
-
-	rrs := make([]array.RecordReader, len(allFields))
-	brs := make([]*BinlogReader, len(allFields))
-	for _, b := range blobs {
-		reader, err := NewBinlogReader(b.Value, opts...)
-		if err != nil {
-			return nil, err
-		}
-
-		er, err := reader.NextEventReader()
-		if err != nil {
-			return nil, err
-		}
-		i := index[reader.FieldID]
-		rr, err := er.GetArrowRecordReader()
-		if err != nil {
-			return nil, err
-		}
-		rrs[i] = rr
-		brs[i] = reader
+	for i, f := range schema.Fields {
+		index[f.FieldID] = int16(i)
 	}
 
 	return &CompositeBinlogRecordReader{
@@ -134,35 +241,9 @@ func newCompositeBinlogRecordReader(
 	}, nil
 }
 
-func newIterativeCompositeBinlogRecordReader(
-	schema *schemapb.CollectionSchema,
-	neededFields typeutil.Set[int64],
-	chunkedBlobs ChunkedBlobsReader,
-	opts ...BinlogReaderOption,
-) *IterativeRecordReader {
-	return &IterativeRecordReader{
-		iterate: func() (RecordReader, error) {
-			blobs, err := chunkedBlobs()
-			if err != nil {
-				return nil, err
-			}
-			return newCompositeBinlogRecordReader(schema, neededFields, blobs, opts...)
-		},
-	}
-}
-
-func ValueDeserializerWithSelectedFields(r Record, v []*Value, fieldSchema []*schemapb.FieldSchema, shouldCopy bool) error {
-	return valueDeserializer(r, v, fieldSchema, shouldCopy)
-}
-
-func ValueDeserializerWithSchema(r Record, v []*Value, schema *schemapb.CollectionSchema, shouldCopy bool) error {
-	allFields := typeutil.GetAllFieldSchemas(schema)
-	return valueDeserializer(r, v, allFields, shouldCopy)
-}
-
-func valueDeserializer(r Record, v []*Value, fields []*schemapb.FieldSchema, shouldCopy bool) error {
+func ValueDeserializer(r Record, v []*Value, fieldSchema []*schemapb.FieldSchema, shouldCopy bool) error {
 	pkField := func() *schemapb.FieldSchema {
-		for _, field := range fields {
+		for _, field := range fieldSchema {
 			if field.GetIsPrimaryKey() {
 				return field
 			}
@@ -177,12 +258,12 @@ func valueDeserializer(r Record, v []*Value, fields []*schemapb.FieldSchema, sho
 		value := v[i]
 		if value == nil {
 			value = &Value{}
-			value.Value = make(map[FieldID]interface{}, len(fields))
+			value.Value = make(map[FieldID]interface{}, len(fieldSchema))
 			v[i] = value
 		}
 
 		m := value.Value.(map[FieldID]interface{})
-		for _, f := range fields {
+		for _, f := range fieldSchema {
 			j := f.FieldID
 			dt := f.DataType
 			if r.Column(j).IsNull(i) {
@@ -192,22 +273,12 @@ func valueDeserializer(r Record, v []*Value, fields []*schemapb.FieldSchema, sho
 					m[j] = nil
 				}
 			} else {
-				// Get element type and dim for ArrayOfVector, otherwise use defaults
-				elementType := schemapb.DataType_None
-				dim := 0
-				if typeutil.IsVectorType(dt) {
-					dimValue, _ := typeutil.GetDim(f)
-					dim = int(dimValue)
+				d, ok := serdeMap[dt].deserialize(r.Column(j), i, shouldCopy)
+				if ok {
+					m[j] = d // TODO: avoid memory copy here.
+				} else {
+					return merr.WrapErrServiceInternal(fmt.Sprintf("unexpected type %s", dt))
 				}
-				if dt == schemapb.DataType_ArrayOfVector {
-					elementType = f.GetElementType()
-				}
-
-				d, err := serdeMap[dt].deserialize(r.Column(j), i, elementType, dim, shouldCopy)
-				if err != nil {
-					return merr.WrapErrServiceInternalMsg("deserialize error on type %s: %v", dt, err)
-				}
-				m[j] = d // TODO: avoid memory copy here.
 			}
 		}
 
@@ -234,7 +305,7 @@ func NewBinlogDeserializeReader(schema *schemapb.CollectionSchema, blobsReader C
 ) (*DeserializeReaderImpl[*Value], error) {
 	reader := newIterativeCompositeBinlogRecordReader(schema, nil, blobsReader)
 	return NewDeserializeReader(reader, func(r Record, v []*Value) error {
-		return ValueDeserializerWithSchema(r, v, schema, shouldCopy)
+		return ValueDeserializer(r, v, schema.Fields, shouldCopy)
 	}), nil
 }
 
@@ -381,92 +452,27 @@ func (bsw *BinlogStreamWriter) writeBinlogHeaders(w io.Writer) error {
 	return nil
 }
 
-func newBinlogWriter(collectionID, partitionID, segmentID UniqueID,
-	field *schemapb.FieldSchema,
-) *BinlogStreamWriter {
-	return &BinlogStreamWriter{
-		collectionID: collectionID,
-		partitionID:  partitionID,
-		segmentID:    segmentID,
-		fieldSchema:  field,
-	}
-}
-
 func NewBinlogStreamWriters(collectionID, partitionID, segmentID UniqueID,
-	schema *schemapb.CollectionSchema,
-	writerOptions ...StreamWriterOption,
+	schema []*schemapb.FieldSchema,
 ) map[FieldID]*BinlogStreamWriter {
-	bws := make(map[FieldID]*BinlogStreamWriter)
-
-	for _, f := range schema.Fields {
-		writer := newBinlogWriter(collectionID, partitionID, segmentID, f)
-		for _, writerOption := range writerOptions {
-			writerOption(writer)
-		}
-		bws[f.FieldID] = writer
-	}
-
-	for _, structField := range schema.StructArrayFields {
-		for _, subField := range structField.Fields {
-			writer := newBinlogWriter(collectionID, partitionID, segmentID, subField)
-			for _, writerOption := range writerOptions {
-				writerOption(writer)
-			}
-			bws[subField.FieldID] = writer
+	bws := make(map[FieldID]*BinlogStreamWriter, len(schema))
+	for _, f := range schema {
+		bws[f.FieldID] = &BinlogStreamWriter{
+			collectionID: collectionID,
+			partitionID:  partitionID,
+			segmentID:    segmentID,
+			fieldSchema:  f,
 		}
 	}
-
 	return bws
 }
 
-func ValueSerializer(v []*Value, schema *schemapb.CollectionSchema) (Record, error) {
-	allFieldsSchema := schema.Fields
-	for _, structField := range schema.StructArrayFields {
-		allFieldsSchema = append(allFieldsSchema, structField.Fields...)
-	}
-	arrowSchema, err := ConvertToArrowSchema(schema, false)
-	if err != nil {
-		return nil, err
-	}
-
-	types := make(map[FieldID]schemapb.DataType, len(allFieldsSchema))
-	textRefFields := make(map[FieldID]struct{})
-	for _, f := range allFieldsSchema {
-		types[f.FieldID] = f.DataType
-	}
-	for _, vv := range v {
-		m := vv.Value.(map[FieldID]any)
-		for fid, value := range m {
-			if types[fid] != schemapb.DataType_Text {
-				continue
-			}
-			switch value.(type) {
-			case TextLobRef:
-				textRefFields[fid] = struct{}{}
-			}
-		}
-	}
-	if len(textRefFields) > 0 {
-		fields := make([]arrow.Field, arrowSchema.NumFields())
-		for i := 0; i < arrowSchema.NumFields(); i++ {
-			fields[i] = arrowSchema.Field(i)
-			if i < len(allFieldsSchema) {
-				if _, ok := textRefFields[allFieldsSchema[i].FieldID]; ok {
-					fields[i].Type = arrow.BinaryTypes.Binary
-				}
-			}
-		}
-		arrowSchema = arrow.NewSchema(fields, nil)
-	}
-
-	builders := make(map[FieldID]array.Builder, len(allFieldsSchema))
-	elementTypes := make(map[FieldID]schemapb.DataType, len(allFieldsSchema)) // For ArrayOfVector
-	for i, f := range allFieldsSchema {
-		if f.DataType == schemapb.DataType_ArrayOfVector {
-			elementTypes[f.FieldID] = f.GetElementType()
-		}
-
-		builders[f.FieldID] = array.NewBuilder(memory.DefaultAllocator, arrowSchema.Field(i).Type)
+func ValueSerializer(v []*Value, fieldSchema []*schemapb.FieldSchema) (Record, error) {
+	builders := make(map[FieldID]array.Builder, len(fieldSchema))
+	types := make(map[FieldID]schemapb.DataType, len(fieldSchema))
+	for _, f := range fieldSchema {
+		dim, _ := typeutil.GetDim(f)
+		builders[f.FieldID] = array.NewBuilder(memory.DefaultAllocator, serdeMap[f.DataType].arrowType(int(dim)))
 		builders[f.FieldID].Reserve(len(v)) // reserve space to avoid copy
 	}
 
@@ -478,22 +484,16 @@ func ValueSerializer(v []*Value, schema *schemapb.CollectionSchema) (Record, err
 			if !ok {
 				panic("unknown type")
 			}
-
-			// Get element type for ArrayOfVector, otherwise use None
-			elementType := schemapb.DataType_None
-			if types[fid] == schemapb.DataType_ArrayOfVector {
-				elementType = elementTypes[fid]
-			}
-
-			if err := typeEntry.serialize(builders[fid], e, elementType); err != nil {
-				return nil, merr.WrapErrServiceInternalMsg("serialize error on type %s: %v", types[fid], err)
+			ok = typeEntry.serialize(builders[fid], e)
+			if !ok {
+				return nil, merr.WrapErrServiceInternal(fmt.Sprintf("serialize error on type %s", types[fid]))
 			}
 		}
 	}
-	arrays := make([]arrow.Array, len(allFieldsSchema))
-	fields := make([]arrow.Field, len(allFieldsSchema))
-	field2Col := make(map[FieldID]int, len(allFieldsSchema))
-	for i, field := range allFieldsSchema {
+	arrays := make([]arrow.Array, len(fieldSchema))
+	fields := make([]arrow.Field, len(fieldSchema))
+	field2Col := make(map[FieldID]int, len(fieldSchema))
+	for i, field := range fieldSchema {
 		builder := builders[field.FieldID]
 		arrays[i] = builder.NewArray()
 		builder.Release()
@@ -604,7 +604,7 @@ func (c *CompositeBinlogRecordWriter) Write(r Record) error {
 
 func (c *CompositeBinlogRecordWriter) initWriters() error {
 	if c.rw == nil {
-		c.fieldWriters = NewBinlogStreamWriters(c.collectionID, c.partitionID, c.segmentID, c.schema, c.options...)
+		c.fieldWriters = NewBinlogStreamWriters(c.collectionID, c.partitionID, c.segmentID, c.schema.Fields)
 		rws := make(map[FieldID]RecordWriter, len(c.fieldWriters))
 		for fid, w := range c.fieldWriters {
 			rw, err := w.GetRecordWriter()
@@ -813,7 +813,7 @@ func NewBinlogValueWriter(rw BinlogRecordWriter, batchSize int,
 	return &BinlogValueWriter{
 		BinlogRecordWriter: rw,
 		SerializeWriter: NewSerializeRecordWriter(rw, func(v []*Value) (Record, error) {
-			return ValueSerializer(v, rw.Schema())
+			return ValueSerializer(v, rw.Schema().Fields)
 		}, batchSize),
 	}
 }
@@ -844,7 +844,456 @@ func NewBinlogSerializeWriter(schema *schemapb.CollectionSchema, partitionID, se
 	return &BinlogSerializeWriter{
 		RecordWriter: compositeRecordWriter,
 		SerializeWriter: NewSerializeRecordWriter[*Value](compositeRecordWriter, func(v []*Value) (Record, error) {
-			return ValueSerializer(v, schema)
+			return ValueSerializer(v, schema.Fields)
 		}, batchSize),
 	}, nil
+}
+
+type DeltalogStreamWriter struct {
+	collectionID UniqueID
+	partitionID  UniqueID
+	segmentID    UniqueID
+	fieldSchema  *schemapb.FieldSchema
+
+	buf bytes.Buffer
+	rw  *singleFieldRecordWriter
+}
+
+func (dsw *DeltalogStreamWriter) GetRecordWriter() (RecordWriter, error) {
+	if dsw.rw != nil {
+		return dsw.rw, nil
+	}
+	rw, err := newSingleFieldRecordWriter(dsw.fieldSchema, &dsw.buf, WithRecordWriterProps(getFieldWriterProps(dsw.fieldSchema)))
+	if err != nil {
+		return nil, err
+	}
+	dsw.rw = rw
+	return rw, nil
+}
+
+func (dsw *DeltalogStreamWriter) Finalize() (*Blob, error) {
+	if dsw.rw == nil {
+		return nil, io.ErrUnexpectedEOF
+	}
+	dsw.rw.Close()
+
+	var b bytes.Buffer
+	if err := dsw.writeDeltalogHeaders(&b); err != nil {
+		return nil, err
+	}
+	if _, err := b.Write(dsw.buf.Bytes()); err != nil {
+		return nil, err
+	}
+	return &Blob{
+		Value:      b.Bytes(),
+		RowNum:     int64(dsw.rw.numRows),
+		MemorySize: int64(dsw.rw.writtenUncompressed),
+	}, nil
+}
+
+func (dsw *DeltalogStreamWriter) writeDeltalogHeaders(w io.Writer) error {
+	// Write magic number
+	if err := binary.Write(w, common.Endian, MagicNumber); err != nil {
+		return err
+	}
+	// Write descriptor
+	de := NewBaseDescriptorEvent(dsw.collectionID, dsw.partitionID, dsw.segmentID)
+	de.PayloadDataType = dsw.fieldSchema.DataType
+	de.descriptorEventData.AddExtra(originalSizeKey, strconv.Itoa(int(dsw.rw.writtenUncompressed)))
+	if err := de.Write(w); err != nil {
+		return err
+	}
+	// Write event header
+	eh := newEventHeader(DeleteEventType)
+	// Write event data
+	ev := newDeleteEventData()
+	ev.StartTimestamp = 1
+	ev.EndTimestamp = 1
+	eh.EventLength = int32(dsw.buf.Len()) + eh.GetMemoryUsageInBytes() + int32(binary.Size(ev))
+	// eh.NextPosition = eh.EventLength + w.Offset()
+	if err := eh.Write(w); err != nil {
+		return err
+	}
+	if err := ev.WriteEventData(w); err != nil {
+		return err
+	}
+	return nil
+}
+
+func newDeltalogStreamWriter(collectionID, partitionID, segmentID UniqueID) *DeltalogStreamWriter {
+	return &DeltalogStreamWriter{
+		collectionID: collectionID,
+		partitionID:  partitionID,
+		segmentID:    segmentID,
+		fieldSchema: &schemapb.FieldSchema{
+			FieldID:  common.RowIDField,
+			Name:     "delta",
+			DataType: schemapb.DataType_String,
+		},
+	}
+}
+
+func newDeltalogSerializeWriter(eventWriter *DeltalogStreamWriter, batchSize int) (*SerializeWriterImpl[*DeleteLog], error) {
+	rws := make(map[FieldID]RecordWriter, 1)
+	rw, err := eventWriter.GetRecordWriter()
+	if err != nil {
+		return nil, err
+	}
+	rws[0] = rw
+	compositeRecordWriter := NewCompositeRecordWriter(rws)
+	return NewSerializeRecordWriter(compositeRecordWriter, func(v []*DeleteLog) (Record, error) {
+		builder := array.NewBuilder(memory.DefaultAllocator, arrow.BinaryTypes.String)
+
+		for _, vv := range v {
+			strVal, err := json.Marshal(vv)
+			if err != nil {
+				return nil, err
+			}
+
+			builder.AppendValueFromString(string(strVal))
+		}
+		arr := []arrow.Array{builder.NewArray()}
+		field := []arrow.Field{{
+			Name:     "delta",
+			Type:     arrow.BinaryTypes.String,
+			Nullable: false,
+		}}
+		field2Col := map[FieldID]int{
+			0: 0,
+		}
+		return NewSimpleArrowRecord(array.NewRecord(arrow.NewSchema(field, nil), arr, int64(len(v))), field2Col), nil
+	}, batchSize), nil
+}
+
+var _ RecordReader = (*simpleArrowRecordReader)(nil)
+
+type simpleArrowRecordReader struct {
+	blobs []*Blob
+
+	blobPos int
+	rr      array.RecordReader
+	closer  func()
+
+	r simpleArrowRecord
+}
+
+func (crr *simpleArrowRecordReader) iterateNextBatch() error {
+	if crr.closer != nil {
+		crr.closer()
+	}
+
+	crr.blobPos++
+	if crr.blobPos >= len(crr.blobs) {
+		return io.EOF
+	}
+
+	reader, err := NewBinlogReader(crr.blobs[crr.blobPos].Value)
+	if err != nil {
+		return err
+	}
+
+	er, err := reader.NextEventReader()
+	if err != nil {
+		return err
+	}
+	rr, err := er.GetArrowRecordReader()
+	if err != nil {
+		return err
+	}
+	crr.rr = rr
+	crr.closer = func() {
+		crr.rr.Release()
+		er.Close()
+		reader.Close()
+	}
+
+	return nil
+}
+
+func (crr *simpleArrowRecordReader) Next() (Record, error) {
+	if crr.rr == nil {
+		if len(crr.blobs) == 0 {
+			return nil, io.EOF
+		}
+		crr.blobPos = -1
+		crr.r = simpleArrowRecord{
+			field2Col: make(map[FieldID]int),
+		}
+		if err := crr.iterateNextBatch(); err != nil {
+			return nil, err
+		}
+	}
+
+	composeRecord := func() bool {
+		if ok := crr.rr.Next(); !ok {
+			return false
+		}
+		record := crr.rr.Record()
+		for i := range record.Schema().Fields() {
+			crr.r.field2Col[FieldID(i)] = i
+		}
+		crr.r.r = record
+		return true
+	}
+
+	if ok := composeRecord(); !ok {
+		if err := crr.iterateNextBatch(); err != nil {
+			return nil, err
+		}
+		if ok := composeRecord(); !ok {
+			return nil, io.EOF
+		}
+	}
+	return &crr.r, nil
+}
+
+func (crr *simpleArrowRecordReader) SetNeededFields(_ typeutil.Set[int64]) {
+	// no-op for simple arrow record reader
+}
+
+func (crr *simpleArrowRecordReader) Close() error {
+	if crr.closer != nil {
+		crr.closer()
+	}
+	return nil
+}
+
+func newSimpleArrowRecordReader(blobs []*Blob) (*simpleArrowRecordReader, error) {
+	return &simpleArrowRecordReader{
+		blobs: blobs,
+	}, nil
+}
+
+func newMultiFieldDeltalogStreamWriter(collectionID, partitionID, segmentID UniqueID, pkType schemapb.DataType) *MultiFieldDeltalogStreamWriter {
+	return &MultiFieldDeltalogStreamWriter{
+		collectionID: collectionID,
+		partitionID:  partitionID,
+		segmentID:    segmentID,
+		pkType:       pkType,
+	}
+}
+
+type MultiFieldDeltalogStreamWriter struct {
+	collectionID UniqueID
+	partitionID  UniqueID
+	segmentID    UniqueID
+	pkType       schemapb.DataType
+
+	buf bytes.Buffer
+	rw  *multiFieldRecordWriter
+}
+
+func (dsw *MultiFieldDeltalogStreamWriter) GetRecordWriter() (RecordWriter, error) {
+	if dsw.rw != nil {
+		return dsw.rw, nil
+	}
+
+	fieldIDs := []FieldID{common.RowIDField, common.TimeStampField} // Not used.
+	fields := []arrow.Field{
+		{
+			Name:     "pk",
+			Type:     serdeMap[dsw.pkType].arrowType(0),
+			Nullable: false,
+		},
+		{
+			Name:     "ts",
+			Type:     arrow.PrimitiveTypes.Int64,
+			Nullable: false,
+		},
+	}
+
+	rw, err := newMultiFieldRecordWriter(fieldIDs, fields, &dsw.buf)
+	if err != nil {
+		return nil, err
+	}
+	dsw.rw = rw
+	return rw, nil
+}
+
+func (dsw *MultiFieldDeltalogStreamWriter) Finalize() (*Blob, error) {
+	if dsw.rw == nil {
+		return nil, io.ErrUnexpectedEOF
+	}
+	dsw.rw.Close()
+
+	var b bytes.Buffer
+	if err := dsw.writeDeltalogHeaders(&b); err != nil {
+		return nil, err
+	}
+	if _, err := b.Write(dsw.buf.Bytes()); err != nil {
+		return nil, err
+	}
+	return &Blob{
+		Value:      b.Bytes(),
+		RowNum:     int64(dsw.rw.numRows),
+		MemorySize: int64(dsw.rw.writtenUncompressed),
+	}, nil
+}
+
+func (dsw *MultiFieldDeltalogStreamWriter) writeDeltalogHeaders(w io.Writer) error {
+	// Write magic number
+	if err := binary.Write(w, common.Endian, MagicNumber); err != nil {
+		return err
+	}
+	// Write descriptor
+	de := NewBaseDescriptorEvent(dsw.collectionID, dsw.partitionID, dsw.segmentID)
+	de.PayloadDataType = schemapb.DataType_Int64
+	de.descriptorEventData.AddExtra(originalSizeKey, strconv.Itoa(int(dsw.rw.writtenUncompressed)))
+	de.descriptorEventData.AddExtra(version, MultiField)
+	if err := de.Write(w); err != nil {
+		return err
+	}
+	// Write event header
+	eh := newEventHeader(DeleteEventType)
+	// Write event data
+	ev := newDeleteEventData()
+	ev.StartTimestamp = 1
+	ev.EndTimestamp = 1
+	eh.EventLength = int32(dsw.buf.Len()) + eh.GetMemoryUsageInBytes() + int32(binary.Size(ev))
+	// eh.NextPosition = eh.EventLength + w.Offset()
+	if err := eh.Write(w); err != nil {
+		return err
+	}
+	if err := ev.WriteEventData(w); err != nil {
+		return err
+	}
+	return nil
+}
+
+func newDeltalogMultiFieldWriter(eventWriter *MultiFieldDeltalogStreamWriter, batchSize int) (*SerializeWriterImpl[*DeleteLog], error) {
+	rw, err := eventWriter.GetRecordWriter()
+	if err != nil {
+		return nil, err
+	}
+	return NewSerializeRecordWriter[*DeleteLog](rw, func(v []*DeleteLog) (Record, error) {
+		fields := []arrow.Field{
+			{
+				Name:     "pk",
+				Type:     serdeMap[schemapb.DataType(v[0].PkType)].arrowType(0),
+				Nullable: false,
+			},
+			{
+				Name:     "ts",
+				Type:     arrow.PrimitiveTypes.Int64,
+				Nullable: false,
+			},
+		}
+		arrowSchema := arrow.NewSchema(fields, nil)
+		builder := array.NewRecordBuilder(memory.DefaultAllocator, arrowSchema)
+		defer builder.Release()
+
+		pkType := schemapb.DataType(v[0].PkType)
+		switch pkType {
+		case schemapb.DataType_Int64:
+			pb := builder.Field(0).(*array.Int64Builder)
+			for _, vv := range v {
+				pk := vv.Pk.GetValue().(int64)
+				pb.Append(pk)
+			}
+		case schemapb.DataType_VarChar:
+			pb := builder.Field(0).(*array.StringBuilder)
+			for _, vv := range v {
+				pk := vv.Pk.GetValue().(string)
+				pb.Append(pk)
+			}
+		default:
+			return nil, fmt.Errorf("unexpected pk type %v", v[0].PkType)
+		}
+
+		for _, vv := range v {
+			builder.Field(1).(*array.Int64Builder).Append(int64(vv.Ts))
+		}
+
+		arr := []arrow.Array{builder.Field(0).NewArray(), builder.Field(1).NewArray()}
+
+		field2Col := map[FieldID]int{
+			common.RowIDField:     0,
+			common.TimeStampField: 1,
+		}
+		return NewSimpleArrowRecord(array.NewRecord(arrowSchema, arr, int64(len(v))), field2Col), nil
+	}, batchSize), nil
+}
+
+func newDeltalogMultiFieldReader(blobs []*Blob) (*DeserializeReaderImpl[*DeleteLog], error) {
+	reader, err := newSimpleArrowRecordReader(blobs)
+	if err != nil {
+		return nil, err
+	}
+	return NewDeserializeReader(reader, func(r Record, v []*DeleteLog) error {
+		rec, ok := r.(*simpleArrowRecord)
+		if !ok {
+			return errors.New("can not cast to simple arrow record")
+		}
+		fields := rec.r.Schema().Fields()
+		switch fields[0].Type.ID() {
+		case arrow.INT64:
+			arr := r.Column(0).(*array.Int64)
+			for j := 0; j < r.Len(); j++ {
+				if v[j] == nil {
+					v[j] = &DeleteLog{}
+				}
+				v[j].Pk = NewInt64PrimaryKey(arr.Value(j))
+			}
+		case arrow.STRING:
+			arr := r.Column(0).(*array.String)
+			for j := 0; j < r.Len(); j++ {
+				if v[j] == nil {
+					v[j] = &DeleteLog{}
+				}
+				v[j].Pk = NewVarCharPrimaryKey(arr.Value(j))
+			}
+		default:
+			return fmt.Errorf("unexpected delta log pkType %v", fields[0].Type.Name())
+		}
+
+		arr := r.Column(1).(*array.Int64)
+		for j := 0; j < r.Len(); j++ {
+			v[j].Ts = uint64(arr.Value(j))
+		}
+		return nil
+	}), nil
+}
+
+// NewDeltalogDeserializeReader is the entry point for the delta log reader.
+// It includes NewDeltalogOneFieldReader, which uses the existing log format with only one column in a log file,
+// and NewDeltalogMultiFieldReader, which uses the new format and supports multiple fields in a log file.
+func newDeltalogDeserializeReader(blobs []*Blob) (*DeserializeReaderImpl[*DeleteLog], error) {
+	if supportMultiFieldFormat(blobs) {
+		return newDeltalogMultiFieldReader(blobs)
+	}
+	return newDeltalogOneFieldReader(blobs)
+}
+
+// check delta log description data to see if it is the format with
+// pk and ts column separately
+func supportMultiFieldFormat(blobs []*Blob) bool {
+	if len(blobs) > 0 {
+		reader, err := NewBinlogReader(blobs[0].Value)
+		if err != nil {
+			return false
+		}
+		defer reader.Close()
+		version := reader.descriptorEventData.Extras[version]
+		return version != nil && version.(string) == MultiField
+	}
+	return false
+}
+
+func CreateDeltalogReader(blobs []*Blob) (*DeserializeReaderImpl[*DeleteLog], error) {
+	return newDeltalogDeserializeReader(blobs)
+}
+
+func CreateDeltalogWriter(collectionID, partitionID, segmentID UniqueID, pkType schemapb.DataType, batchSize int,
+) (*SerializeWriterImpl[*DeleteLog], func() (*Blob, error), error) {
+	format := paramtable.Get().DataNodeCfg.DeltalogFormat.GetValue()
+	if format == "json" {
+		eventWriter := newDeltalogStreamWriter(collectionID, partitionID, segmentID)
+		writer, err := newDeltalogSerializeWriter(eventWriter, batchSize)
+		return writer, eventWriter.Finalize, err
+	} else if format == "parquet" {
+		eventWriter := newMultiFieldDeltalogStreamWriter(collectionID, partitionID, segmentID, pkType)
+		writer, err := newDeltalogMultiFieldWriter(eventWriter, batchSize)
+		return writer, eventWriter.Finalize, err
+	}
+	return nil, nil, merr.WrapErrParameterInvalid("unsupported deltalog format %s", format)
 }

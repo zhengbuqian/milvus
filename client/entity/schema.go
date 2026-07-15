@@ -20,9 +20,8 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/samber/lo"
 
-	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
-	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
+	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
 )
 
 const (
@@ -135,52 +134,12 @@ func (s *Schema) ProtoMessage() *schemapb.CollectionSchema {
 		ExternalSource:     s.ExternalSource,
 		ExternalSpec:       s.ExternalSpec,
 	}
-	r.Fields = lo.FilterMap(s.Fields, func(field *Field, _ int) (*schemapb.FieldSchema, bool) {
-		if field.DataType == FieldTypeArray && field.ElementType == FieldTypeStruct {
-			return nil, false
-		}
-		return field.ProtoMessage(), true
+	r.Fields = lo.Map(s.Fields, func(field *Field, _ int) *schemapb.FieldSchema {
+		return field.ProtoMessage()
 	})
 
 	r.Functions = lo.Map(s.Functions, func(function *Function, _ int) *schemapb.FunctionSchema {
 		return function.ProtoMessage()
-	})
-
-	r.StructArrayFields = lo.FilterMap(s.Fields, func(field *Field, _ int) (*schemapb.StructArrayFieldSchema, bool) {
-		if field.DataType != FieldTypeArray || field.ElementType != FieldTypeStruct {
-			return nil, false
-		}
-		f := &schemapb.StructArrayFieldSchema{
-			Name:        field.Name,
-			Description: field.Description,
-			TypeParams:  MapKvPairs(field.TypeParams),
-			Nullable:    field.Nullable,
-		}
-		// max_capacity declared on the parent struct field must be carried onto each sub-field's
-		// type params — the server validates it per sub-field on insert.
-		parentMaxCap, hasParentMaxCap := field.TypeParams[TypeParamMaxCapacity]
-		if field.StructSchema != nil {
-			f.Fields = lo.Map(field.StructSchema.Fields, func(sub *Field, _ int) *schemapb.FieldSchema {
-				// translate to ArrayStruct
-				p := sub.ProtoMessage()
-				p.ElementType = p.DataType
-				if typeutil.IsVectorType(p.DataType) {
-					p.DataType = schemapb.DataType_ArrayOfVector
-				} else {
-					p.DataType = schemapb.DataType_Array
-				}
-				if hasParentMaxCap {
-					if _, ok := sub.TypeParams[TypeParamMaxCapacity]; !ok {
-						p.TypeParams = append(p.TypeParams, &commonpb.KeyValuePair{
-							Key:   TypeParamMaxCapacity,
-							Value: parentMaxCap,
-						})
-					}
-				}
-				return p
-			})
-		}
-		return f, true
 	})
 
 	return r

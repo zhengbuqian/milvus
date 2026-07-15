@@ -33,10 +33,6 @@
 #include "NamedType/underlying_functionalities.hpp"
 #include "boost/container/detail/std_fwd.hpp"
 #include "cachinglayer/CacheSlot.h"
-#include "cachinglayer/Utils.h"
-#include "common/Array.h"
-#include "common/ArrayOffsets.h"
-#include "common/BitsetView.h"
 #include "common/EasyAssert.h"
 #include "common/FieldMeta.h"
 #include "common/Json.h"
@@ -323,25 +319,7 @@ class SegmentInterface {
            SchemaPtr new_schema) = 0;
 
     virtual void
-    SetLoadInfo(milvus::proto::segcore::SegmentLoadInfo load_info) = 0;
-
-    virtual void
-    SetCommitTimestamp(uint64_t ts) {
-    }
-
-    virtual uint64_t
-    GetCommitTimestamp() const {
-        return 0;
-    }
-
-    virtual void
-    Load(milvus::tracer::TraceContext& trace_ctx,
-         milvus::OpContext* op_ctx) = 0;
-
-    // Get IArrayOffsets for element-level filtering on array fields
-    // Returns nullptr if the field doesn't have IArrayOffsets
-    virtual std::shared_ptr<const IArrayOffsets>
-    GetArrayOffsets(FieldId field_id) const = 0;
+    Load(milvus::tracer::TraceContext& trace_ctx) = 0;
 };
 
 // internal API for DSL calculation
@@ -354,34 +332,6 @@ class SegmentInternalInterface : public SegmentInterface {
                     const std::vector<int64_t>& chunk_ids) const {
         // do nothing
     }
-
-    // Convenience: prefetch all chunks of a field. Default impl enumerates
-    // [0, num_chunk(field_id)) and forwards to the typed overload.
-    virtual void
-    prefetch_chunks(milvus::OpContext* op_ctx, FieldId field_id) const {
-    }
-
-    virtual void
-    prefetch_vector(milvus::OpContext* op_ctx, FieldId field_id) const {
-    }
-
-    // Apply field nullability to an already-initialized valid_result bitmap.
-    // Implementations only clear invalid rows and leave valid rows unchanged.
-    virtual void
-    ApplyFieldValidData(milvus::OpContext* op_ctx,
-                        FieldId field_id,
-                        int64_t chunk_id,
-                        int64_t offset,
-                        int64_t size,
-                        TargetBitmapView valid_result) const = 0;
-
-    // Offsets are segment-level row offsets. valid_result must have count bits.
-    virtual void
-    ApplyFieldValidDataByOffsets(milvus::OpContext* op_ctx,
-                                 FieldId field_id,
-                                 const int64_t* offsets,
-                                 int64_t count,
-                                 TargetBitmapView valid_result) const = 0;
 
     template <typename T>
     PinWrapper<Span<T>>
@@ -405,11 +355,7 @@ class SegmentInternalInterface : public SegmentInterface {
             return chunk_string_view_impl(
                 op_ctx, field_id, chunk_id, offset_len);
         } else if constexpr (std::is_same_v<ViewType, ArrayView>) {
-            return chunk_array_view_impl(
-                op_ctx, field_id, chunk_id, offset_len);
-        } else if constexpr (std::is_same_v<ViewType, VectorArrayView>) {
-            return chunk_vector_array_view_impl(
-                op_ctx, field_id, chunk_id, offset_len);
+            return chunk_array_view_impl(field_id, chunk_id, offset_len);
         } else if constexpr (std::is_same_v<ViewType, Json>) {
             auto pw =
                 chunk_string_view_impl(op_ctx, field_id, chunk_id, offset_len);
@@ -610,14 +556,9 @@ class SegmentInternalInterface : public SegmentInterface {
     GetJsonStats(milvus::OpContext* op_ctx, FieldId field_id) const override;
 
  public:
-    // `query_offsets` is not null only for vector array (embedding list) search
-    // where it denotes the number of vectors in each embedding list. The length
-    // of `query_offsets` is the number of queries in the search plus one (the first
-    // element in query_offsets is 0).
     virtual void
     vector_search(SearchInfo& search_info,
                   const void* query_data,
-                  const size_t* query_offsets,
                   int64_t query_count,
                   Timestamp timestamp,
                   const BitsetView& bitset,
@@ -686,27 +627,7 @@ class SegmentInternalInterface : public SegmentInterface {
      * @return All candidates offsets.
      */
     virtual std::pair<std::vector<OffsetMap::OffsetType>, bool>
-    find_first_n(int64_t limit, const BitsetTypeView& bitset) const = 0;
-
-    /**
-     * Element-level version of find_first_n.
-     * Find the first N elements that pass the filter from an element-level bitset.
-     *
-     * @param limit Maximum number of elements to return
-     * @param element_bitset Element-level bitset (size = total_element_count)
-     * @param array_offsets Mapping between element IDs and (doc_id, element_index)
-     * @return tuple of:
-     *   - vector of unique doc_offsets (no duplicates)
-     *   - vector of element_indices per doc (element_indices[i] for doc_offsets[i])
-     *   - has_more_result flag
-     */
-    virtual std::
-        tuple<std::vector<int64_t>, std::vector<std::vector<int32_t>>, bool>
-        find_first_n_element(
-            int64_t limit,
-            const BitsetTypeView& element_bitset,
-            const IArrayOffsets* array_offsets,
-            const std::optional<QueryIteratorCursor>& cursor) const = 0;
+    find_first(int64_t limit, const BitsetTypeView& bitset) const = 0;
 
     void
     FillTargetEntryDirectly(
@@ -760,14 +681,6 @@ class SegmentInternalInterface : public SegmentInterface {
 
     virtual PinWrapper<std::pair<std::vector<ArrayView>, FixedVector<bool>>>
     chunk_array_view_impl(
-        milvus::OpContext* op_ctx,
-        FieldId field_id,
-        int64_t chunk_id,
-        std::optional<std::pair<int64_t, int64_t>> offset_len) const = 0;
-
-    virtual PinWrapper<
-        std::pair<std::vector<VectorArrayView>, FixedVector<bool>>>
-    chunk_vector_array_view_impl(
         milvus::OpContext* op_ctx,
         FieldId field_id,
         int64_t chunk_id,

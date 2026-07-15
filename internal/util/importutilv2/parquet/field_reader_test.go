@@ -3,7 +3,6 @@ package parquet
 import (
 	"context"
 	"fmt"
-	"math"
 	"math/rand"
 	"os"
 	"strings"
@@ -60,7 +59,7 @@ func TestInvalidUTF8(t *testing.T) {
 	wf, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0o666)
 	assert.NoError(t, err)
 
-	pqSchema, err := ConvertToArrowSchemaForUT(schema, false)
+	pqSchema, err := ConvertToArrowSchema(schema, false)
 	assert.NoError(t, err)
 	fw, err := pqarrow.NewFileWriter(pqSchema, wf,
 		parquet.NewWriterProperties(parquet.WithMaxRowGroupLength(numRows)), pqarrow.DefaultWriterProps())
@@ -1328,126 +1327,4 @@ func TestArrayNullElement(t *testing.T) {
 			checkFunc(tt.dataType, tt.elementType)
 		})
 	}
-}
-
-func TestStructFieldReader_toScalarField_TypeMismatch(t *testing.T) {
-	tests := []struct {
-		name        string
-		elementType schemapb.DataType
-		data        []interface{}
-	}{
-		{"Bool_wrong_type", schemapb.DataType_Bool, []interface{}{"not_a_bool"}},
-		{"Int8_wrong_type", schemapb.DataType_Int8, []interface{}{"not_an_int8"}},
-		{"Int16_wrong_type", schemapb.DataType_Int16, []interface{}{3.14}},
-		{"Int32_wrong_type", schemapb.DataType_Int32, []interface{}{true}},
-		{"Int64_wrong_type", schemapb.DataType_Int64, []interface{}{"not_an_int64"}},
-		{"Float_wrong_type", schemapb.DataType_Float, []interface{}{int32(1)}},
-		{"Double_wrong_type", schemapb.DataType_Double, []interface{}{int64(1)}},
-		{"VarChar_wrong_type", schemapb.DataType_VarChar, []interface{}{123}},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			reader := &StructFieldReader{
-				field: &schemapb.FieldSchema{
-					Name:        "test_field",
-					DataType:    schemapb.DataType_Array,
-					ElementType: tt.elementType,
-				},
-			}
-			_, err := reader.toScalarField(tt.data)
-			assert.Error(t, err)
-			assert.Contains(t, err.Error(), "expected")
-		})
-	}
-}
-
-func TestStructFieldReader_NullableArrayOfVector(t *testing.T) {
-	mem := memory.NewGoAllocator()
-	structType := arrow.StructOf(arrow.Field{
-		Name:     "vector_array",
-		Type:     arrow.ListOf(arrow.PrimitiveTypes.Float32),
-		Nullable: true,
-	})
-	listBuilder := array.NewListBuilder(mem, structType)
-	structBuilder := listBuilder.ValueBuilder().(*array.StructBuilder)
-	vectorBuilder := structBuilder.FieldBuilder(0).(*array.ListBuilder)
-	floatBuilder := vectorBuilder.ValueBuilder().(*array.Float32Builder)
-
-	appendVector := func(values ...float32) {
-		vectorBuilder.Append(true)
-		floatBuilder.AppendValues(values, nil)
-		structBuilder.Append(true)
-	}
-	listBuilder.Append(true)
-	appendVector(1, 2, 3, 4)
-	appendVector(5, 6, 7, 8)
-	listBuilder.Append(false)
-	listBuilder.Append(true)
-	appendVector(9, 10, 11, 12)
-
-	arr := listBuilder.NewArray()
-	listBuilder.Release()
-	defer arr.Release()
-
-	chunked := arrow.NewChunked(arr.DataType(), []arrow.Array{arr})
-	defer chunked.Release()
-
-	reader := &StructFieldReader{
-		field: &schemapb.FieldSchema{
-			Name:        "struct_array[vector_array]",
-			DataType:    schemapb.DataType_ArrayOfVector,
-			ElementType: schemapb.DataType_FloatVector,
-			Nullable:    true,
-			TypeParams: []*commonpb.KeyValuePair{
-				{Key: common.MaxCapacityKey, Value: "20"},
-			},
-		},
-		fieldIndex: 0,
-		dim:        4,
-	}
-
-	data, validData, err := reader.readArrayOfVectorField(chunked)
-	assert.NoError(t, err)
-
-	rows := data.([]*schemapb.VectorField)
-	assert.Equal(t, 3, len(rows))
-	assert.Equal(t, []bool{true, false, true}, validData.([]bool))
-	assert.Equal(t, []float32{1, 2, 3, 4, 5, 6, 7, 8}, rows[0].GetFloatVector().GetData())
-	assert.Empty(t, rows[1].GetFloatVector().GetData())
-	assert.Equal(t, []float32{9, 10, 11, 12}, rows[2].GetFloatVector().GetData())
-}
-
-func TestBuildVectorArrayFieldRejectsInvalidFloat(t *testing.T) {
-	field := &schemapb.FieldSchema{
-		Name:        "struct_array[vector_array]",
-		DataType:    schemapb.DataType_ArrayOfVector,
-		ElementType: schemapb.DataType_FloatVector,
-	}
-
-	t.Run("list format", func(t *testing.T) {
-		mem := memory.NewGoAllocator()
-		vectorBuilder := array.NewListBuilder(mem, arrow.PrimitiveTypes.Float32)
-		floatBuilder := vectorBuilder.ValueBuilder().(*array.Float32Builder)
-		vectorBuilder.Append(true)
-		floatBuilder.AppendValues([]float32{1, float32(math.NaN()), 3, 4}, nil)
-		vectors := vectorBuilder.NewArray().(*array.List)
-		vectorBuilder.Release()
-		defer vectors.Release()
-
-		_, err := buildVectorArrayFieldFromList(field, 4, vectors, 0, 1)
-		assert.Error(t, err)
-	})
-
-	t.Run("fixed size binary format", func(t *testing.T) {
-		mem := memory.NewGoAllocator()
-		builder := array.NewFixedSizeBinaryBuilder(mem, &arrow.FixedSizeBinaryType{ByteWidth: 16})
-		builder.Append(arrow.Float32Traits.CastToBytes([]float32{1, float32(math.Inf(1)), 3, 4}))
-		vectors := builder.NewArray().(*array.FixedSizeBinary)
-		builder.Release()
-		defer vectors.Release()
-
-		_, err := buildVectorArrayFieldFromFixedSizeBinary(field, 4, vectors, 0, 1)
-		assert.Error(t, err)
-	})
 }

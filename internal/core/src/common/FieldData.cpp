@@ -37,7 +37,6 @@
 #include "common/FieldDataInterface.h"
 #include "common/Geometry.h"
 #include "common/Json.h"
-#include "pb/schema.pb.h"
 #include "simdjson/padded_string.h"
 
 namespace milvus {
@@ -336,8 +335,8 @@ FieldDataImpl<Type, is_type_entire_row>::FillFieldData(
             std::vector<Array> values(element_count);
             int null_number = 0;
             for (size_t index = 0; index < element_count; ++index) {
-                auto str = array_array->GetString(index);
-                if (str.empty()) {
+                ScalarArray field_data;
+                if (array_array->GetString(index) == "") {
                     null_number++;
                     continue;
                 }
@@ -402,90 +401,6 @@ FieldDataImpl<Type, is_type_entire_row>::FillFieldData(
                 auto view = arr->GetString(index);
                 values.push_back(
                     CopyAndWrapSparseRow(view.data(), view.size()));
-            }
-            return FillFieldData(values.data(), element_count);
-        }
-        case DataType::VECTOR_ARRAY: {
-            auto list_array =
-                std::dynamic_pointer_cast<arrow::ListArray>(array);
-            AssertInfo(list_array != nullptr,
-                       "Failed to cast to ListArray for VECTOR_ARRAY");
-
-            auto vector_array_field =
-                dynamic_cast<FieldData<VectorArray>*>(this);
-            AssertInfo(vector_array_field != nullptr,
-                       "Failed to cast to FieldData<VectorArray>");
-            int64_t dim = vector_array_field->get_dim();
-            DataType element_type = vector_array_field->get_element_type();
-
-            AssertInfo(dim > 0, "Invalid dimension {} in VECTOR_ARRAY", dim);
-            AssertInfo(element_type != DataType::NONE,
-                       "Element type not set for VECTOR_ARRAY");
-
-            auto values_array = list_array->values();
-            std::vector<VectorArray> values;
-            values.reserve(nullable_ ? element_count - list_array->null_count()
-                                     : element_count);
-
-            switch (element_type) {
-                case DataType::VECTOR_FLOAT:
-                case DataType::VECTOR_BINARY:
-                case DataType::VECTOR_FLOAT16:
-                case DataType::VECTOR_BFLOAT16:
-                case DataType::VECTOR_INT8: {
-                    // All vector types use FixedSizeBinaryArray and have the same serialization logic
-                    auto binary_array =
-                        std::dynamic_pointer_cast<arrow::FixedSizeBinaryArray>(
-                            values_array);
-                    AssertInfo(binary_array != nullptr,
-                               "Expected FixedSizeBinaryArray for VectorArray "
-                               "element");
-
-                    // Calculate bytes per vector using the unified function
-                    auto bytes_per_vec =
-                        milvus::vector_bytes_per_element(element_type, dim);
-
-                    for (size_t index = 0; index < element_count; ++index) {
-                        if (nullable_ && list_array->IsNull(index)) {
-                            continue;
-                        }
-                        int64_t start_offset = list_array->value_offset(index);
-                        int64_t end_offset =
-                            list_array->value_offset(index + 1);
-                        int64_t num_vectors = end_offset - start_offset;
-
-                        auto data_size = num_vectors * bytes_per_vec;
-                        auto data_ptr =
-                            data_size > 0
-                                ? std::make_unique<uint8_t[]>(data_size)
-                                : nullptr;
-
-                        for (int64_t i = 0; i < num_vectors; i++) {
-                            const uint8_t* binary_data =
-                                binary_array->GetValue(start_offset + i);
-                            uint8_t* dest = data_ptr.get() + i * bytes_per_vec;
-                            milvus::fastmem::FastMemcpy(
-                                dest, binary_data, bytes_per_vec);
-                        }
-
-                        values.emplace_back(
-                            static_cast<const void*>(data_ptr.get()),
-                            num_vectors,
-                            dim,
-                            element_type);
-                    }
-                    break;
-                }
-                default:
-                    ThrowInfo(DataTypeInvalid,
-                              "Unsupported element type {} in VectorArray",
-                              GetDataTypeName(element_type));
-            }
-            if (nullable_) {
-                return FillFieldData(values.data(),
-                                     list_array->null_bitmap_data(),
-                                     element_count,
-                                     list_array->offset());
             }
             return FillFieldData(values.data(), element_count);
         }
@@ -660,9 +575,7 @@ template class FieldDataImpl<int8_t, false>;
 template class FieldDataImpl<float, false>;
 template class FieldDataImpl<float16, false>;
 template class FieldDataImpl<bfloat16, false>;
-template class FieldDataImpl<knowhere::sparse::SparseRow<SparseValueType>,
-                             true>;
-template class FieldDataImpl<VectorArray, true>;
+template class FieldDataImpl<knowhere::sparse::SparseRow<float>, true>;
 
 template <typename Type, bool is_type_entire_row>
 void

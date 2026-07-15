@@ -294,25 +294,6 @@ class ArrayChunkWriter : public ChunkWriterBase {
     std::vector<uint32_t> header_;
 };
 
-class VectorArrayChunkWriter : public ChunkWriterBase {
- public:
-    VectorArrayChunkWriter(int64_t dim,
-                           const milvus::DataType element_type,
-                           bool nullable)
-        : ChunkWriterBase(nullable), element_type_(element_type) {
-    }
-
-    std::pair<size_t, size_t>
-    calculate_size(const arrow::ArrayVector& array_vec) override;
-
-    void
-    write_to_target(const arrow::ArrayVector& array_vec,
-                    const std::shared_ptr<ChunkTarget>& target) override;
-
- private:
-    const milvus::DataType element_type_;
-};
-
 class SparseFloatVectorChunkWriter : public ChunkWriterBase {
  public:
     using ChunkWriterBase::ChunkWriterBase;

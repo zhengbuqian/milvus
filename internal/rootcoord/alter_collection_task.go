@@ -90,18 +90,6 @@ func ResetFieldProperties(coll *model.Collection, fieldName string, newProps []*
 			return nil
 		}
 	}
-	for i, structField := range coll.StructArrayFields {
-		if structField.Name == fieldName {
-			coll.StructArrayFields[i].TypeParams = newProps
-			return nil
-		}
-		for j, field := range structField.Fields {
-			if field.Name == fieldName {
-				coll.StructArrayFields[i].Fields[j].TypeParams = newProps
-				return nil
-			}
-		}
-	}
 	return merr.WrapErrParameterInvalidMsg("field %s does not exist in collection", fieldName)
 }
 
@@ -109,16 +97,6 @@ func GetFieldProperties(coll *model.Collection, fieldName string) ([]*commonpb.K
 	for _, field := range coll.Fields {
 		if field.Name == fieldName {
 			return field.TypeParams, nil
-		}
-	}
-	for _, structField := range coll.StructArrayFields {
-		if structField.Name == fieldName {
-			return structField.TypeParams, nil
-		}
-		for _, field := range structField.Fields {
-			if field.Name == fieldName {
-				return field.TypeParams, nil
-			}
 		}
 	}
 	return nil, merr.WrapErrParameterInvalidMsg("field %s does not exist in collection", fieldName)

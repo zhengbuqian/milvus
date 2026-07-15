@@ -258,12 +258,11 @@ WriteDiskValidData(const LocalChunkManagerPtr& local_chunk_manager,
 
 template <typename T>
 VectorDiskAnnIndex<T>::VectorDiskAnnIndex(
-    DataType elem_type,
     const IndexType& index_type,
     const MetricType& metric_type,
     const IndexVersion& version,
     const storage::FileManagerContext& file_manager_context)
-    : VectorIndex(index_type, metric_type), elem_type_(elem_type) {
+    : VectorIndex(index_type, metric_type) {
     CheckMetricTypeSupport<T>(metric_type);
     file_manager_ =
         std::make_shared<storage::DiskFileManagerImpl>(file_manager_context);
@@ -406,83 +405,11 @@ VectorDiskAnnIndex<T>::Build(const Config& config) {
     knowhere::Json build_config;
     build_config.update(config);
 
-    auto is_embedding_list = (elem_type_ != DataType::NONE);
-    Config config_with_emb_list = config;
-    config_with_emb_list[EMB_LIST] = is_embedding_list;
-    auto local_raw_data_prefix = file_manager_->GetLocalRawDataObjectPrefix();
-    auto raw_data_lease =
-        file_manager_->AcquireLocalDirWriteLease(local_raw_data_prefix);
-
-    std::string offsets_path;
-    // Set offsets path in config for VECTOR_ARRAY
-    if (is_embedding_list) {
-        offsets_path = local_raw_data_prefix + "offset";
-        config_with_emb_list[EMB_LIST_OFFSETS_PATH] = offsets_path;
-    }
-
-    // Set valid data path to track nullable vector fields
-    auto local_index_path_prefix = file_manager_->GetLocalIndexObjectPrefix();
-    auto index_lease =
-        file_manager_->AcquireLocalDirWriteLease(local_index_path_prefix);
-    auto valid_data_path = local_index_path_prefix + "/" + VALID_DATA_KEY;
-    config_with_emb_list[VALID_DATA_PATH_KEY] = valid_data_path;
-
-    auto local_data_path =
-        file_manager_->CacheRawDataToDisk<T>(config_with_emb_list);
+    auto segment_id = file_manager_->GetFieldDataMeta().segment_id;
+    auto local_data_path = file_manager_->CacheRawDataToDisk<T>(config);
     build_config[DISK_ANN_RAW_DATA_PATH] = local_data_path;
 
-    auto disk_valid_data =
-        ReadDiskValidData(local_chunk_manager, valid_data_path);
-    if (disk_valid_data.found) {
-        BuildValidDataFromBitmap(
-            this, disk_valid_data.total_count, disk_valid_data.bitmap.data());
-        if (disk_valid_data.valid_count == 0) {
-            auto dim = GetValueFromConfig<int64_t>(build_config, DIM_KEY);
-            if (dim.has_value()) {
-                SetDim(dim.value());
-            }
-            file_manager_->AddFile(valid_data_path);
-            file_manager_->RemoveRawDataFiles();
-            LOG_INFO("build all-null nullable disk index done, build_id: {}",
-                     config.value("build_id", "unknown"));
-            return;
-        }
-    }
-
-    // For VECTOR_ARRAY, verify offsets file exists and pass its path to build_config
-    if (is_embedding_list) {
-        auto offsets =
-            ReadDiskEmbListOffsets(local_chunk_manager, offsets_path);
-        if (!offsets.has_value()) {
-            ThrowInfo(ErrorCode::UnexpectedError,
-                      fmt::format("Embedding list offsets file not found: {}",
-                                  offsets_path));
-        }
-        if (offsets->back() == 0) {
-            auto dim = GetValueFromConfig<int64_t>(build_config, DIM_KEY);
-            AssertInfo(dim.has_value() && dim.value() > 0,
-                       "dim is missing when build empty emb_list disk index");
-            SetDim(dim.value());
-
-            auto empty_offsets_path =
-                local_index_path_prefix + "/" + EMPTY_EMB_LIST_OFFSET_KEY;
-            WriteDiskEmptyEmbListOffsets(local_chunk_manager,
-                                         empty_offsets_path,
-                                         GetDim(),
-                                         offsets.value());
-            file_manager_->AddFile(empty_offsets_path);
-            if (local_chunk_manager->Exist(valid_data_path)) {
-                file_manager_->AddFile(valid_data_path);
-            }
-            file_manager_->RemoveRawDataFiles();
-            empty_emb_list_offsets_ = std::move(offsets.value());
-            LOG_INFO("build all-empty emb_list disk index done, build_id: {}",
-                     config.value("build_id", "unknown"));
-            return;
-        }
-        build_config[EMB_LIST_OFFSETS_PATH] = offsets_path;
-    }
-
+    auto local_index_path_prefix = file_manager_->GetLocalIndexObjectPrefix();
     build_config[DISK_ANN_PREFIX_PATH] = local_index_path_prefix;
 
     if (GetIndexType() == knowhere::IndexEnum::INDEX_DISKANN) {
@@ -534,10 +461,6 @@ VectorDiskAnnIndex<T>::BuildWithDataset(const DatasetPtr& dataset,
         storage::LocalChunkManagerSingleton::GetInstance().GetChunkManager();
     knowhere::Json build_config;
     build_config.update(config);
-
-    auto is_embedding_list = (elem_type_ != DataType::NONE);
-    build_config[EMB_LIST] = is_embedding_list;
-
     // set data path
     auto local_raw_data_prefix = file_manager_->GetLocalRawDataObjectPrefix();
     auto raw_data_lease =
@@ -614,40 +537,6 @@ VectorDiskAnnIndex<T>::BuildWithDataset(const DatasetPtr& dataset,
     auto raw_data = const_cast<void*>(milvus::GetDatasetTensor(dataset));
     local_chunk_manager->Write(local_data_path, offset, raw_data, data_size);
 
-    // For VECTOR_ARRAY, write offsets to a separate file and pass the path to knowhere
-    if (elem_type_ != DataType::NONE) {
-        auto offsets =
-            dataset->Get<const size_t*>(knowhere::meta::EMB_LIST_OFFSET);
-        if (offsets == nullptr) {
-            ThrowInfo(ErrorCode::UnexpectedError,
-                      "Embedding list offsets is empty when build index");
-        }
-
-        // Write offsets to disk file (use same path convention as Build method)
-        std::string offsets_path = local_raw_data_prefix + "offset";
-        local_chunk_manager->CreateFile(offsets_path);
-
-        size_t total_vectors =
-            static_cast<size_t>(milvus::GetDatasetRows(dataset));
-        auto num_offsets =
-            GetEmbListNumOffsets(dataset, offsets, total_vectors);
-
-        // Write offsets to file
-        // Format: [num_offsets (size_t)][offsets_data (size_t array)]
-        int64_t write_pos = 0;
-        local_chunk_manager->Write(
-            offsets_path, write_pos, &num_offsets, sizeof(size_t));
-        write_pos += sizeof(size_t);
-
-        local_chunk_manager->Write(
-            offsets_path,
-            write_pos,
-            const_cast<void*>(static_cast<const void*>(offsets)),
-            num_offsets * sizeof(size_t));
-
-        build_config[EMB_LIST_OFFSETS_PATH] = offsets_path;
-    }
-
     auto stat = index_.Build({}, build_config);
     if (stat != knowhere::Status::success)
         ThrowInfo(ErrorCode::IndexBuildError,
@@ -676,7 +565,7 @@ VectorDiskAnnIndex<T>::Query(const DatasetPtr dataset,
                              SearchResult& search_result) const {
     AssertInfo(GetMetricType() == search_info.metric_type_,
                "Metric type of field index isn't the same with search info");
-    auto num_rows = dataset->GetRows();
+    auto num_queries = dataset->GetRows();
     auto topk = search_info.topk_;
 
     knowhere::Json search_config = PrepareSearchParams(search_info);
@@ -735,7 +624,7 @@ VectorDiskAnnIndex<T>::Query(const DatasetPtr dataset,
                                       res.what()));
             }
             return ReGenRangeSearchResult(
-                res.value(), topk, num_rows, GetMetricType());
+                res.value(), topk, num_queries, GetMetricType());
         } else {
             auto res =
                 index_.Search(dataset, search_config, bitset, op_context);
@@ -750,8 +639,6 @@ VectorDiskAnnIndex<T>::Query(const DatasetPtr dataset,
     }();
 
     auto ids = final->GetIds();
-    // In embedding list query, final->GetRows() can be different from dataset->GetRows().
-    auto num_queries = final->GetRows();
     float* distances = const_cast<float*>(final->GetDistance());
     final->SetIsOwner(true);
 
@@ -857,38 +744,14 @@ VectorDiskAnnIndex<T>::GetVector(const DatasetPtr dataset) const {
                               KnowhereStatusString(res.error()),
                               res.what()));
     }
-    return this->template DecodeVectorByIdsResult<T>(res.value());
-}
-
-template <typename T>
-std::pair<std::vector<uint8_t>, std::vector<size_t>>
-VectorDiskAnnIndex<T>::GetEmbListByIds(const DatasetPtr dataset,
-                                       const std::string& metric_type) const {
-    if (dataset->GetRows() == 0) {
-        return {{}, {0}};
-    }
-    if (IsEmptyEmbListIndex()) {
-        auto ids = dataset->GetIds();
-        auto rows = dataset->GetRows();
-        auto emb_list_count =
-            static_cast<int64_t>(empty_emb_list_offsets_.size()) - 1;
-        for (int64_t i = 0; i < rows; ++i) {
-            AssertInfo(ids[i] >= 0 && ids[i] < emb_list_count,
-                       "emb list id {} out of range {}",
-                       ids[i],
-                       emb_list_count);
-        }
-        return {{}, std::vector<size_t>(rows + 1, 0)};
-    }
-
-    auto res = index_.GetEmbListByIds(dataset, metric_type);
-    if (!res.has_value()) {
-        ThrowInfo(ErrorCode::UnexpectedError,
-                  fmt::format("failed to get emb list: {}: {}",
-                              KnowhereStatusString(res.error()),
-                              res.what()));
-    }
-    return this->template DecodeEmbListByIdsResult<T>(res.value());
+    auto tensor = res.value()->GetTensor();
+    auto row_num = res.value()->GetRows();
+    auto dim = res.value()->GetDim();
+    int64_t data_size = milvus::GetVecRowSize<T>(dim) * row_num;
+    std::vector<uint8_t> raw_data;
+    raw_data.resize(data_size);
+    memcpy(raw_data.data(), tensor, data_size);
+    return raw_data;
 }
 
 template <typename T>

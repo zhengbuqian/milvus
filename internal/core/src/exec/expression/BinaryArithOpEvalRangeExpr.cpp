@@ -26,7 +26,6 @@
 #include "common/EasyAssert.h"
 #include "common/Json.h"
 #include "common/Tracer.h"
-#include "common/VectorArray.h"
 #include "exec/expression/Expr.h"
 #include "exec/expression/Utils.h"
 #include "fmt/core.h"
@@ -48,11 +47,7 @@ PhyBinaryArithOpEvalRangeExpr::Eval(EvalCtx& context, VectorPtr& result) {
 
     auto input = context.get_offset_input();
     SetHasOffsetInput((input != nullptr));
-    auto data_type = expr_->column_.data_type_;
-    if (expr_->column_.element_level_) {
-        data_type = expr_->column_.element_type_;
-    }
-    switch (data_type) {
+    switch (expr_->column_.data_type_) {
         case DataType::BOOL: {
             result = ExecRangeVisitorImpl<bool>(input);
             break;
@@ -114,26 +109,6 @@ PhyBinaryArithOpEvalRangeExpr::Eval(EvalCtx& context, VectorPtr& result) {
                 }
                 case proto::plan::GenericValue::ValCase::kFloatVal: {
                     result = ExecRangeVisitorImplForArray<double>(input);
-                    break;
-                }
-                default: {
-                    ThrowInfo(
-                        DataTypeInvalid,
-                        fmt::format("unsupported value type {} in expression",
-                                    value_type));
-                }
-            }
-            break;
-        }
-        case DataType::VECTOR_ARRAY: {
-            auto value_type = expr_->value_.val_case();
-            switch (value_type) {
-                case proto::plan::GenericValue::ValCase::kInt64Val: {
-                    result = ExecRangeVisitorImplForVectorArray<int64_t>(input);
-                    break;
-                }
-                case proto::plan::GenericValue::ValCase::kFloatVal: {
-                    result = ExecRangeVisitorImplForVectorArray<double>(input);
                     break;
                 }
                 default: {
@@ -1132,100 +1107,6 @@ PhyBinaryArithOpEvalRangeExpr::ExecRangeVisitorImplForArray(
     return res_vec;
 }
 
-template <typename ValueType>
-VectorPtr
-PhyBinaryArithOpEvalRangeExpr::ExecRangeVisitorImplForVectorArray(
-    OffsetVector* input) {
-    if (expr_->arith_op_type_ != proto::plan::ArithOpType::ArrayLength) {
-        ThrowInfo(OpTypeInvalid,
-                  "unsupported arith type for vector array field: {}",
-                  expr_->arith_op_type_);
-    }
-
-    auto real_batch_size =
-        has_offset_input_ ? input->size() : GetNextBatchSize();
-    if (real_batch_size == 0) {
-        return nullptr;
-    }
-
-    if (!arg_inited_) {
-        value_arg_.SetValue<ValueType>(expr_->value_);
-        arg_inited_ = true;
-    }
-
-    auto res_vec =
-        std::make_shared<ColumnVector>(TargetBitmap(real_batch_size, false),
-                                       TargetBitmap(real_batch_size, true));
-    TargetBitmapView res(res_vec->GetRawData(), real_batch_size);
-    TargetBitmapView valid_res(res_vec->GetValidRawData(), real_batch_size);
-
-    auto op_type = expr_->op_type_;
-    auto value = value_arg_.GetValue<ValueType>();
-
-    auto compare_length = [op_type, value](int length) {
-        switch (op_type) {
-            case proto::plan::OpType::Equal:
-                return length == value;
-            case proto::plan::OpType::NotEqual:
-                return length != value;
-            case proto::plan::OpType::GreaterThan:
-                return length > value;
-            case proto::plan::OpType::GreaterEqual:
-                return length >= value;
-            case proto::plan::OpType::LessThan:
-                return length < value;
-            case proto::plan::OpType::LessEqual:
-                return length <= value;
-            default:
-                ThrowInfo(OpTypeInvalid,
-                          "unsupported operator type for vector array "
-                          "length eval expr: {}",
-                          op_type);
-        }
-        return false;
-    };
-
-    auto execute_sub_batch = [compare_length]<FilterType filter_type =
-                                                  FilterType::sequential>(
-        const VectorArrayView* data,
-        const bool* valid_data,
-        const int32_t* offsets,
-        const int size,
-        TargetBitmapView res,
-        TargetBitmapView valid_res) {
-        if (data == nullptr) {
-            return;
-        }
-        for (size_t i = 0; i < size; ++i) {
-            auto offset = i;
-            if constexpr (filter_type == FilterType::random) {
-                offset = (offsets) ? offsets[i] : i;
-            }
-            if (valid_data != nullptr && !valid_data[offset]) {
-                res[i] = valid_res[i] = false;
-                continue;
-            }
-            res[i] = compare_length(data[offset].length());
-        }
-    };
-
-    int64_t processed_size = 0;
-    if (has_offset_input_) {
-        processed_size = ProcessDataByOffsets<VectorArrayView>(
-            execute_sub_batch, std::nullptr_t{}, input, res, valid_res);
-    } else {
-        processed_size = ProcessDataChunks<VectorArrayView>(
-            execute_sub_batch, std::nullptr_t{}, res, valid_res);
-    }
-
-    AssertInfo(processed_size == real_batch_size,
-               "internal error: expr processed rows {} not equal "
-               "expect batch size {}",
-               processed_size,
-               real_batch_size);
-    return res_vec;
-}
-
 template <typename T>
 VectorPtr
 PhyBinaryArithOpEvalRangeExpr::ExecRangeVisitorImpl(OffsetVector* input) {
@@ -1247,7 +1128,7 @@ PhyBinaryArithOpEvalRangeExpr::ExecRangeVisitorImplForIndex(
                                T>
         HighPrecisionType;
     auto real_batch_size =
-        GetNextRealBatchSize(input, expr_->column_.element_level_);
+        has_offset_input_ ? input->size() : GetNextBatchSize();
     if (real_batch_size == 0) {
         return nullptr;
     }
@@ -2001,9 +1882,8 @@ PhyBinaryArithOpEvalRangeExpr::ExecRangeVisitorImplForData(
                                int64_t,
                                T>
         HighPrecisionType;
-
     auto real_batch_size =
-        GetNextRealBatchSize(input, expr_->column_.element_level_);
+        has_offset_input_ ? input->size() : GetNextBatchSize();
     if (real_batch_size == 0) {
         return nullptr;
     }
@@ -2577,42 +2457,20 @@ PhyBinaryArithOpEvalRangeExpr::ExecRangeVisitorImplForData(
 
     int64_t processed_size;
     if (has_offset_input_) {
-        if (expr_->column_.element_level_) {
-            // For element-level filtering with offset input
-            processed_size = ProcessElementLevelByOffsets<T>(execute_sub_batch,
-                                                             skip_index_func,
-                                                             input,
-                                                             res,
-                                                             valid_res,
-                                                             value,
-                                                             right_operand);
-        } else {
-            processed_size = ProcessDataByOffsets<T>(execute_sub_batch,
-                                                     skip_index_func,
-                                                     input,
-                                                     res,
-                                                     valid_res,
-                                                     value,
-                                                     right_operand);
-        }
+        processed_size = ProcessDataByOffsets<T>(execute_sub_batch,
+                                                 skip_index_func,
+                                                 input,
+                                                 res,
+                                                 valid_res,
+                                                 value,
+                                                 right_operand);
     } else {
-        if (expr_->column_.element_level_) {
-            // For element-level filtering without offset input (brute force)
-            processed_size =
-                ProcessDataChunksForElementLevel<T>(execute_sub_batch,
-                                                    skip_index_func,
-                                                    res,
-                                                    valid_res,
-                                                    value,
-                                                    right_operand);
-        } else {
-            processed_size = ProcessDataChunks<T>(execute_sub_batch,
-                                                  skip_index_func,
-                                                  res,
-                                                  valid_res,
-                                                  value,
-                                                  right_operand);
-        }
+        processed_size = ProcessDataChunks<T>(execute_sub_batch,
+                                              skip_index_func,
+                                              res,
+                                              valid_res,
+                                              value,
+                                              right_operand);
     }
     AssertInfo(processed_size == real_batch_size,
                "internal error: expr processed rows {} not equal "

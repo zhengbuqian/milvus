@@ -159,9 +159,7 @@ class TestFloatSearchBruteForce : public ::testing::Test {
                                        search_info,
                                        index_info,
                                        bitset_view,
-                                       DataType::VECTOR_FLOAT,
-                                       DataType::NONE,
-                                       nullptr);
+                                       DataType::VECTOR_FLOAT);
         for (int i = 0; i < nq; i++) {
             auto ref = Ref(base.data(),
                            query.data() + i * dim,
@@ -169,7 +167,7 @@ class TestFloatSearchBruteForce : public ::testing::Test {
                            dim,
                            topk,
                            metric_type);
-            auto ans = result.get_offsets() + i * topk;
+            auto ans = result.get_seg_offsets() + i * topk;
             AssertMatch(ref, ans);
         }
     }

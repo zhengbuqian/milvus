@@ -28,39 +28,20 @@
 
 namespace milvus {
 
-#define GET_ELEM_TYPE_FOR_VECTOR_TRAIT                                        \
-    using elem_type = std::conditional_t<                                     \
-        std::is_same_v<TraitType, milvus::EmbListFloatVector>,                \
-        milvus::EmbListFloatVector::embedded_type,                            \
-        std::conditional_t<                                                   \
-            std::is_same_v<TraitType, milvus::EmbListBinaryVector>,           \
-            milvus::EmbListBinaryVector::embedded_type,                       \
-            std::conditional_t<                                               \
-                std::is_same_v<TraitType, milvus::EmbListFloat16Vector>,      \
-                milvus::EmbListFloat16Vector::embedded_type,                  \
-                std::conditional_t<                                           \
-                    std::is_same_v<TraitType, milvus::EmbListBFloat16Vector>, \
-                    milvus::EmbListBFloat16Vector::embedded_type,             \
-                    std::conditional_t<                                       \
-                        std::is_same_v<TraitType, milvus::EmbListInt8Vector>, \
-                        milvus::EmbListInt8Vector::embedded_type,             \
-                        std::conditional_t<                                   \
-                            std::is_same_v<TraitType, milvus::FloatVector>,   \
-                            milvus::FloatVector::embedded_type,               \
-                            std::conditional_t<                               \
-                                std::is_same_v<TraitType,                     \
-                                               milvus::Float16Vector>,        \
-                                milvus::Float16Vector::embedded_type,         \
-                                std::conditional_t<                           \
-                                    std::is_same_v<TraitType,                 \
-                                                   milvus::BFloat16Vector>,   \
-                                    milvus::BFloat16Vector::embedded_type,    \
-                                    std::conditional_t<                       \
-                                        std::is_same_v<TraitType,             \
-                                                       milvus::Int8Vector>,   \
-                                        milvus::Int8Vector::embedded_type,    \
-                                        milvus::BinaryVector::                \
-                                            embedded_type>>>>>>>>>;
+#define GET_ELEM_TYPE_FOR_VECTOR_TRAIT                             \
+    using elem_type = std::conditional_t<                          \
+        std::is_same_v<TraitType, milvus::FloatVector>,            \
+        milvus::FloatVector::embedded_type,                        \
+        std::conditional_t<                                        \
+            std::is_same_v<TraitType, milvus::Float16Vector>,      \
+            milvus::Float16Vector::embedded_type,                  \
+            std::conditional_t<                                    \
+                std::is_same_v<TraitType, milvus::BFloat16Vector>, \
+                milvus::BFloat16Vector::embedded_type,             \
+                std::conditional_t<                                \
+                    std::is_same_v<TraitType, milvus::Int8Vector>, \
+                    milvus::Int8Vector::embedded_type,             \
+                    milvus::BinaryVector::embedded_type>>>>;
 
 #define GET_SCHEMA_DATA_TYPE_FOR_VECTOR_TRAIT               \
     auto schema_data_type =                                 \
@@ -74,13 +55,7 @@ namespace milvus {
             ? milvus::Int8Vector::schema_data_type          \
             : milvus::BinaryVector::schema_data_type;
 
-class VectorTrait {
- public:
-    static constexpr bool
-    is_embedding_list() {
-        return false;
-    }
-};
+class VectorTrait {};
 
 class FloatVector : public VectorTrait {
  public:
@@ -161,100 +136,38 @@ class Int8Vector : public VectorTrait {
         proto::common::PlaceholderType::Int8Vector;
 };
 
-class EmbListFloatVector : public VectorTrait {
- public:
-    using embedded_type = float;
-    static constexpr int32_t dim_factor = 1;
-    static constexpr auto data_type = DataType::VECTOR_ARRAY;
-    static constexpr auto c_data_type = CDataType::VectorArray;
-    static constexpr auto schema_data_type =
-        proto::schema::DataType::ArrayOfVector;
-    static constexpr auto vector_type =
-        proto::plan::VectorType::EmbListFloatVector;
-    static constexpr auto placeholder_type =
-        proto::common::PlaceholderType::EmbListFloatVector;
+template <typename T>
+constexpr bool IsVector = std::is_base_of_v<VectorTrait, T>;
 
-    static constexpr bool
-    is_embedding_list() {
-        return true;
-    }
-};
+template <typename T>
+constexpr bool IsScalar =
+    std::is_fundamental_v<T> || std::is_same_v<T, std::string> ||
+    std::is_same_v<T, Json> || std::is_same_v<T, std::string_view> ||
+    std::is_same_v<T, Array> || std::is_same_v<T, ArrayView> ||
+    std::is_same_v<T, proto::plan::Array>;
 
-class EmbListBinaryVector : public VectorTrait {
- public:
-    using embedded_type = uint8_t;
-    static constexpr int32_t dim_factor = 8;
-    static constexpr auto data_type = DataType::VECTOR_ARRAY;
-    static constexpr auto c_data_type = CDataType::VectorArray;
-    static constexpr auto schema_data_type =
-        proto::schema::DataType::ArrayOfVector;
-    static constexpr auto vector_type =
-        proto::plan::VectorType::EmbListBinaryVector;
-    static constexpr auto placeholder_type =
-        proto::common::PlaceholderType::EmbListBinaryVector;
+template <typename T>
+constexpr bool IsSparse = std::is_same_v<T, SparseFloatVector> ||
+                          std::is_same_v<T, knowhere::sparse::SparseRow<float>>;
 
-    static constexpr bool
-    is_embedding_list() {
-        return true;
-    }
-};
+template <typename T>
+constexpr bool IsVariableType =
+    std::is_same_v<T, std::string> || std::is_same_v<T, std::string_view> ||
+    std::is_same_v<T, Array> || std::is_same_v<T, ArrayView> ||
+    std::is_same_v<T, proto::plan::Array> || std::is_same_v<T, Json> ||
+    IsSparse<T>;
 
-class EmbListFloat16Vector : public VectorTrait {
- public:
-    using embedded_type = float16;
-    static constexpr int32_t dim_factor = 1;
-    static constexpr auto data_type = DataType::VECTOR_ARRAY;
-    static constexpr auto c_data_type = CDataType::VectorArray;
-    static constexpr auto schema_data_type =
-        proto::schema::DataType::ArrayOfVector;
-    static constexpr auto vector_type =
-        proto::plan::VectorType::EmbListFloat16Vector;
-    static constexpr auto placeholder_type =
-        proto::common::PlaceholderType::EmbListFloat16Vector;
+template <typename T>
+constexpr bool IsVariableTypeSupportInChunk =
+    std::is_same_v<T, std::string> || std::is_same_v<T, Array> ||
+    std::is_same_v<T, Json> ||
+    std::is_same_v<T, knowhere::sparse::SparseRow<float>>;
 
-    static constexpr bool
-    is_embedding_list() {
-        return true;
-    }
-};
-
-class EmbListBFloat16Vector : public VectorTrait {
- public:
-    using embedded_type = bfloat16;
-    static constexpr int32_t dim_factor = 1;
-    static constexpr auto data_type = DataType::VECTOR_ARRAY;
-    static constexpr auto c_data_type = CDataType::VectorArray;
-    static constexpr auto schema_data_type =
-        proto::schema::DataType::ArrayOfVector;
-    static constexpr auto vector_type =
-        proto::plan::VectorType::EmbListBFloat16Vector;
-    static constexpr auto placeholder_type =
-        proto::common::PlaceholderType::EmbListBFloat16Vector;
-
-    static constexpr bool
-    is_embedding_list() {
-        return true;
-    }
-};
-
-class EmbListInt8Vector : public VectorTrait {
- public:
-    using embedded_type = int8;
-    static constexpr int32_t dim_factor = 1;
-    static constexpr auto data_type = DataType::VECTOR_ARRAY;
-    static constexpr auto c_data_type = CDataType::VectorArray;
-    static constexpr auto schema_data_type =
-        proto::schema::DataType::ArrayOfVector;
-    static constexpr auto vector_type =
-        proto::plan::VectorType::EmbListInt8Vector;
-    static constexpr auto placeholder_type =
-        proto::common::PlaceholderType::EmbListInt8Vector;
-
-    static constexpr bool
-    is_embedding_list() {
-        return true;
-    }
-};
+template <typename T>
+using ChunkViewType = std::conditional_t<
+    std::is_same_v<T, std::string>,
+    std::string_view,
+    std::conditional_t<std::is_same_v<T, Array>, ArrayView, T>>;
 
 struct FundamentalTag {};
 struct StringTag {};

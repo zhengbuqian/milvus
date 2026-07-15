@@ -35,7 +35,6 @@
 
 #include "segcore/Utils.h"
 #include "knowhere/comp/index_param.h"
-#include "knowhere/operands.h"
 
 #include "PbHelper.h"
 #include "segcore/collection_c.h"
@@ -61,7 +60,7 @@ namespace milvus::segcore {
 struct GeneratedData {
     std::vector<idx_t> row_ids_;
     std::vector<Timestamp> timestamps_;
-    InsertRecordProto* raw_ = nullptr;
+    InsertRecordProto* raw_;
     std::vector<FieldId> field_ids;
     SchemaPtr schema_;
 
@@ -111,168 +110,128 @@ struct GeneratedData {
             }
 
             auto& field_meta = schema_->operator[](field_id);
+            if (field_meta.is_vector() &&
+                field_meta.get_data_type() != DataType::VECTOR_SPARSE_FLOAT) {
+                if (field_meta.get_data_type() == DataType::VECTOR_FLOAT) {
+                    int len = raw_->num_rows() * field_meta.get_dim();
+                    ret.resize(len);
+                    auto src_data =
+                        reinterpret_cast<const T*>(target_field_data.vectors()
+                                                       .float_vector()
+                                                       .data()
+                                                       .data());
+                    std::copy_n(src_data, len, ret.data());
+                } else if (field_meta.get_data_type() ==
+                           DataType::VECTOR_BINARY) {
+                    int len = raw_->num_rows() * (field_meta.get_dim() / 8);
+                    ret.resize(len);
+                    auto src_data = reinterpret_cast<const T*>(
+                        target_field_data.vectors().binary_vector().data());
+                    std::copy_n(src_data, len, ret.data());
+                } else if (field_meta.get_data_type() ==
+                           DataType::VECTOR_FLOAT16) {
+                    int len = raw_->num_rows() * field_meta.get_dim();
+                    ret.resize(len);
+                    auto src_data = reinterpret_cast<const T*>(
+                        target_field_data.vectors().float16_vector().data());
+                    std::copy_n(src_data, len, ret.data());
+                } else if (field_meta.get_data_type() ==
+                           DataType::VECTOR_BFLOAT16) {
+                    int len = raw_->num_rows() * field_meta.get_dim();
+                    ret.resize(len);
+                    auto src_data = reinterpret_cast<const T*>(
+                        target_field_data.vectors().bfloat16_vector().data());
+                    std::copy_n(src_data, len, ret.data());
+                } else if (field_meta.get_data_type() ==
+                           DataType::VECTOR_INT8) {
+                    int len = raw_->num_rows() * field_meta.get_dim();
+                    ret.resize(len);
+                    auto src_data = reinterpret_cast<const T*>(
+                        target_field_data.vectors().int8_vector().data());
+                    std::copy_n(src_data, len, ret.data());
+                } else {
+                    PanicInfo(Unsupported, "unsupported");
+                }
 
-            if constexpr (std::is_same_v<T, VectorFieldProto>) {
-                auto ret_data = reinterpret_cast<VectorFieldProto*>(ret.data());
-                auto src_data =
-                    target_field_data.vectors().vector_array().data();
-                std::copy(src_data.begin(), src_data.end(), ret_data);
                 return std::move(ret);
+            }
+            if constexpr (std::is_same_v<T,
+                                         knowhere::sparse::SparseRow<float>>) {
+                auto sparse_float_array =
+                    target_field_data.vectors().sparse_float_vector();
+                auto rows = SparseBytesToRows(sparse_float_array.contents());
+                std::copy_n(rows.get(), raw_->num_rows(), ret.data());
+            } else if constexpr (std::is_same_v<T, ScalarArray>) {
+                auto ret_data = reinterpret_cast<ScalarArray*>(ret.data());
+                auto src_data = target_field_data.scalars().array_data().data();
+                std::copy(src_data.begin(), src_data.end(), ret_data);
             } else {
-                if (field_meta.is_vector() &&
-                    field_meta.get_data_type() !=
-                        DataType::VECTOR_SPARSE_U32_F32) {
-                    if (field_meta.get_data_type() == DataType::VECTOR_FLOAT) {
-                        int len = raw_->num_rows() * field_meta.get_dim();
-                        ret.resize(len);
+                switch (field_meta.get_data_type()) {
+                    case DataType::BOOL: {
                         auto src_data = reinterpret_cast<const T*>(
-                            target_field_data.vectors()
-                                .float_vector()
+                            target_field_data.scalars()
+                                .bool_data()
                                 .data()
                                 .data());
-                        std::copy_n(src_data, len, ret.data());
-                    } else if (field_meta.get_data_type() ==
-                               DataType::VECTOR_BINARY) {
-                        int len = raw_->num_rows() * (field_meta.get_dim() / 8);
-                        ret.resize(len);
-                        auto src_data = reinterpret_cast<const T*>(
-                            target_field_data.vectors().binary_vector().data());
-                        std::copy_n(src_data, len, ret.data());
-                    } else if (field_meta.get_data_type() ==
-                               DataType::VECTOR_FLOAT16) {
-                        int len = raw_->num_rows() * field_meta.get_dim();
-                        ret.resize(len);
-                        auto src_data = reinterpret_cast<const T*>(
-                            target_field_data.vectors()
-                                .float16_vector()
-                                .data());
-                        std::copy_n(src_data, len, ret.data());
-                    } else if (field_meta.get_data_type() ==
-                               DataType::VECTOR_BFLOAT16) {
-                        int len = raw_->num_rows() * field_meta.get_dim();
-                        ret.resize(len);
-                        auto src_data = reinterpret_cast<const T*>(
-                            target_field_data.vectors()
-                                .bfloat16_vector()
-                                .data());
-                        std::copy_n(src_data, len, ret.data());
-                    } else if (field_meta.get_data_type() ==
-                               DataType::VECTOR_INT8) {
-                        int len = raw_->num_rows() * field_meta.get_dim();
-                        ret.resize(len);
-                        auto src_data = reinterpret_cast<const T*>(
-                            target_field_data.vectors().int8_vector().data());
-                        std::copy_n(src_data, len, ret.data());
-                    } else {
-                        ThrowInfo(Unsupported, "unsupported");
+                        std::copy_n(src_data, raw_->num_rows(), ret.data());
+                        break;
                     }
-
-                    return std::move(ret);
-                }
-                if constexpr (std::is_same_v<T,
-                                             knowhere::sparse::SparseRow<
-                                                 milvus::SparseValueType>>) {
-                    auto sparse_float_array =
-                        target_field_data.vectors().sparse_float_vector();
-                    auto rows =
-                        SparseBytesToRows(sparse_float_array.contents());
-                    std::copy_n(rows.get(), raw_->num_rows(), ret.data());
-                } else if constexpr (std::is_same_v<T, ScalarFieldProto>) {
-                    auto ret_data =
-                        reinterpret_cast<ScalarFieldProto*>(ret.data());
-                    auto src_data =
-                        target_field_data.scalars().array_data().data();
-                    std::copy(src_data.begin(), src_data.end(), ret_data);
-                } else {
-                    switch (field_meta.get_data_type()) {
-                        case DataType::BOOL: {
-                            auto src_data = reinterpret_cast<const T*>(
-                                target_field_data.scalars()
-                                    .bool_data()
-                                    .data()
-                                    .data());
-                            std::copy_n(src_data, raw_->num_rows(), ret.data());
-                            break;
-                        }
-                        case DataType::INT8:
-                        case DataType::INT16:
-                        case DataType::INT32: {
-                            auto src_data = reinterpret_cast<const int32_t*>(
-                                target_field_data.scalars()
-                                    .int_data()
-                                    .data()
-                                    .data());
-                            std::copy_n(src_data, raw_->num_rows(), ret.data());
-                            break;
-                        }
-                        case DataType::INT64: {
-                            auto src_data = reinterpret_cast<const T*>(
-                                target_field_data.scalars()
-                                    .long_data()
-                                    .data()
-                                    .data());
-                            std::copy_n(src_data, raw_->num_rows(), ret.data());
-                            break;
-                        }
-                        case DataType::FLOAT: {
-                            auto src_data = reinterpret_cast<const T*>(
-                                target_field_data.scalars()
-                                    .float_data()
-                                    .data()
-                                    .data());
-                            std::copy_n(src_data, raw_->num_rows(), ret.data());
-                            break;
-                        }
-                        case DataType::DOUBLE: {
-                            auto src_data = reinterpret_cast<const T*>(
-                                target_field_data.scalars()
-                                    .double_data()
-                                    .data()
-                                    .data());
-                            std::copy_n(src_data, raw_->num_rows(), ret.data());
-                            break;
-                        }
-                        case DataType::TIMESTAMPTZ: {
-                            auto src_data = reinterpret_cast<const T*>(
-                                target_field_data.scalars()
-                                    .timestamptz_data()
-                                    .data()
-                                    .data());
-                            std::copy_n(src_data, raw_->num_rows(), ret.data());
-                            break;
-                        }
-                        case DataType::VARCHAR: {
-                            auto ret_data =
-                                reinterpret_cast<std::string*>(ret.data());
-                            auto src_data = target_field_data.scalars()
-                                                .string_data()
-                                                .data();
-                            std::copy(
-                                src_data.begin(), src_data.end(), ret_data);
-                            break;
-                        }
-                        case DataType::JSON: {
-                            auto ret_data =
-                                reinterpret_cast<std::string*>(ret.data());
-                            auto src_data =
-                                target_field_data.scalars().json_data().data();
-                            std::copy(
-                                src_data.begin(), src_data.end(), ret_data);
-                            break;
-                        }
-                        case DataType::GEOMETRY: {
-                            auto ret_data =
-                                reinterpret_cast<std::string*>(ret.data());
-                            auto src_data = target_field_data.scalars()
-                                                .geometry_data()
-                                                .data();
-                            std::copy(
-                                src_data.begin(), src_data.end(), ret_data);
-                            break;
-                        }
-                        default: {
-                            ThrowInfo(Unsupported, "unsupported");
-                        }
+                    case DataType::INT8:
+                    case DataType::INT16:
+                    case DataType::INT32: {
+                        auto src_data = reinterpret_cast<const int32_t*>(
+                            target_field_data.scalars()
+                                .int_data()
+                                .data()
+                                .data());
+                        std::copy_n(src_data, raw_->num_rows(), ret.data());
+                        break;
+                    }
+                    case DataType::INT64: {
+                        auto src_data = reinterpret_cast<const T*>(
+                            target_field_data.scalars()
+                                .long_data()
+                                .data()
+                                .data());
+                        std::copy_n(src_data, raw_->num_rows(), ret.data());
+                        break;
+                    }
+                    case DataType::FLOAT: {
+                        auto src_data = reinterpret_cast<const T*>(
+                            target_field_data.scalars()
+                                .float_data()
+                                .data()
+                                .data());
+                        std::copy_n(src_data, raw_->num_rows(), ret.data());
+                        break;
+                    }
+                    case DataType::DOUBLE: {
+                        auto src_data = reinterpret_cast<const T*>(
+                            target_field_data.scalars()
+                                .double_data()
+                                .data()
+                                .data());
+                        std::copy_n(src_data, raw_->num_rows(), ret.data());
+                        break;
+                    }
+                    case DataType::VARCHAR: {
+                        auto ret_data =
+                            reinterpret_cast<std::string*>(ret.data());
+                        auto src_data =
+                            target_field_data.scalars().string_data().data();
+                        std::copy(src_data.begin(), src_data.end(), ret_data);
+                        break;
+                    }
+                    case DataType::JSON: {
+                        auto ret_data =
+                            reinterpret_cast<std::string*>(ret.data());
+                        auto src_data =
+                            target_field_data.scalars().json_data().data();
+                        std::copy(src_data.begin(), src_data.end(), ret_data);
+                        break;
+                    }
+                    default: {
+                        PanicInfo(Unsupported, "unsupported");
                     }
                 }
             }
@@ -388,8 +347,7 @@ GenerateRandomSparseFloatVector(size_t rows,
     return tensor;
 }
 
-inline SchemaPtr
-CreateTestSchema() {
+inline SchemaPtr CreateTestSchema() {
     auto schema = std::make_shared<milvus::Schema>();
     schema->AddDebugField("bool", milvus::DataType::BOOL, true);
     schema->AddDebugField("int8", milvus::DataType::INT8, true);
@@ -569,167 +527,55 @@ DataGen(SchemaPtr schema,
             insert_data->mutable_fields_data()->AddAllocated(array.release());
         };
 
-    auto generate_float_vector = [&seed, &offset](auto& field_meta, int64_t N) {
-        auto dim = field_meta.get_dim();
-        vector<float> final(dim * N);
-        bool is_ip = starts_with(field_meta.get_name().get(), "normalized");
-#pragma omp parallel for
-        for (int n = 0; n < N; ++n) {
-            vector<float> data(dim);
-            float sum = 0;
-
-            std::default_random_engine er2(seed + n);
-            std::normal_distribution<> distr2(0, 1);
-            for (auto& x : data) {
-                x = distr2(er2) + offset;
-                sum += x * x;
-            }
-            if (is_ip) {
-                sum = sqrt(sum);
-                for (auto& x : data) {
-                    x /= sum;
-                }
-            }
-
-            std::copy(data.begin(), data.end(), final.begin() + dim * n);
-        }
-        return final;
-    };
-
-    auto generate_binary_vector = [&random](auto& field_meta, int64_t N) {
-        auto dim = field_meta.get_dim();
-        Assert(dim % 8 == 0);
-        vector<uint8_t> data(dim / 8 * N);
-        for (auto& x : data) {
-            x = random();
-        }
-        return data;
-    };
-
-    auto generate_float16_vector = [&offset, &random, &distr](auto& field_meta,
-                                                              int64_t N) {
-        auto dim = field_meta.get_dim();
-        vector<float16> data(dim * N);
-        for (auto& x : data) {
-            x = float16(distr(random) + offset);
-        }
-        return data;
-    };
-
-    auto generate_bfloat16_vector = [&offset, &random, &distr](auto& field_meta,
-                                                               int64_t N) {
-        auto dim = field_meta.get_dim();
-        vector<bfloat16> data(dim * N);
-        for (auto& x : data) {
-            x = bfloat16(distr(random) + offset);
-        }
-        return data;
-    };
-
-    auto generate_int8_vector = [&random](auto& field_meta, int64_t N) {
-        auto dim = field_meta.get_dim();
-        vector<int8_t> data(dim * N);
-        for (auto& x : data) {
-            x = int8_t(random() % 256 - 128);
-        }
-        return data;
-    };
-
-    auto generate_valid_data = [&](const FieldMeta& field_meta, int64_t N) {
-        struct Result {
-            int64_t valid_count;
-            FixedVector<bool> valid_data;
-        };
-
-        Result result;
-        result.valid_data.resize(N);
-        result.valid_count = 0;
-
-        bool is_nullable = field_meta.is_nullable();
-        if (is_nullable) {
-            for (int i = 0; i < N; ++i) {
-                if (random_valid) {
-                    int x = rand();
-                    result.valid_data[i] = x % 2 == 0 ? true : false;
-                } else {
-                    result.valid_data[i] = (i % 100) >= null_percent;
-                }
-                if (result.valid_data[i]) {
-                    result.valid_count++;
-                }
-            }
-        } else {
-            result.valid_count = N;
-        }
-
-        return result;
-    };
-
     for (auto field_id : schema->get_field_ids()) {
         auto field_meta = schema->operator[](field_id);
         switch (field_meta.get_data_type()) {
             case DataType::VECTOR_FLOAT: {
-                auto [valid_count, valid_data] =
-                    generate_valid_data(field_meta, N);
-                bool is_nullable = field_meta.is_nullable();
+                auto dim = field_meta.get_dim();
+                vector<float> final(dim * N);
+                bool is_ip =
+                    starts_with(field_meta.get_name().get(), "normalized");
+#pragma omp parallel for
+                for (int n = 0; n < N; ++n) {
+                    vector<float> data(dim);
+                    float sum = 0;
 
-                auto data = generate_float_vector(field_meta, valid_count);
-                auto array = milvus::segcore::CreateVectorDataArrayFrom(
-                    data.data(),
-                    is_nullable ? valid_data.data() : nullptr,
-                    N,
-                    valid_count,
-                    field_meta);
-                insert_data->mutable_fields_data()->AddAllocated(
-                    array.release());
+                    std::default_random_engine er2(seed + n);
+                    std::normal_distribution<> distr2(0, 1);
+                    for (auto& x : data) {
+                        x = distr2(er2) + offset;
+                        sum += x * x;
+                    }
+                    if (is_ip) {
+                        sum = sqrt(sum);
+                        for (auto& x : data) {
+                            x /= sum;
+                        }
+                    }
+
+                    std::copy(
+                        data.begin(), data.end(), final.begin() + dim * n);
+                }
+                insert_cols(final, N, field_meta, random_valid);
                 break;
             }
             case DataType::VECTOR_BINARY: {
-                auto [valid_count, valid_data] =
-                    generate_valid_data(field_meta, N);
-                bool is_nullable = field_meta.is_nullable();
-
-                auto data = generate_binary_vector(field_meta, valid_count);
-                auto array = milvus::segcore::CreateVectorDataArrayFrom(
-                    data.data(),
-                    is_nullable ? valid_data.data() : nullptr,
-                    N,
-                    valid_count,
-                    field_meta);
-                insert_data->mutable_fields_data()->AddAllocated(
-                    array.release());
+                auto dim = field_meta.get_dim();
+                Assert(dim % 8 == 0);
+                vector<uint8_t> data(dim / 8 * N);
+                for (auto& x : data) {
+                    x = random();
+                }
+                insert_cols(data, N, field_meta, random_valid);
                 break;
             }
             case DataType::VECTOR_FLOAT16: {
-                auto [valid_count, valid_data] =
-                    generate_valid_data(field_meta, N);
-                bool is_nullable = field_meta.is_nullable();
-
-                auto data = generate_float16_vector(field_meta, valid_count);
-                auto array = milvus::segcore::CreateVectorDataArrayFrom(
-                    data.data(),
-                    is_nullable ? valid_data.data() : nullptr,
-                    N,
-                    valid_count,
-                    field_meta);
-                insert_data->mutable_fields_data()->AddAllocated(
-                    array.release());
-                break;
-            }
-            case DataType::VECTOR_BFLOAT16: {
-                auto [valid_count, valid_data] =
-                    generate_valid_data(field_meta, N);
-                bool is_nullable = field_meta.is_nullable();
-
-                auto data = generate_bfloat16_vector(field_meta, valid_count);
-                auto array = milvus::segcore::CreateVectorDataArrayFrom(
-                    data.data(),
-                    is_nullable ? valid_data.data() : nullptr,
-                    N,
-                    valid_count,
-                    field_meta);
-                insert_data->mutable_fields_data()->AddAllocated(
-                    array.release());
+                auto dim = field_meta.get_dim();
+                vector<float16> final(dim * N);
+                for (auto& x : final) {
+                    x = float16(distr(random) + offset);
+                }
+                insert_cols(final, N, field_meta, random_valid);
                 break;
             }
             case DataType::VECTOR_SPARSE_U32_F32: {
@@ -753,92 +599,23 @@ DataGen(SchemaPtr schema,
                     array.release());
                 break;
             }
-            case DataType::VECTOR_INT8: {
-                auto [valid_count, valid_data] =
-                    generate_valid_data(field_meta, N);
-                bool is_nullable = field_meta.is_nullable();
-
-                auto data = generate_int8_vector(field_meta, valid_count);
-                auto array = milvus::segcore::CreateVectorDataArrayFrom(
-                    data.data(),
-                    is_nullable ? valid_data.data() : nullptr,
-                    N,
-                    valid_count,
-                    field_meta);
-                insert_data->mutable_fields_data()->AddAllocated(
-                    array.release());
+            case DataType::VECTOR_BFLOAT16: {
+                auto dim = field_meta.get_dim();
+                vector<bfloat16> final(dim * N);
+                for (auto& x : final) {
+                    x = bfloat16(distr(random) + offset);
+                }
+                insert_cols(final, N, field_meta, random_valid);
                 break;
             }
-
-            case DataType::VECTOR_ARRAY: {
+            case DataType::VECTOR_INT8: {
                 auto dim = field_meta.get_dim();
-                vector<VectorFieldProto> vector_array(N);
-                for (int i = 0; i < N / repeat_count; ++i) {
-                    VectorFieldProto field_data;
-                    field_data.set_dim(dim);
-
-                    switch (field_meta.get_element_type()) {
-                        case DataType::VECTOR_FLOAT: {
-                            auto data =
-                                generate_float_vector(field_meta, array_len);
-                            field_data.mutable_float_vector()
-                                ->mutable_data()
-                                ->Add(data.begin(), data.end());
-                            break;
-                        }
-                        case DataType::VECTOR_BINARY: {
-                            auto num_bytes = array_len * dim / 8;
-                            auto data_raw =
-                                generate_binary_vector(field_meta, array_len);
-                            auto data =
-                                reinterpret_cast<const char*>(data_raw.data());
-                            auto obj = field_data.mutable_binary_vector();
-                            obj->assign(data, num_bytes);
-                            break;
-                        }
-                        case DataType::VECTOR_FLOAT16: {
-                            auto length = array_len * dim;
-                            auto data_raw =
-                                generate_float16_vector(field_meta, array_len);
-                            auto data =
-                                reinterpret_cast<const char*>(data_raw.data());
-                            auto obj = field_data.mutable_float16_vector();
-                            obj->assign(data, length * sizeof(float16));
-                            break;
-                        }
-                        case DataType::VECTOR_SPARSE_U32_F32:
-                            ThrowInfo(DataTypeInvalid, "not implemented");
-                            break;
-                        case DataType::VECTOR_BFLOAT16: {
-                            auto length = array_len * dim;
-                            auto data_raw =
-                                generate_bfloat16_vector(field_meta, array_len);
-                            auto data =
-                                reinterpret_cast<const char*>(data_raw.data());
-                            auto obj = field_data.mutable_bfloat16_vector();
-                            obj->assign(data, length * sizeof(bfloat16));
-                            break;
-                        }
-                        case DataType::VECTOR_INT8: {
-                            auto length = array_len * dim;
-                            auto data_raw =
-                                generate_int8_vector(field_meta, array_len);
-                            auto data =
-                                reinterpret_cast<const char*>(data_raw.data());
-                            auto obj = field_data.mutable_int8_vector();
-                            obj->assign(data, length * sizeof(int8_t));
-                            break;
-                        }
-                        default: {
-                            ThrowInfo(DataTypeInvalid, "not implemented");
-                        }
-                    }
-
-                    for (int j = 0; j < repeat_count; ++j) {
-                        vector_array[i * repeat_count + j] = field_data;
-                    }
+                vector<int8> final(dim * N);
+                srand(seed);
+                for (auto& x : final) {
+                    x = int8_t(rand() % 256 - 128);
                 }
-                insert_cols(vector_array, N, field_meta, random_valid);
+                insert_cols(final, N, field_meta, random_valid);
                 break;
             }
             case DataType::BOOL: {
@@ -1007,7 +784,7 @@ DataGen(SchemaPtr schema,
                 break;
             }
             case DataType::ARRAY: {
-                vector<ScalarFieldProto> data(N);
+                vector<ScalarArray> data(N);
                 switch (field_meta.get_element_type()) {
                     case DataType::BOOL: {
                         for (int i = 0; i < N / repeat_count; i++) {
@@ -1248,10 +1025,7 @@ CreatePlaceholderGroup(int64_t num_queries,
 
 template <class TraitType = milvus::FloatVector>
 auto
-CreatePlaceholderGroup(int64_t num_queries,
-                       int dim,
-                       int64_t seed = 42,
-                       bool element_level = false) {
+CreatePlaceholderGroup(int64_t num_queries, int dim, int64_t seed = 42) {
     if (std::is_same_v<TraitType, milvus::BinaryVector>) {
         assert(dim % 8 == 0);
     }
@@ -1262,7 +1036,6 @@ CreatePlaceholderGroup(int64_t num_queries,
     auto value = raw_group.add_placeholders();
     value->set_tag("$0");
     value->set_type(TraitType::placeholder_type);
-    value->set_element_level(element_level);
     // TODO caiyd: need update for Int8Vector
     std::normal_distribution<double> dis(0, 1);
     std::default_random_engine e(seed);
@@ -1282,10 +1055,7 @@ CreatePlaceholderGroup(int64_t num_queries,
 
 template <class TraitType = milvus::FloatVector>
 inline auto
-CreatePlaceholderGroupFromBlob(int64_t num_queries,
-                               int dim,
-                               const void* src,
-                               std::vector<size_t> offsets = {}) {
+CreatePlaceholderGroupFromBlob(int64_t num_queries, int dim, const void* src) {
     if (std::is_same_v<TraitType, milvus::BinaryVector>) {
         assert(dim % 8 == 0);
     }
@@ -1298,27 +1068,12 @@ CreatePlaceholderGroupFromBlob(int64_t num_queries,
     value->set_type(TraitType::placeholder_type);
     int64_t src_index = 0;
 
-    if (offsets.empty()) {
-        for (int i = 0; i < num_queries; ++i) {
-            std::vector<elem_type> vec;
-            for (int d = 0; d < dim / TraitType::dim_factor; ++d) {
-                vec.push_back(((elem_type*)src)[src_index++]);
-            }
-            value->add_values(vec.data(), vec.size() * sizeof(elem_type));
+    for (int i = 0; i < num_queries; ++i) {
+        std::vector<elem_type> vec;
+        for (int d = 0; d < dim / TraitType::dim_factor; ++d) {
+            vec.push_back(((elem_type*)src)[src_index++]);
         }
-    } else {
-        assert(offsets.back() == num_queries);
-        for (int i = 0; i < offsets.size() - 1; i++) {
-            auto start = offsets[i];
-            auto end = offsets[i + 1];
-            std::vector<elem_type> vec;
-            for (int j = start; j < end; j++) {
-                for (int d = 0; d < dim / TraitType::dim_factor; ++d) {
-                    vec.push_back(((elem_type*)src)[src_index++]);
-                }
-            }
-            value->add_values(vec.data(), vec.size() * sizeof(elem_type));
-        }
+        value->add_values(vec.data(), vec.size() * sizeof(elem_type));
     }
     return raw_group;
 }
@@ -1419,21 +1174,18 @@ CreateFieldDataFromDataArray(ssize_t raw_count,
     int64_t dim = 1;
     FieldDataPtr field_data = nullptr;
 
-    auto element_type = field_meta.get_element_type();
-    auto createFieldData =
-        [&field_data, &raw_count, &element_type](
-            const void* raw_data, DataType data_type, int64_t dim) {
-            field_data =
-                storage::CreateFieldData(data_type, element_type, false, dim);
-            field_data->FillFieldData(raw_data, raw_count);
-        };
-    auto createNullableFieldData = [&field_data, &raw_count, &element_type](
+    auto createFieldData = [&field_data, &raw_count](const void* raw_data,
+                                                     DataType data_type,
+                                                     int64_t dim) {
+        field_data = storage::CreateFieldData(data_type, false, dim);
+        field_data->FillFieldData(raw_data, raw_count);
+    };
+    auto createNullableFieldData = [&field_data, &raw_count](
                                        const void* raw_data,
                                        const bool* raw_valid_data,
                                        DataType data_type,
                                        int64_t dim) {
-        field_data =
-            storage::CreateFieldData(data_type, element_type, true, dim);
+        field_data = storage::CreateFieldData(data_type, true, dim);
         int byteSize = (raw_count + 7) / 8;
         std::vector<uint8_t> valid_data(byteSize);
         for (int i = 0; i < raw_count; i++) {
@@ -1486,16 +1238,6 @@ CreateFieldDataFromDataArray(ssize_t raw_count,
                 auto raw_data = data->vectors().int8_vector().data();
                 dim = field_meta.get_dim();
                 createFieldData(raw_data, DataType::VECTOR_INT8, dim);
-                break;
-            }
-            case DataType::VECTOR_ARRAY: {
-                auto src_data = data->vectors().vector_array().data();
-                auto dim = field_meta.get_dim();
-                std::vector<VectorArray> data_raw(src_data.size());
-                for (int i = 0; i < src_data.size(); i++) {
-                    data_raw[i] = VectorArray(src_data.at(i));
-                }
-                createFieldData(data_raw.data(), DataType::VECTOR_ARRAY, dim);
                 break;
             }
             default: {
@@ -1692,7 +1434,6 @@ GenVecIndexing(int64_t N,
     milvus::storage::FileManagerContext file_manager_context(
         field_data_meta, index_meta, chunk_manager, fs);
     auto indexing = std::make_unique<index::VectorMemIndex<float>>(
-        DataType::NONE,
         index_type,
         knowhere::metric::L2,
         knowhere::Version::GetCurrentVersion().VersionNumber(),
@@ -1705,158 +1446,6 @@ GenVecIndexing(int64_t N,
     conf[milvus::LOAD_PRIORITY] = milvus::proto::common::LoadPriority::HIGH;
     // we need a load stage to use index as the producation does
     // knowhere would do some data preparation in this stage
-    indexing->Load(milvus::tracer::TraceContext{}, conf);
-    return indexing;
-}
-
-// GenVecIndexing for Float16Vector
-inline std::unique_ptr<milvus::index::VectorIndex>
-GenVecIndexingFloat16(int64_t N,
-                      int64_t dim,
-                      const knowhere::fp16* vec,
-                      const char* index_type,
-                      bool use_knowhere_build_pool = true) {
-    auto conf =
-        knowhere::Json{{knowhere::meta::METRIC_TYPE, knowhere::metric::L2},
-                       {knowhere::meta::DIM, std::to_string(dim)},
-                       {knowhere::indexparam::NLIST, "1024"},
-                       {knowhere::meta::DEVICE_ID, 0}};
-    auto database = knowhere::GenDataSet(N, dim, vec);
-    milvus::storage::FieldDataMeta field_data_meta{1, 2, 3, 100};
-    milvus::storage::IndexMeta index_meta{3, 100, 1000, 1};
-    milvus::storage::StorageConfig storage_config;
-    storage_config.storage_type = "local";
-    storage_config.root_path = TestRemotePath;
-    auto chunk_manager = milvus::storage::CreateChunkManager(storage_config);
-    auto fs = milvus::storage::InitArrowFileSystem(storage_config);
-    milvus::storage::FileManagerContext file_manager_context(
-        field_data_meta, index_meta, chunk_manager, fs);
-    auto indexing = std::make_unique<index::VectorMemIndex<knowhere::fp16>>(
-        DataType::NONE,
-        index_type,
-        knowhere::metric::L2,
-        knowhere::Version::GetCurrentVersion().VersionNumber(),
-        use_knowhere_build_pool,
-        file_manager_context);
-    indexing->BuildWithDataset(database, conf);
-    auto create_index_result = indexing->Upload();
-    auto index_files = create_index_result->GetIndexFiles();
-    conf["index_files"] = index_files;
-    conf[milvus::LOAD_PRIORITY] = milvus::proto::common::LoadPriority::HIGH;
-    indexing->Load(milvus::tracer::TraceContext{}, conf);
-    return indexing;
-}
-
-// GenVecIndexing for BFloat16Vector
-inline std::unique_ptr<milvus::index::VectorIndex>
-GenVecIndexingBFloat16(int64_t N,
-                       int64_t dim,
-                       const knowhere::bf16* vec,
-                       const char* index_type,
-                       bool use_knowhere_build_pool = true) {
-    auto conf =
-        knowhere::Json{{knowhere::meta::METRIC_TYPE, knowhere::metric::L2},
-                       {knowhere::meta::DIM, std::to_string(dim)},
-                       {knowhere::indexparam::NLIST, "1024"},
-                       {knowhere::meta::DEVICE_ID, 0}};
-    auto database = knowhere::GenDataSet(N, dim, vec);
-    milvus::storage::FieldDataMeta field_data_meta{1, 2, 3, 100};
-    milvus::storage::IndexMeta index_meta{3, 100, 1000, 1};
-    milvus::storage::StorageConfig storage_config;
-    storage_config.storage_type = "local";
-    storage_config.root_path = TestRemotePath;
-    auto chunk_manager = milvus::storage::CreateChunkManager(storage_config);
-    auto fs = milvus::storage::InitArrowFileSystem(storage_config);
-    milvus::storage::FileManagerContext file_manager_context(
-        field_data_meta, index_meta, chunk_manager, fs);
-    auto indexing = std::make_unique<index::VectorMemIndex<knowhere::bf16>>(
-        DataType::NONE,
-        index_type,
-        knowhere::metric::L2,
-        knowhere::Version::GetCurrentVersion().VersionNumber(),
-        use_knowhere_build_pool,
-        file_manager_context);
-    indexing->BuildWithDataset(database, conf);
-    auto create_index_result = indexing->Upload();
-    auto index_files = create_index_result->GetIndexFiles();
-    conf["index_files"] = index_files;
-    conf[milvus::LOAD_PRIORITY] = milvus::proto::common::LoadPriority::HIGH;
-    indexing->Load(milvus::tracer::TraceContext{}, conf);
-    return indexing;
-}
-
-// GenVecIndexing for Int8Vector
-inline std::unique_ptr<milvus::index::VectorIndex>
-GenVecIndexingInt8(int64_t N,
-                   int64_t dim,
-                   const int8_t* vec,
-                   const char* index_type,
-                   bool use_knowhere_build_pool = true) {
-    auto conf =
-        knowhere::Json{{knowhere::meta::METRIC_TYPE, knowhere::metric::L2},
-                       {knowhere::meta::DIM, std::to_string(dim)},
-                       {knowhere::indexparam::NLIST, "1024"},
-                       {knowhere::meta::DEVICE_ID, 0}};
-    auto database = knowhere::GenDataSet(N, dim, vec);
-    milvus::storage::FieldDataMeta field_data_meta{1, 2, 3, 100};
-    milvus::storage::IndexMeta index_meta{3, 100, 1000, 1};
-    milvus::storage::StorageConfig storage_config;
-    storage_config.storage_type = "local";
-    storage_config.root_path = TestRemotePath;
-    auto chunk_manager = milvus::storage::CreateChunkManager(storage_config);
-    auto fs = milvus::storage::InitArrowFileSystem(storage_config);
-    milvus::storage::FileManagerContext file_manager_context(
-        field_data_meta, index_meta, chunk_manager, fs);
-    auto indexing = std::make_unique<index::VectorMemIndex<int8_t>>(
-        DataType::NONE,
-        index_type,
-        knowhere::metric::L2,
-        knowhere::Version::GetCurrentVersion().VersionNumber(),
-        use_knowhere_build_pool,
-        file_manager_context);
-    indexing->BuildWithDataset(database, conf);
-    auto create_index_result = indexing->Upload();
-    auto index_files = create_index_result->GetIndexFiles();
-    conf["index_files"] = index_files;
-    conf[milvus::LOAD_PRIORITY] = milvus::proto::common::LoadPriority::HIGH;
-    indexing->Load(milvus::tracer::TraceContext{}, conf);
-    return indexing;
-}
-
-// GenVecIndexing for BinaryVector
-inline std::unique_ptr<milvus::index::VectorIndex>
-GenVecIndexingBinary(int64_t N,
-                     int64_t dim,
-                     const uint8_t* vec,
-                     const char* index_type,
-                     bool use_knowhere_build_pool = true) {
-    auto conf =
-        knowhere::Json{{knowhere::meta::METRIC_TYPE, knowhere::metric::HAMMING},
-                       {knowhere::meta::DIM, std::to_string(dim)},
-                       {knowhere::indexparam::NLIST, "1024"},
-                       {knowhere::meta::DEVICE_ID, 0}};
-    auto database = knowhere::GenDataSet(N, dim, vec);
-    milvus::storage::FieldDataMeta field_data_meta{1, 2, 3, 100};
-    milvus::storage::IndexMeta index_meta{3, 100, 1000, 1};
-    milvus::storage::StorageConfig storage_config;
-    storage_config.storage_type = "local";
-    storage_config.root_path = TestRemotePath;
-    auto chunk_manager = milvus::storage::CreateChunkManager(storage_config);
-    auto fs = milvus::storage::InitArrowFileSystem(storage_config);
-    milvus::storage::FileManagerContext file_manager_context(
-        field_data_meta, index_meta, chunk_manager, fs);
-    auto indexing = std::make_unique<index::VectorMemIndex<uint8_t>>(
-        DataType::NONE,
-        index_type,
-        knowhere::metric::HAMMING,
-        knowhere::Version::GetCurrentVersion().VersionNumber(),
-        use_knowhere_build_pool,
-        file_manager_context);
-    indexing->BuildWithDataset(database, conf);
-    auto create_index_result = indexing->Upload();
-    auto index_files = create_index_result->GetIndexFiles();
-    conf["index_files"] = index_files;
-    conf[milvus::LOAD_PRIORITY] = milvus::proto::common::LoadPriority::HIGH;
     indexing->Load(milvus::tracer::TraceContext{}, conf);
     return indexing;
 }
@@ -2416,30 +2005,5 @@ GenChunkedSegmentTestSchema(bool pk_is_string) {
     schema->set_primary_field_id(pk_fid);
     return schema;
 }
-
-inline std::vector<float>
-generate_float_vector(int64_t N, int64_t dim) {
-    auto seed = 42;
-    auto offset = 0;
-    std::vector<float> final(dim * N);
-    for (int n = 0; n < N; ++n) {
-        std::vector<float> data(dim);
-        float sum = 0;
-
-        std::default_random_engine er2(seed + n);
-        std::normal_distribution<> distr2(0, 1);
-        for (auto& x : data) {
-            x = distr2(er2) + offset++;
-            sum += x * x;
-        }
-        sum = sqrt(sum);
-        for (auto& x : data) {
-            x /= sum;
-        }
-
-        std::copy(data.begin(), data.end(), final.begin() + dim * n);
-    }
-    return final;
-};
 
 }  // namespace milvus::segcore

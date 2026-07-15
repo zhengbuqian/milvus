@@ -29,9 +29,8 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/importutilv2/common"
-	"github.com/milvus-io/milvus/pkg/v3/mlog"
-	"github.com/milvus-io/milvus/pkg/v3/util/merr"
-	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v2/log"
+	"github.com/milvus-io/milvus/pkg/v2/util/merr"
 )
 
 const totalReadBufferSize = int64(64 * 1024 * 1024)
@@ -59,11 +58,10 @@ func NewReader(ctx context.Context, cm storage.ChunkManager, schema *schemapb.Co
 	}
 	retryableReader := common.NewRetryableReader(ctx, path, cmReader)
 
-	allFields := typeutil.GetAllFieldSchemas(schema)
 	// Each ColumnReader consumes ReaderProperties.BufferSize memory independently.
 	// Therefore, the bufferSize should be divided by the number of columns
 	// to ensure total memory usage stays within the intended limit.
-	columnReaderBufferSize := totalReadBufferSize / int64(len(allFields))
+	columnReaderBufferSize := totalReadBufferSize / int64(len(schema.GetFields()))
 
 	r, err := file.NewParquetReader(retryableReader, file.WithReadProps(&parquet.ReaderProperties{
 		BufferSize:            columnReaderBufferSize,

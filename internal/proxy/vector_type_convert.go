@@ -65,55 +65,51 @@ func isVectorTypeMatch(placeholderType commonpb.PlaceholderType, fieldType schem
 // If the placeholder type matches the field type, returns the original bytes unchanged.
 // If the placeholder is fp32 and field is fp16/bf16, converts the vectors.
 // Otherwise returns an error for incompatible types.
-// Also returns the original placeholder type (before conversion) for callers that need it.
-func ConvertPlaceholderGroup(phgBytes []byte, fieldSchema *schemapb.FieldSchema) ([]byte, commonpb.PlaceholderType, error) {
+func ConvertPlaceholderGroup(phgBytes []byte, fieldSchema *schemapb.FieldSchema) ([]byte, error) {
 	var phg commonpb.PlaceholderGroup
 	if err := proto.Unmarshal(phgBytes, &phg); err != nil {
-		return nil, 0, merr.WrapErrParameterInvalidMsg("failed to unmarshal placeholder group: %v", err)
+		return nil, fmt.Errorf("failed to unmarshal placeholder group: %w", err)
 	}
 
 	if len(phg.Placeholders) == 0 {
-		return phgBytes, 0, nil
+		return phgBytes, nil
 	}
 
 	placeholder := phg.Placeholders[0]
-	phType := placeholder.Type
 	fieldType := fieldSchema.GetDataType()
 
 	// Check if types already match
 	if isVectorTypeMatch(placeholder.Type, fieldType) {
-		return phgBytes, phType, nil
+		return phgBytes, nil
 	}
 
 	// If placeholder is not a vector type (e.g., VarChar for text embedding), pass through.
 	// Let downstream logic handle non-vector placeholders.
 	if _, isVectorType := placeholderTypeToDataType[placeholder.Type]; !isVectorType {
-		return phgBytes, phType, nil
+		return phgBytes, nil
 	}
 
 	// Only handle fp32 -> fp16/bf16 conversion.
 	// For other field types (e.g., SparseFloatVector, BinaryVector), pass through
 	// and let downstream logic handle the type mismatch with appropriate error messages.
 	if fieldType != schemapb.DataType_Float16Vector && fieldType != schemapb.DataType_BFloat16Vector {
-		return phgBytes, phType, nil
+		return phgBytes, nil
 	}
 
 	// Check if conversion is supported (fp32 -> fp16/bf16)
 	if placeholder.Type != commonpb.PlaceholderType_FloatVector {
-		return nil, phType, merr.WrapErrParameterInvalidMsg("vector type must be the same: field type %s, search type %s",
+		return nil, fmt.Errorf("vector type must be the same: field type %s, search type %s",
 			fieldType.String(), placeholder.Type.String())
 	}
 
 	switch fieldType {
 	case schemapb.DataType_Float16Vector:
-		converted, err := convertPlaceholder(&phg, fieldType, commonpb.PlaceholderType_Float16Vector)
-		return converted, phType, err
+		return convertPlaceholder(&phg, validateFloat32ForFloat16, typeutil.Float32ArrayToFloat16Bytes, commonpb.PlaceholderType_Float16Vector)
 	case schemapb.DataType_BFloat16Vector:
-		converted, err := convertPlaceholder(&phg, fieldType, commonpb.PlaceholderType_BFloat16Vector)
-		return converted, phType, err
+		return convertPlaceholder(&phg, validateFloat32ForBFloat16, typeutil.Float32ArrayToBFloat16Bytes, commonpb.PlaceholderType_BFloat16Vector)
 	default:
 		// This should never be reached due to the check above, but keep for safety
-		return phgBytes, phType, nil
+		return phgBytes, nil
 	}
 }
 

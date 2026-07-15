@@ -38,9 +38,9 @@ using namespace milvus;
 using namespace milvus::storage;
 
 std::shared_ptr<Chunk>
-create_chunk_int64(const FixedVector<int64_t>& data) {
-    auto field_data = milvus::storage::CreateFieldData(storage::DataType::INT64,
-                                                       DataType::NONE);
+create_chunk(const FixedVector<int64_t>& data) {
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::INT64);
     field_data->FillFieldData(data.data(), data.size());
     storage::InsertEventData event_data;
     auto payload_reader =
@@ -73,9 +73,9 @@ create_chunk_int64(const FixedVector<int64_t>& data) {
 
 // Helper function to create chunks for string data
 std::shared_ptr<Chunk>
-create_chunk_string(const FixedVector<std::string>& data) {
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::VARCHAR, DataType::NONE);
+create_chunk(const FixedVector<std::string>& data) {
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::VARCHAR);
     field_data->FillFieldData(data.data(), data.size());
 
     storage::InsertEventData event_data;

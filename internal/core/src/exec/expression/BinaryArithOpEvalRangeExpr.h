@@ -656,9 +656,8 @@ class PhyBinaryArithOpEvalRangeExpr : public SegmentExpr {
             data_type = expr_->column_.element_type_;
         }
 
-        // JSON, ARRAY and VECTOR_ARRAY types cannot use index for arith ops.
-        if (data_type == DataType::JSON || data_type == DataType::ARRAY ||
-            data_type == DataType::VECTOR_ARRAY) {
+        // JSON and ARRAY types cannot use index for arith ops
+        if (data_type == DataType::JSON || data_type == DataType::ARRAY) {
             exec_path_ = ExprExecPath::RawData;
             return;
         }
@@ -737,10 +736,6 @@ class PhyBinaryArithOpEvalRangeExpr : public SegmentExpr {
     template <typename ValueType>
     VectorPtr
     ExecRangeVisitorImplForArray(OffsetVector* input = nullptr);
-
-    template <typename ValueType>
-    VectorPtr
-    ExecRangeVisitorImplForVectorArray(OffsetVector* input = nullptr);
 
  private:
     std::shared_ptr<const milvus::expr::BinaryArithOpEvalRangeExpr> expr_;

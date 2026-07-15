@@ -20,10 +20,6 @@
 
 #include "arrow/array/builder_binary.h"
 #include "arrow/array/builder_nested.h"
-#include "arrow/array/builder_primitive.h"
-#include "arrow/array/concatenate.h"
-#include "arrow/buffer_builder.h"
-#include <arrow/c/bridge.h>
 #include "arrow/scalar.h"
 #include "arrow/type_fwd.h"
 #include "common/type_c.h"
@@ -54,8 +50,6 @@
 #include "storage/Types.h"
 #include "storage/Util.h"
 #include "common/Common.h"
-#include "common/Types.h"
-#include "common/VectorArray.h"
 #include "storage/ThreadPools.h"
 #include "storage/MemFileManagerImpl.h"
 #include "storage/DiskFileManagerImpl.h"
@@ -330,83 +324,6 @@ AddPayloadToArrowBuilder(std::shared_ptr<arrow::ArrayBuilder> builder,
                       "add_one_binary_payload",
                       data_type);
         }
-        case DataType::VECTOR_ARRAY: {
-            auto list_builder =
-                std::dynamic_pointer_cast<arrow::ListBuilder>(builder);
-            AssertInfo(list_builder != nullptr,
-                       "builder must be ListBuilder for VECTOR_ARRAY");
-
-            auto vector_arrays = reinterpret_cast<VectorArray*>(raw_data);
-            auto valid_data = payload.valid_data;
-            AssertInfo((nullable && valid_data) || !nullable,
-                       "valid_data is required for nullable VectorArray");
-
-            if (length > 0) {
-                auto value_builder =
-                    static_cast<arrow::FixedSizeBinaryBuilder*>(
-                        list_builder->value_builder());
-                AssertInfo(value_builder != nullptr,
-                           "value_builder must be FixedSizeBinaryBuilder for "
-                           "VectorArray");
-
-                DataType element_type = DataType::NONE;
-                auto append_vector_array = [&](const VectorArray& array) {
-                    if (element_type == DataType::NONE) {
-                        element_type = array.get_element_type();
-                        switch (element_type) {
-                            case DataType::VECTOR_FLOAT:
-                            case DataType::VECTOR_BINARY:
-                            case DataType::VECTOR_FLOAT16:
-                            case DataType::VECTOR_BFLOAT16:
-                            case DataType::VECTOR_INT8:
-                                break;
-                            default:
-                                ThrowInfo(
-                                    DataTypeInvalid,
-                                    "Unsupported element type in VectorArray: "
-                                    "{}",
-                                    element_type);
-                        }
-                    } else {
-                        AssertInfo(array.get_element_type() == element_type,
-                                   "Inconsistent element types in "
-                                   "VectorArray");
-                    }
-                    auto status = list_builder->Append();
-                    AssertInfo(status.ok(),
-                               "Failed to append list: {}",
-                               status.ToString());
-
-                    int num_vectors = array.length();
-                    if (num_vectors > 0) {
-                        auto ast = value_builder->AppendValues(
-                            reinterpret_cast<const uint8_t*>(array.data()),
-                            num_vectors);
-                        AssertInfo(ast.ok(),
-                                   "Failed to batch append vectors: {}",
-                                   ast.ToString());
-                    }
-                };
-
-                int valid_index = 0;
-                for (int i = 0; i < length; ++i) {
-                    if (nullable) {
-                        auto bit = (valid_data[i >> 3] >> (i & 0x07)) & 1;
-                        if (!bit) {
-                            auto status = list_builder->AppendNull();
-                            AssertInfo(status.ok(),
-                                       "Failed to append null list: {}",
-                                       status.ToString());
-                            continue;
-                        }
-                        append_vector_array(vector_arrays[valid_index++]);
-                    } else {
-                        append_vector_array(vector_arrays[i]);
-                    }
-                }
-            }
-            break;
-        }
         default: {
             ThrowInfo(DataTypeInvalid, "unsupported data type {}", data_type);
         }
@@ -480,8 +397,7 @@ CreateArrowBuilder(DataType data_type) {
             return std::make_shared<arrow::StringBuilder>();
         }
         case DataType::ARRAY:
-        case DataType::JSON:
-        case DataType::GEOMETRY: {
+        case DataType::JSON: {
             return std::make_shared<arrow::BinaryBuilder>();
         }
         // sparse float vector doesn't require a dim
@@ -496,10 +412,7 @@ CreateArrowBuilder(DataType data_type) {
 }
 
 std::shared_ptr<arrow::ArrayBuilder>
-CreateArrowBuilder(DataType data_type,
-                   DataType element_type,
-                   int dim,
-                   bool nullable) {
+CreateArrowBuilder(DataType data_type, int dim) {
     switch (static_cast<DataType>(data_type)) {
         case DataType::VECTOR_FLOAT: {
             AssertInfo(dim > 0, "invalid dim value: {}", dim);
@@ -540,61 +453,6 @@ CreateArrowBuilder(DataType data_type,
             }
             return std::make_shared<arrow::FixedSizeBinaryBuilder>(
                 arrow::fixed_size_binary(dim * sizeof(int8)));
-        }
-        case DataType::VECTOR_SPARSE_U32_F32: {
-            return std::make_shared<arrow::BinaryBuilder>();
-        }
-        case DataType::VECTOR_ARRAY: {
-            AssertInfo(dim > 0, "invalid dim value");
-            AssertInfo(element_type != DataType::NONE,
-                       "element_type must be specified for VECTOR_ARRAY");
-
-            std::shared_ptr<arrow::ArrayBuilder> value_builder;
-            switch (element_type) {
-                case DataType::VECTOR_FLOAT: {
-                    int byte_width = dim * sizeof(float);
-                    value_builder =
-                        std::make_shared<arrow::FixedSizeBinaryBuilder>(
-                            arrow::fixed_size_binary(byte_width));
-                    break;
-                }
-                case DataType::VECTOR_BINARY: {
-                    int byte_width = (dim + 7) / 8;
-                    value_builder =
-                        std::make_shared<arrow::FixedSizeBinaryBuilder>(
-                            arrow::fixed_size_binary(byte_width));
-                    break;
-                }
-                case DataType::VECTOR_FLOAT16: {
-                    int byte_width = dim * 2;
-                    value_builder =
-                        std::make_shared<arrow::FixedSizeBinaryBuilder>(
-                            arrow::fixed_size_binary(byte_width));
-                    break;
-                }
-                case DataType::VECTOR_BFLOAT16: {
-                    int byte_width = dim * 2;
-                    value_builder =
-                        std::make_shared<arrow::FixedSizeBinaryBuilder>(
-                            arrow::fixed_size_binary(byte_width));
-                    break;
-                }
-                case DataType::VECTOR_INT8: {
-                    int byte_width = dim;
-                    value_builder =
-                        std::make_shared<arrow::FixedSizeBinaryBuilder>(
-                            arrow::fixed_size_binary(byte_width));
-                    break;
-                }
-                default: {
-                    ThrowInfo(DataTypeInvalid,
-                              "unsupported element type {} for VECTOR_ARRAY",
-                              GetDataTypeName(element_type));
-                }
-            }
-
-            return std::make_shared<arrow::ListBuilder>(
-                arrow::default_memory_pool(), value_builder);
         }
         default: {
             ThrowInfo(
@@ -691,8 +549,7 @@ CreateArrowSchema(DataType data_type, bool nullable) {
                 {arrow::field("val", arrow::utf8(), nullable)});
         }
         case DataType::ARRAY:
-        case DataType::JSON:
-        case DataType::GEOMETRY: {
+        case DataType::JSON: {
             return arrow::schema(
                 {arrow::field("val", arrow::binary(), nullable)});
         }
@@ -783,37 +640,11 @@ CreateArrowSchema(DataType data_type, int dim, bool nullable) {
                               arrow::fixed_size_binary(dim * sizeof(int8)),
                               nullable)});
         }
-        case DataType::VECTOR_ARRAY: {
-            // VectorArray should not use this overload - should call the one with element_type
-            ThrowInfo(
-                NotImplemented,
-                "VectorArray requires element_type parameter. Use "
-                "CreateArrowSchema(data_type, dim, element_type, nullable)");
-        }
         default: {
             ThrowInfo(
                 DataTypeInvalid, "unsupported vector data type {}", data_type);
         }
     }
-}
-
-std::shared_ptr<arrow::Schema>
-CreateArrowSchema(DataType data_type,
-                  int dim,
-                  DataType element_type,
-                  bool nullable) {
-    AssertInfo(data_type == DataType::VECTOR_ARRAY,
-               "This overload is only for VECTOR_ARRAY type");
-    AssertInfo(dim > 0, "invalid dim value");
-
-    auto value_type = GetArrowDataTypeForVectorArray(element_type, dim);
-    auto metadata = arrow::KeyValueMetadata::Make(
-        {ELEMENT_TYPE_KEY_FOR_ARROW, DIM_KEY},
-        {std::to_string(static_cast<int>(element_type)), std::to_string(dim)});
-
-    auto field =
-        arrow::field("val", value_type, nullable)->WithMetadata(metadata);
-    return arrow::schema({field});
 }
 
 int
@@ -839,6 +670,60 @@ GetDimensionFromFileMetaData(const parquet::ColumnDescriptor* schema,
         }
         case DataType::VECTOR_INT8: {
             return schema->type_length() / sizeof(int8);
+        }
+        default:
+            ThrowInfo(DataTypeInvalid, "unsupported data type {}", data_type);
+    }
+}
+
+int
+GetDimensionFromArrowArray(std::shared_ptr<arrow::Array> data,
+                           DataType data_type) {
+    switch (data_type) {
+        case DataType::VECTOR_FLOAT: {
+            AssertInfo(
+                data->type()->id() == arrow::Type::type::FIXED_SIZE_BINARY,
+                "inconsistent data type: {}",
+                data->type_id());
+            auto array =
+                std::dynamic_pointer_cast<arrow::FixedSizeBinaryArray>(data);
+            return array->byte_width() / sizeof(float);
+        }
+        case DataType::VECTOR_BINARY: {
+            AssertInfo(
+                data->type()->id() == arrow::Type::type::FIXED_SIZE_BINARY,
+                "inconsistent data type: {}",
+                data->type_id());
+            auto array =
+                std::dynamic_pointer_cast<arrow::FixedSizeBinaryArray>(data);
+            return array->byte_width() * 8;
+        }
+        case DataType::VECTOR_FLOAT16: {
+            AssertInfo(
+                data->type()->id() == arrow::Type::type::FIXED_SIZE_BINARY,
+                "inconsistent data type: {}",
+                data->type_id());
+            auto array =
+                std::dynamic_pointer_cast<arrow::FixedSizeBinaryArray>(data);
+            return array->byte_width() / sizeof(float16);
+        }
+        case DataType::VECTOR_BFLOAT16: {
+            AssertInfo(
+                data->type()->id() == arrow::Type::type::FIXED_SIZE_BINARY,
+                "inconsistent data type: {}",
+                data->type_id());
+            auto array =
+                std::dynamic_pointer_cast<arrow::FixedSizeBinaryArray>(data);
+            return array->byte_width() / sizeof(bfloat16);
+        }
+        case DataType::VECTOR_INT8: {
+            AssertInfo(
+                data->type()->id() == arrow::Type::type::FIXED_SIZE_BINARY,
+                "inconsistent data type: {}",
+                data->type_id());
+            auto array =
+                std::dynamic_pointer_cast<arrow::FixedSizeBinaryArray>(data);
+            return array->byte_width() / sizeof(int8);
         }
         default:
             ThrowInfo(DataTypeInvalid, "unsupported data type {}", data_type);
@@ -1000,8 +885,7 @@ EncodeAndUploadIndexSlice(ChunkManager* chunk_manager,
         index_data = std::make_shared<IndexData>(buf, batch_size);
         // index-build tasks assigned from new milvus-coord nodes to none-encoding
     } else {
-        auto field_data =
-            CreateFieldData(DataType::INT8, DataType::NONE, false);
+        auto field_data = CreateFieldData(DataType::INT8, false);
         field_data->FillFieldData(buf, batch_size);
         auto payload_reader = std::make_shared<PayloadReader>(field_data);
         index_data = std::make_shared<IndexData>(payload_reader);
@@ -1220,7 +1104,6 @@ InitArrowFileSystem(milvus::storage::StorageConfig storage_config) {
 
 FieldDataPtr
 CreateFieldData(const DataType& type,
-                const DataType& element_type,
                 bool nullable,
                 int64_t dim,
                 int64_t total_num_rows) {
@@ -1280,10 +1163,7 @@ CreateFieldData(const DataType& type,
                 type, nullable, total_num_rows);
         case DataType::VECTOR_INT8:
             return std::make_shared<FieldData<Int8Vector>>(
-                dim, type, nullable, total_num_rows);
-        case DataType::VECTOR_ARRAY:
-            return std::make_shared<FieldData<VectorArray>>(
-                dim, element_type, nullable, total_num_rows);
+                dim, type, total_num_rows);
         default:
             ThrowInfo(DataTypeInvalid,
                       "CreateFieldData not support data type " +
@@ -1325,16 +1205,7 @@ MergeFieldData(std::vector<FieldDataPtr>& data_array) {
     for (const auto& data : data_array) {
         total_length += data->Length();
     }
-
-    auto element_type = DataType::NONE;
-    auto vector_array_data =
-        dynamic_cast<FieldData<VectorArray>*>(data_array[0].get());
-    if (vector_array_data) {
-        element_type = vector_array_data->get_element_type();
-    }
-
     auto merged_data = storage::CreateFieldData(data_array[0]->get_data_type(),
-                                                element_type,
                                                 data_array[0]->IsNullable());
     merged_data->Reserve(total_length);
     for (const auto& data : data_array) {
@@ -1379,7 +1250,6 @@ std::vector<FieldDataPtr>
 GetFieldDatasFromStorageV2(std::vector<std::vector<std::string>>& remote_files,
                            int64_t field_id,
                            DataType data_type,
-                           DataType element_type,
                            int64_t dim,
                            milvus_storage::ArrowFileSystemPtr fs) {
     AssertInfo(remote_files.size() > 0, "[StorageV2] remote files size is 0");
@@ -1530,15 +1400,10 @@ GetFieldDatasFromStorageV2(std::vector<std::vector<std::string>>& remote_files,
                 }
                 field_data_list.push_back(field_data);
             }
-        } catch (...) {
-            // The load task captures this frame by reference and may be
-            // blocked pushing into the bounded channel. Unblock it, then
-            // wait for it to finish before unwinding (see #46958).
-            try {
-                std::shared_ptr<milvus::ArrowDataWrapper> discard;
-                while (field_data_info.arrow_reader_channel->pop(discard)) {
-                }
-            } catch (...) {
+            auto field_data = storage::CreateFieldData(
+                data_type, field_schema->nullable(), dim, num_rows);
+            for (const auto& chunked_array : chunked_arrays) {
+                field_data->FillFieldData(chunked_array);
             }
             DrainFuture(load_future);
             throw;
@@ -1620,8 +1485,7 @@ GetFieldDatasFromManifest(
             if (data_type.value() == DataType::VECTOR_ARRAY) {
                 arrow_schema = CreateArrowSchema(data_type.value(),
                                                  static_cast<int>(dim),
-                                                 element_type.value(),
-                                                 nullable);
+                                                 element_type.value());
             } else if (IsSparseFloatVectorDataType(data_type.value())) {
                 arrow_schema = CreateArrowSchema(data_type.value(), nullable);
             } else {
@@ -1877,7 +1741,6 @@ CacheRawDataAndFillMissing(const MemFileManagerImplPtr& file_manager,
         }();
         auto field_data = storage::CreateFieldData(
             static_cast<DataType>(field_schema.data_type()),
-            static_cast<DataType>(field_schema.element_type()),
             true,
             1,
             lack_binlog_rows);
@@ -2961,7 +2824,7 @@ NormalizeVectorArrayInner(const arrow::ArrayVector& arrays,
             continue;
         }
         auto list_arr = std::static_pointer_cast<arrow::ListArray>(arr);
-        AssertInfo(field_meta.is_nullable() || list_arr->null_count() == 0,
+        AssertInfo(list_arr->null_count() == 0,
                    "VECTOR_ARRAY does not support null rows");
         if (list_arr->values()->type_id() == arrow::Type::FIXED_SIZE_BINARY) {
             ValidateFixedSizeBinaryVectorWidth(list_arr->values(),
@@ -2976,14 +2839,12 @@ NormalizeVectorArrayInner(const arrow::ArrayVector& arrays,
                                                    element_type,
                                                    static_cast<int>(dim),
                                                    field_meta);
-        auto rebuilt_data = arrow::ArrayData::Make(
-            arrow::list(normalized[0]->type()),
-            list_arr->length(),
-            {list_arr->null_bitmap(), list_arr->value_offsets()},
-            {normalized[0]->data()},
-            list_arr->null_count(),
-            list_arr->offset());
-        result.push_back(arrow::MakeArray(rebuilt_data));
+        auto rebuilt =
+            arrow::ListArray::FromArrays(*list_arr->offsets(), *normalized[0]);
+        AssertInfo(rebuilt.ok(),
+                   "Failed to rebuild ListArray for VectorArray: {}",
+                   rebuilt.status().ToString());
+        result.push_back(*rebuilt);
     }
     return result;
 }

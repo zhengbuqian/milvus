@@ -726,8 +726,26 @@ JsonKeyStats::Build(const Config& config) {
     if (is_built_)
         return;
     auto start_time = std::chrono::steady_clock::now();
-    auto field_datas =
-        storage::CacheRawDataAndFillMissing(mem_file_manager_, config);
+    auto field_datas = mem_file_manager_->CacheRawDataToMemory(config);
+
+    auto lack_binlog_rows =
+        GetValueFromConfig<int64_t>(config, "lack_binlog_rows");
+    if (lack_binlog_rows.has_value()) {
+        auto field_schema = mem_file_manager_->GetFieldDataMeta().field_schema;
+        auto default_value = [&]() -> std::optional<DefaultValueType> {
+            if (!field_schema.has_default_value()) {
+                return std::nullopt;
+            }
+            return field_schema.default_value();
+        }();
+        auto field_data = storage::CreateFieldData(
+            static_cast<DataType>(field_schema.data_type()),
+            true,
+            1,
+            lack_binlog_rows.value());
+        field_data->FillFieldData(default_value, lack_binlog_rows.value());
+        field_datas.insert(field_datas.begin(), field_data);
+    }
 
     BuildWithFieldData(field_datas, schema_.nullable());
     auto end_time = std::chrono::steady_clock::now();

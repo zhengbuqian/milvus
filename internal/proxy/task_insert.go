@@ -208,22 +208,11 @@ func (it *insertTask) PreExecute(ctx context.Context) error {
 		}
 	}
 
-	err = addNamespaceData(it.schema, it.insertMsg)
-	if err != nil {
-		return err
-	}
-
-	err = checkAndFlattenStructFieldData(it.schema, it.insertMsg)
-	if err != nil {
-		return err
-	}
-
-	allFields := typeutil.GetAllFieldSchemas(it.schema)
-
 	// check primaryFieldData whether autoID is true or not
 	// set rowIDs as primary data if autoID == true
 	// TODO(dragondriver): in fact, NumRows is not trustable, we should check all input fields
-	it.result.IDs, err = checkPrimaryFieldData(ctx, allFields, it.schema, it.insertMsg)
+	it.result.IDs, err = checkPrimaryFieldData(it.schema, it.insertMsg)
+	log := log.Ctx(ctx).With(zap.String("collectionName", collectionName))
 	if err != nil {
 		log.Warn(ctx, "check primary field data and hash primary key failed",
 			mlog.Err(err))
@@ -231,7 +220,7 @@ func (it *insertTask) PreExecute(ctx context.Context) error {
 	}
 
 	// check varchar/text with analyzer was utf-8 format
-	err = checkInputUtf8Compatiable(allFields, it.insertMsg)
+	err = checkInputUtf8Compatiable(it.schema, it.insertMsg)
 	if err != nil {
 		log.Warn(ctx, "check varchar/text format failed", mlog.Err(err))
 		return err

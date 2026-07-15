@@ -137,20 +137,14 @@ get_opt_field(const ::google::protobuf::RepeatedPtrField<
     milvus::OptFieldT opt_fields_map;
     for (const auto& field_info : field_infos) {
         auto field_id = field_info.fieldid();
-        auto it = opt_fields_map.find(field_id);
-        if (it == opt_fields_map.end()) {
-            it = opt_fields_map
-                     .emplace(field_id,
-                              std::make_tuple(field_info.field_name(),
-                                              static_cast<milvus::DataType>(
-                                                  field_info.field_type()),
-                                              static_cast<milvus::DataType>(
-                                                  field_info.element_type()),
-                                              std::vector<std::string>{}))
-                     .first;
+        if (opt_fields_map.find(field_id) == opt_fields_map.end()) {
+            opt_fields_map[field_id] = {
+                field_info.field_name(),
+                static_cast<milvus::DataType>(field_info.field_type()),
+                {}};
         }
         for (const auto& str : field_info.data_paths()) {
-            std::get<3>(it->second).emplace_back(str);
+            std::get<2>(opt_fields_map[field_id]).emplace_back(str);
         }
     }
 
@@ -259,14 +253,6 @@ get_config(std::unique_ptr<milvus::proto::indexcgo::BuildIndexInfo>& info) {
     }
     config[DIM_KEY] = info->dim();
     config[DATA_TYPE_KEY] = info->field_schema().data_type();
-    config[ELEMENT_TYPE_KEY] = info->field_schema().element_type();
-    if (!info->stats_base_path().empty()) {
-        config[STATS_BASE_PATH_KEY] = info->stats_base_path();
-    }
-
-    if (!info->analyzer_extra_info().empty()) {
-        config["analyzer_extra_info"] = info->analyzer_extra_info();
-    }
 
     return config;
 }

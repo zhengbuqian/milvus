@@ -135,9 +135,7 @@ class TestSparseFloatSearchBruteForce : public ::testing::Test {
                                               search_info,
                                               index_info,
                                               bitset_view,
-                                              DataType::VECTOR_SPARSE_U32_F32,
-                                              DataType::NONE,
-                                              nullptr));
+                                              DataType::VECTOR_SPARSE_FLOAT));
             return;
         }
         auto result = BruteForceSearch(query_dataset,
@@ -145,12 +143,10 @@ class TestSparseFloatSearchBruteForce : public ::testing::Test {
                                        search_info,
                                        index_info,
                                        bitset_view,
-                                       DataType::VECTOR_SPARSE_U32_F32,
-                                       DataType::NONE,
-                                       nullptr);
+                                       DataType::VECTOR_SPARSE_FLOAT);
         for (int i = 0; i < nq; i++) {
             auto ref = SearchRef(base.get(), *(query.get() + i), nb, topk);
-            auto ans = result.get_offsets() + i * topk;
+            auto ans = result.get_seg_offsets() + i * topk;
             AssertMatch(ref, ans);
         }
 
@@ -161,13 +157,11 @@ class TestSparseFloatSearchBruteForce : public ::testing::Test {
                                         search_info,
                                         index_info,
                                         bitset_view,
-                                        DataType::VECTOR_SPARSE_U32_F32,
-                                        DataType::NONE,
-                                        nullptr);
+                                        DataType::VECTOR_SPARSE_FLOAT);
         for (int i = 0; i < nq; i++) {
             auto ref = RangeSearchRef(
                 base.get(), *(query.get() + i), nb, 0.1, 0.5, topk);
-            auto ans = result2.get_offsets() + i * topk;
+            auto ans = result2.get_seg_offsets() + i * topk;
             AssertMatch(ref, ans);
         }
 

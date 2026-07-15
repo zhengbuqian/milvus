@@ -278,8 +278,7 @@ class Json {
                                : doc().at_pointer(pointer).type();
     }
 
-    auto
-    get_number_type(const std::string& pointer) const {
+    auto get_number_type(const std::string& pointer) const {
         return pointer.empty() ? doc().get_number_type()
                                : doc().at_pointer(pointer).get_number_type();
     }

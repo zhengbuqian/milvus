@@ -26,7 +26,7 @@ import (
 
 // PayloadWriterInterface abstracts PayloadWriter
 type PayloadWriterInterface interface {
-	AddDataToPayloadForUT(any, []bool) error
+	AddDataToPayload(any, []bool) error
 	AddBoolToPayload([]bool, []bool) error
 	AddByteToPayload([]byte, []bool) error
 	AddInt8ToPayload([]int8, []bool) error
@@ -45,8 +45,7 @@ type PayloadWriterInterface interface {
 	AddFloat16VectorToPayload(data []byte, dim int, validData []bool) error
 	AddBFloat16VectorToPayload(data []byte, dim int, validData []bool) error
 	AddSparseFloatVectorToPayload(*SparseFloatVectorFieldData) error
-	AddInt8VectorToPayload(data []int8, dim int, validData []bool) error
-	AddVectorArrayFieldDataToPayload(*VectorArrayFieldData) error
+	AddInt8VectorToPayload([]int8, int) error
 	FinishPayloadWriter() error
 	GetPayloadBufferFromWriter() ([]byte, error)
 	GetPayloadLengthFromWriter() (int, error)
@@ -69,7 +68,6 @@ type PayloadReaderInterface interface {
 	GetTimestamptzFromPayload() ([]int64, []bool, error)
 	GetStringFromPayload() ([]string, []bool, error)
 	GetArrayFromPayload() ([]*schemapb.ScalarField, []bool, error)
-	GetVectorArrayFromPayload() ([]*schemapb.VectorField, error)
 	GetJSONFromPayload() ([][]byte, []bool, error)
 	GetGeometryFromPayload() ([][]byte, []bool, error)
 	GetBinaryVectorFromPayload() ([]byte, int, []bool, int, error)

@@ -113,9 +113,8 @@ class JsonKeyStatsTest : public ::testing::TestWithParam<bool> {
         auto index_meta = storage::IndexMeta{
             segment_id, field_id, index_build_id, index_version};
 
-        data_ = GenerateJsons(size);
-        auto field_data =
-            storage::CreateFieldData(DataType::JSON, DataType::NONE, nullable_);
+        data_ = std::move(GenerateJsons(size));
+        auto field_data = storage::CreateFieldData(DataType::JSON, nullable_);
         if (nullable_) {
             valid_data.reserve(size_);
             for (size_t i = 0; i < size_; i++) {
@@ -391,9 +390,8 @@ class JsonKeyStatsUploadLoadTest : public ::testing::Test {
     }
 
     void
-    BuildAndUpload(int64_t lack_binlog_rows = 0) {
-        auto field_data =
-            storage::CreateFieldData(DataType::JSON, DataType::NONE, false);
+    BuildAndUpload() {
+        auto field_data = storage::CreateFieldData(DataType::JSON, false);
         field_data->FillFieldData(data_.data(), data_.size());
 
         auto payload_reader =

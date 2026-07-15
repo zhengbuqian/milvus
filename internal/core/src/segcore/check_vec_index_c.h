@@ -17,9 +17,7 @@ extern "C" {
 #include <stdbool.h>
 #include "common/type_c.h"
 bool
-CheckVecIndexWithDataType(const char* index_type,
-                          enum CDataType data_type,
-                          bool is_emb_list_data);
+CheckVecIndexWithDataType(const char* index_type, enum CDataType data_type);
 
 #ifdef __cplusplus
 }

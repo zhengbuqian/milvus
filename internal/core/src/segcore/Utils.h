@@ -53,7 +53,7 @@ GetRawDataSizeOfDataArray(const DataArray* data,
 // Note: this is temporary solution.
 // modify bulk script implement to make process more clear
 std::unique_ptr<DataArray>
-CreateEmptyScalarDataArray(int64_t count, const FieldMeta& field_meta);
+CreateScalarDataArray(int64_t count, const FieldMeta& field_meta);
 
 void
 SetUpScalarFieldData(milvus::proto::schema::ScalarField*& scalar_array,
@@ -69,7 +69,7 @@ CreateScalarDataArray(DataArray& data_array,
                       bool nullable);
 
 std::unique_ptr<DataArray>
-CreateEmptyVectorDataArray(int64_t count, const FieldMeta& field_meta);
+CreateVectorDataArray(int64_t count, const FieldMeta& field_meta);
 
 std::unique_ptr<DataArray>
 CreateEmptyVectorDataArray(int64_t count,

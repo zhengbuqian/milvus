@@ -63,18 +63,13 @@ func GetDynamicPool() *conc.Pool[any] {
 	return dp.Load()
 }
 
-func CheckVecIndexWithDataTypeExist(name string, dataType schemapb.DataType, elementType schemapb.DataType) bool {
-	isEmbeddingList := dataType == schemapb.DataType_ArrayOfVector
-	if isEmbeddingList {
-		dataType = elementType
-	}
-
+func CheckVecIndexWithDataTypeExist(name string, dType schemapb.DataType) bool {
 	var result bool
 	GetDynamicPool().Submit(func() (any, error) {
 		cIndexName := C.CString(name)
-		cType := uint32(dataType)
+		cType := uint32(dType)
 		defer C.free(unsafe.Pointer(cIndexName))
-		result = bool(C.CheckVecIndexWithDataType(cIndexName, cType, C.bool(isEmbeddingList)))
+		result = bool(C.CheckVecIndexWithDataType(cIndexName, cType))
 		return nil, nil
 	}).Await()
 

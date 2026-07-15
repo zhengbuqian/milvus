@@ -153,7 +153,7 @@ func (s *PackedBinlogRecordSuite) TestPackedBinlogRecordIntegration() {
 	for i := 1; i <= rows; i++ {
 		value, err := reader.NextValue()
 		s.NoError(err)
-		rec, err := ValueSerializer([]*Value{*value}, s.schema)
+		rec, err := ValueSerializer([]*Value{*value}, s.schema.Fields)
 		s.NoError(err)
 		err = w.Write(rec)
 		s.NoError(err)
@@ -237,7 +237,7 @@ func (s *PackedBinlogRecordSuite) TestGenerateBM25Stats() {
 		Timestamp: int64(tsoutil.ComposeTSByTime(getMilvusBirthday())),
 		Value:     genRowWithBM25(0),
 	}
-	rec, err := ValueSerializer([]*Value{v}, s.schema)
+	rec, err := ValueSerializer([]*Value{v}, s.schema.Fields)
 	s.NoError(err)
 
 	w, err := NewBinlogRecordWriter(s.ctx, s.collectionID, s.partitionID, s.segmentID, s.schema, s.logIDAlloc, s.chunkSize, s.maxRowNum, wOption...)
@@ -270,36 +270,6 @@ func (s *PackedBinlogRecordSuite) TestUnsuportedStorageVersion() {
 	}
 	_, err = NewBinlogRecordReader(s.ctx, []*datapb.FieldBinlog{{}}, s.schema, rOption...)
 	s.Error(err)
-}
-
-func (s *PackedBinlogRecordSuite) TestStorageV1RejectsNullableArrayOfVectorWriter() {
-	s.schema.StructArrayFields = []*schemapb.StructArrayFieldSchema{
-		{
-			Name:     "struct_array",
-			Nullable: true,
-			Fields: []*schemapb.FieldSchema{
-				{
-					FieldID:     200,
-					Name:        "embeddings",
-					DataType:    schemapb.DataType_ArrayOfVector,
-					ElementType: schemapb.DataType_FloatVector,
-					Nullable:    true,
-					TypeParams: []*commonpb.KeyValuePair{
-						{Key: common.DimKey, Value: "4"},
-						{Key: common.MaxCapacityKey, Value: "8"},
-					},
-				},
-			},
-		},
-	}
-
-	_, err := NewBinlogRecordWriter(s.ctx, s.collectionID, s.partitionID, s.segmentID, s.schema, s.logIDAlloc, s.chunkSize, s.maxRowNum,
-		WithVersion(StorageV1),
-		WithUploader(func(context.Context, map[string][]byte) error { return nil }),
-		WithStorageConfig(s.storageConfig),
-	)
-	s.Error(err)
-	s.Contains(err.Error(), "nullable ArrayOfVector is not supported in V1 storage format")
 }
 
 func (s *PackedBinlogRecordSuite) TestNoPrimaryKeyError() {
@@ -380,7 +350,7 @@ func (s *PackedBinlogRecordSuite) TestAllocIDExhausedError() {
 		value, err := reader.NextValue()
 		s.NoError(err)
 
-		rec, err := ValueSerializer([]*Value{*value}, s.schema)
+		rec, err := ValueSerializer([]*Value{*value}, s.schema.Fields)
 		s.NoError(err)
 		err = w.Write(rec)
 		s.Error(err)

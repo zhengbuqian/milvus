@@ -304,8 +304,7 @@ class DiskFileManagerImpl : public FileManagerImpl {
         std::string& local_data_path,
         bool& file_created,
         uint32_t& dim,
-        int64_t& write_offset,
-        std::vector<size_t>* offsets = nullptr);
+        int64_t& write_offset);
 
     inline void
     set_bit(std::vector<uint8_t>& bitmap, int64_t bit_pos) {

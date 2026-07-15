@@ -142,45 +142,6 @@ class FieldMeta {
                "vector fields do not support default values");
     }
 
-    // array of vector type
-    FieldMeta(FieldName name,
-              FieldId id,
-              DataType type,
-              DataType element_type,
-              int64_t dim,
-              std::optional<knowhere::MetricType> metric_type,
-              bool nullable,
-              std::string external_field_mapping = "")
-        : name_(std::move(name)),
-          id_(id),
-          type_(type),
-          nullable_(nullable),
-          element_type_(element_type),
-          vector_info_(VectorInfo{dim, std::move(metric_type)}),
-          external_field_mapping_(std::move(external_field_mapping)) {
-        Assert(type_ == DataType::VECTOR_ARRAY);
-        Assert(IsVectorDataType(element_type_));
-    }
-
-    // for json stats shredding column field meta,
-    // we need to pass in the main field id
-    FieldMeta(FieldName name,
-              FieldId id,
-              int64_t main_field_id,
-              DataType type,
-              bool nullable,
-              std::optional<DefaultValueType> default_value,
-              std::string external_field_mapping = "")
-        : name_(std::move(name)),
-          id_(id),
-          main_field_id_(main_field_id),
-          type_(type),
-          nullable_(nullable),
-          default_value_(std::move(default_value)),
-          external_field_mapping_(std::move(external_field_mapping)) {
-        Assert(!IsVectorDataType(type_));
-    }
-
     int64_t
     get_dim() const {
         Assert(IsVectorDataType(type_));
@@ -306,11 +267,7 @@ class FieldMeta {
                    "schema");
         static const size_t ARRAY_SIZE = 128;
         static const size_t JSON_SIZE = 512;
-        // assume float vector with dim 512, array length 10
-        static const size_t VECTOR_ARRAY_SIZE = 512 * 10 * 4;
-        if (type_ == DataType::VECTOR_ARRAY) {
-            return VECTOR_ARRAY_SIZE;
-        } else if (is_vector()) {
+        if (is_vector()) {
             return GetDataTypeSize(type_, get_dim());
         } else if (is_string()) {
             Assert(string_info_.has_value());

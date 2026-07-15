@@ -98,7 +98,7 @@ func Test_VecIndex_DataType_Support(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.indexType, func(t *testing.T) {
 			for i, dataType := range tt.dataTypes {
-				got := mgr.IsDataTypeSupport(tt.indexType, dataType, schemapb.DataType_None)
+				got := mgr.IsDataTypeSupport(tt.indexType, dataType)
 				if got != tt.wants[i] {
 					t.Errorf("IsDataTypeSupport(%v, %v) = %v, want %v", tt.indexType, dataType, got, tt.wants[i])
 				}

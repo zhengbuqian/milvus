@@ -363,6 +363,130 @@ func (s *ExprContext) ToStringTree(ruleNames []string, recog antlr.Recognizer) s
 	return antlr.TreesStringTree(s, ruleNames, recog)
 }
 
+type JSONIdentifierContext struct {
+	ExprContext
+}
+
+func NewJSONIdentifierContext(parser antlr.Parser, ctx antlr.ParserRuleContext) *JSONIdentifierContext {
+	var p = new(JSONIdentifierContext)
+
+	InitEmptyExprContext(&p.ExprContext)
+	p.parser = parser
+	p.CopyAll(ctx.(*ExprContext))
+
+	return p
+}
+
+func (s *JSONIdentifierContext) GetRuleContext() antlr.RuleContext {
+	return s
+}
+
+func (s *JSONIdentifierContext) JSONIdentifier() antlr.TerminalNode {
+	return s.GetToken(PlanParserJSONIdentifier, 0)
+}
+
+func (s *JSONIdentifierContext) Accept(visitor antlr.ParseTreeVisitor) interface{} {
+	switch t := visitor.(type) {
+	case PlanVisitor:
+		return t.VisitJSONIdentifier(s)
+
+	default:
+		return t.VisitChildren(s)
+	}
+}
+
+type RandomSampleContext struct {
+	ExprContext
+}
+
+func NewRandomSampleContext(parser antlr.Parser, ctx antlr.ParserRuleContext) *RandomSampleContext {
+	var p = new(RandomSampleContext)
+
+	InitEmptyExprContext(&p.ExprContext)
+	p.parser = parser
+	p.CopyAll(ctx.(*ExprContext))
+
+	return p
+}
+
+func (s *RandomSampleContext) GetRuleContext() antlr.RuleContext {
+	return s
+}
+
+func (s *RandomSampleContext) RANDOMSAMPLE() antlr.TerminalNode {
+	return s.GetToken(PlanParserRANDOMSAMPLE, 0)
+}
+
+func (s *RandomSampleContext) Expr() IExprContext {
+	var t antlr.RuleContext
+	for _, ctx := range s.GetChildren() {
+		if _, ok := ctx.(IExprContext); ok {
+			t = ctx.(antlr.RuleContext)
+			break
+		}
+	}
+
+	if t == nil {
+		return nil
+	}
+
+	return t.(IExprContext)
+}
+
+func (s *RandomSampleContext) Accept(visitor antlr.ParseTreeVisitor) interface{} {
+	switch t := visitor.(type) {
+	case PlanVisitor:
+		return t.VisitRandomSample(s)
+
+	default:
+		return t.VisitChildren(s)
+	}
+}
+
+type ParensContext struct {
+	ExprContext
+}
+
+func NewParensContext(parser antlr.Parser, ctx antlr.ParserRuleContext) *ParensContext {
+	var p = new(ParensContext)
+
+	InitEmptyExprContext(&p.ExprContext)
+	p.parser = parser
+	p.CopyAll(ctx.(*ExprContext))
+
+	return p
+}
+
+func (s *ParensContext) GetRuleContext() antlr.RuleContext {
+	return s
+}
+
+func (s *ParensContext) Expr() IExprContext {
+	var t antlr.RuleContext
+	for _, ctx := range s.GetChildren() {
+		if _, ok := ctx.(IExprContext); ok {
+			t = ctx.(antlr.RuleContext)
+			break
+		}
+	}
+
+	if t == nil {
+		return nil
+	}
+
+	return t.(IExprContext)
+}
+
+func (s *ParensContext) Accept(visitor antlr.ParseTreeVisitor) interface{} {
+	switch t := visitor.(type) {
+	case PlanVisitor:
+		return t.VisitParens(s)
+
+	default:
+		return t.VisitChildren(s)
+	}
+}
+
 type StringContext struct {
 	ExprContext
 }
@@ -525,6 +649,92 @@ func (s *IsNotNullContext) Accept(visitor antlr.ParseTreeVisitor) interface{} {
 	switch t := visitor.(type) {
 	case PlanVisitor:
 		return t.VisitIsNotNull(s)
+
+	default:
+		return t.VisitChildren(s)
+	}
+}
+
+type MulDivModContext struct {
+	ExprContext
+	op antlr.Token
+}
+
+func NewMulDivModContext(parser antlr.Parser, ctx antlr.ParserRuleContext) *MulDivModContext {
+	var p = new(MulDivModContext)
+
+	InitEmptyExprContext(&p.ExprContext)
+	p.parser = parser
+	p.CopyAll(ctx.(*ExprContext))
+
+	return p
+}
+
+func (s *MulDivModContext) GetOp() antlr.Token { return s.op }
+
+func (s *MulDivModContext) SetOp(v antlr.Token) { s.op = v }
+
+func (s *MulDivModContext) GetRuleContext() antlr.RuleContext {
+	return s
+}
+
+func (s *MulDivModContext) AllExpr() []IExprContext {
+	children := s.GetChildren()
+	len := 0
+	for _, ctx := range children {
+		if _, ok := ctx.(IExprContext); ok {
+			len++
+		}
+	}
+
+	tst := make([]IExprContext, len)
+	i := 0
+	for _, ctx := range children {
+		if t, ok := ctx.(IExprContext); ok {
+			tst[i] = t.(IExprContext)
+			i++
+		}
+	}
+
+	return tst
+}
+
+func (s *MulDivModContext) Expr(i int) IExprContext {
+	var t antlr.RuleContext
+	j := 0
+	for _, ctx := range s.GetChildren() {
+		if _, ok := ctx.(IExprContext); ok {
+			if j == i {
+				t = ctx.(antlr.RuleContext)
+				break
+			}
+			j++
+		}
+	}
+
+	if t == nil {
+		return nil
+	}
+
+	return t.(IExprContext)
+}
+
+func (s *MulDivModContext) MUL() antlr.TerminalNode {
+	return s.GetToken(PlanParserMUL, 0)
+}
+
+func (s *MulDivModContext) DIV() antlr.TerminalNode {
+	return s.GetToken(PlanParserDIV, 0)
+}
+
+func (s *MulDivModContext) MOD() antlr.TerminalNode {
+	return s.GetToken(PlanParserMOD, 0)
+}
+
+func (s *MulDivModContext) Accept(visitor antlr.ParseTreeVisitor) interface{} {
+	switch t := visitor.(type) {
+	case PlanVisitor:
+		return t.VisitMulDivMod(s)
 
 	default:
 		return t.VisitChildren(s)
@@ -827,6 +1037,162 @@ func (s *BooleanContext) Accept(visitor antlr.ParseTreeVisitor) interface{} {
 	}
 }
 
+type TimestamptzCompareReverseContext struct {
+	ExprContext
+	compare_string  antlr.Token
+	op2             antlr.Token
+	op1             antlr.Token
+	interval_string antlr.Token
+}
+
+func NewTimestamptzCompareReverseContext(parser antlr.Parser, ctx antlr.ParserRuleContext) *TimestamptzCompareReverseContext {
+	var p = new(TimestamptzCompareReverseContext)
+
+	InitEmptyExprContext(&p.ExprContext)
+	p.parser = parser
+	p.CopyAll(ctx.(*ExprContext))
+
+	return p
+}
+
+func (s *TimestamptzCompareReverseContext) GetCompare_string() antlr.Token { return s.compare_string }
+
+func (s *TimestamptzCompareReverseContext) GetOp2() antlr.Token { return s.op2 }
+
+func (s *TimestamptzCompareReverseContext) GetOp1() antlr.Token { return s.op1 }
+
+func (s *TimestamptzCompareReverseContext) GetInterval_string() antlr.Token { return s.interval_string }
+
+func (s *TimestamptzCompareReverseContext) SetCompare_string(v antlr.Token) { s.compare_string = v }
+
+func (s *TimestamptzCompareReverseContext) SetOp2(v antlr.Token) { s.op2 = v }
+
+func (s *TimestamptzCompareReverseContext) SetOp1(v antlr.Token) { s.op1 = v }
+
+func (s *TimestamptzCompareReverseContext) SetInterval_string(v antlr.Token) { s.interval_string = v }
+
+func (s *TimestamptzCompareReverseContext) GetRuleContext() antlr.RuleContext {
+	return s
+}
+
+func (s *TimestamptzCompareReverseContext) ISO() antlr.TerminalNode {
+	return s.GetToken(PlanParserISO, 0)
+}
+
+func (s *TimestamptzCompareReverseContext) Identifier() antlr.TerminalNode {
+	return s.GetToken(PlanParserIdentifier, 0)
+}
+
+func (s *TimestamptzCompareReverseContext) AllStringLiteral() []antlr.TerminalNode {
+	return s.GetTokens(PlanParserStringLiteral)
+}
+
+func (s *TimestamptzCompareReverseContext) StringLiteral(i int) antlr.TerminalNode {
+	return s.GetToken(PlanParserStringLiteral, i)
+}
+
+func (s *TimestamptzCompareReverseContext) LT() antlr.TerminalNode {
+	return s.GetToken(PlanParserLT, 0)
+}
+
+func (s *TimestamptzCompareReverseContext) LE() antlr.TerminalNode {
+	return s.GetToken(PlanParserLE, 0)
+}
+
+func (s *TimestamptzCompareReverseContext) GT() antlr.TerminalNode {
+	return s.GetToken(PlanParserGT, 0)
+}
+
+func (s *TimestamptzCompareReverseContext) GE() antlr.TerminalNode {
+	return s.GetToken(PlanParserGE, 0)
+}
+
+func (s *TimestamptzCompareReverseContext) EQ() antlr.TerminalNode {
+	return s.GetToken(PlanParserEQ, 0)
+}
+
+func (s *TimestamptzCompareReverseContext) NE() antlr.TerminalNode {
+	return s.GetToken(PlanParserNE, 0)
+}
+
+func (s *TimestamptzCompareReverseContext) INTERVAL() antlr.TerminalNode {
+	return s.GetToken(PlanParserINTERVAL, 0)
+}
+
+func (s *TimestamptzCompareReverseContext) ADD() antlr.TerminalNode {
+	return s.GetToken(PlanParserADD, 0)
+}
+
+func (s *TimestamptzCompareReverseContext) SUB() antlr.TerminalNode {
+	return s.GetToken(PlanParserSUB, 0)
+}
+
+func (s *TimestamptzCompareReverseContext) Accept(visitor antlr.ParseTreeVisitor) interface{} {
+	switch t := visitor.(type) {
+	case PlanVisitor:
+		return t.VisitTimestamptzCompareReverse(s)
+
+	default:
+		return t.VisitChildren(s)
+	}
+}
+
+type STDWithinContext struct {
+	ExprContext
+}
+
+func NewSTDWithinContext(parser antlr.Parser, ctx antlr.ParserRuleContext) *STDWithinContext {
+	var p = new(STDWithinContext)
+
+	InitEmptyExprContext(&p.ExprContext)
+	p.parser = parser
+	p.CopyAll(ctx.(*ExprContext))
+
+	return p
+}
+
+func (s *STDWithinContext) GetRuleContext() antlr.RuleContext {
+	return s
+}
+
+func (s *STDWithinContext) STDWithin() antlr.TerminalNode {
+	return s.GetToken(PlanParserSTDWithin, 0)
+}
+
+func (s *STDWithinContext) Identifier() antlr.TerminalNode {
+	return s.GetToken(PlanParserIdentifier, 0)
+}
+
+func (s *STDWithinContext) StringLiteral() antlr.TerminalNode {
+	return s.GetToken(PlanParserStringLiteral, 0)
+}
+
+func (s *STDWithinContext) Expr() IExprContext {
+	var t antlr.RuleContext
+	for _, ctx := range s.GetChildren() {
+		if _, ok := ctx.(IExprContext); ok {
+			t = ctx.(antlr.RuleContext)
+			break
+		}
+	}
+
+	if t == nil {
+		return nil
+	}
+
+	return t.(IExprContext)
+}
+
+func (s *STDWithinContext) Accept(visitor antlr.ParseTreeVisitor) interface{} {
+	switch t := visitor.(type) {
+	case PlanVisitor:
+		return t.VisitSTDWithin(s)
+
+	default:
+		return t.VisitChildren(s)
+	}
+}
+
 type ShiftContext struct {
 	ExprContext
 	op antlr.Token
@@ -1009,6 +1375,119 @@ func (s *TimestamptzCompareForwardContext) Accept(visitor antlr.ParseTreeVisitor
 	}
 }
 
+type CallContext struct {
+	ExprContext
+}
+
+func NewCallContext(parser antlr.Parser, ctx antlr.ParserRuleContext) *CallContext {
+	var p = new(CallContext)
+
+	InitEmptyExprContext(&p.ExprContext)
+	p.parser = parser
+	p.CopyAll(ctx.(*ExprContext))
+
+	return p
+}
+
+func (s *CallContext) GetRuleContext() antlr.RuleContext {
+	return s
+}
+
+func (s *CallContext) Identifier() antlr.TerminalNode {
+	return s.GetToken(PlanParserIdentifier, 0)
+}
+
+func (s *CallContext) AllExpr() []IExprContext {
+	children := s.GetChildren()
+	len := 0
+	for _, ctx := range children {
+		if _, ok := ctx.(IExprContext); ok {
+			len++
+		}
+	}
+
+	tst := make([]IExprContext, len)
+	i := 0
+	for _, ctx := range children {
+		if t, ok := ctx.(IExprContext); ok {
+			tst[i] = t.(IExprContext)
+			i++
+		}
+	}
+
+	return tst
+}
+
+func (s *CallContext) Expr(i int) IExprContext {
+	var t antlr.RuleContext
+	j := 0
+	for _, ctx := range s.GetChildren() {
+		if _, ok := ctx.(IExprContext); ok {
+			if j == i {
+				t = ctx.(antlr.RuleContext)
+				break
+			}
+			j++
+		}
+	}
+
+	if t == nil {
+		return nil
+	}
+
+	return t.(IExprContext)
+}
+
+func (s *CallContext) Accept(visitor antlr.ParseTreeVisitor) interface{} {
+	switch t := visitor.(type) {
+	case PlanVisitor:
+		return t.VisitCall(s)
+
+	default:
+		return t.VisitChildren(s)
+	}
+}
+
+type STCrossesContext struct {
+	ExprContext
+}
+
+func NewSTCrossesContext(parser antlr.Parser, ctx antlr.ParserRuleContext) *STCrossesContext {
+	var p = new(STCrossesContext)
+
+	InitEmptyExprContext(&p.ExprContext)
+	p.parser = parser
+	p.CopyAll(ctx.(*ExprContext))
+
+	return p
+}
+
+func (s *STCrossesContext) GetRuleContext() antlr.RuleContext {
+	return s
+}
+
+func (s *STCrossesContext) STCrosses() antlr.TerminalNode {
+	return s.GetToken(PlanParserSTCrosses, 0)
+}
+
+func (s *STCrossesContext) Identifier() antlr.TerminalNode {
+	return s.GetToken(PlanParserIdentifier, 0)
+}
+
+func (s *STCrossesContext) StringLiteral() antlr.TerminalNode {
+	return s.GetToken(PlanParserStringLiteral, 0)
+}
+
+func (s *STCrossesContext) Accept(visitor antlr.ParseTreeVisitor) interface{} {
+	switch t := visitor.(type) {
+	case PlanVisitor:
+		return t.VisitSTCrosses(s)
+
+	default:
+		return t.VisitChildren(s)
+	}
+}
+
 type ReverseRangeContext struct {
 	ExprContext
 	op1 antlr.Token
@@ -1086,14 +1565,6 @@ func (s *ReverseRangeContext) JSONIdentifier() antlr.TerminalNode {
 	return s.GetToken(PlanParserJSONIdentifier, 0)
 }
 
-func (s *ReverseRangeContext) StructSubFieldIdentifier() antlr.TerminalNode {
-	return s.GetToken(PlanParserStructSubFieldIdentifier, 0)
-}
-
-func (s *ReverseRangeContext) StructIndexFieldIdentifier() antlr.TerminalNode {
-	return s.GetToken(PlanParserStructIndexFieldIdentifier, 0)
-}
-
 func (s *ReverseRangeContext) AllGT() []antlr.TerminalNode {
 	return s.GetTokens(PlanParserGT)
 }
@@ -1114,6 +1585,79 @@ func (s *ReverseRangeContext) Accept(visitor antlr.ParseTreeVisitor) interface{}
 	switch t := visitor.(type) {
 	case PlanVisitor:
 		return t.VisitReverseRange(s)
+
+	default:
+		return t.VisitChildren(s)
+	}
+}
+
+type BitOrContext struct {
+	ExprContext
+}
+
+func NewBitOrContext(parser antlr.Parser, ctx antlr.ParserRuleContext) *BitOrContext {
+	var p = new(BitOrContext)
+
+	InitEmptyExprContext(&p.ExprContext)
+	p.parser = parser
+	p.CopyAll(ctx.(*ExprContext))
+
+	return p
+}
+
+func (s *BitOrContext) GetRuleContext() antlr.RuleContext {
+	return s
+}
+
+func (s *BitOrContext) AllExpr() []IExprContext {
+	children := s.GetChildren()
+	len := 0
+	for _, ctx := range children {
+		if _, ok := ctx.(IExprContext); ok {
+			len++
+		}
+	}
+
+	tst := make([]IExprContext, len)
+	i := 0
+	for _, ctx := range children {
+		if t, ok := ctx.(IExprContext); ok {
+			tst[i] = t.(IExprContext)
+			i++
+		}
+	}
+
+	return tst
+}
+
+func (s *BitOrContext) Expr(i int) IExprContext {
+	var t antlr.RuleContext
+	j := 0
+	for _, ctx := range s.GetChildren() {
+		if _, ok := ctx.(IExprContext); ok {
+			if j == i {
+				t = ctx.(antlr.RuleContext)
+				break
+			}
+			j++
+		}
+	}
+
+	if t == nil {
+		return nil
+	}
+
+	return t.(IExprContext)
+}
+
+func (s *BitOrContext) BOR() antlr.TerminalNode {
+	return s.GetToken(PlanParserBOR, 0)
+}
+
+func (s *BitOrContext) Accept(visitor antlr.ParseTreeVisitor) interface{} {
+	switch t := visitor.(type) {
+	case PlanVisitor:
+		return t.VisitBitOr(s)
 
 	default:
 		return t.VisitChildren(s)
@@ -1146,6 +1690,88 @@ func (s *EmptyArrayContext) Accept(visitor antlr.ParseTreeVisitor) interface{} {
 	switch t := visitor.(type) {
 	case PlanVisitor:
 		return t.VisitEmptyArray(s)
+
+	default:
+		return t.VisitChildren(s)
+	}
+}
+
+type AddSubContext struct {
+	ExprContext
+	op antlr.Token
+}
+
+func NewAddSubContext(parser antlr.Parser, ctx antlr.ParserRuleContext) *AddSubContext {
+	var p = new(AddSubContext)
+
+	InitEmptyExprContext(&p.ExprContext)
+	p.parser = parser
+	p.CopyAll(ctx.(*ExprContext))
+
+	return p
+}
+
+func (s *AddSubContext) GetOp() antlr.Token { return s.op }
+
+func (s *AddSubContext) SetOp(v antlr.Token) { s.op = v }
+
+func (s *AddSubContext) GetRuleContext() antlr.RuleContext {
+	return s
+}
+
+func (s *AddSubContext) AllExpr() []IExprContext {
+	children := s.GetChildren()
+	len := 0
+	for _, ctx := range children {
+		if _, ok := ctx.(IExprContext); ok {
+			len++
+		}
+	}
+
+	tst := make([]IExprContext, len)
+	i := 0
+	for _, ctx := range children {
+		if t, ok := ctx.(IExprContext); ok {
+			tst[i] = t.(IExprContext)
+			i++
+		}
+	}
+
+	return tst
+}
+
+func (s *AddSubContext) Expr(i int) IExprContext {
+	var t antlr.RuleContext
+	j := 0
+	for _, ctx := range s.GetChildren() {
+		if _, ok := ctx.(IExprContext); ok {
+			if j == i {
+				t = ctx.(antlr.RuleContext)
+				break
+			}
+			j++
+		}
+	}
+
+	if t == nil {
+		return nil
+	}
+
+	return t.(IExprContext)
+}
+
+func (s *AddSubContext) ADD() antlr.TerminalNode {
+	return s.GetToken(PlanParserADD, 0)
+}
+
+func (s *AddSubContext) SUB() antlr.TerminalNode {
+	return s.GetToken(PlanParserSUB, 0)
+}
+
+func (s *AddSubContext) Accept(visitor antlr.ParseTreeVisitor) interface{} {
+	switch t := visitor.(type) {
+	case PlanVisitor:
+		return t.VisitAddSub(s)
 
 	default:
 		return t.VisitChildren(s)
@@ -1229,6 +1855,96 @@ func (s *PhraseMatchContext) Accept(visitor antlr.ParseTreeVisitor) interface{} 
 	}
 }
 
+type RelationalContext struct {
+	ExprContext
+	op antlr.Token
+}
+
+func NewRelationalContext(parser antlr.Parser, ctx antlr.ParserRuleContext) *RelationalContext {
+	var p = new(RelationalContext)
+
+	InitEmptyExprContext(&p.ExprContext)
+	p.parser = parser
+	p.CopyAll(ctx.(*ExprContext))
+
+	return p
+}
+
+func (s *RelationalContext) GetOp() antlr.Token { return s.op }
+
+func (s *RelationalContext) SetOp(v antlr.Token) { s.op = v }
+
+func (s *RelationalContext) GetRuleContext() antlr.RuleContext {
+	return s
+}
+
+func (s *RelationalContext) AllExpr() []IExprContext {
+	children := s.GetChildren()
+	len := 0
+	for _, ctx := range children {
+		if _, ok := ctx.(IExprContext); ok {
+			len++
+		}
+	}
+
+	tst := make([]IExprContext, len)
+	i := 0
+	for _, ctx := range children {
+		if t, ok := ctx.(IExprContext); ok {
+			tst[i] = t.(IExprContext)
+			i++
+		}
+	}
+
+	return tst
+}
+
+func (s *RelationalContext) Expr(i int) IExprContext {
+	var t antlr.RuleContext
+	j := 0
+	for _, ctx := range s.GetChildren() {
+		if _, ok := ctx.(IExprContext); ok {
+			if j == i {
+				t = ctx.(antlr.RuleContext)
+				break
+			}
+			j++
+		}
+	}
+
+	if t == nil {
+		return nil
+	}
+
+	return t.(IExprContext)
+}
+
+func (s *RelationalContext) LT() antlr.TerminalNode {
+	return s.GetToken(PlanParserLT, 0)
+}
+
+func (s *RelationalContext) LE() antlr.TerminalNode {
+	return s.GetToken(PlanParserLE, 0)
+}
+
+func (s *RelationalContext) GT() antlr.TerminalNode {
+	return s.GetToken(PlanParserGT, 0)
+}
+
+func (s *RelationalContext) GE() antlr.TerminalNode {
+	return s.GetToken(PlanParserGE, 0)
+}
+
+func (s *RelationalContext) Accept(visitor antlr.ParseTreeVisitor) interface{} {
+	switch t := visitor.(type) {
+	case PlanVisitor:
+		return t.VisitRelational(s)
+
+	default:
+		return t.VisitChildren(s)
+	}
+}
+
 type ArrayLengthContext struct {
 	ExprContext
 }
@@ -1257,10 +1973,6 @@ func (s *ArrayLengthContext) Identifier() antlr.TerminalNode {
 
 func (s *ArrayLengthContext) JSONIdentifier() antlr.TerminalNode {
 	return s.GetToken(PlanParserJSONIdentifier, 0)
-}
-
-func (s *ArrayLengthContext) StructFieldIdentifier() antlr.TerminalNode {
-	return s.GetToken(PlanParserStructFieldIdentifier, 0)
 }
 
 func (s *ArrayLengthContext) Accept(visitor antlr.ParseTreeVisitor) interface{} {
@@ -1507,14 +2219,6 @@ func (s *RangeContext) Identifier() antlr.TerminalNode {
 
 func (s *RangeContext) JSONIdentifier() antlr.TerminalNode {
 	return s.GetToken(PlanParserJSONIdentifier, 0)
-}
-
-func (s *RangeContext) StructSubFieldIdentifier() antlr.TerminalNode {
-	return s.GetToken(PlanParserStructSubFieldIdentifier, 0)
-}
-
-func (s *RangeContext) StructIndexFieldIdentifier() antlr.TerminalNode {
-	return s.GetToken(PlanParserStructIndexFieldIdentifier, 0)
 }
 
 func (s *RangeContext) AllLT() []antlr.TerminalNode {
@@ -3371,6 +4075,115 @@ func (s *JSONContainsAnyContext) Accept(visitor antlr.ParseTreeVisitor) interfac
 	}
 }
 
+type STIsValidContext struct {
+	ExprContext
+}
+
+func NewSTIsValidContext(parser antlr.Parser, ctx antlr.ParserRuleContext) *STIsValidContext {
+	var p = new(STIsValidContext)
+
+	InitEmptyExprContext(&p.ExprContext)
+	p.parser = parser
+	p.CopyAll(ctx.(*ExprContext))
+
+	return p
+}
+
+func (s *STIsValidContext) GetRuleContext() antlr.RuleContext {
+	return s
+}
+
+func (s *STIsValidContext) STIsValid() antlr.TerminalNode {
+	return s.GetToken(PlanParserSTIsValid, 0)
+}
+
+func (s *STIsValidContext) Identifier() antlr.TerminalNode {
+	return s.GetToken(PlanParserIdentifier, 0)
+}
+
+func (s *STIsValidContext) Accept(visitor antlr.ParseTreeVisitor) interface{} {
+	switch t := visitor.(type) {
+	case PlanVisitor:
+		return t.VisitSTIsValid(s)
+
+	default:
+		return t.VisitChildren(s)
+	}
+}
+
+type BitXorContext struct {
+	ExprContext
+}
+
+func NewBitXorContext(parser antlr.Parser, ctx antlr.ParserRuleContext) *BitXorContext {
+	var p = new(BitXorContext)
+
+	InitEmptyExprContext(&p.ExprContext)
+	p.parser = parser
+	p.CopyAll(ctx.(*ExprContext))
+
+	return p
+}
+
+func (s *BitXorContext) GetRuleContext() antlr.RuleContext {
+	return s
+}
+
+func (s *BitXorContext) AllExpr() []IExprContext {
+	children := s.GetChildren()
+	len := 0
+	for _, ctx := range children {
+		if _, ok := ctx.(IExprContext); ok {
+			len++
+		}
+	}
+
+	tst := make([]IExprContext, len)
+	i := 0
+	for _, ctx := range children {
+		if t, ok := ctx.(IExprContext); ok {
+			tst[i] = t.(IExprContext)
+			i++
+		}
+	}
+
+	return tst
+}
+
+func (s *BitXorContext) Expr(i int) IExprContext {
+	var t antlr.RuleContext
+	j := 0
+	for _, ctx := range s.GetChildren() {
+		if _, ok := ctx.(IExprContext); ok {
+			if j == i {
+				t = ctx.(antlr.RuleContext)
+				break
+			}
+			j++
+		}
+	}
+
+	if t == nil {
+		return nil
+	}
+
+	return t.(IExprContext)
+}
+
+func (s *BitXorContext) BXOR() antlr.TerminalNode {
+	return s.GetToken(PlanParserBXOR, 0)
+}
+
+func (s *BitXorContext) Accept(visitor antlr.ParseTreeVisitor) interface{} {
+	switch t := visitor.(type) {
+	case PlanVisitor:
+		return t.VisitBitXor(s)
+
+	default:
+		return t.VisitChildren(s)
+	}
+}
+
 type ExistsContext struct {
 	ExprContext
 }
@@ -3631,6 +4444,46 @@ func (s *PowerContext) Accept(visitor antlr.ParseTreeVisitor) interface{} {
 	switch t := visitor.(type) {
 	case PlanVisitor:
 		return t.VisitPower(s)
+
+	default:
+		return t.VisitChildren(s)
+	}
+}
+
+type STOverlapsContext struct {
+	ExprContext
+}
+
+func NewSTOverlapsContext(parser antlr.Parser, ctx antlr.ParserRuleContext) *STOverlapsContext {
+	var p = new(STOverlapsContext)
+
+	InitEmptyExprContext(&p.ExprContext)
+	p.parser = parser
+	p.CopyAll(ctx.(*ExprContext))
+
+	return p
+}
+
+func (s *STOverlapsContext) GetRuleContext() antlr.RuleContext {
+	return s
+}
+
+func (s *STOverlapsContext) STOverlaps() antlr.TerminalNode {
+	return s.GetToken(PlanParserSTOverlaps, 0)
+}
+
+func (s *STOverlapsContext) Identifier() antlr.TerminalNode {
+	return s.GetToken(PlanParserIdentifier, 0)
+}
+
+func (s *STOverlapsContext) StringLiteral() antlr.TerminalNode {
+	return s.GetToken(PlanParserStringLiteral, 0)
+}
+
+func (s *STOverlapsContext) Accept(visitor antlr.ParseTreeVisitor) interface{} {
+	switch t := visitor.(type) {
+	case PlanVisitor:
+		return t.VisitSTOverlaps(s)
 
 	default:
 		return t.VisitChildren(s)
@@ -4393,12 +5246,29 @@ func (p *PlanParser) expr(_p int) (localctx IExprContext) {
 				goto errorExit
 			}
 		}
+
+	case 18:
+		localctx = NewJSONContainsContext(p, localctx)
+		p.SetParserRuleContext(localctx)
+		_prevctx = localctx
 		{
-			p.SetState(92)
+			p.SetState(91)
 			p.expr(0)
 		}
 		{
-			p.SetState(93)
+			p.SetState(83)
+			p.Match(PlanParserT__3)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(84)
+			p.expr(0)
+		}
+		{
+			p.SetState(85)
 			p.Match(PlanParserT__1)
 			if p.HasError() {
 				// Recognition error - abort rule
@@ -4419,7 +5289,7 @@ func (p *PlanParser) expr(_p int) (localctx IExprContext) {
 			}
 		}
 		{
-			p.SetState(96)
+			p.SetState(94)
 			p.Match(PlanParserT__0)
 			if p.HasError() {
 				// Recognition error - abort rule
@@ -4427,23 +5297,26 @@ func (p *PlanParser) expr(_p int) (localctx IExprContext) {
 			}
 		}
 		{
-			p.SetState(97)
-			p.Match(PlanParserIdentifier)
+			p.SetState(95)
+			_la = p.GetTokenStream().LA(1)
+
+			if !(_la == PlanParserJSONContainsAll || _la == PlanParserArrayContainsAll) {
+				p.GetErrorHandler().RecoverInline(p)
+			} else {
+				p.GetErrorHandler().ReportMatch(p)
+				p.Consume()
+			}
+		}
+		{
+			p.SetState(88)
+			p.Match(PlanParserT__0)
 			if p.HasError() {
 				// Recognition error - abort rule
 				goto errorExit
 			}
 		}
 		{
-			p.SetState(98)
-			p.Match(PlanParserT__3)
-			if p.HasError() {
-				// Recognition error - abort rule
-				goto errorExit
-			}
-		}
-		{
-			p.SetState(99)
+			p.SetState(89)
 			p.expr(0)
 		}
 		{
@@ -4478,7 +5351,7 @@ func (p *PlanParser) expr(_p int) (localctx IExprContext) {
 			}
 		}
 		{
-			p.SetState(103)
+			p.SetState(95)
 			p.Match(PlanParserT__0)
 			if p.HasError() {
 				// Recognition error - abort rule
@@ -4494,7 +5367,7 @@ func (p *PlanParser) expr(_p int) (localctx IExprContext) {
 			}
 		}
 		{
-			p.SetState(105)
+			p.SetState(97)
 			p.Match(PlanParserT__3)
 			if p.HasError() {
 				// Recognition error - abort rule
@@ -4502,11 +5375,117 @@ func (p *PlanParser) expr(_p int) (localctx IExprContext) {
 			}
 		}
 		{
-			p.SetState(106)
+			p.SetState(98)
 			p.expr(0)
 		}
 		{
+			p.SetState(99)
+			p.Match(PlanParserT__1)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+
+	case 21:
+		localctx = NewSTEuqalsContext(p, localctx)
+		p.SetParserRuleContext(localctx)
+		_prevctx = localctx
+		{
+			p.SetState(101)
+			p.Match(PlanParserSTEuqals)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(102)
+			p.Match(PlanParserT__0)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(103)
+			p.Match(PlanParserIdentifier)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(104)
+			p.Match(PlanParserT__3)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(105)
+			p.Match(PlanParserStringLiteral)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(106)
+			p.Match(PlanParserT__1)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+
+	case 22:
+		localctx = NewSTTouchesContext(p, localctx)
+		p.SetParserRuleContext(localctx)
+		_prevctx = localctx
+		{
 			p.SetState(107)
+			p.Match(PlanParserSTTouches)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(108)
+			p.Match(PlanParserT__0)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(109)
+			p.Match(PlanParserIdentifier)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(110)
+			p.Match(PlanParserT__3)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(111)
+			p.Match(PlanParserStringLiteral)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(112)
 			p.Match(PlanParserT__1)
 			if p.HasError() {
 				// Recognition error - abort rule
@@ -4573,6 +5552,59 @@ func (p *PlanParser) expr(_p int) (localctx IExprContext) {
 			}
 		}
 		{
+			p.SetState(113)
+			p.Match(PlanParserStringLiteral)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(114)
+			p.Match(PlanParserT__0)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(115)
+			p.Match(PlanParserIdentifier)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(116)
+			p.Match(PlanParserT__3)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(117)
+			p.Match(PlanParserStringLiteral)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(118)
+			p.Match(PlanParserT__1)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+
+	case 24:
+		localctx = NewSTCrossesContext(p, localctx)
+		p.SetParserRuleContext(localctx)
+		_prevctx = localctx
+		{
 			p.SetState(115)
 			p.Match(PlanParserTHRESHOLD)
 			if p.HasError() {
@@ -4637,7 +5669,7 @@ func (p *PlanParser) expr(_p int) (localctx IExprContext) {
 		p.SetParserRuleContext(localctx)
 		_prevctx = localctx
 		{
-			p.SetState(122)
+			p.SetState(121)
 			_la = p.GetTokenStream().LA(1)
 
 			if !(_la == PlanParserJSONContains || _la == PlanParserArrayContains) {
@@ -4648,8 +5680,20 @@ func (p *PlanParser) expr(_p int) (localctx IExprContext) {
 			}
 		}
 		{
-			p.SetState(123)
+			p.SetState(121)
 			p.Match(PlanParserT__0)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(122)
+			p.expr(0)
+		}
+		{
+			p.SetState(123)
+			p.Match(PlanParserT__3)
 			if p.HasError() {
 				// Recognition error - abort rule
 				goto errorExit
@@ -4661,18 +5705,6 @@ func (p *PlanParser) expr(_p int) (localctx IExprContext) {
 		}
 		{
 			p.SetState(125)
-			p.Match(PlanParserT__3)
-			if p.HasError() {
-				// Recognition error - abort rule
-				goto errorExit
-			}
-		}
-		{
-			p.SetState(126)
-			p.expr(0)
-		}
-		{
-			p.SetState(127)
 			p.Match(PlanParserT__1)
 			if p.HasError() {
 				// Recognition error - abort rule
@@ -4696,7 +5728,7 @@ func (p *PlanParser) expr(_p int) (localctx IExprContext) {
 			}
 		}
 		{
-			p.SetState(130)
+			p.SetState(128)
 			p.Match(PlanParserT__0)
 			if p.HasError() {
 				// Recognition error - abort rule
@@ -4708,7 +5740,7 @@ func (p *PlanParser) expr(_p int) (localctx IExprContext) {
 			p.expr(0)
 		}
 		{
-			p.SetState(132)
+			p.SetState(130)
 			p.Match(PlanParserT__3)
 			if p.HasError() {
 				// Recognition error - abort rule
@@ -4720,7 +5752,141 @@ func (p *PlanParser) expr(_p int) (localctx IExprContext) {
 			p.expr(0)
 		}
 		{
+			p.SetState(132)
+			p.Match(PlanParserT__0)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(133)
+			p.Match(PlanParserIdentifier)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
 			p.SetState(134)
+			p.Match(PlanParserT__3)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(135)
+			p.Match(PlanParserStringLiteral)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(136)
+			p.Match(PlanParserT__1)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+
+	case 26:
+		localctx = NewSTDWithinContext(p, localctx)
+		p.SetParserRuleContext(localctx)
+		_prevctx = localctx
+		{
+			p.SetState(133)
+			p.Match(PlanParserSTDWithin)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(134)
+			p.Match(PlanParserT__0)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(135)
+			p.Match(PlanParserIdentifier)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(136)
+			p.Match(PlanParserT__3)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(137)
+			p.Match(PlanParserSTWithin)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(138)
+			p.Match(PlanParserT__3)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(139)
+			p.expr(0)
+		}
+		{
+			p.SetState(140)
+			p.Match(PlanParserT__1)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+
+	case 27:
+		localctx = NewSTIsValidContext(p, localctx)
+		p.SetParserRuleContext(localctx)
+		_prevctx = localctx
+		{
+			p.SetState(142)
+			p.Match(PlanParserSTIsValid)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(128)
+			p.Match(PlanParserT__0)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(144)
+			p.Match(PlanParserIdentifier)
+			if p.HasError() {
+				// Recognition error - abort rule
+				goto errorExit
+			}
+		}
+		{
+			p.SetState(145)
 			p.Match(PlanParserT__1)
 			if p.HasError() {
 				// Recognition error - abort rule
@@ -4835,8 +6001,8 @@ func (p *PlanParser) expr(_p int) (localctx IExprContext) {
 			}
 		}
 
-	case 30:
-		localctx = NewSTDWithinContext(p, localctx)
+	case 29:
+		localctx = NewSTIsValidContext(p, localctx)
 		p.SetParserRuleContext(localctx)
 		_prevctx = localctx
 		{
@@ -4883,6 +6049,11 @@ func (p *PlanParser) expr(_p int) (localctx IExprContext) {
 				goto errorExit
 			}
 		}
+
+	case 30:
+		localctx = NewArrayLengthContext(p, localctx)
+		p.SetParserRuleContext(localctx)
+		_prevctx = localctx
 		{
 			p.SetState(156)
 			p.expr(0)
@@ -4897,7 +6068,7 @@ func (p *PlanParser) expr(_p int) (localctx IExprContext) {
 		}
 
 	case 31:
-		localctx = NewSTIsValidContext(p, localctx)
+		localctx = NewCallContext(p, localctx)
 		p.SetParserRuleContext(localctx)
 		_prevctx = localctx
 		{
@@ -5069,7 +6240,7 @@ func (p *PlanParser) expr(_p int) (localctx IExprContext) {
 			}
 		}
 
-	case 34:
+	case 32:
 		localctx = NewIsNullContext(p, localctx)
 		p.SetParserRuleContext(localctx)
 		_prevctx = localctx
@@ -5093,7 +6264,7 @@ func (p *PlanParser) expr(_p int) (localctx IExprContext) {
 			}
 		}
 
-	case 35:
+	case 33:
 		localctx = NewIsNotNullContext(p, localctx)
 		p.SetParserRuleContext(localctx)
 		_prevctx = localctx

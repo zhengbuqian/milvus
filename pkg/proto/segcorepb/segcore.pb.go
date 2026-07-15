@@ -447,17 +447,12 @@ type RetrieveResults struct {
 	HasMoreResult      bool                  `protobuf:"varint,5,opt,name=has_more_result,json=hasMoreResult,proto3" json:"has_more_result,omitempty"`
 	ScannedRemoteBytes int64                 `protobuf:"varint,6,opt,name=scanned_remote_bytes,json=scannedRemoteBytes,proto3" json:"scanned_remote_bytes,omitempty"`
 	ScannedTotalBytes  int64                 `protobuf:"varint,7,opt,name=scanned_total_bytes,json=scannedTotalBytes,proto3" json:"scanned_total_bytes,omitempty"`
-	// Element-level query support
-	ElementLevel bool `protobuf:"varint,8,opt,name=element_level,json=elementLevel,proto3" json:"element_level,omitempty"`
-	// Element indices per document (aligned with offset array)
-	// element_indices[i] contains all matching element indices for offset[i]
-	ElementIndices []*ElementIndices `protobuf:"bytes,9,rep,name=element_indices,json=elementIndices,proto3" json:"element_indices,omitempty"`
 }
 
 func (x *RetrieveResults) Reset() {
 	*x = RetrieveResults{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_segcore_proto_msgTypes[5]
+		mi := &file_segcore_proto_msgTypes[4]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -470,7 +465,7 @@ func (x *RetrieveResults) String() string {
 func (*RetrieveResults) ProtoMessage() {}
 
 func (x *RetrieveResults) ProtoReflect() protoreflect.Message {
-	mi := &file_segcore_proto_msgTypes[5]
+	mi := &file_segcore_proto_msgTypes[4]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -483,7 +478,7 @@ func (x *RetrieveResults) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetrieveResults.ProtoReflect.Descriptor instead.
 func (*RetrieveResults) Descriptor() ([]byte, []int) {
-	return file_segcore_proto_rawDescGZIP(), []int{5}
+	return file_segcore_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *RetrieveResults) GetIds() *schemapb.IDs {
@@ -535,20 +530,6 @@ func (x *RetrieveResults) GetScannedTotalBytes() int64 {
 	return 0
 }
 
-func (x *RetrieveResults) GetElementLevel() bool {
-	if x != nil {
-		return x.ElementLevel
-	}
-	return false
-}
-
-func (x *RetrieveResults) GetElementIndices() []*ElementIndices {
-	if x != nil {
-		return x.ElementIndices
-	}
-	return nil
-}
-
 type LoadFieldMeta struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -562,7 +543,7 @@ type LoadFieldMeta struct {
 func (x *LoadFieldMeta) Reset() {
 	*x = LoadFieldMeta{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_segcore_proto_msgTypes[6]
+		mi := &file_segcore_proto_msgTypes[5]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -575,7 +556,7 @@ func (x *LoadFieldMeta) String() string {
 func (*LoadFieldMeta) ProtoMessage() {}
 
 func (x *LoadFieldMeta) ProtoReflect() protoreflect.Message {
-	mi := &file_segcore_proto_msgTypes[6]
+	mi := &file_segcore_proto_msgTypes[5]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -588,7 +569,7 @@ func (x *LoadFieldMeta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LoadFieldMeta.ProtoReflect.Descriptor instead.
 func (*LoadFieldMeta) Descriptor() ([]byte, []int) {
-	return file_segcore_proto_rawDescGZIP(), []int{6}
+	return file_segcore_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *LoadFieldMeta) GetMinTimestamp() int64 {
@@ -625,7 +606,7 @@ type LoadSegmentMeta struct {
 func (x *LoadSegmentMeta) Reset() {
 	*x = LoadSegmentMeta{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_segcore_proto_msgTypes[7]
+		mi := &file_segcore_proto_msgTypes[6]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -638,7 +619,7 @@ func (x *LoadSegmentMeta) String() string {
 func (*LoadSegmentMeta) ProtoMessage() {}
 
 func (x *LoadSegmentMeta) ProtoReflect() protoreflect.Message {
-	mi := &file_segcore_proto_msgTypes[7]
+	mi := &file_segcore_proto_msgTypes[6]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -651,7 +632,7 @@ func (x *LoadSegmentMeta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LoadSegmentMeta.ProtoReflect.Descriptor instead.
 func (*LoadSegmentMeta) Descriptor() ([]byte, []int) {
-	return file_segcore_proto_rawDescGZIP(), []int{7}
+	return file_segcore_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *LoadSegmentMeta) GetMetas() []*LoadFieldMeta {
@@ -680,7 +661,7 @@ type InsertRecord struct {
 func (x *InsertRecord) Reset() {
 	*x = InsertRecord{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_segcore_proto_msgTypes[8]
+		mi := &file_segcore_proto_msgTypes[7]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -693,7 +674,7 @@ func (x *InsertRecord) String() string {
 func (*InsertRecord) ProtoMessage() {}
 
 func (x *InsertRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_segcore_proto_msgTypes[8]
+	mi := &file_segcore_proto_msgTypes[7]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -706,7 +687,7 @@ func (x *InsertRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InsertRecord.ProtoReflect.Descriptor instead.
 func (*InsertRecord) Descriptor() ([]byte, []int) {
-	return file_segcore_proto_rawDescGZIP(), []int{8}
+	return file_segcore_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *InsertRecord) GetFieldsData() []*schemapb.FieldData {
@@ -741,7 +722,7 @@ type FieldIndexMeta struct {
 func (x *FieldIndexMeta) Reset() {
 	*x = FieldIndexMeta{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_segcore_proto_msgTypes[9]
+		mi := &file_segcore_proto_msgTypes[8]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -754,7 +735,7 @@ func (x *FieldIndexMeta) String() string {
 func (*FieldIndexMeta) ProtoMessage() {}
 
 func (x *FieldIndexMeta) ProtoReflect() protoreflect.Message {
-	mi := &file_segcore_proto_msgTypes[9]
+	mi := &file_segcore_proto_msgTypes[8]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -767,7 +748,7 @@ func (x *FieldIndexMeta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FieldIndexMeta.ProtoReflect.Descriptor instead.
 func (*FieldIndexMeta) Descriptor() ([]byte, []int) {
-	return file_segcore_proto_rawDescGZIP(), []int{9}
+	return file_segcore_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *FieldIndexMeta) GetFieldID() int64 {
@@ -838,7 +819,7 @@ type CollectionIndexMeta struct {
 func (x *CollectionIndexMeta) Reset() {
 	*x = CollectionIndexMeta{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_segcore_proto_msgTypes[10]
+		mi := &file_segcore_proto_msgTypes[9]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -851,7 +832,7 @@ func (x *CollectionIndexMeta) String() string {
 func (*CollectionIndexMeta) ProtoMessage() {}
 
 func (x *CollectionIndexMeta) ProtoReflect() protoreflect.Message {
-	mi := &file_segcore_proto_msgTypes[10]
+	mi := &file_segcore_proto_msgTypes[9]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -864,7 +845,7 @@ func (x *CollectionIndexMeta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CollectionIndexMeta.ProtoReflect.Descriptor instead.
 func (*CollectionIndexMeta) Descriptor() ([]byte, []int) {
-	return file_segcore_proto_rawDescGZIP(), []int{10}
+	return file_segcore_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *CollectionIndexMeta) GetMaxIndexRowCount() int64 {
@@ -907,7 +888,7 @@ type FieldIndexInfo struct {
 func (x *FieldIndexInfo) Reset() {
 	*x = FieldIndexInfo{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_segcore_proto_msgTypes[11]
+		mi := &file_segcore_proto_msgTypes[10]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -920,7 +901,7 @@ func (x *FieldIndexInfo) String() string {
 func (*FieldIndexInfo) ProtoMessage() {}
 
 func (x *FieldIndexInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_segcore_proto_msgTypes[11]
+	mi := &file_segcore_proto_msgTypes[10]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -933,7 +914,7 @@ func (x *FieldIndexInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FieldIndexInfo.ProtoReflect.Descriptor instead.
 func (*FieldIndexInfo) Descriptor() ([]byte, []int) {
-	return file_segcore_proto_rawDescGZIP(), []int{11}
+	return file_segcore_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *FieldIndexInfo) GetFieldID() int64 {
@@ -1074,7 +1055,7 @@ type SegmentLoadInfo struct {
 func (x *SegmentLoadInfo) Reset() {
 	*x = SegmentLoadInfo{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_segcore_proto_msgTypes[12]
+		mi := &file_segcore_proto_msgTypes[11]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -1087,7 +1068,7 @@ func (x *SegmentLoadInfo) String() string {
 func (*SegmentLoadInfo) ProtoMessage() {}
 
 func (x *SegmentLoadInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_segcore_proto_msgTypes[12]
+	mi := &file_segcore_proto_msgTypes[11]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1100,7 +1081,7 @@ func (x *SegmentLoadInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SegmentLoadInfo.ProtoReflect.Descriptor instead.
 func (*SegmentLoadInfo) Descriptor() ([]byte, []int) {
-	return file_segcore_proto_rawDescGZIP(), []int{12}
+	return file_segcore_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *SegmentLoadInfo) GetSegmentID() int64 {
@@ -1569,7 +1550,7 @@ func file_segcore_proto_rawDescGZIP() []byte {
 	return file_segcore_proto_rawDescData
 }
 
-var file_segcore_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_segcore_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_segcore_proto_goTypes = []interface{}{
 	(*Binlog)(nil),                     // 0: milvus.proto.segcore.Binlog
 	(*FieldBinlog)(nil),                // 1: milvus.proto.segcore.FieldBinlog
@@ -1677,18 +1658,6 @@ func file_segcore_proto_init() {
 			}
 		}
 		file_segcore_proto_msgTypes[4].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*ElementIndices); i {
-			case 0:
-				return &v.state
-			case 1:
-				return &v.sizeCache
-			case 2:
-				return &v.unknownFields
-			default:
-				return nil
-			}
-		}
-		file_segcore_proto_msgTypes[5].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*RetrieveResults); i {
 			case 0:
 				return &v.state
@@ -1700,7 +1669,7 @@ func file_segcore_proto_init() {
 				return nil
 			}
 		}
-		file_segcore_proto_msgTypes[6].Exporter = func(v interface{}, i int) interface{} {
+		file_segcore_proto_msgTypes[5].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*LoadFieldMeta); i {
 			case 0:
 				return &v.state
@@ -1712,7 +1681,7 @@ func file_segcore_proto_init() {
 				return nil
 			}
 		}
-		file_segcore_proto_msgTypes[7].Exporter = func(v interface{}, i int) interface{} {
+		file_segcore_proto_msgTypes[6].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*LoadSegmentMeta); i {
 			case 0:
 				return &v.state
@@ -1724,7 +1693,7 @@ func file_segcore_proto_init() {
 				return nil
 			}
 		}
-		file_segcore_proto_msgTypes[8].Exporter = func(v interface{}, i int) interface{} {
+		file_segcore_proto_msgTypes[7].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*InsertRecord); i {
 			case 0:
 				return &v.state
@@ -1736,7 +1705,7 @@ func file_segcore_proto_init() {
 				return nil
 			}
 		}
-		file_segcore_proto_msgTypes[9].Exporter = func(v interface{}, i int) interface{} {
+		file_segcore_proto_msgTypes[8].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*FieldIndexMeta); i {
 			case 0:
 				return &v.state
@@ -1748,7 +1717,7 @@ func file_segcore_proto_init() {
 				return nil
 			}
 		}
-		file_segcore_proto_msgTypes[10].Exporter = func(v interface{}, i int) interface{} {
+		file_segcore_proto_msgTypes[9].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*CollectionIndexMeta); i {
 			case 0:
 				return &v.state
@@ -1760,7 +1729,7 @@ func file_segcore_proto_init() {
 				return nil
 			}
 		}
-		file_segcore_proto_msgTypes[11].Exporter = func(v interface{}, i int) interface{} {
+		file_segcore_proto_msgTypes[10].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*FieldIndexInfo); i {
 			case 0:
 				return &v.state
@@ -1772,7 +1741,7 @@ func file_segcore_proto_init() {
 				return nil
 			}
 		}
-		file_segcore_proto_msgTypes[12].Exporter = func(v interface{}, i int) interface{} {
+		file_segcore_proto_msgTypes[11].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*SegmentLoadInfo); i {
 			case 0:
 				return &v.state
@@ -1791,7 +1760,7 @@ func file_segcore_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: file_segcore_proto_rawDesc,
 			NumEnums:      0,
-			NumMessages:   15,
+			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

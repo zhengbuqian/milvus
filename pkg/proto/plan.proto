@@ -46,11 +46,6 @@ enum VectorType {
   BFloat16Vector = 3;
   SparseFloatVector = 4;
   Int8Vector = 5;
-  EmbListFloatVector = 6;
-  EmbListFloat16Vector = 7;
-  EmbListBFloat16Vector = 8;
-  EmbListInt8Vector = 9;
-  EmbListBinaryVector = 10;
 };
 
 message GenericValue {
@@ -107,7 +102,6 @@ message ColumnInfo {
   schema.DataType element_type = 7;
   bool is_clustering_key = 8;
   bool nullable = 9;
-  bool is_element_level = 10;
 }
 
 message ColumnExpr {
@@ -255,28 +249,6 @@ message RandomSampleExpr {
   Expr predicate = 2;
 }
 
-message ElementFilterExpr {
-  Expr element_expr = 1;
-  string struct_name = 2;
-  Expr predicate = 3;
-}
-
-// MatchType defines the type of match operation for struct array queries
-enum MatchType {
-  MatchAll = 0;    // All elements must match the predicate
-  MatchAny = 1;    // At least one element matches the predicate
-  MatchLeast = 2;  // At least N elements match the predicate
-  MatchMost = 3;   // At most N elements match the predicate
-  MatchExact = 4;  // Exactly N elements match the predicate
-}
-
-message MatchExpr {
-  string struct_name = 1;      // The struct array field name (e.g., struct_array)
-  Expr predicate = 2;          // The condition expression using $[field] syntax (e.g., $[intField] == 1 && $[strField] == "aaa")
-  MatchType match_type = 3;    // Type of match operation
-  int64 count = 4;             // For MatchLeast/MatchMost: the count parameter (N)
-}
-
 message AlwaysTrueExpr {}
 
 message Interval {
@@ -317,8 +289,6 @@ message Expr {
     RandomSampleExpr random_sample_expr = 16;
     GISFunctionFilterExpr gisfunction_filter_expr = 17;
     TimestamptzArithCompareExpr timestamptz_arith_compare_expr = 18;
-    ElementFilterExpr element_filter_expr = 19;
-    MatchExpr match_expr = 21;
   };
   bool is_template = 20;
 }
@@ -358,14 +328,7 @@ message QueryPlanNode {
   repeated int64 group_by_field_ids = 4;
   repeated Aggregate aggregates = 5;
   repeated OrderByField order_by_fields = 6;  // ORDER BY specifications
-  optional QueryIteratorCursor query_iterator_cursor = 7;
 };
-
-message QueryIteratorCursor {
-  optional int64 last_int_pk = 1;
-  optional string last_str_pk = 2;
-  int64 last_element_offset = 3;
-}
 
 enum FunctionType{
   FunctionTypeWeight = 0;

@@ -87,30 +87,6 @@ func WriteFile(filepath string, data []byte, perm fs.FileMode) error {
 	return nil
 }
 
-// ValidateStorageV1InsertWritableSchema validates schema constraints required by V1 insert binlogs.
-func ValidateStorageV1InsertWritableSchema(schema *schemapb.CollectionSchema) error {
-	for _, field := range schema.GetFields() {
-		if isNullableArrayOfVectorField(field) {
-			return merr.WrapErrParameterInvalidMsg("nullable ArrayOfVector is not supported in V1 storage format, fieldName=%s", field.GetName())
-		}
-	}
-
-	for _, structField := range schema.GetStructArrayFields() {
-		for _, field := range structField.GetFields() {
-			if isNullableArrayOfVectorField(field) {
-				return merr.WrapErrParameterInvalidMsg("nullable ArrayOfVector is not supported in V1 storage format, structName=%s, fieldName=%s",
-					structField.GetName(), field.GetName())
-			}
-		}
-	}
-
-	return nil
-}
-
-func isNullableArrayOfVectorField(field *schemapb.FieldSchema) bool {
-	return field.GetDataType() == schemapb.DataType_ArrayOfVector && field.GetNullable()
-}
-
 func checkTsField(data *InsertData) bool {
 	tsData, ok := data.Data[common.TimeStampField]
 	if !ok {
@@ -417,10 +393,6 @@ func RowBasedInsertMsgToInsertData(msg *msgstream.InsertMsg, collSchema *schemap
 		Infos: nil,
 	}
 
-	if len(collSchema.StructArrayFields) > 0 {
-		return nil, merr.WrapErrServiceInternalMsg("struct fields are not implemented in row based insert data")
-	}
-
 	for _, field := range collSchema.Fields {
 		if skipFunction && isEmbeddingFunctionOutputField(field, collSchema) {
 			continue
@@ -604,10 +576,6 @@ func validateColumnBasedInsertMsgNullableVectors(schema *schemapb.CollectionSche
 func ColumnBasedInsertMsgToInsertData(msg *msgstream.InsertMsg, collSchema *schemapb.CollectionSchema) (idata *InsertData, err error) {
 	srcFields := make(map[FieldID]*schemapb.FieldData)
 	for _, field := range msg.FieldsData {
-		if _, ok := field.Field.(*schemapb.FieldData_StructArrays); ok {
-			// unreachable
-			panic("struct is not flattened")
-		}
 		srcFields[field.FieldId] = field
 	}
 
@@ -615,13 +583,18 @@ func ColumnBasedInsertMsgToInsertData(msg *msgstream.InsertMsg, collSchema *sche
 		Data: make(map[FieldID]FieldData),
 	}
 	length := 0
-	hasMissingFields := false
-	getFieldData := func(field *schemapb.FieldSchema) (FieldData, error) {
+	for _, field := range collSchema.Fields {
+		if IsBM25FunctionOutputField(field, collSchema) {
+			continue
+		}
+
 		srcField, ok := srcFields[field.GetFieldID()]
 		if !ok && field.GetFieldID() >= common.StartOfUserFieldID {
-			// Field not found in incoming message, will be handled by fillMissingFields later
-			hasMissingFields = true
-			return nil, nil
+			err := fillMissingFields(collSchema, idata)
+			if err != nil {
+				return nil, err
+			}
+			continue
 		}
 		var fieldData FieldData
 		switch field.DataType {
@@ -886,76 +859,18 @@ func ColumnBasedInsertMsgToInsertData(msg *msgstream.InsertMsg, collSchema *sche
 				Nullable:  field.GetNullable(),
 			}
 
-		case schemapb.DataType_ArrayOfVector:
-			vectorArray := srcField.GetVectors().GetVectorArray()
-			validData := srcField.GetValidData()
-
-			fieldData = &VectorArrayFieldData{
-				ElementType: field.GetElementType(),
-				Data:        vectorArray.GetData(),
-				Dim:         vectorArray.GetDim(),
-				ValidData:   validData,
-				Nullable:    field.GetNullable(),
-			}
-		case schemapb.DataType_Geometry:
-			srcData := srcField.GetScalars().GetGeometryData().GetData()
-			validData := srcField.GetValidData()
-			fieldData = &GeometryFieldData{
-				Data:      srcData,
-				ValidData: validData,
-				Nullable:  field.GetNullable(),
-			}
-
 		default:
 			return nil, merr.WrapErrServiceInternal("data type not handled", field.GetDataType().String())
-		}
-
-		return fieldData, nil
-	}
-
-	handleFieldData := func(field *schemapb.FieldSchema) (FieldData, error) {
-		if isEmbeddingFunctionOutputField(field, collSchema) {
-			if _, ok := srcFields[field.GetFieldID()]; !ok {
-				return nil, nil
-			}
-		}
-
-		fieldData, err := getFieldData(field)
-		if err != nil || fieldData == nil {
-			return nil, err
 		}
 
 		if length == 0 {
 			length = fieldData.RowNum()
 		}
-
 		if fieldData.RowNum() != length {
 			return nil, merr.WrapErrServiceInternal("row num not match", fmt.Sprintf("field %s row num not match %d, other column %d", field.GetName(), fieldData.RowNum(), length))
 		}
 
-		return fieldData, nil
-	}
-
-	for _, field := range collSchema.Fields {
-		fieldData, err := handleFieldData(field)
-		if err != nil {
-			return nil, err
-		}
-		if fieldData != nil {
-			idata.Data[field.FieldID] = fieldData
-		}
-	}
-
-	for _, structField := range collSchema.GetStructArrayFields() {
-		for _, field := range structField.GetFields() {
-			fieldData, err := handleFieldData(field)
-			if err != nil {
-				return nil, err
-			}
-			if fieldData != nil {
-				idata.Data[field.FieldID] = fieldData
-			}
-		}
+		idata.Data[field.FieldID] = fieldData
 	}
 	if hasMissingFields {
 		// Fill missing fields after all fields are processed
@@ -1203,22 +1118,6 @@ func mergeSparseFloatVectorField(data *InsertData, fid FieldID, field *SparseFlo
 	fieldData.AppendAllRows(field)
 }
 
-func mergeVectorArrayField(data *InsertData, fid FieldID, field *VectorArrayFieldData) {
-	if _, ok := data.Data[fid]; !ok {
-		fieldData := &VectorArrayFieldData{
-			Data:        nil,
-			Dim:         field.Dim,
-			ElementType: field.ElementType,
-			ValidData:   nil,
-			Nullable:    field.Nullable,
-		}
-		data.Data[fid] = fieldData
-	}
-	fieldData := data.Data[fid].(*VectorArrayFieldData)
-	fieldData.Data = append(fieldData.Data, field.Data...)
-	fieldData.ValidData = append(fieldData.ValidData, field.ValidData...)
-}
-
 func mergeInt8VectorField(data *InsertData, fid FieldID, field *Int8VectorFieldData) {
 	if _, ok := data.Data[fid]; !ok {
 		fieldData := &Int8VectorFieldData{
@@ -1277,8 +1176,6 @@ func MergeFieldData(data *InsertData, fid FieldID, field FieldData) {
 		mergeSparseFloatVectorField(data, fid, field)
 	case *Int8VectorFieldData:
 		mergeInt8VectorField(data, fid, field)
-	case *VectorArrayFieldData:
-		mergeVectorArrayField(data, fid, field)
 	}
 }
 
@@ -1664,24 +1561,6 @@ func TransferInsertDataToInsertRecord(insertData *InsertData) (*segcorepb.Insert
 				},
 				ValidData: rawData.ValidData,
 			}
-		case *VectorArrayFieldData:
-			fieldData = &schemapb.FieldData{
-				Type:    schemapb.DataType_ArrayOfVector,
-				FieldId: fieldID,
-				Field: &schemapb.FieldData_Vectors{
-					Vectors: &schemapb.VectorField{
-						Data: &schemapb.VectorField_VectorArray{
-							VectorArray: &schemapb.VectorArray{
-								Data:        rawData.Data,
-								ElementType: rawData.ElementType,
-								Dim:         rawData.Dim,
-							},
-						},
-						Dim: rawData.Dim,
-					},
-				},
-				ValidData: rawData.ValidData,
-			}
 		default:
 			return insertRecord, merr.WrapErrServiceInternalMsg("unsupported data type when transter storage.InsertData to internalpb.InsertRecord")
 		}
@@ -1829,10 +1708,9 @@ func GetDefaultValue(fieldSchema *schemapb.FieldSchema) interface{} {
 func fillMissingFields(schema *schemapb.CollectionSchema, insertData *InsertData) error {
 	batchRows := int64(insertData.GetRowNum())
 
-	allFields := typeutil.GetAllFieldSchemas(schema)
-	for _, field := range allFields {
-		// Skip embedding function output fields and system fields.
-		if isEmbeddingFunctionOutputField(field, schema) || field.GetFieldID() < 100 {
+	for _, field := range schema.Fields {
+		// Skip function output fields and system fields
+		if field.GetIsFunctionOutput() || field.GetFieldID() < 100 {
 			continue
 		}
 
@@ -1879,88 +1757,4 @@ func SortFieldBinlogs(fieldBinlogs map[int64]*datapb.FieldBinlog) []*datapb.Fiel
 		binlogs = append(binlogs, fieldBinlogs[fieldID])
 	}
 	return binlogs
-}
-
-// VectorArrayToArrowType converts VectorArray element type to the corresponding Arrow type
-// Note: This returns the element type (e.g., FixedSizeBinary), not a list type
-// The caller is responsible for wrapping it in a list if needed
-func VectorArrayToArrowType(elementType schemapb.DataType, dim int) (arrow.DataType, error) {
-	switch elementType {
-	case schemapb.DataType_FloatVector:
-		// Each vector is stored as a fixed-size binary chunk
-		return &arrow.FixedSizeBinaryType{ByteWidth: dim * 4}, nil
-	case schemapb.DataType_BinaryVector:
-		return &arrow.FixedSizeBinaryType{ByteWidth: (dim + 7) / 8}, nil
-	case schemapb.DataType_Float16Vector:
-		return &arrow.FixedSizeBinaryType{ByteWidth: dim * 2}, nil
-	case schemapb.DataType_BFloat16Vector:
-		return &arrow.FixedSizeBinaryType{ByteWidth: dim * 2}, nil
-	case schemapb.DataType_Int8Vector:
-		return &arrow.FixedSizeBinaryType{ByteWidth: dim}, nil
-	default:
-		return nil, merr.WrapErrParameterInvalidMsg("unsupported element type in VectorArray: %s", elementType.String())
-	}
-}
-
-func getTTLFieldID(schema *schemapb.CollectionSchema) int64 {
-	ttlFieldName := ""
-	for _, pair := range schema.GetProperties() {
-		if pair.GetKey() == common.CollectionTTLFieldKey {
-			ttlFieldName = pair.GetValue()
-			break
-		}
-	}
-	if ttlFieldName == "" {
-		return -1
-	}
-	for _, field := range schema.GetFields() {
-		if field.GetName() == ttlFieldName && field.GetDataType() == schemapb.DataType_Timestamptz {
-			return field.GetFieldID()
-		}
-	}
-	return -1
-}
-
-// calculateExpirQuantiles computes TTL values at 20%, 40%, 60%, 80%, 100% percentiles.
-// Returns nil if ttlFieldID is not enabled or no rows exist.
-// Precondition: ttlFieldValues must contain only positive values (>0); the caller is responsible
-// for filtering out null/zero TTL values which represent "never expire" rows.
-func calculateExpirQuantiles(ttlFieldID int64, rowNum int64, ttlFieldValues []int64) []int64 {
-	// If ttl field is not enabled for this writer, do not emit percentile info.
-	if ttlFieldID <= 1 {
-		return nil
-	}
-
-	// If segment is empty, do not emit percentile info.
-	if rowNum <= 0 {
-		return nil
-	}
-
-	sort.Slice(ttlFieldValues, func(i, j int) bool {
-		return ttlFieldValues[i] < ttlFieldValues[j]
-	})
-
-	// Calculate percentile indices for 20%, 40%, 60%, 80%, 100%
-	percentiles := []float64{0.2, 0.4, 0.6, 0.8, 1.0}
-	result := make([]int64, len(percentiles))
-
-	// Treat rows with null/<=0 ttl as "never expire".
-	const neverExpire = int64(^uint64(0) >> 1)
-
-	for i, p := range percentiles {
-		// Calculate index: for n elements, p percentile means ceil(n * p) elements
-		// e.g., for n=5: 20%->idx 0, 40%->idx 1, 60%->idx 2, 80%->idx 3, 100%->idx 4
-		idx := int(math.Ceil(p*float64(rowNum))) - 1
-		if idx < 0 {
-			idx = 0
-		}
-		// If idx exceeds collected ttl values, it falls into "never expire" region.
-		if idx >= len(ttlFieldValues) {
-			result[i] = neverExpire
-			continue
-		}
-		result[i] = ttlFieldValues[idx]
-	}
-
-	return result
 }

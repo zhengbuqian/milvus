@@ -118,7 +118,6 @@ struct ColumnInfo {
     DataType element_type_;
     std::vector<std::string> nested_path_;
     bool nullable_;
-    bool element_level_;
 
     ColumnInfo(const proto::plan::ColumnInfo& column_info)
         : field_id_(column_info.field_id()),
@@ -126,8 +125,7 @@ struct ColumnInfo {
           element_type_(static_cast<DataType>(column_info.element_type())),
           nested_path_(column_info.nested_path().begin(),
                        column_info.nested_path().end()),
-          nullable_(column_info.nullable()),
-          element_level_(column_info.is_element_level()) {
+          nullable_(column_info.nullable()) {
     }
 
     ColumnInfo(FieldId field_id,
@@ -138,8 +136,7 @@ struct ColumnInfo {
           data_type_(data_type),
           element_type_(DataType::NONE),
           nested_path_(std::move(nested_path)),
-          nullable_(nullable),
-          element_level_(false) {
+          nullable_(nullable) {
     }
 
     ColumnInfo(FieldId field_id,
@@ -151,8 +148,7 @@ struct ColumnInfo {
           data_type_(data_type),
           element_type_(element_type),
           nested_path_(std::move(nested_path)),
-          nullable_(nullable),
-          element_level_(false) {
+          nullable_(nullable) {
     }
 
     bool
@@ -166,10 +162,6 @@ struct ColumnInfo {
         }
 
         if (element_type_ != other.element_type_) {
-            return false;
-        }
-
-        if (element_level_ != other.element_level_) {
             return false;
         }
 
@@ -188,25 +180,21 @@ struct ColumnInfo {
                         data_type_,
                         element_type_,
                         nested_path_,
-                        nullable_,
-                        element_level_) < std::tie(other.field_id_,
-                                                   other.data_type_,
-                                                   other.element_type_,
-                                                   other.nested_path_,
-                                                   other.nullable_,
-                                                   other.element_level_);
+                        nullable_) < std::tie(other.field_id_,
+                                              other.data_type_,
+                                              other.element_type_,
+                                              other.nested_path_,
+                                              other.nullable_);
     }
 
     std::string
     ToString() const {
         return fmt::format(
-            "[FieldId:{}, data_type:{}, element_type:{}, nested_path:{}, "
-            "element_level:{}]",
+            "[FieldId:{}, data_type:{}, element_type:{}, nested_path:{}]",
             std::to_string(field_id_.get()),
             data_type_,
             element_type_,
-            milvus::Join<std::string>(nested_path_, ","),
-            element_level_);
+            milvus::Join<std::string>(nested_path_, ","));
     }
 };
 
@@ -908,49 +896,6 @@ class JsonContainsExpr : public ITypeFilterExpr {
     bool same_type_;
     const std::vector<proto::plan::GenericValue> vals_;
 };
-
-// MatchType mirrors the protobuf MatchType enum
-using MatchType = proto::plan::MatchType;
-
-class MatchExpr : public ITypeFilterExpr {
- public:
-    MatchExpr(const std::string& struct_name,
-              MatchType match_type,
-              int64_t count,
-              const TypedExprPtr& predicate)
-        : struct_name_(struct_name), match_type_(match_type), count_(count) {
-        inputs_.push_back(predicate);
-    }
-
-    std::string
-    ToString() const override {
-        return fmt::format("MatchExpr(struct_name={}, match_type={}, count={})",
-                           struct_name_,
-                           proto::plan::MatchType_Name(match_type_),
-                           count_);
-    }
-
-    const std::string&
-    get_struct_name() const {
-        return struct_name_;
-    }
-
-    MatchType
-    get_match_type() const {
-        return match_type_;
-    }
-
-    int64_t
-    get_count() const {
-        return count_;
-    }
-
- private:
-    std::string struct_name_;
-    MatchType match_type_;
-    int64_t count_;  // Used for MatchLeast/MatchMost/MatchExact
-};
-
 }  // namespace expr
 }  // namespace milvus
 

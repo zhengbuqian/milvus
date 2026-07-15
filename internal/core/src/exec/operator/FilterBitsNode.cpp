@@ -166,7 +166,7 @@ PhyFilterBitsNode::GetOutput() {
     std::chrono::high_resolution_clock::time_point scalar_start =
         std::chrono::high_resolution_clock::now();
 
-    EvalCtx eval_ctx(operator_context_->get_exec_context());
+    EvalCtx eval_ctx(operator_context_->get_exec_context(), exprs_.get());
 
     TargetBitmap bitset;
     TargetBitmap valid_bitset;
@@ -246,11 +246,7 @@ PhyFilterBitsNode::GetOutput() {
                       "PhyFilterBitsNode result should be ColumnVector");
         }
     }
-    TargetBitmapView bitset_view(bitset);
-    TargetBitmapView valid_bitset_view(valid_bitset);
-    ConvertPredicateToFilteredBitset(
-        bitset_view, valid_bitset_view, bitset.size());
-
+    bitset.flip();
     AssertInfo(bitset.size() == need_process_rows_,
                "bitset size: {}, need_process_rows_: {}",
                bitset.size(),

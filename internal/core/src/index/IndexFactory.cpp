@@ -53,7 +53,6 @@
 #include "index/VectorDiskIndex.h"
 #include "index/VectorMemIndex.h"
 #include "knowhere/comp/knowhere_check.h"
-#include "knowhere/emb_list_utils.h"
 #include "knowhere/expected.h"
 #include "knowhere/index/index_static.h"
 #include "knowhere/operands.h"
@@ -212,12 +211,6 @@ ResolveHybridInternalIndexType(
 
 }  // namespace
 
-bool
-IndexFactory::CanUseIndexRawDataForField(DataType field_type,
-                                         bool has_raw_data) {
-    return has_raw_data && field_type != DataType::ARRAY;
-}
-
 template <typename T>
 ScalarIndexPtr<T>
 IndexFactory::CreatePrimitiveScalarIndex(
@@ -287,7 +280,6 @@ IndexFactory::CreatePrimitiveScalarIndex<std::string>(
 LoadResourceRequest
 IndexFactory::IndexLoadResource(
     DataType field_type,
-    DataType element_type,
     IndexVersion index_version,
     uint64_t index_size_in_bytes,
     const std::map<std::string, std::string>& index_params,
@@ -295,14 +287,8 @@ IndexFactory::IndexLoadResource(
     int64_t num_rows,
     int64_t dim) {
     if (milvus::IsVectorDataType(field_type)) {
-        return VecIndexLoadResource(field_type,
-                                    element_type,
-                                    index_version,
-                                    index_size_in_bytes,
-                                    index_params,
-                                    mmap_enable,
-                                    num_rows,
-                                    dim);
+        return VecIndexLoadResource(
+            field_type, index_version, index_size, index_params, mmap_enable);
     } else {
         return ScalarIndexLoadResource(field_type,
                                        index_version,
@@ -348,7 +334,6 @@ IndexFactory::IndexLoadResource(
 LoadResourceRequest
 IndexFactory::VecIndexLoadResource(
     DataType field_type,
-    DataType element_type,
     IndexVersion index_version,
     uint64_t index_size_in_bytes,
     const std::map<std::string, std::string>& index_params,
@@ -445,87 +430,6 @@ IndexFactory::VecIndexLoadResource(
                 knowhere::IndexStaticFaced<knowhere::int8>::HasRawData(
                     index_type, index_version, config);
             break;
-        case milvus::DataType::VECTOR_ARRAY: {
-            auto metric_type = milvus::index::GetMetricTypeFromConfig(config);
-            auto is_emb_list_metric =
-                knowhere::get_el_metric_type(metric_type).has_value();
-            switch (element_type) {
-                case milvus::DataType::VECTOR_FLOAT:
-                    resource = knowhere::IndexStaticFaced<knowhere::fp32>::
-                        EstimateLoadResource(index_type,
-                                             index_version,
-                                             index_size_in_bytes,
-                                             num_rows,
-                                             dim,
-                                             config);
-                    has_raw_data =
-                        knowhere::IndexStaticFaced<knowhere::fp32>::HasRawData(
-                            index_type, index_version, config);
-                    break;
-                case milvus::DataType::VECTOR_FLOAT16:
-                    resource = knowhere::IndexStaticFaced<knowhere::fp16>::
-                        EstimateLoadResource(index_type,
-                                             index_version,
-                                             index_size_in_bytes,
-                                             num_rows,
-                                             dim,
-                                             config);
-                    has_raw_data =
-                        knowhere::IndexStaticFaced<knowhere::fp16>::HasRawData(
-                            index_type, index_version, config);
-                    break;
-                case milvus::DataType::VECTOR_BFLOAT16:
-                    resource = knowhere::IndexStaticFaced<knowhere::bf16>::
-                        EstimateLoadResource(index_type,
-                                             index_version,
-                                             index_size_in_bytes,
-                                             num_rows,
-                                             dim,
-                                             config);
-                    has_raw_data =
-                        knowhere::IndexStaticFaced<knowhere::bf16>::HasRawData(
-                            index_type, index_version, config);
-                    break;
-                case milvus::DataType::VECTOR_BINARY:
-                    resource = knowhere::IndexStaticFaced<knowhere::bin1>::
-                        EstimateLoadResource(index_type,
-                                             index_version,
-                                             index_size_in_bytes,
-                                             num_rows,
-                                             dim,
-                                             config);
-                    has_raw_data =
-                        knowhere::IndexStaticFaced<knowhere::bin1>::HasRawData(
-                            index_type, index_version, config);
-                    break;
-                case milvus::DataType::VECTOR_INT8:
-                    resource = knowhere::IndexStaticFaced<knowhere::int8>::
-                        EstimateLoadResource(index_type,
-                                             index_version,
-                                             index_size_in_bytes,
-                                             num_rows,
-                                             dim,
-                                             config);
-                    has_raw_data =
-                        knowhere::IndexStaticFaced<knowhere::int8>::HasRawData(
-                            index_type, index_version, config);
-                    break;
-
-                default:
-                    LOG_ERROR(
-                        "invalid data type to estimate index load resource: "
-                        "field_type {}, element_type {}",
-                        field_type,
-                        element_type);
-                    return LoadResourceRequest{0, 0, 0, 0, true};
-            }
-            // Non-emb-list VECTOR_ARRAY indexes do not keep embedding-list
-            // offsets, so they cannot reconstruct row-level embedding lists.
-            if (!is_emb_list_metric) {
-                has_raw_data = false;
-            }
-            break;
-        }
         default:
             LOG_ERROR("invalid data type to estimate index load resource: {}",
                       field_type);
@@ -662,8 +566,6 @@ IndexFactory::ScalarIndexLoadResource(
             index_type);
         return LoadResourceRequest{0, 0, 0, 0, false};
     }
-    request.has_raw_data =
-        CanUseIndexRawDataForField(field_type, request.has_raw_data);
     return request;
 }
 
@@ -950,141 +852,10 @@ IndexFactory::CreateGeometryIndex(
 }
 
 IndexBasePtr
-IndexFactory::CreateNestedIndex(
-    IndexType index_type,
-    int32_t tantivy_index_version,
-    const storage::FileManagerContext& file_manager_context) {
-    if (index_type == INVERTED_INDEX_TYPE) {
-        return CreateNestedIndexInverted(tantivy_index_version,
-                                         file_manager_context);
-    }
-    if (index_type == BITMAP_INDEX_TYPE) {
-        return CreateNestedIndexBitmap(file_manager_context);
-    }
-
-    return CreateNestedIndexScalarIndexSort(file_manager_context);
-}
-
-IndexBasePtr
-IndexFactory::CreateNestedIndexInverted(
-    int32_t tantivy_index_version,
-    const storage::FileManagerContext& file_manager_context) {
-    DataType element_type = static_cast<DataType>(
-        file_manager_context.fieldDataMeta.field_schema.element_type());
-    switch (element_type) {
-        case DataType::BOOL:
-            return std::make_unique<InvertedIndexTantivy<bool>>(
-                tantivy_index_version,
-                file_manager_context,
-                false,  // inverted_index_single_segment
-                true,   // user_specified_doc_id
-                true);  // is_nested_index
-        case DataType::INT8:
-            return std::make_unique<InvertedIndexTantivy<int8_t>>(
-                tantivy_index_version, file_manager_context, false, true, true);
-        case DataType::INT16:
-            return std::make_unique<InvertedIndexTantivy<int16_t>>(
-                tantivy_index_version, file_manager_context, false, true, true);
-        case DataType::INT32:
-            return std::make_unique<InvertedIndexTantivy<int32_t>>(
-                tantivy_index_version, file_manager_context, false, true, true);
-        case DataType::INT64:
-            return std::make_unique<InvertedIndexTantivy<int64_t>>(
-                tantivy_index_version, file_manager_context, false, true, true);
-        case DataType::FLOAT:
-            return std::make_unique<InvertedIndexTantivy<float>>(
-                tantivy_index_version, file_manager_context, false, true, true);
-        case DataType::DOUBLE:
-            return std::make_unique<InvertedIndexTantivy<double>>(
-                tantivy_index_version, file_manager_context, false, true, true);
-        case DataType::STRING:
-        case DataType::VARCHAR:
-            return std::make_unique<InvertedIndexTantivy<std::string>>(
-                tantivy_index_version, file_manager_context, false, true, true);
-        default:
-            ThrowInfo(DataTypeInvalid, "Invalid data type:{}", element_type);
-    }
-}
-
-IndexBasePtr
-IndexFactory::CreateNestedIndexBitmap(
-    const storage::FileManagerContext& file_manager_context) {
-    DataType element_type = static_cast<DataType>(
-        file_manager_context.fieldDataMeta.field_schema.element_type());
-    switch (element_type) {
-        case DataType::BOOL:
-            return std::make_unique<BitmapIndex<bool>>(file_manager_context,
-                                                       true);
-        case DataType::INT8:
-            return std::make_unique<BitmapIndex<int8_t>>(file_manager_context,
-                                                         true);
-        case DataType::INT16:
-            return std::make_unique<BitmapIndex<int16_t>>(file_manager_context,
-                                                          true);
-        case DataType::INT32:
-            return std::make_unique<BitmapIndex<int32_t>>(file_manager_context,
-                                                          true);
-        case DataType::INT64:
-            return std::make_unique<BitmapIndex<int64_t>>(file_manager_context,
-                                                          true);
-        case DataType::STRING:
-        case DataType::VARCHAR:
-            return std::make_unique<BitmapIndex<std::string>>(
-                file_manager_context, true);
-        default:
-            ThrowInfo(DataTypeInvalid, "Invalid data type:{}", element_type);
-    }
-}
-
-IndexBasePtr
-IndexFactory::CreateNestedIndexScalarIndexSort(
-    const storage::FileManagerContext& file_manager_context) {
-    DataType element_type = static_cast<DataType>(
-        file_manager_context.fieldDataMeta.field_schema.element_type());
-    switch (element_type) {
-        case DataType::BOOL:
-            return std::make_unique<ScalarIndexSort<bool>>(file_manager_context,
-                                                           true);
-        case DataType::INT8:
-            return std::make_unique<ScalarIndexSort<int8_t>>(
-                file_manager_context, true);
-        case DataType::INT16:
-            return std::make_unique<ScalarIndexSort<int16_t>>(
-                file_manager_context, true);
-        case DataType::INT32:
-            return std::make_unique<ScalarIndexSort<int32_t>>(
-                file_manager_context, true);
-        case DataType::INT64:
-            return std::make_unique<ScalarIndexSort<int64_t>>(
-                file_manager_context, true);
-        case DataType::FLOAT:
-            return std::make_unique<ScalarIndexSort<float>>(
-                file_manager_context, true);
-        case DataType::DOUBLE:
-            return std::make_unique<ScalarIndexSort<double>>(
-                file_manager_context, true);
-        case DataType::STRING:
-        case DataType::VARCHAR:
-            return std::make_unique<StringIndexSort>(file_manager_context,
-                                                     true);
-        default:
-            ThrowInfo(DataTypeInvalid, "Invalid data type:{}", element_type);
-    }
-}
-
-IndexBasePtr
 IndexFactory::CreateScalarIndex(
     const CreateIndexInfo& create_index_info,
     const storage::FileManagerContext& file_manager_context) {
     auto data_type = create_index_info.field_type;
-
-    if (IsStructSubField(create_index_info.field_name)) {
-        assert(data_type == DataType::ARRAY);
-        return CreateNestedIndex(create_index_info.index_type,
-                                 create_index_info.tantivy_index_version,
-                                 file_manager_context);
-    }
-
     switch (data_type) {
         case DataType::BOOL:
         case DataType::INT8:
@@ -1129,98 +900,26 @@ IndexFactory::CreateVectorIndex(
         switch (data_type) {
             case DataType::VECTOR_FLOAT: {
                 return std::make_unique<VectorDiskAnnIndex<float>>(
-                    DataType::NONE,
-                    index_type,
-                    metric_type,
-                    version,
-                    file_manager_context);
+                    index_type, metric_type, version, file_manager_context);
             }
             case DataType::VECTOR_FLOAT16: {
                 return std::make_unique<VectorDiskAnnIndex<float16>>(
-                    DataType::NONE,
-                    index_type,
-                    metric_type,
-                    version,
-                    file_manager_context);
+                    index_type, metric_type, version, file_manager_context);
             }
             case DataType::VECTOR_BFLOAT16: {
                 return std::make_unique<VectorDiskAnnIndex<bfloat16>>(
-                    DataType::NONE,
-                    index_type,
-                    metric_type,
-                    version,
-                    file_manager_context);
+                    index_type, metric_type, version, file_manager_context);
             }
             case DataType::VECTOR_BINARY: {
                 return std::make_unique<VectorDiskAnnIndex<bin1>>(
-                    DataType::NONE,
-                    index_type,
-                    metric_type,
-                    version,
-                    file_manager_context);
+                    index_type, metric_type, version, file_manager_context);
             }
             case DataType::VECTOR_SPARSE_U32_F32: {
                 return std::make_unique<VectorDiskAnnIndex<sparse_u32_f32>>(
-                    DataType::NONE,
-                    index_type,
-                    metric_type,
-                    version,
-                    file_manager_context);
-            }
-            case DataType::VECTOR_ARRAY: {
-                auto element_type =
-                    static_cast<DataType>(file_manager_context.fieldDataMeta
-                                              .field_schema.element_type());
-                switch (element_type) {
-                    case DataType::VECTOR_FLOAT:
-                        return std::make_unique<VectorDiskAnnIndex<float>>(
-                            element_type,
-                            index_type,
-                            metric_type,
-                            version,
-                            file_manager_context);
-                    case DataType::VECTOR_FLOAT16:
-                        return std::make_unique<VectorDiskAnnIndex<float16>>(
-                            element_type,
-                            index_type,
-                            metric_type,
-                            version,
-                            file_manager_context);
-                    case DataType::VECTOR_BFLOAT16:
-                        return std::make_unique<VectorDiskAnnIndex<bfloat16>>(
-                            element_type,
-                            index_type,
-                            metric_type,
-                            version,
-                            file_manager_context);
-                    case DataType::VECTOR_BINARY:
-                        return std::make_unique<VectorDiskAnnIndex<bin1>>(
-                            element_type,
-                            index_type,
-                            metric_type,
-                            version,
-                            file_manager_context);
-                    case DataType::VECTOR_INT8:
-                        return std::make_unique<VectorDiskAnnIndex<int8>>(
-                            element_type,
-                            index_type,
-                            metric_type,
-                            version,
-                            file_manager_context);
-                    default:
-                        ThrowInfo(NotImplemented,
-                                  fmt::format("not implemented data type to "
-                                              "build disk index: {}",
-                                              element_type));
-                }
+                    index_type, metric_type, version, file_manager_context);
             }
             case DataType::VECTOR_INT8: {
-                return std::make_unique<VectorDiskAnnIndex<int8>>(
-                    DataType::NONE,
-                    index_type,
-                    metric_type,
-                    version,
-                    file_manager_context);
+                // TODO caiyd, not support yet
             }
             default:
                 ThrowInfo(
@@ -1232,7 +931,6 @@ IndexFactory::CreateVectorIndex(
         switch (data_type) {
             case DataType::VECTOR_FLOAT: {
                 return std::make_unique<VectorMemIndex<float>>(
-                    DataType::NONE,
                     index_type,
                     metric_type,
                     version,
@@ -1250,7 +948,6 @@ IndexFactory::CreateVectorIndex(
             }
             case DataType::VECTOR_BINARY: {
                 return std::make_unique<VectorMemIndex<bin1>>(
-                    DataType::NONE,
                     index_type,
                     metric_type,
                     version,
@@ -1259,7 +956,6 @@ IndexFactory::CreateVectorIndex(
             }
             case DataType::VECTOR_FLOAT16: {
                 return std::make_unique<VectorMemIndex<float16>>(
-                    DataType::NONE,
                     index_type,
                     metric_type,
                     version,
@@ -1268,7 +964,6 @@ IndexFactory::CreateVectorIndex(
             }
             case DataType::VECTOR_BFLOAT16: {
                 return std::make_unique<VectorMemIndex<bfloat16>>(
-                    DataType::NONE,
                     index_type,
                     metric_type,
                     version,
@@ -1277,68 +972,11 @@ IndexFactory::CreateVectorIndex(
             }
             case DataType::VECTOR_INT8: {
                 return std::make_unique<VectorMemIndex<int8>>(
-                    DataType::NONE,
                     index_type,
                     metric_type,
                     version,
                     use_knowhere_build_pool,
                     file_manager_context);
-            }
-            case DataType::VECTOR_ARRAY: {
-                auto element_type =
-                    static_cast<DataType>(file_manager_context.fieldDataMeta
-                                              .field_schema.element_type());
-                switch (element_type) {
-                    case DataType::VECTOR_FLOAT:
-                        return std::make_unique<VectorMemIndex<float>>(
-                            element_type,
-                            index_type,
-                            metric_type,
-                            version,
-                            use_knowhere_build_pool,
-                            file_manager_context);
-                    case DataType::VECTOR_FLOAT16: {
-                        return std::make_unique<VectorMemIndex<float16>>(
-                            element_type,
-                            index_type,
-                            metric_type,
-                            version,
-                            use_knowhere_build_pool,
-                            file_manager_context);
-                    }
-                    case DataType::VECTOR_BFLOAT16: {
-                        return std::make_unique<VectorMemIndex<bfloat16>>(
-                            element_type,
-                            index_type,
-                            metric_type,
-                            version,
-                            use_knowhere_build_pool,
-                            file_manager_context);
-                    }
-                    case DataType::VECTOR_BINARY: {
-                        return std::make_unique<VectorMemIndex<bin1>>(
-                            element_type,
-                            index_type,
-                            metric_type,
-                            version,
-                            use_knowhere_build_pool,
-                            file_manager_context);
-                    }
-                    case DataType::VECTOR_INT8: {
-                        return std::make_unique<VectorMemIndex<int8>>(
-                            element_type,
-                            index_type,
-                            metric_type,
-                            version,
-                            use_knowhere_build_pool,
-                            file_manager_context);
-                    }
-                    default:
-                        ThrowInfo(NotImplemented,
-                                  fmt::format("not implemented data type to "
-                                              "build mem index: {}",
-                                              element_type));
-                }
             }
             default:
                 ThrowInfo(

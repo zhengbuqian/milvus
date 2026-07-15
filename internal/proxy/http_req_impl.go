@@ -389,7 +389,6 @@ func describeCollection(node *Proxy) gin.HandlerFunc {
 			PartitionInfos:       metricsinfo.NewPartitionInfos(describePartitionResp),
 			EnableDynamicField:   describeCollectionResp.Schema.EnableDynamicField,
 			Fields:               metricsinfo.NewFields(describeCollectionResp.GetSchema()),
-			StructArrayFields:    metricsinfo.NewStructArrayFields(describeCollectionResp.GetSchema()),
 		}
 
 		// Marshal the collection struct to JSON

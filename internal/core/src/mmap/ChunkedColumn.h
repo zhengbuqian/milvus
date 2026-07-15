@@ -36,6 +36,7 @@
 #include "common/FastMem.h"
 #include "common/FieldMeta.h"
 #include "common/Span.h"
+#include "common/Array.h"
 #include "segcore/storagev1translator/ChunkTranslator.h"
 #include "cachinglayer/Translator.h"
 #include "mmap/ChunkedColumnInterface.h"
@@ -297,24 +298,6 @@ class ChunkedColumnBase : public ChunkedColumnInterface {
         std::optional<std::pair<int64_t, int64_t>> offset_len) const override {
         ThrowInfo(ErrorCode::Unsupported,
                   "ArrayViews only supported for ArrayChunkedColumn");
-    }
-
-    PinWrapper<std::pair<std::vector<VectorArrayView>, FixedVector<bool>>>
-    VectorArrayViews(
-        milvus::OpContext* op_ctx,
-        int64_t chunk_id,
-        std::optional<std::pair<int64_t, int64_t>> offset_len) const override {
-        ThrowInfo(
-            ErrorCode::Unsupported,
-            "VectorArrayViews only supported for ChunkedVectorArrayColumn");
-    }
-
-    PinWrapper<const size_t*>
-    VectorArrayOffsets(milvus::OpContext* op_ctx,
-                       int64_t chunk_id) const override {
-        ThrowInfo(
-            ErrorCode::Unsupported,
-            "VectorArrayOffsets only supported for ChunkedVectorArrayColumn");
     }
 
     PinWrapper<std::pair<std::vector<std::string_view>, FixedVector<bool>>>
@@ -667,8 +650,7 @@ class ChunkedArrayColumn : public ChunkedColumnBase {
     }
 
     void
-    BulkArrayAt(milvus::OpContext* op_ctx,
-                std::function<void(const ArrayView&, size_t)> fn,
+    BulkArrayAt(std::function<void(ScalarArray&&, size_t)> fn,
                 const int64_t* offsets,
                 int64_t count) const override {
         auto [cids, offsets_in_chunk] = ToChunkIdAndOffset(offsets, count);
@@ -704,54 +686,6 @@ class ChunkedArrayColumn : public ChunkedColumnBase {
     }
 };
 
-class ChunkedVectorArrayColumn : public ChunkedColumnBase {
- public:
-    explicit ChunkedVectorArrayColumn(std::shared_ptr<CacheSlot<Chunk>> slot,
-                                      const FieldMeta& field_meta)
-        : ChunkedColumnBase(std::move(slot), field_meta) {
-    }
-
-    void
-    BulkVectorArrayAt(milvus::OpContext* op_ctx,
-                      std::function<void(VectorFieldProto&&, size_t)> fn,
-                      const int64_t* offsets,
-                      int64_t count) const override {
-        auto [cids, offsets_in_chunk] = ToChunkIdAndOffset(offsets, count);
-        auto ca = SemiInlineGet(slot_->PinCells(op_ctx, cids));
-        for (int64_t i = 0; i < count; i++) {
-            auto chunk =
-                static_cast<VectorArrayChunk*>(ca->get_cell_of(cids[i]));
-            auto offset = offsets_in_chunk[i];
-            auto array = chunk->View(offset).output_data();
-            fn(std::move(array), i);
-        }
-    }
-
-    PinWrapper<std::pair<std::vector<VectorArrayView>, FixedVector<bool>>>
-    VectorArrayViews(milvus::OpContext* op_ctx,
-                     int64_t chunk_id,
-                     std::optional<std::pair<int64_t, int64_t>> offset_len =
-                         std::nullopt) const override {
-        auto ca = SemiInlineGet(
-            slot_->PinCells(op_ctx, {static_cast<cid_t>(chunk_id)}));
-        auto chunk = ca->get_cell_of(chunk_id);
-        return PinWrapper<
-            std::pair<std::vector<VectorArrayView>, FixedVector<bool>>>(
-            std::move(ca),
-            static_cast<VectorArrayChunk*>(chunk)->Views(offset_len));
-    }
-
-    PinWrapper<const size_t*>
-    VectorArrayOffsets(milvus::OpContext* op_ctx,
-                       int64_t chunk_id) const override {
-        auto ca = SemiInlineGet(
-            slot_->PinCells(op_ctx, {static_cast<cid_t>(chunk_id)}));
-        auto chunk = ca->get_cell_of(chunk_id);
-        return PinWrapper<const size_t*>(
-            std::move(ca), static_cast<VectorArrayChunk*>(chunk)->Offsets());
-    }
-};
-
 inline std::shared_ptr<ChunkedColumnInterface>
 MakeChunkedColumnBase(
     DataType data_type,
@@ -771,12 +705,6 @@ MakeChunkedColumnBase(
     if (ChunkedColumnInterface::IsChunkedArrayColumnDataType(data_type)) {
         return std::static_pointer_cast<ChunkedColumnInterface>(
             std::make_shared<ChunkedArrayColumn>(std::move(slot), field_meta));
-    }
-
-    if (ChunkedColumnInterface::IsChunkedVectorArrayColumnDataType(data_type)) {
-        return std::static_pointer_cast<ChunkedColumnInterface>(
-            std::make_shared<ChunkedVectorArrayColumn>(std::move(slot),
-                                                       field_meta));
     }
 
     return std::static_pointer_cast<ChunkedColumnInterface>(

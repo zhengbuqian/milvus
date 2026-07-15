@@ -98,6 +98,127 @@ DeleteLoadIndexInfo(CLoadIndexInfo c_load_index_info) {
 }
 
 CStatus
+AppendIndexParam(CLoadIndexInfo c_load_index_info,
+                 const char* c_index_key,
+                 const char* c_index_value) {
+    SCOPE_CGO_CALL_METRIC();
+
+    try {
+        auto load_index_info =
+            (milvus::segcore::LoadIndexInfo*)c_load_index_info;
+        std::string index_key(c_index_key);
+        std::string index_value(c_index_value);
+        load_index_info->index_params[index_key] = index_value;
+
+        auto status = CStatus();
+        status.error_code = milvus::Success;
+        status.error_msg = "";
+        return status;
+    } catch (std::exception& e) {
+        auto status = CStatus();
+        status.error_code = milvus::UnexpectedError;
+        status.error_msg = strdup(e.what());
+        return status;
+    }
+}
+
+CStatus
+AppendFieldInfo(CLoadIndexInfo c_load_index_info,
+                int64_t collection_id,
+                int64_t partition_id,
+                int64_t segment_id,
+                int64_t field_id,
+                enum CDataType field_type,
+                bool enable_mmap,
+                const char* mmap_dir_path) {
+    SCOPE_CGO_CALL_METRIC();
+
+    try {
+        auto load_index_info =
+            (milvus::segcore::LoadIndexInfo*)c_load_index_info;
+        load_index_info->collection_id = collection_id;
+        load_index_info->partition_id = partition_id;
+        load_index_info->segment_id = segment_id;
+        load_index_info->field_id = field_id;
+        load_index_info->field_type = milvus::DataType(field_type);
+        load_index_info->enable_mmap = enable_mmap;
+        load_index_info->mmap_dir_path = std::string(mmap_dir_path);
+
+        auto status = CStatus();
+        status.error_code = milvus::Success;
+        status.error_msg = "";
+        return status;
+    } catch (std::exception& e) {
+        auto status = CStatus();
+        status.error_code = milvus::UnexpectedError;
+        status.error_msg = strdup(e.what());
+        return status;
+    }
+}
+
+CStatus
+appendVecIndex(CLoadIndexInfo c_load_index_info, CBinarySet c_binary_set) {
+    SCOPE_CGO_CALL_METRIC();
+
+    try {
+        auto load_index_info =
+            (milvus::segcore::LoadIndexInfo*)c_load_index_info;
+        auto binary_set = (knowhere::BinarySet*)c_binary_set;
+        auto& index_params = load_index_info->index_params;
+
+        milvus::index::CreateIndexInfo index_info;
+        index_info.field_type = load_index_info->field_type;
+        index_info.index_engine_version = load_index_info->index_engine_version;
+
+        // get index type
+        AssertInfo(index_params.find("index_type") != index_params.end(),
+                   "index type is empty");
+        index_info.index_type = index_params.at("index_type");
+
+        // get metric type
+        AssertInfo(index_params.find("metric_type") != index_params.end(),
+                   "metric type is empty");
+        index_info.metric_type = index_params.at("metric_type");
+
+        // init file manager
+        milvus::storage::FieldDataMeta field_meta{
+            load_index_info->collection_id,
+            load_index_info->partition_id,
+            load_index_info->segment_id,
+            load_index_info->field_id};
+        milvus::storage::IndexMeta index_meta{load_index_info->segment_id,
+                                              load_index_info->field_id,
+                                              load_index_info->index_build_id,
+                                              load_index_info->index_version};
+        auto remote_chunk_manager =
+            milvus::storage::RemoteChunkManagerSingleton::GetInstance()
+                .GetRemoteChunkManager();
+
+        auto config = milvus::index::ParseConfigFromIndexParams(
+            load_index_info->index_params);
+        config["index_files"] = load_index_info->index_files;
+
+        milvus::storage::FileManagerContext fileManagerContext(
+            field_meta, index_meta, remote_chunk_manager);
+        fileManagerContext.set_for_loading_index(true);
+
+        load_index_info->index =
+            milvus::index::IndexFactory::GetInstance().CreateIndex(
+                index_info, fileManagerContext);
+        load_index_info->index->Load(*binary_set, config);
+        auto status = CStatus();
+        status.error_code = milvus::Success;
+        status.error_msg = "";
+        return status;
+    } catch (std::exception& e) {
+        auto status = CStatus();
+        status.error_code = milvus::UnexpectedError;
+        status.error_msg = strdup(e.what());
+        return status;
+    }
+}
+
+CStatus
 appendScalarIndex(CLoadIndexInfo c_load_index_info, CBinarySet c_binary_set) {
     SCOPE_CGO_CALL_METRIC();
 
@@ -155,7 +276,6 @@ EstimateLoadIndexResource(CLoadIndexInfo c_load_index_info) {
         auto load_index_info =
             (milvus::segcore::LoadIndexInfo*)c_load_index_info;
         auto field_type = load_index_info->field_type;
-        auto element_type = load_index_info->element_type;
         auto& index_params = load_index_info->index_params;
         bool find_index_type =
             index_params.count("index_type") > 0 ? true : false;
@@ -165,7 +285,6 @@ EstimateLoadIndexResource(CLoadIndexInfo c_load_index_info) {
         LoadResourceRequest request =
             milvus::index::IndexFactory::GetInstance().IndexLoadResource(
                 field_type,
-                element_type,
                 load_index_info->index_engine_version,
                 load_index_info->index_size,
                 index_params,
@@ -325,8 +444,6 @@ FinishLoadIndexInfo(CLoadIndexInfo c_load_index_info,
             load_index_info->field_id = info_proto->field().fieldid();
             load_index_info->field_type =
                 static_cast<milvus::DataType>(info_proto->field().data_type());
-            load_index_info->element_type = static_cast<milvus::DataType>(
-                info_proto->field().element_type());
             load_index_info->enable_mmap = info_proto->enable_mmap();
             load_index_info->index_id = info_proto->indexid();
             load_index_info->index_build_id = info_proto->index_buildid();

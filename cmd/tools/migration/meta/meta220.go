@@ -50,7 +50,6 @@ func (meta *TtCollectionsMeta220) GenerateSaves(sourceVersion semver.Version) (m
 	if sourceVersion.LT(versions.Version220) {
 		opts = append(opts, model.WithFields())
 		opts = append(opts, model.WithPartitions())
-		opts = append(opts, model.WithStructArrayFields())
 	}
 
 	for collectionID := range *meta {
@@ -99,7 +98,6 @@ func (meta *CollectionsMeta220) GenerateSaves(sourceVersion semver.Version) (map
 	if sourceVersion.LT(versions.Version220) {
 		opts = append(opts, model.WithFields())
 		opts = append(opts, model.WithPartitions())
-		opts = append(opts, model.WithStructArrayFields())
 	}
 
 	for collectionID := range *meta {

@@ -29,7 +29,7 @@ func Test_CheckVecIndexWithDataTypeExist(t *testing.T) {
 		want      bool
 	}{
 		{"HNSW", schemapb.DataType_FloatVector, true},
-		{"HNSW", schemapb.DataType_BinaryVector, true},
+		{"HNSW", schemapb.DataType_BinaryVector, false},
 		{"HNSW", schemapb.DataType_Float16Vector, true},
 
 		{"SPARSE_WAND", schemapb.DataType_SparseFloatVector, true},
@@ -50,7 +50,7 @@ func Test_CheckVecIndexWithDataTypeExist(t *testing.T) {
 	}
 
 	for _, test := range cases {
-		if got := CheckVecIndexWithDataTypeExist(test.indexType, test.dataType, schemapb.DataType_None); got != test.want {
+		if got := CheckVecIndexWithDataTypeExist(test.indexType, test.dataType); got != test.want {
 			t.Errorf("CheckVecIndexWithDataTypeExist(%v, %v) = %v", test.indexType, test.dataType, test.want)
 		}
 	}

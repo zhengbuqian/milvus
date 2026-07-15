@@ -101,7 +101,6 @@ void
 SearchOnGrowing(const segcore::SegmentGrowingImpl& segment,
                 const SearchInfo& info,
                 const void* query_data,
-                const size_t* query_offsets,
                 int64_t num_queries,
                 Timestamp timestamp,
                 const BitsetView& bitset,
@@ -109,6 +108,8 @@ SearchOnGrowing(const segcore::SegmentGrowingImpl& segment,
                 SearchResult& search_result) {
     auto& schema = segment.get_schema();
     auto& record = segment.get_insert_record();
+    auto active_count =
+        std::min(int64_t(bitset.size()), segment.get_active_count(timestamp));
 
     // step 1.1: get meta
     // step 1.2: get which vector field to search
@@ -117,7 +118,6 @@ SearchOnGrowing(const segcore::SegmentGrowingImpl& segment,
     CheckBruteForceSearchParam(field, info);
 
     auto data_type = field.get_data_type();
-    auto element_type = field.get_element_type();
     AssertInfo(IsVectorDataType(data_type),
                "[SearchOnGrowing]Data type isn't vector type");
 
@@ -127,47 +127,23 @@ SearchOnGrowing(const segcore::SegmentGrowingImpl& segment,
 
     // step 2: small indexing search
     if (segment.get_indexing_record().SyncDataWithIndex(field.get_id())) {
-        AssertInfo(
-            data_type != DataType::VECTOR_ARRAY,
-            "vector array(embedding list) is not supported for growing segment "
-            "indexing search");
-
-        FloatSegmentIndexSearch(segment,
-                                info,
-                                query_data,
-                                num_queries,
-                                bitset,
-                                op_context,
-                                search_result);
+        FloatSegmentIndexSearch(
+            segment, info, query_data, num_queries, bitset, search_result);
     } else {
         std::shared_lock<std::shared_mutex> read_chunk_mutex(
             segment.get_chunk_mutex());
         // check SyncDataWithIndex() again, in case the vector chunks has been removed.
         if (segment.get_indexing_record().SyncDataWithIndex(field.get_id())) {
-            AssertInfo(data_type != DataType::VECTOR_ARRAY,
-                       "vector array(embedding list) is not supported for "
-                       "growing segment indexing search");
-
-            return FloatSegmentIndexSearch(segment,
-                                           info,
-                                           query_data,
-                                           num_queries,
-                                           bitset,
-                                           op_context,
-                                           search_result);
+            return FloatSegmentIndexSearch(
+                segment, info, query_data, num_queries, bitset, search_result);
         }
         SubSearchResult final_qr(num_queries, topk, metric_type, round_decimal);
         // TODO(SPARSE): see todo in PlanImpl.h::PlaceHolder.
         auto dim = field.get_data_type() == DataType::VECTOR_SPARSE_U32_F32
                        ? 0
                        : field.get_dim();
-        dataset::SearchDataset search_dataset{metric_type,
-                                              num_queries,
-                                              topk,
-                                              round_decimal,
-                                              dim,
-                                              query_data,
-                                              query_offsets};
+        dataset::SearchDataset search_dataset{
+            metric_type, num_queries, topk, round_decimal, dim, query_data};
         int32_t current_chunk_id = 0;
 
         // get index params for bm25 and minhash brute force
@@ -185,7 +161,6 @@ SearchOnGrowing(const segcore::SegmentGrowingImpl& segment,
         const bool is_element_level_search =
             data_type == DataType::VECTOR_ARRAY &&
             info.array_offsets_ != nullptr;
-        search_result.element_level_ = is_element_level_search;
         const auto has_offset_mapping =
             offset_mapping.IsEnabled() && !is_element_level_search;
 
@@ -220,166 +195,71 @@ SearchOnGrowing(const segcore::SegmentGrowingImpl& segment,
                 search_result.PinBitset(std::move(transformed_bitset));
         }
 
-        // Element-level search (embedding-search-embedding): knowhere sees
-        // a scalar vector type and the per-chunk size must be measured in
-        // elements. Compute this before the iterator_v2 branch so both
-        // paths share the substitution. Emb-list (multi-search-multi)
-        // iterator is rejected by the proxy; the assert below is
-        // defense-in-depth.
-        const auto iter_data_type =
-            is_element_level_search ? element_type : data_type;
-        const bool use_vector_iterator = milvus::exec::UseVectorIterator(info);
-
         if (info.iterator_v2_info_.has_value()) {
-            AssertInfo(iter_data_type != DataType::VECTOR_ARRAY,
-                       "embedding list (multi-search-multi) iterator is not "
-                       "supported on vector array fields");
-
             CachedSearchIterator cached_iter(search_dataset,
                                              vec_ptr,
                                              active_count,
                                              info,
                                              index_info,
                                              search_bitset,
-                                             iter_data_type);
+                                             data_type);
             cached_iter.NextBatch(info, search_result);
-            FinalizeVectorSearchOffsets(
-                search_result, offset_mapping, info.array_offsets_.get());
+            if (offset_mapping.IsEnabled()) {
+                TransformOffset(search_result.seg_offsets_, offset_mapping);
+            }
             return;
         }
 
         auto vec_size_per_chunk = vec_ptr->get_size_per_chunk();
         auto max_chunk = upper_div(active_count, vec_size_per_chunk);
 
-        // Track cumulative element offset for element-level search.
-        // begin_id must be the cumulative element count (not row offset),
-        // because ArrayOffsets maps global element IDs to row IDs.
-        int64_t cumulative_element_offset = 0;
-
-        std::vector<size_t> offsets;
         for (int chunk_id = current_chunk_id; chunk_id < max_chunk;
              ++chunk_id) {
             auto chunk_data = vec_ptr->get_chunk_data(chunk_id);
 
-            auto row_begin = chunk_id * vec_size_per_chunk;
-            auto row_end =
+            auto element_begin = chunk_id * vec_size_per_chunk;
+            auto element_end =
                 std::min(active_count, (chunk_id + 1) * vec_size_per_chunk);
-            auto size_per_chunk = row_end - row_begin;
+            auto size_per_chunk = element_end - element_begin;
 
-            query::dataset::RawDataset sub_data;
-            std::unique_ptr<uint8_t[]> buf = nullptr;
-            if (data_type != DataType::VECTOR_ARRAY) {
-                sub_data = query::dataset::RawDataset{
-                    row_begin, dim, size_per_chunk, chunk_data};
-            } else {
-                // TODO(SpadeA): For VectorArray(Embedding List), data is
-                // discreted stored in FixedVector which means we will copy the
-                // data to a contiguous memory buffer. This is inefficient and
-                // will be optimized in the future.
-                auto vec_ptr = reinterpret_cast<const VectorArray*>(chunk_data);
-                auto size = 0;
-                for (int i = 0; i < size_per_chunk; ++i) {
-                    size += vec_ptr[i].byte_size();
-                }
-
-                buf = std::make_unique<uint8_t[]>(size);
-
-                if (is_element_level_search) {
-                    auto count = 0;
-                    auto ptr = buf.get();
-                    for (int i = 0; i < size_per_chunk; ++i) {
-                        milvus::fastmem::FastMemcpy(
-                            ptr, vec_ptr[i].data(), vec_ptr[i].byte_size());
-                        ptr += vec_ptr[i].byte_size();
-                        count += vec_ptr[i].length();
-                    }
-                    sub_data = query::dataset::RawDataset{
-                        cumulative_element_offset, dim, count, buf.get()};
-                    cumulative_element_offset += count;
-                } else {
-                    offsets.clear();
-                    offsets.reserve(size_per_chunk + 1);
-                    offsets.push_back(0);
-
-                    auto offset = 0;
-                    auto ptr = buf.get();
-                    for (int i = 0; i < size_per_chunk; ++i) {
-                        milvus::fastmem::FastMemcpy(
-                            ptr, vec_ptr[i].data(), vec_ptr[i].byte_size());
-                        ptr += vec_ptr[i].byte_size();
-
-                        offset += vec_ptr[i].length();
-                        offsets.push_back(offset);
-                    }
-                    sub_data = query::dataset::RawDataset{row_begin,
-                                                          dim,
-                                                          size_per_chunk,
-                                                          buf.get(),
-                                                          offsets.data()};
-                }
-            }
-
-            if (use_vector_iterator) {
-                AssertInfo(iter_data_type != DataType::VECTOR_ARRAY,
-                           "vector array(embedding list) is not supported for "
-                           "vector iterator");
-
-                if (buf != nullptr) {
-                    search_result.chunk_buffers_.emplace_back(std::move(buf));
-                }
-
+            auto sub_data = query::dataset::RawDataset{
+                element_begin, dim, size_per_chunk, chunk_data};
+            if (milvus::exec::UseVectorIterator(info)) {
                 auto sub_qr =
                     PackBruteForceSearchIteratorsIntoSubResult(search_dataset,
                                                                sub_data,
                                                                info,
                                                                index_info,
-                                                               search_bitset,
-                                                               iter_data_type);
+                                                               bitset,
+                                                               data_type);
                 final_qr.merge(sub_qr);
             } else {
                 auto sub_qr = BruteForceSearch(search_dataset,
                                                sub_data,
                                                info,
                                                index_info,
-                                               search_bitset,
-                                               iter_data_type,
-                                               element_type,
-                                               op_context);
+                                               bitset,
+                                               data_type);
                 final_qr.merge(sub_qr);
             }
         }
-        if (use_vector_iterator) {
+        if (milvus::exec::UseVectorIterator(info)) {
+            std::vector<int64_t> chunk_rows(max_chunk, 0);
+            for (int i = 1; i < max_chunk; ++i) {
+                chunk_rows[i] = i * vec_size_per_chunk;
+            }
             bool larger_is_closer = PositivelyRelated(info.metric_type_);
-            // Element-level search skips row-level mapping (element IDs are
-            // not row-aligned); see ChunkMergeIterator ctor.
-            const milvus::OffsetMapping* iter_offset_mapping =
-                (is_element_level_search || !has_offset_mapping)
-                    ? nullptr
-                    : &offset_mapping;
             search_result.AssembleChunkVectorIterators(
                 num_queries,
                 max_chunk,
+                chunk_rows,
                 final_qr.chunk_iterators(),
-                iter_offset_mapping,
+                offset_mapping,
                 larger_is_closer);
         } else {
-            // See FinalizeVectorSearchOffsets for the rationale:
-            // element-level and row-level remapping are mutually exclusive.
-            if (info.array_offsets_ != nullptr) {
-                auto [seg_offsets, elem_indicies] =
-                    final_qr.convert_to_element_offsets(
-                        info.array_offsets_.get());
-                search_result.seg_offsets_ = std::move(seg_offsets);
-                search_result.element_indices_ = std::move(elem_indicies);
-                search_result.element_level_ = true;
-            } else {
-                if (has_offset_mapping) {
-                    offset_mapping.TransformOffsets(final_qr.mutable_offsets());
-                }
-                search_result.seg_offsets_ =
-                    std::move(final_qr.mutable_offsets());
-            }
             search_result.distances_ = std::move(final_qr.mutable_distances());
+            search_result.seg_offsets_ =
+                std::move(final_qr.mutable_seg_offsets());
         }
         search_result.unity_topK_ = topk;
         search_result.total_nq_ = num_queries;

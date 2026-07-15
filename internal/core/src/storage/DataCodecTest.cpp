@@ -480,193 +480,7 @@ TEST(storage, ExternalNullableFloatVectorBinaryIsAccepted) {
     ASSERT_EQ(normalized->type_id(), arrow::Type::BINARY);
 }
 
-TEST(storage, NullableFloatVectorArrowAllValidMaterializesValidData) {
-    std::array<float, 2> row0 = {1.0F, 2.0F};
-    std::array<float, 2> row1 = {3.0F, 4.0F};
-    arrow::BinaryBuilder builder;
-    ASSERT_TRUE(builder
-                    .Append(reinterpret_cast<const uint8_t*>(row0.data()),
-                            sizeof(float) * row0.size())
-                    .ok());
-    ASSERT_TRUE(builder
-                    .Append(reinterpret_cast<const uint8_t*>(row1.data()),
-                            sizeof(float) * row1.size())
-                    .ok());
-    std::shared_ptr<arrow::Array> binary_array;
-    ASSERT_TRUE(builder.Finish(&binary_array).ok());
-    ASSERT_EQ(binary_array->null_count(), 0);
-
-    auto field_data = storage::CreateFieldData(
-        storage::DataType::VECTOR_FLOAT, DataType::NONE, true, 2);
-    auto chunked_array = std::make_shared<arrow::ChunkedArray>(binary_array);
-    ASSERT_NO_THROW(field_data->FillFieldData(chunked_array));
-
-    ASSERT_EQ(field_data->get_num_rows(), 2);
-    ASSERT_EQ(field_data->get_valid_rows(), 2);
-    ASSERT_EQ(field_data->get_null_count(), 0);
-    ASSERT_TRUE(field_data->is_valid(0));
-    ASSERT_TRUE(field_data->is_valid(1));
-
-    auto actual0 = static_cast<const float*>(field_data->RawValue(0));
-    auto actual1 = static_cast<const float*>(field_data->RawValue(1));
-    ASSERT_NE(actual0, nullptr);
-    ASSERT_NE(actual1, nullptr);
-    EXPECT_FLOAT_EQ(actual0[0], row0[0]);
-    EXPECT_FLOAT_EQ(actual0[1], row0[1]);
-    EXPECT_FLOAT_EQ(actual1[0], row1[0]);
-    EXPECT_FLOAT_EQ(actual1[1], row1[1]);
-}
-
-TEST(storage, NullableFloatVectorArrowChunksAccumulateNullCount) {
-    std::array<float, 2> row0 = {1.0F, 2.0F};
-    std::array<float, 2> row3 = {7.0F, 8.0F};
-
-    arrow::BinaryBuilder first_builder;
-    ASSERT_TRUE(first_builder
-                    .Append(reinterpret_cast<const uint8_t*>(row0.data()),
-                            sizeof(float) * row0.size())
-                    .ok());
-    ASSERT_TRUE(first_builder.AppendNull().ok());
-    std::shared_ptr<arrow::Array> first_array;
-    ASSERT_TRUE(first_builder.Finish(&first_array).ok());
-
-    arrow::BinaryBuilder second_builder;
-    ASSERT_TRUE(second_builder.AppendNull().ok());
-    ASSERT_TRUE(second_builder
-                    .Append(reinterpret_cast<const uint8_t*>(row3.data()),
-                            sizeof(float) * row3.size())
-                    .ok());
-    std::shared_ptr<arrow::Array> second_array;
-    ASSERT_TRUE(second_builder.Finish(&second_array).ok());
-
-    auto field_data = storage::CreateFieldData(
-        storage::DataType::VECTOR_FLOAT, DataType::NONE, true, 2);
-    auto chunked_array = std::make_shared<arrow::ChunkedArray>(
-        arrow::ArrayVector{first_array, second_array});
-    ASSERT_NO_THROW(field_data->FillFieldData(chunked_array));
-
-    ASSERT_EQ(field_data->get_num_rows(), 4);
-    ASSERT_EQ(field_data->get_valid_rows(), 2);
-    ASSERT_EQ(field_data->get_null_count(), 2);
-    EXPECT_TRUE(field_data->is_valid(0));
-    EXPECT_FALSE(field_data->is_valid(1));
-    EXPECT_FALSE(field_data->is_valid(2));
-    EXPECT_TRUE(field_data->is_valid(3));
-
-    auto actual0 = static_cast<const float*>(field_data->RawValue(0));
-    auto actual3 = static_cast<const float*>(field_data->RawValue(3));
-    ASSERT_NE(actual0, nullptr);
-    ASSERT_NE(actual3, nullptr);
-    EXPECT_FLOAT_EQ(actual0[0], row0[0]);
-    EXPECT_FLOAT_EQ(actual0[1], row0[1]);
-    EXPECT_FLOAT_EQ(actual3[0], row3[0]);
-    EXPECT_FLOAT_EQ(actual3[1], row3[1]);
-}
-
-TEST(storage, ExternalNullableVectorArrayPreservesNullRows) {
-    auto value_builder = std::make_shared<arrow::FloatBuilder>();
-    auto vector_builder = std::make_shared<arrow::ListBuilder>(
-        arrow::default_memory_pool(), value_builder);
-    arrow::ListBuilder array_builder(arrow::default_memory_pool(),
-                                     vector_builder);
-    auto& inner_list_builder =
-        dynamic_cast<arrow::ListBuilder&>(*array_builder.value_builder());
-    auto& float_builder =
-        dynamic_cast<arrow::FloatBuilder&>(*inner_list_builder.value_builder());
-
-    ASSERT_TRUE(array_builder.Append().ok());
-    ASSERT_TRUE(inner_list_builder.Append().ok());
-    ASSERT_TRUE(float_builder.Append(1.0F).ok());
-    ASSERT_TRUE(float_builder.Append(2.0F).ok());
-    ASSERT_TRUE(array_builder.AppendNull().ok());
-    ASSERT_TRUE(array_builder.Append().ok());
-    ASSERT_TRUE(inner_list_builder.Append().ok());
-    ASSERT_TRUE(float_builder.Append(3.0F).ok());
-    ASSERT_TRUE(float_builder.Append(4.0F).ok());
-    ASSERT_TRUE(inner_list_builder.Append().ok());
-    ASSERT_TRUE(float_builder.Append(5.0F).ok());
-    ASSERT_TRUE(float_builder.Append(6.0F).ok());
-
-    std::shared_ptr<arrow::Array> list_array;
-    ASSERT_TRUE(array_builder.Finish(&list_array).ok());
-
-    auto nullable_meta = MakeExternalFieldMetaForTest(
-        DataType::VECTOR_ARRAY, DataType::VECTOR_FLOAT, true, 2);
-    auto normalized =
-        storage::NormalizeExternalArrow(list_array, nullable_meta);
-    ASSERT_EQ(normalized->type_id(), arrow::Type::LIST);
-
-    auto normalized_list =
-        std::static_pointer_cast<arrow::ListArray>(normalized);
-    EXPECT_EQ(normalized_list->length(), 3);
-    EXPECT_EQ(normalized_list->null_count(), 1);
-    EXPECT_TRUE(normalized_list->IsNull(1));
-    EXPECT_EQ(normalized_list->value_length(0), 1);
-    EXPECT_EQ(normalized_list->value_length(2), 2);
-    EXPECT_EQ(normalized_list->values()->type_id(),
-              arrow::Type::FIXED_SIZE_BINARY);
-
-    auto non_nullable_meta = MakeExternalFieldMetaForTest(
-        DataType::VECTOR_ARRAY, DataType::VECTOR_FLOAT, false, 2);
-    EXPECT_ANY_THROW(
-        storage::NormalizeExternalArrow(list_array, non_nullable_meta));
-}
-
-TEST(storage, InsertDataVectorArrayNullablePreservesNullRows) {
-    constexpr int dim = 2;
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::VECTOR_ARRAY, DataType::VECTOR_FLOAT, true, dim);
-
-    auto make_vector_array = [dim](std::initializer_list<float> values) {
-        return milvus::VectorArray(values.size() > 0 ? values.begin() : nullptr,
-                                   values.size() / dim,
-                                   dim,
-                                   DataType::VECTOR_FLOAT);
-    };
-
-    std::vector<milvus::VectorArray> data;
-    data.emplace_back(make_vector_array({1.0F, 2.0F}));
-    data.emplace_back(make_vector_array({}));
-    data.emplace_back(make_vector_array({3.0F, 4.0F, 5.0F, 6.0F}));
-    uint8_t valid_data[] = {0x0D};  // rows 0,2,3 valid; row 1 null.
-
-    field_data->FillFieldData(data.data(), valid_data, 4, 0);
-
-    auto payload_reader =
-        std::make_shared<milvus::storage::PayloadReader>(field_data);
-    storage::InsertData insert_data(payload_reader);
-    storage::FieldDataMeta field_data_meta{100, 101, 102, 103};
-    insert_data.SetFieldDataMeta(field_data_meta);
-    insert_data.SetTimestamps(0, 100);
-
-    auto serialized_bytes = insert_data.Serialize(storage::StorageType::Remote);
-    std::shared_ptr<uint8_t[]> serialized_data_ptr(serialized_bytes.data(),
-                                                   [&](uint8_t*) {});
-    auto new_insert_data = storage::DeserializeFileData(
-        serialized_data_ptr, serialized_bytes.size());
-    auto new_payload = new_insert_data->GetFieldData();
-
-    ASSERT_EQ(new_payload->get_data_type(), storage::DataType::VECTOR_ARRAY);
-    ASSERT_TRUE(new_payload->IsNullable());
-    ASSERT_EQ(new_payload->get_num_rows(), 4);
-    ASSERT_EQ(new_payload->get_valid_rows(), 3);
-    ASSERT_EQ(new_payload->get_null_count(), 1);
-    EXPECT_TRUE(new_payload->is_valid(0));
-    EXPECT_FALSE(new_payload->is_valid(1));
-    EXPECT_TRUE(new_payload->is_valid(2));
-    EXPECT_TRUE(new_payload->is_valid(3));
-
-    auto vector_array_payload =
-        std::dynamic_pointer_cast<milvus::FieldData<milvus::VectorArray>>(
-            new_payload);
-    ASSERT_NE(vector_array_payload, nullptr);
-    ASSERT_EQ(vector_array_payload->get_element_type(), DataType::VECTOR_FLOAT);
-    EXPECT_EQ(vector_array_payload->value_at(0)->length(), 1);
-    EXPECT_EQ(vector_array_payload->value_at(1)->length(), 0);
-    EXPECT_EQ(vector_array_payload->value_at(2)->length(), 2);
-}
-
-TEST(storage, ExternalBinaryVectorListNormalizesToFixedSizeBinary) {
+TEST(storage, ExternalBinaryVectorListNormalizeFails) {
     auto value_builder = std::make_shared<arrow::UInt8Builder>();
     arrow::ListBuilder builder(arrow::default_memory_pool(), value_builder);
     auto& byte_builder =
@@ -748,8 +562,8 @@ TEST(storage, ExternalNullableVarCharBinaryAccumulatesNullCountAcrossChunks) {
 
 TEST(storage, InsertDataBool) {
     FixedVector<bool> data = {true, false, true, false, true};
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::BOOL, DataType::NONE, false);
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::BOOL, false);
     field_data->FillFieldData(data.data(), data.size());
 
     auto payload_reader =
@@ -778,10 +592,9 @@ TEST(storage, InsertDataBool) {
 
 TEST(storage, InsertDataBoolNullable) {
     FixedVector<bool> data = {true, false, false, false, true};
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::BOOL, DataType::NONE, true);
-    uint8_t valid_data_storage[1] = {0xF3};
-    uint8_t* valid_data = valid_data_storage;
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::BOOL, true);
+    uint8_t* valid_data = new uint8_t[1]{0xF3};
 
     field_data->FillFieldData(data.data(), valid_data, data.size(), 0);
 
@@ -815,8 +628,8 @@ TEST(storage, InsertDataBoolNullable) {
 
 TEST(storage, InsertDataInt8) {
     FixedVector<int8_t> data = {1, 2, 3, 4, 5};
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::INT8, DataType::NONE, false);
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::INT8, false);
     field_data->FillFieldData(data.data(), data.size());
 
     auto payload_reader =
@@ -845,10 +658,9 @@ TEST(storage, InsertDataInt8) {
 
 TEST(storage, InsertDataInt8Nullable) {
     FixedVector<int8_t> data = {1, 2, 3, 4, 5};
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::INT8, DataType::NONE, true);
-    uint8_t valid_data_storage[1] = {0xF3};
-    uint8_t* valid_data = valid_data_storage;
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::INT8, true);
+    uint8_t* valid_data = new uint8_t[1]{0xF3};
     field_data->FillFieldData(data.data(), valid_data, data.size(), 0);
 
     auto payload_reader =
@@ -879,8 +691,8 @@ TEST(storage, InsertDataInt8Nullable) {
 
 TEST(storage, InsertDataInt16) {
     FixedVector<int16_t> data = {1, 2, 3, 4, 5};
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::INT16, DataType::NONE, false);
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::INT16, false);
     field_data->FillFieldData(data.data(), data.size());
 
     auto payload_reader =
@@ -909,10 +721,9 @@ TEST(storage, InsertDataInt16) {
 
 TEST(storage, InsertDataInt16Nullable) {
     FixedVector<int16_t> data = {1, 2, 3, 4, 5};
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::INT16, DataType::NONE, true);
-    uint8_t valid_data_storage[1] = {0xF3};
-    uint8_t* valid_data = valid_data_storage;
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::INT16, true);
+    uint8_t* valid_data = new uint8_t[1]{0xF3};
     field_data->FillFieldData(data.data(), valid_data, data.size(), 0);
 
     auto payload_reader =
@@ -943,8 +754,8 @@ TEST(storage, InsertDataInt16Nullable) {
 
 TEST(storage, InsertDataInt32) {
     FixedVector<int32_t> data = {true, false, true, false, true};
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::INT32, DataType::NONE, false);
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::INT32, false);
     field_data->FillFieldData(data.data(), data.size());
 
     auto payload_reader =
@@ -973,10 +784,9 @@ TEST(storage, InsertDataInt32) {
 
 TEST(storage, InsertDataInt32Nullable) {
     FixedVector<int32_t> data = {1, 2, 3, 4, 5};
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::INT32, DataType::NONE, true);
-    uint8_t valid_data_storage[1] = {0xF3};
-    uint8_t* valid_data = valid_data_storage;
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::INT32, true);
+    uint8_t* valid_data = new uint8_t[1]{0xF3};
     field_data->FillFieldData(data.data(), valid_data, data.size(), 0);
 
     auto payload_reader =
@@ -1007,8 +817,8 @@ TEST(storage, InsertDataInt32Nullable) {
 
 TEST(storage, InsertDataInt64) {
     FixedVector<int64_t> data = {1, 2, 3, 4, 5};
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::INT64, DataType::NONE, false);
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::INT64, false);
     field_data->FillFieldData(data.data(), data.size());
 
     auto payload_reader =
@@ -1037,10 +847,9 @@ TEST(storage, InsertDataInt64) {
 
 TEST(storage, InsertDataInt64Nullable) {
     FixedVector<int64_t> data = {1, 2, 3, 4, 5};
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::INT64, DataType::NONE, true);
-    uint8_t valid_data_storage[1] = {0xF3};
-    uint8_t* valid_data = valid_data_storage;
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::INT64, true);
+    uint8_t* valid_data = new uint8_t[1]{0xF3};
     field_data->FillFieldData(data.data(), valid_data, data.size(), 0);
 
     auto payload_reader =
@@ -1181,8 +990,8 @@ TEST(storage, InsertDataGeometryNullable) {
 TEST(storage, InsertDataString) {
     FixedVector<std::string> data = {
         "test1", "test2", "test3", "test4", "test5"};
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::VARCHAR, DataType::NONE, false);
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::VARCHAR, false);
     field_data->FillFieldData(data.data(), data.size());
 
     auto payload_reader =
@@ -1216,10 +1025,9 @@ TEST(storage, InsertDataString) {
 TEST(storage, InsertDataStringNullable) {
     FixedVector<std::string> data = {
         "test1", "test2", "test3", "test4", "test5"};
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::STRING, DataType::NONE, true);
-    uint8_t valid_data_storage[1] = {0xF3};
-    uint8_t* valid_data = valid_data_storage;
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::STRING, true);
+    uint8_t* valid_data = new uint8_t[1]{0xF3};
     field_data->FillFieldData(data.data(), valid_data, data.size(), 0);
 
     auto payload_reader =
@@ -1253,8 +1061,8 @@ TEST(storage, InsertDataStringNullable) {
 
 TEST(storage, InsertDataFloat) {
     FixedVector<float> data = {1, 2, 3, 4, 5};
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::FLOAT, DataType::NONE, false);
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::FLOAT, false);
     field_data->FillFieldData(data.data(), data.size());
 
     auto payload_reader =
@@ -1283,8 +1091,8 @@ TEST(storage, InsertDataFloat) {
 
 TEST(storage, InsertDataFloatNullable) {
     FixedVector<float> data = {1, 2, 3, 4, 5};
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::FLOAT, DataType::NONE, true);
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::FLOAT, true);
     std::array<uint8_t, 1> valid_data = {0xF3};
     field_data->FillFieldData(data.data(), valid_data.data(), data.size(), 0);
 
@@ -1316,8 +1124,8 @@ TEST(storage, InsertDataFloatNullable) {
 
 TEST(storage, InsertDataDouble) {
     FixedVector<double> data = {1.0, 2.0, 3.0, 4.2, 5.3};
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::DOUBLE, DataType::NONE, false);
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::DOUBLE, false);
     field_data->FillFieldData(data.data(), data.size());
 
     auto payload_reader =
@@ -1346,10 +1154,9 @@ TEST(storage, InsertDataDouble) {
 
 TEST(storage, InsertDataDoubleNullable) {
     FixedVector<double> data = {1, 2, 3, 4, 5};
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::DOUBLE, DataType::NONE, true);
-    uint8_t valid_data_storage[1] = {0xF3};
-    uint8_t* valid_data = valid_data_storage;
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::DOUBLE, true);
+    uint8_t* valid_data = new uint8_t[1]{0xF3};
     field_data->FillFieldData(data.data(), valid_data, data.size(), 0);
 
     auto payload_reader =
@@ -1381,8 +1188,8 @@ TEST(storage, InsertDataDoubleNullable) {
 TEST(storage, InsertDataTimestamptz) {
     FixedVector<int64_t> data = {
         1000000000, 2000000000, 3000000000, 400000, 5000};
-    auto field_data = milvus::storage::CreateFieldData(
-        DataType::TIMESTAMPTZ, DataType::NONE, false);
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::TIMESTAMPTZ, false);
     field_data->FillFieldData(data.data(), data.size());
 
     auto payload_reader =
@@ -1412,10 +1219,9 @@ TEST(storage, InsertDataTimestamptz) {
 TEST(storage, InsertDataTimestamptzNullable) {
     FixedVector<int64_t> data = {
         1000000000, 2000000000, 3000000000, 400000, 5000};
-    auto field_data = milvus::storage::CreateFieldData(
-        DataType::TIMESTAMPTZ, DataType::NONE, true);
-    uint8_t valid_data_storage[1] = {0xF3};
-    uint8_t* valid_data = valid_data_storage;
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::TIMESTAMPTZ, true);
+    uint8_t* valid_data = new uint8_t[1]{0xF3};
     field_data->FillFieldData(data.data(), valid_data, data.size(), 0);
 
     auto payload_reader =
@@ -1448,7 +1254,7 @@ TEST(storage, InsertDataFloatVector) {
     std::vector<float> data = {1, 2, 3, 4, 5, 6, 7, 8};
     int DIM = 2;
     auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::VECTOR_FLOAT, DataType::NONE, false, DIM);
+        storage::DataType::VECTOR_FLOAT, false, DIM);
     field_data->FillFieldData(data.data(), data.size() / DIM);
 
     auto payload_reader =
@@ -1554,12 +1360,11 @@ TEST(storage, InsertDataSparseFloatVector) {
     auto n_rows = 100;
     auto vecs = milvus::segcore::GenerateRandomSparseFloatVector(
         n_rows, kTestSparseDim, kTestSparseVectorDensity);
-    auto field_data =
-        milvus::storage::CreateFieldData(DataType::VECTOR_SPARSE_U32_F32,
-                                         DataType::NONE,
-                                         false,
-                                         kTestSparseDim,
-                                         n_rows);
+    auto field_data = milvus::storage::CreateFieldData(
+        storage::DataType::VECTOR_SPARSE_U32_F32,
+        false,
+        kTestSparseDim,
+        n_rows);
     field_data->FillFieldData(vecs.get(), n_rows);
 
     auto payload_reader =
@@ -1670,7 +1475,7 @@ TEST(storage, InsertDataBinaryVector) {
     std::vector<uint8_t> data = {1, 2, 3, 4, 5, 6, 7, 8};
     int DIM = 16;
     auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::VECTOR_BINARY, DataType::NONE, false, DIM);
+        storage::DataType::VECTOR_BINARY, false, DIM);
     field_data->FillFieldData(data.data(), data.size() * 8 / DIM);
 
     auto payload_reader =
@@ -1767,7 +1572,7 @@ TEST(storage, InsertDataFloat16Vector) {
     std::vector<float16> data = {1, 2, 3, 4, 5, 6, 7, 8};
     int DIM = 2;
     auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::VECTOR_FLOAT16, DataType::NONE, false, DIM);
+        storage::DataType::VECTOR_FLOAT16, false, DIM);
     field_data->FillFieldData(data.data(), data.size() / DIM);
 
     auto payload_reader =
@@ -1896,8 +1701,8 @@ TEST(storage, InsertDataStringArray) {
     field_string_data.mutable_string_data()->add_data("test_array5");
     auto string_array = Array(field_string_data);
     FixedVector<Array> data = {string_array};
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::ARRAY, DataType::NONE, false);
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::ARRAY, false);
     field_data->FillFieldData(data.data(), data.size());
 
     auto payload_reader =
@@ -1942,10 +1747,9 @@ TEST(storage, InsertDataStringArrayNullable) {
     field_string_data.mutable_int_data()->add_data(5);
     auto int_array = Array(field_int_data);
     FixedVector<Array> data = {string_array, int_array};
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::ARRAY, DataType::NONE, true);
-    uint8_t valid_data_storage[1] = {0xFD};
-    uint8_t* valid_data = valid_data_storage;
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::ARRAY, true);
+    uint8_t* valid_data = new uint8_t[1]{0xFD};
     field_data->FillFieldData(data.data(), valid_data, data.size(), 0);
 
     auto payload_reader =
@@ -1980,10 +1784,9 @@ TEST(storage, InsertDataStringArrayNullable) {
 TEST(storage, InsertDataJsonNullable) {
     FixedVector<Json> data = {Json(),
                               Json(simdjson::padded_string(std::string("A")))};
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::JSON, DataType::NONE, true);
-    uint8_t valid_data_storage[1] = {0xFC};
-    uint8_t* valid_data = valid_data_storage;
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::JSON, true);
+    uint8_t* valid_data = new uint8_t[1]{0xFC};
     field_data->FillFieldData(data.data(), valid_data, data.size(), 0);
 
     auto payload_reader =
@@ -2009,8 +1812,8 @@ TEST(storage, InsertDataJsonNullable) {
 }
 
 TEST(storage, InsertDataJsonFillWithNull) {
-    auto field_data = milvus::storage::CreateFieldData(
-        storage::DataType::JSON, DataType::NONE, true);
+    auto field_data =
+        milvus::storage::CreateFieldData(storage::DataType::JSON, true);
     int64_t size = 2;
     uint8_t valid_data_storage[1] = {0xFC};
     uint8_t* valid_data = valid_data_storage;

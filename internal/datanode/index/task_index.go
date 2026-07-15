@@ -233,23 +233,14 @@ func (it *indexBuildTask) Execute(ctx context.Context) error {
 
 	indexType := it.newIndexParams[common.IndexTypeKey]
 	var fieldDataSize uint64
+	var err error
 
-	// Estimate field data size, only used for diskann and aisaq
-	dim := uint64(it.req.GetDim())
-	numRows := uint64(it.req.GetNumRows())
-	switch it.req.GetField().GetDataType() {
-	case schemapb.DataType_BinaryVector:
-		fieldDataSize = dim / 8 * numRows
-	case schemapb.DataType_FloatVector:
-		fieldDataSize = dim * numRows * 4
-	case schemapb.DataType_Float16Vector, schemapb.DataType_BFloat16Vector:
-		fieldDataSize = dim * numRows * 2
-	case schemapb.DataType_ArrayOfVector:
-		fieldDataSize = getFieldDataSizeFromBinlogs(it.req.GetInsertLogs(), it.req.GetField().GetFieldID())
-	}
+	// Ignore the error here, this param will only be used for diskann and aisaq
+	fieldDataSize, _ = estimateFieldDataSize(it.req.GetDim(), it.req.GetNumRows(), it.req.GetField().GetDataType())
 	if vecindexmgr.GetVecIndexMgrInstance().IsDiskANN(indexType) {
-		if err := indexparams.SetDiskIndexBuildParams(it.newIndexParams, int64(fieldDataSize)); err != nil {
-			log.Warn(ctx, "failed to fill disk index params", mlog.Err(err))
+		err = indexparams.SetDiskIndexBuildParams(it.newIndexParams, int64(fieldDataSize))
+		if err != nil {
+			log.Warn("failed to fill disk index params", zap.Error(err))
 			return err
 		}
 	}
@@ -282,11 +273,10 @@ func (it *indexBuildTask) Execute(ctx context.Context) error {
 	optFields := make([]*indexcgopb.OptionalFieldInfo, 0, len(it.req.GetOptionalScalarFields()))
 	for _, optField := range it.req.GetOptionalScalarFields() {
 		optFields = append(optFields, &indexcgopb.OptionalFieldInfo{
-			FieldID:     optField.GetFieldID(),
-			FieldName:   optField.GetFieldName(),
-			FieldType:   optField.GetFieldType(),
-			ElementType: optField.GetElementType(),
-			DataPaths:   optField.GetDataPaths(),
+			FieldID:   optField.GetFieldID(),
+			FieldName: optField.GetFieldName(),
+			FieldType: optField.GetFieldType(),
+			DataPaths: optField.GetDataPaths(),
 		})
 	}
 
@@ -333,7 +323,6 @@ func (it *indexBuildTask) Execute(ctx context.Context) error {
 		buildIndexParams.StoragePluginContext = it.pluginContext
 	}
 
-	var err error
 	it.index, err = indexcgowrapper.CreateIndex(ctx, buildIndexParams)
 	if err != nil {
 		if it.index != nil && it.index.CleanLocalData() != nil {
