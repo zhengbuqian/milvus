@@ -26,10 +26,10 @@ import (
 
 	"github.com/stretchr/testify/suite"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
 	"github.com/milvus-io/milvus/internal/util/credentials"
 	"github.com/milvus-io/milvus/internal/util/function/models"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
 )
 
 func TestRerankModel(t *testing.T) {
@@ -261,6 +261,28 @@ func (s *RerankModelSuite) TestNewProvider() {
 			{Key: models.CredentialParamKey, Value: "mock"},
 			{Key: models.MaxClientBatchSizeParamKey, Value: "10"},
 		}
+		_, err := NewModelProvider(params, &models.ModelExtraInfo{ClusterID: "test-cluster", DBName: "test-db"})
+		s.NoError(err)
+	}
+	{
+		params := []*commonpb.KeyValuePair{
+			{Key: providerParamName, Value: "ali"},
+			{Key: models.ModelNameParamKey, Value: "ali-test"},
+			{Key: models.CredentialParamKey, Value: "mock"},
+			{Key: models.TimeoutMsParamKey, Value: "invalid"},
+		}
+		// an invalid timeout_ms is logged and ignored (falls back to the
+		// default), so it must not break provider construction
+		_, err := NewModelProvider(params, &models.ModelExtraInfo{ClusterID: "test-cluster", DBName: "test-db"})
+		s.NoError(err)
+	}
+	{
+		params := []*commonpb.KeyValuePair{
+			{Key: providerParamName, Value: "ali"},
+			{Key: models.ModelNameParamKey, Value: "ali-test"},
+			{Key: models.TimeoutMsParamKey, Value: "0"},
+		}
+		// a non-positive timeout_ms also falls back to the default
 		_, err := NewModelProvider(params, &models.ModelExtraInfo{ClusterID: "test-cluster", DBName: "test-db"})
 		s.NoError(err)
 	}

@@ -16,20 +16,67 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
+#include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 #include "cachinglayer/Translator.h"
+#include "segcore/CacheMetricAttribution.h"
 
 namespace milvus::segcore::storagev2translator {
 
-// Number of row groups (parquet row groups) merged into one cache cell,
-// for now it is a constant.
-// hierarchy: 1 group chunk <-> 1 cache cell <-> kRowGroupsPerCell row groups
-constexpr size_t kRowGroupsPerCell = 4;
-static_assert(kRowGroupsPerCell > 0,
-              "kRowGroupsPerCell must be greater than 0");
+// Target average byte size per storage-v2 cache cell. Parquet row groups
+// are packed into cells so that `rgs_per_cell * avg_row_group_size ≈ target`.
+// Runtime-configurable via SetCellTargetSizeBytes (wired from paramtable
+// `queryNode.segcore.storageV2.cellTargetSizeBytes`).
+inline std::atomic<int64_t>&
+cell_target_size_bytes_atomic() {
+    static std::atomic<int64_t> instance{4LL * 1024 * 1024};  // init: 4 MiB
+    return instance;
+}
+
+inline int64_t
+GetCellTargetSizeBytes() {
+    return cell_target_size_bytes_atomic().load(std::memory_order_acquire);
+}
+
+inline void
+SetCellTargetSizeBytes(int64_t v) {
+    if (v <= 0) {
+        return;  // ignore invalid
+    }
+    cell_target_size_bytes_atomic().store(v, std::memory_order_release);
+}
+
+// Derive the number of row groups per cell from a byte-size target so
+// that each cell holds >= 1 row group and the average cell size is
+// close to cell_target_size_bytes.
+// Templated so it accepts both std::vector<int64_t> (built locally by
+// GroupChunkTranslator) and std::vector<uint64_t>/size_t (returned by
+// milvus-storage's chunk_reader->get_chunk_size()).
+template <typename T>
+inline size_t
+ComputeRowGroupsPerCell(const std::vector<T>& row_group_sizes,
+                        int64_t cell_target_size_bytes) {
+    static_assert(std::is_arithmetic_v<T>,
+                  "ComputeRowGroupsPerCell expects a vector of numeric sizes");
+    if (row_group_sizes.empty()) {
+        return 1;
+    }
+    int64_t total = 0;
+    for (auto s : row_group_sizes) {
+        total += static_cast<int64_t>(s);
+    }
+    int64_t avg = total / static_cast<int64_t>(row_group_sizes.size());
+    if (avg <= 0) {
+        return 1;
+    }
+    size_t n = static_cast<size_t>(cell_target_size_bytes / avg);
+    return std::max<size_t>(n, 1);
+}
 
 struct GroupCTMeta : public milvus::cachinglayer::Meta {
     // num_rows_until_chunk_[i] = total rows(prefix sum) in cells [0, i-1]
@@ -49,12 +96,16 @@ struct GroupCTMeta : public milvus::cachinglayer::Meta {
                 milvus::cachinglayer::CellIdMappingMode cell_id_mapping_mode,
                 milvus::cachinglayer::CellDataType cell_data_type,
                 CacheWarmupPolicy cache_warmup_policy,
-                bool support_eviction)
-        : milvus::cachinglayer::Meta(storage_type,
-                                     cell_id_mapping_mode,
-                                     cell_data_type,
-                                     cache_warmup_policy,
-                                     support_eviction),
+                bool support_eviction,
+                std::string shard = "")
+        : milvus::cachinglayer::Meta(
+              storage_type,
+              cell_id_mapping_mode,
+              cell_data_type,
+              cache_warmup_policy,
+              support_eviction,
+              std::nullopt,
+              milvus::segcore::MetricAttributionFromShard(std::move(shard))),
           num_fields_(num_fields),
           total_row_groups_(0) {
     }

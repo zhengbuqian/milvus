@@ -32,15 +32,15 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/proxy/connection"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/util"
-	"github.com/milvus-io/milvus/pkg/v2/util/crypto"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/util"
+	"github.com/milvus-io/milvus/pkg/v3/util/crypto"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
 )
 
 type GrpcAccessInfoSuite struct {
@@ -124,7 +124,11 @@ func (s *GrpcAccessInfoSuite) TestErrorType() {
 	result = Get(s.info, "$error_type")
 	s.Equal(merr.InputError.String(), result[0])
 
-	s.info.err = merr.ErrParameterInvalid
+	// ErrServiceInternal is a SystemError-typed sentinel.
+	// (ErrParameterInvalid was previously SystemError but became InputError after
+	// the 02-storage err-std PR; keep this branch on a still-SystemError sentinel
+	// so the test still covers the "system_error" classification path.)
+	s.info.err = merr.ErrServiceInternal
 	result = Get(s.info, "$error_type")
 	s.Equal(merr.SystemError.String(), result[0])
 }
@@ -139,6 +143,43 @@ func (s *GrpcAccessInfoSuite) TestDbName() {
 	}
 	result = Get(s.info, "$database_name")
 	s.Equal("test", result[0])
+}
+
+func (s *GrpcAccessInfoSuite) TestCollectionName() {
+	s.info.req = nil
+	result := Get(s.info, "$collection_name")
+	s.Equal(Unknown, result[0])
+
+	// singular collection name
+	s.info.req = &milvuspb.QueryRequest{
+		CollectionName: "test_collection",
+	}
+	result = Get(s.info, "$collection_name")
+	s.Equal("test_collection", result[0])
+
+	// requests carrying a list of collection names (e.g. Flush) should not be Unknown
+	s.info.req = &milvuspb.FlushRequest{
+		CollectionNames: []string{"coll_a", "coll_b"},
+	}
+	result = Get(s.info, "$collection_name")
+	s.Equal(fmt.Sprint([]string{"coll_a", "coll_b"}), result[0])
+	s.NotEqual(Unknown, result[0])
+
+	// rename logs both the source and target collection
+	s.info.req = &milvuspb.RenameCollectionRequest{
+		OldName: "old_coll",
+		NewName: "new_coll",
+	}
+	result = Get(s.info, "$collection_name")
+	s.Equal("old_coll->new_coll", result[0])
+
+	// batch describe carries a list under the singular-named CollectionName field
+	s.info.req = &milvuspb.BatchDescribeCollectionRequest{
+		CollectionName: []string{"coll_a", "coll_b"},
+	}
+	result = Get(s.info, "$collection_name")
+	s.Equal(fmt.Sprint([]string{"coll_a", "coll_b"}), result[0])
+	s.NotEqual(Unknown, result[0])
 }
 
 func (s *GrpcAccessInfoSuite) TestSdkInfo() {
@@ -214,6 +255,17 @@ func (s *GrpcAccessInfoSuite) TestOutputFields() {
 	}
 	result = Get(s.info, "$output_fields")
 	s.Equal(fmt.Sprint(fields), result[0])
+}
+
+func (s *GrpcAccessInfoSuite) TestPartialUpdate() {
+	// non-Upsert request -> NotAny
+	s.Equal(NotAny, Get(s.info, "$partial_update")[0])
+
+	s.info.req = &milvuspb.UpsertRequest{PartialUpdate: false}
+	s.Equal("false", Get(s.info, "$partial_update")[0])
+
+	s.info.req = &milvuspb.UpsertRequest{PartialUpdate: true}
+	s.Equal("true", Get(s.info, "$partial_update")[0])
 }
 
 func (s *GrpcAccessInfoSuite) TestConsistencyLevel() {

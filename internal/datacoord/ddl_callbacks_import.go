@@ -21,18 +21,19 @@ import (
 
 	"github.com/cockroachdb/errors"
 	"github.com/samber/lo"
-	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/msgpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/balancer/balance"
+	"github.com/milvus-io/milvus/internal/streamingcoord/server/broadcaster/registry"
 	"github.com/milvus-io/milvus/internal/util/importutilv2"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/internalpb"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/message"
+	"github.com/milvus-io/milvus/pkg/v3/util/funcutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
 )
 
 // importV1AckCallback handles the ack callback for import messages.
@@ -77,9 +78,9 @@ func (c *DDLCallbacks) importV1AckCallback(ctx context.Context, result message.B
 
 	err = merr.CheckRPCCall(importResp, err)
 	if errors.Is(err, merr.ErrCollectionNotFound) {
-		log.Ctx(ctx).Warn("import job creation failed because of collection not found, skip it",
-			zap.Strings("vchannels", vchannels),
-			zap.String("job_id", importResp.GetJobID()), zap.Error(err))
+		mlog.Warn(ctx, "import job creation failed because of collection not found, skip it",
+			mlog.Strings("vchannels", vchannels),
+			mlog.String("job_id", importResp.GetJobID()), mlog.Err(err))
 		return nil
 	}
 	return err
@@ -108,22 +109,40 @@ func (s *Server) validateImportRequest(ctx context.Context, files []*msgpb.Impor
 		return err
 	}
 
-	// Validate channel assignment availability and replication configuration
+	if err := s.validateImportReplication(ctx, options); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *Server) validateImportReplication(ctx context.Context, options []*commonpb.KeyValuePair) error {
 	balancer, err := balance.GetWithContext(ctx)
 	if err != nil {
 		return err
 	}
-	channelAssignment, err := balancer.GetLatestChannelAssignment()
+	assignment, err := balancer.GetLatestChannelAssignment()
 	if err != nil {
 		return err
 	}
-
-	// Import in replicating cluster is not supported yet
-	if channelAssignment.ReplicateConfiguration != nil && len(channelAssignment.ReplicateConfiguration.GetClusters()) > 1 {
-		return merr.WrapErrImportFailed("import in replicating cluster is not supported yet")
+	if assignment == nil {
+		return nil
+	}
+	if !isReplicatingCluster(assignment.ReplicateConfiguration) {
+		return nil
 	}
 
+	if !paramtable.Get().DataCoordCfg.ImportInReplicatingCluster.GetAsBool() {
+		return merr.WrapErrOperationNotSupportedMsg("import in replicating cluster is not supported yet")
+	}
+	if importutilv2.IsAutoCommit(options) {
+		return merr.WrapErrOperationNotSupportedMsg("auto_commit=true import in replicating cluster is not supported")
+	}
 	return nil
+}
+
+func isReplicatingCluster(cfg *commonpb.ReplicateConfiguration) bool {
+	return cfg != nil && (len(cfg.GetCrossClusterTopology()) > 0 || len(cfg.GetClusters()) > 1)
 }
 
 // broadcastImport broadcasts the import message to all vchannels.
@@ -148,14 +167,14 @@ func (s *Server) broadcastImport(ctx context.Context,
 
 	// Validate the request before broadcasting
 	if err := s.validateImportRequest(ctx, msgFiles, options); err != nil {
-		return errors.Wrap(err, "failed to validate import request")
+		return merr.Wrap(err, "failed to validate import request")
 	}
 
 	// Get database name from collection metadata via broker
 	// This is safer than extracting from schema which may be stale
 	broadcaster, err := s.startBroadcastWithCollectionID(ctx, collectionID)
 	if err != nil {
-		return errors.Wrap(err, "failed to start broadcast with collection id")
+		return merr.Wrap(err, "failed to start broadcast with collection id")
 	}
 	defer broadcaster.Close()
 
@@ -186,4 +205,88 @@ func (s *Server) broadcastImport(ctx context.Context,
 	// Broadcast the message
 	_, err = broadcaster.Broadcast(ctx, msg)
 	return err
+}
+
+func (c *DDLCallbacks) registerImportCallbacks() {
+	registry.RegisterImportV1AckCallback(c.importV1AckCallback)
+	registry.RegisterCommitImportV2AckCallback(c.commitImportV2AckCallback)
+	registry.RegisterRollbackImportV2AckCallback(c.rollbackImportV2AckCallback)
+}
+
+// commitImportV2AckCallback handles the ack callback for CommitImport WAL message.
+// It transitions the import job from Uncommitted → Committing state.
+// Concurrency safety is guaranteed by the broadcaster framework's resource key lock
+// (exclusive collection-level lock), so no CAS is needed here.
+func (c *DDLCallbacks) commitImportV2AckCallback(ctx context.Context, result message.BroadcastResultCommitImportMessageV2) error {
+	header := result.Message.Header()
+	jobID := header.GetJobId()
+	mlog.Info(ctx, "CommitImport broadcast ack received", mlog.FieldJobID(jobID))
+
+	job := c.importMeta.GetJob(ctx, jobID)
+	if job == nil {
+		mlog.Warn(ctx, "CommitImport: job not found, skipping", mlog.FieldJobID(jobID))
+		return nil
+	}
+	switch job.GetState() {
+	case internalpb.ImportJobState_Uncommitted:
+		// proceed
+	case internalpb.ImportJobState_Committing, internalpb.ImportJobState_Completed:
+		mlog.Info(ctx, "CommitImport: job already committing or completed, no-op",
+			mlog.FieldJobID(jobID), mlog.String("state", job.GetState().String()))
+		return nil
+	case internalpb.ImportJobState_Failed:
+		mlog.Info(ctx, "CommitImport: job already failed, no-op",
+			mlog.FieldJobID(jobID))
+		return nil
+	default:
+		// CommitImport may be replicated before the local import task reaches
+		// Uncommitted. Returning an error keeps the broadcast task alive so the
+		// callback can retry after the import task finishes writing local meta.
+		mlog.Info(ctx, "CommitImport: job is not ready, retry later",
+			mlog.FieldJobID(jobID), mlog.String("state", job.GetState().String()))
+		return merr.WrapErrImportSysFailedMsg("job %d is in state %s, waiting for Uncommitted", jobID, job.GetState())
+	}
+
+	if err := c.importMeta.UpdateJob(ctx, jobID,
+		UpdateJobState(internalpb.ImportJobState_Committing),
+	); err != nil {
+		return err
+	}
+
+	uncommittedDuration := job.GetTR().RecordSpan()
+	mlog.Info(ctx, "import job uncommitted stage done",
+		mlog.FieldJobID(jobID),
+		mlog.Duration("jobTimeCost/uncommitted", uncommittedDuration))
+	return nil
+}
+
+// rollbackImportV2AckCallback handles the ack callback for RollbackImport WAL message.
+// It transitions the import job to Failed state and records that the failure
+// was user-initiated so AbortImport retries can be idempotent.
+// Concurrency safety is guaranteed by the broadcaster framework's resource key lock
+// (exclusive collection-level lock), so no CAS is needed here.
+// Segment cleanup is handled by the import inspector (processFailed), not here.
+func (c *DDLCallbacks) rollbackImportV2AckCallback(ctx context.Context, result message.BroadcastResultRollbackImportMessageV2) error {
+	header := result.Message.Header()
+	jobID := header.GetJobId()
+	mlog.Info(ctx, "RollbackImport broadcast ack received", mlog.FieldJobID(jobID))
+
+	job := c.importMeta.GetJob(ctx, jobID)
+	if job == nil {
+		mlog.Warn(ctx, "RollbackImport: job not found, skipping", mlog.FieldJobID(jobID))
+		return nil
+	}
+	state := job.GetState()
+	if state == internalpb.ImportJobState_Committing ||
+		state == internalpb.ImportJobState_Completed ||
+		state == internalpb.ImportJobState_Failed {
+		mlog.Info(ctx, "RollbackImport: job already in terminal/committed state, no-op",
+			mlog.FieldJobID(jobID), mlog.String("state", state.String()))
+		return nil
+	}
+
+	return c.importMeta.UpdateJob(ctx, jobID,
+		UpdateJobState(internalpb.ImportJobState_Failed),
+		UpdateJobReason(importJobReasonAbortedByUser),
+	)
 }

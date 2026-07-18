@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"math/rand"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,30 +35,32 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/msgpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/allocator"
 	"github.com/milvus-io/milvus/internal/json"
 	"github.com/milvus-io/milvus/internal/mocks"
 	"github.com/milvus-io/milvus/internal/proxy/shardclient"
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
 	"github.com/milvus-io/milvus/internal/util/function/embedding"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgstream"
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/util/commonpbutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/metric"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/testutils"
-	"github.com/milvus-io/milvus/pkg/v2/util/timerecord"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/uniquegenerator"
+	"github.com/milvus-io/milvus/internal/util/indexparamcheck"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/mq/msgstream"
+	"github.com/milvus-io/milvus/pkg/v3/proto/indexpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/internalpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/querypb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/rootcoordpb"
+	"github.com/milvus-io/milvus/pkg/v3/util/commonpbutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/funcutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/metric"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/testutils"
+	"github.com/milvus-io/milvus/pkg/v3/util/timerecord"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/uniquegenerator"
 )
 
 // TODO(dragondriver): add more test cases
@@ -1073,6 +1076,50 @@ func TestAddFieldTask(t *testing.T) {
 		err = task.PreExecute(ctx)
 		assert.NoError(t, err)
 
+		paramtable.Get().Save(paramtable.Get().CommonCfg.UseLoonFFI.Key, "true")
+		t.Cleanup(func() {
+			paramtable.Get().Reset(paramtable.Get().CommonCfg.UseLoonFFI.Key)
+		})
+		fSchema = &schemapb.FieldSchema{
+			Name:     "text_field",
+			DataType: schemapb.DataType_Text,
+			Nullable: true,
+		}
+		bytes, err = proto.Marshal(fSchema)
+		assert.NoError(t, err)
+		task.Schema = bytes
+		err = task.PreExecute(ctx)
+		assert.NoError(t, err)
+
+		fSchema = &schemapb.FieldSchema{
+			Name:     "text_not_nullable",
+			DataType: schemapb.DataType_Text,
+			Nullable: false,
+		}
+		bytes, err = proto.Marshal(fSchema)
+		assert.NoError(t, err)
+		task.Schema = bytes
+		err = task.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.ErrorIs(t, err, merr.ErrParameterInvalid)
+		assert.Contains(t, err.Error(), "added field must be nullable")
+
+		fSchema = &schemapb.FieldSchema{
+			Name:     "text_default",
+			DataType: schemapb.DataType_Text,
+			Nullable: true,
+			DefaultValue: &schemapb.ValueField{
+				Data: &schemapb.ValueField_StringData{StringData: "default text"},
+			},
+		}
+		bytes, err = proto.Marshal(fSchema)
+		assert.NoError(t, err)
+		task.Schema = bytes
+		err = task.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.ErrorIs(t, err, merr.ErrParameterInvalid)
+		assert.Contains(t, err.Error(), "default value is not supported when adding TEXT field")
+
 		fSchema = &schemapb.FieldSchema{
 			Name:     "sparse_vec",
 			DataType: schemapb.DataType_SparseFloatVector,
@@ -1083,6 +1130,22 @@ func TestAddFieldTask(t *testing.T) {
 		task.Schema = bytes
 		err = task.PreExecute(ctx)
 		assert.NoError(t, err)
+
+		fSchema = &schemapb.FieldSchema{
+			Name:        "array_struct",
+			DataType:    schemapb.DataType_Array,
+			ElementType: schemapb.DataType_Struct,
+			Nullable:    true,
+			TypeParams: []*commonpb.KeyValuePair{
+				{Key: common.MaxCapacityKey, Value: "4"},
+			},
+		}
+		bytes, err = proto.Marshal(fSchema)
+		assert.NoError(t, err)
+		task.Schema = bytes
+		err = task.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "element type Struct is not supported")
 
 		// not support system field
 		fSchema = &schemapb.FieldSchema{
@@ -1256,6 +1319,142 @@ func TestAddFieldTask(t *testing.T) {
 	})
 }
 
+func TestAddCollectionStructFieldTaskPreExecute(t *testing.T) {
+	ctx := context.Background()
+	oldSchema := &schemapb.CollectionSchema{
+		Name: "test_collection",
+		Fields: []*schemapb.FieldSchema{
+			{
+				FieldID:      100,
+				Name:         "pk",
+				DataType:     schemapb.DataType_Int64,
+				IsPrimaryKey: true,
+			},
+		},
+	}
+	structField := newAddStructFieldSchema("profile")
+
+	task := &addCollectionStructFieldTask{
+		Condition: NewTaskCondition(ctx),
+		AddCollectionStructFieldRequest: &milvuspb.AddCollectionStructFieldRequest{
+			DbName:                 "",
+			CollectionName:         oldSchema.GetName(),
+			StructArrayFieldSchema: structField,
+		},
+		ctx:       ctx,
+		mixCoord:  NewMixCoordMock(),
+		oldSchema: oldSchema,
+	}
+
+	require.NoError(t, task.OnEnqueue())
+	assert.Equal(t, commonpb.MsgType_AddCollectionField, task.Type())
+
+	require.NoError(t, task.PreExecute(ctx))
+
+	got := task.GetStructArrayFieldSchema()
+	require.NotSame(t, structField, got)
+	require.Len(t, got.GetFields(), 2)
+	assert.Equal(t, "profile[ints]", got.GetFields()[0].GetName())
+	assert.Equal(t, "profile[vectors]", got.GetFields()[1].GetName())
+	assert.True(t, got.GetFields()[0].GetNullable())
+	assert.True(t, got.GetFields()[1].GetNullable())
+
+	// PreExecute works on a cloned schema, so callers do not observe partial mutation on failure.
+	assert.Equal(t, "ints", structField.GetFields()[0].GetName())
+	assert.Equal(t, "vectors", structField.GetFields()[1].GetName())
+}
+
+func TestValidateAddStructFieldRequest(t *testing.T) {
+	baseSchema := &schemapb.CollectionSchema{
+		Name: "test_collection",
+		Fields: []*schemapb.FieldSchema{
+			{
+				Name:     "pk",
+				DataType: schemapb.DataType_Int64,
+			},
+		},
+	}
+
+	t.Run("valid", func(t *testing.T) {
+		err := validateAddStructFieldRequest(proto.Clone(baseSchema).(*schemapb.CollectionSchema), newAddStructFieldSchema("profile"))
+		require.NoError(t, err)
+	})
+
+	t.Run("struct must be nullable", func(t *testing.T) {
+		structField := newAddStructFieldSchema("profile")
+		structField.Nullable = false
+
+		err := validateAddStructFieldRequest(proto.Clone(baseSchema).(*schemapb.CollectionSchema), structField)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, merr.ErrParameterInvalid)
+		assert.Contains(t, err.Error(), "added struct field must be nullable")
+	})
+
+	t.Run("duplicate parent name", func(t *testing.T) {
+		err := validateAddStructFieldRequest(proto.Clone(baseSchema).(*schemapb.CollectionSchema), newAddStructFieldSchema("pk"))
+		require.Error(t, err)
+		assert.ErrorIs(t, err, merr.ErrParameterInvalid)
+		assert.Contains(t, err.Error(), "duplicated field name pk")
+	})
+
+	t.Run("duplicate transformed sub field name", func(t *testing.T) {
+		schema := proto.Clone(baseSchema).(*schemapb.CollectionSchema)
+		schema.Fields = append(schema.Fields, &schemapb.FieldSchema{
+			Name:     "profile[ints]",
+			DataType: schemapb.DataType_Int64,
+		})
+
+		err := validateAddStructFieldRequest(schema, newAddStructFieldSchema("profile"))
+		require.Error(t, err)
+		assert.ErrorIs(t, err, merr.ErrParameterInvalid)
+		assert.Contains(t, err.Error(), "duplicated field name profile[ints]")
+	})
+
+	t.Run("max field count includes struct parent", func(t *testing.T) {
+		Params.Save(Params.ProxyCfg.MaxFieldNum.Key, "3")
+		defer Params.Reset(Params.ProxyCfg.MaxFieldNum.Key)
+
+		err := validateAddStructFieldRequest(proto.Clone(baseSchema).(*schemapb.CollectionSchema), newAddStructFieldSchema("profile"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "maximum field's number should be limited to 3")
+	})
+
+	t.Run("vector count includes array of vector sub field", func(t *testing.T) {
+		Params.Save(Params.ProxyCfg.MaxVectorFieldNum.Key, "0")
+		defer Params.Reset(Params.ProxyCfg.MaxVectorFieldNum.Key)
+
+		err := validateAddStructFieldRequest(proto.Clone(baseSchema).(*schemapb.CollectionSchema), newAddStructFieldSchema("profile"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "maximum vector field's number should be limited to 0")
+	})
+}
+
+func newAddStructFieldSchema(name string) *schemapb.StructArrayFieldSchema {
+	return &schemapb.StructArrayFieldSchema{
+		Name:     name,
+		Nullable: true,
+		Fields: []*schemapb.FieldSchema{
+			{
+				Name:        "ints",
+				DataType:    schemapb.DataType_Array,
+				ElementType: schemapb.DataType_Int64,
+				TypeParams: []*commonpb.KeyValuePair{
+					{Key: common.MaxCapacityKey, Value: "16"},
+				},
+			},
+			{
+				Name:        "vectors",
+				DataType:    schemapb.DataType_ArrayOfVector,
+				ElementType: schemapb.DataType_FloatVector,
+				TypeParams: []*commonpb.KeyValuePair{
+					{Key: common.DimKey, Value: "8"},
+					{Key: common.MaxCapacityKey, Value: "16"},
+				},
+			},
+		},
+	}
+}
+
 func TestCreateCollectionTask(t *testing.T) {
 	mix := NewMixCoordMock()
 	ctx := context.Background()
@@ -1347,7 +1546,7 @@ func TestCreateCollectionTask(t *testing.T) {
 		Params.Save(Params.ProxyCfg.MustUsePartitionKey.Key, "true")
 		err = task.PreExecute(ctx)
 		assert.Error(t, err)
-		assert.ErrorIs(t, err, merr.ErrParameterInvalid)
+		assert.ErrorIs(t, err, merr.ErrParameterMissing)
 		Params.Reset(Params.ProxyCfg.MustUsePartitionKey.Key)
 
 		task.Schema = []byte{0x1, 0x2, 0x3, 0x4}
@@ -1440,6 +1639,14 @@ func TestCreateCollectionTask(t *testing.T) {
 		task.Schema = tooLongNameSchema
 		err = task.PreExecute(ctx)
 		assert.Error(t, err)
+
+		schema = proto.Clone(schemaBackup).(*schemapb.CollectionSchema)
+		schema.Description = strings.Repeat("a", Params.ProxyCfg.MaxCollectionDescriptionLength.GetAsInt()+1)
+		tooLongDescriptionSchema, err := proto.Marshal(schema)
+		assert.NoError(t, err)
+		task.Schema = tooLongDescriptionSchema
+		err = task.PreExecute(ctx)
+		assert.ErrorIs(t, err, merr.ErrParameterInvalid)
 
 		schema.Name = "$" // invalid first char
 		invalidFirstCharSchema, err := proto.Marshal(schema)
@@ -1828,6 +2035,29 @@ func TestCreateCollectionTaskExternalCollection(t *testing.T) {
 		require.NoError(t, err)
 	})
 
+	t.Run("source spec without external field rejected", func(t *testing.T) {
+		schema := buildExternalSchema()
+		for _, field := range schema.GetFields() {
+			field.ExternalField = ""
+		}
+		freshTask := &createCollectionTask{
+			Condition: NewTaskCondition(ctx),
+			CreateCollectionRequest: &milvuspb.CreateCollectionRequest{
+				CollectionName: collectionName,
+				Schema:         marshal(schema),
+				ShardsNum:      common.DefaultShardsNum,
+			},
+			ctx:      ctx,
+			mixCoord: mix,
+		}
+		err := freshTask.OnEnqueue()
+		require.NoError(t, err)
+		err = freshTask.PreExecute(ctx)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, merr.ErrParameterInvalid)
+		assert.Contains(t, err.Error(), "external_field mappings")
+	})
+
 	t.Run("virtual PK injected after PreExecute", func(t *testing.T) {
 		schema := buildExternalSchema()
 		freshTask := &createCollectionTask{
@@ -1855,26 +2085,9 @@ func TestCreateCollectionTaskExternalCollection(t *testing.T) {
 		assert.Equal(t, "vec_field", freshTask.schema.Fields[2].Name)
 	})
 
-	t.Run("functions forbidden", func(t *testing.T) {
-		schema := buildExternalSchema()
-		schema.Functions = []*schemapb.FunctionSchema{{Name: "test_func"}}
-		task.Schema = marshal(schema)
-		err := task.PreExecute(ctx)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "does not support functions")
-	})
-
 	t.Run("dynamic field forbidden", func(t *testing.T) {
 		schema := buildExternalSchema()
 		schema.EnableDynamicField = true
-		task.Schema = marshal(schema)
-		err := task.PreExecute(ctx)
-		assert.Error(t, err)
-	})
-
-	t.Run("primary key forbidden", func(t *testing.T) {
-		schema := buildExternalSchema()
-		schema.Fields[0].IsPrimaryKey = true
 		task.Schema = marshal(schema)
 		err := task.PreExecute(ctx)
 		assert.Error(t, err)
@@ -1904,15 +2117,20 @@ func TestCreateCollectionTaskExternalCollection(t *testing.T) {
 		assert.Error(t, err)
 	})
 
-	t.Run("text match forbidden", func(t *testing.T) {
+	t.Run("text match allowed", func(t *testing.T) {
 		schema := buildExternalSchema()
-		schema.Fields[0].TypeParams = append(schema.Fields[0].TypeParams, &commonpb.KeyValuePair{
-			Key:   "enable_match",
-			Value: "true",
-		})
+		schema.Fields[0].TypeParams = append(schema.Fields[0].TypeParams,
+			&commonpb.KeyValuePair{
+				Key:   "enable_match",
+				Value: "true",
+			},
+			&commonpb.KeyValuePair{
+				Key:   common.EnableAnalyzerKey,
+				Value: "true",
+			})
 		task.Schema = marshal(schema)
 		err := task.PreExecute(ctx)
-		assert.Error(t, err)
+		assert.NoError(t, err)
 	})
 
 	t.Run("struct field forbidden", func(t *testing.T) {
@@ -2301,6 +2519,68 @@ func TestDescribeCollectionTask_FilterNamespaceField(t *testing.T) {
 	assert.Equal(t, collectionName, task.result.GetCollectionName())
 }
 
+// Security regression: DescribeCollection must redact credentials embedded in
+// ExternalSpec.extfs (access_key_id / access_key_value / ssl_ca_cert) before
+// returning to the client. Any caller with Describe privilege would otherwise
+// be able to read another tenant's object-storage credentials out of the
+// persisted collection metadata.
+func TestDescribeCollectionTask_RedactsExternalSpecCredentials(t *testing.T) {
+	mix := NewMixCoordMock()
+	ctx := context.Background()
+	InitMetaCache(ctx, mix)
+
+	collectionName := "TestDescribeCollectionTask_RedactsExternalSpecCredentials"
+
+	rawSpec := `{"format":"parquet","extfs":{"access_key_id":"AKIAEXAMPLE","access_key_value":"SUPERSECRET","region":"us-east-1"}}`
+
+	schema := &schemapb.CollectionSchema{
+		Name:           collectionName,
+		ExternalSource: "s3://my-bucket/data/",
+		ExternalSpec:   rawSpec,
+		Fields: []*schemapb.FieldSchema{
+			{
+				FieldID:      common.StartOfUserFieldID,
+				Name:         "id",
+				IsPrimaryKey: true,
+				DataType:     schemapb.DataType_Int64,
+			},
+		},
+	}
+
+	mix.SetDescribeCollectionFunc(func(ctx context.Context, request *milvuspb.DescribeCollectionRequest) (*milvuspb.DescribeCollectionResponse, error) {
+		return &milvuspb.DescribeCollectionResponse{
+			Status:       merr.Success(),
+			Schema:       schema,
+			CollectionID: 1,
+		}, nil
+	})
+
+	task := &describeCollectionTask{
+		Condition: NewTaskCondition(ctx),
+		DescribeCollectionRequest: &milvuspb.DescribeCollectionRequest{
+			Base:           &commonpb.MsgBase{MsgType: commonpb.MsgType_DescribeCollection},
+			CollectionName: collectionName,
+		},
+		ctx:      ctx,
+		mixCoord: mix,
+	}
+
+	assert.NoError(t, task.PreExecute(ctx))
+	assert.NoError(t, task.Execute(ctx))
+
+	// describeCollectionTask now passes ExternalSpec through unredacted —
+	// redaction lives at the public proxy.DescribeCollection edge so both
+	// cached and remote provider paths converge through one sanitizer.
+	// The task-level result must still carry raw creds so that the
+	// post-task wrapper can choose to redact (user-facing) or not
+	// (internal callers, if added later, that need raw spec for FFI).
+	out := task.result.Schema.ExternalSpec
+	assert.Contains(t, out, "AKIAEXAMPLE",
+		"task-level result must carry raw spec; redaction is applied at proxy edge")
+	assert.Contains(t, out, "SUPERSECRET",
+		"task-level result must carry raw spec; redaction is applied at proxy edge")
+}
+
 func TestDescribeCollectionTask_ShardsNum2(t *testing.T) {
 	mix := NewMixCoordMock()
 	ctx := context.Background()
@@ -2406,8 +2686,10 @@ func TestCreatePartitionTask(t *testing.T) {
 
 	// setup global meta cache
 	mockCache.EXPECT().GetCollectionID(mock.Anything, mock.Anything, mock.Anything).Return(100, nil).Once()
-	mockCache.EXPECT().GetPartitionID(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(1000, nil).Once()
-	rc.EXPECT().CreatePartition(mock.Anything, mock.Anything).Return(merr.Success(), nil).Once()
+	rc.EXPECT().CreatePartitionV2(mock.Anything, mock.Anything).Return(&rootcoordpb.CreatePartitionResponse{
+		Status:      merr.Success(),
+		PartitionID: 1000,
+	}, nil).Once()
 	rc.EXPECT().SyncNewCreatedPartition(mock.Anything, mock.Anything).Return(merr.Success(), nil).Once()
 	err := task.Execute(ctx)
 	assert.NoError(t, err)
@@ -3239,18 +3521,20 @@ func Test_createIndexTask_getIndexedFieldAndFunction(t *testing.T) {
 }
 
 func Test_fillDimension(t *testing.T) {
+	// fillDimension moved to indexparamcheck.FillDimension (shared with the
+	// add-function-field bound-index path); coverage kept here for the proxy flow.
 	t.Run("scalar", func(t *testing.T) {
 		f := &schemapb.FieldSchema{
 			DataType: schemapb.DataType_Int64,
 		}
-		assert.NoError(t, fillDimension(f, nil))
+		assert.NoError(t, indexparamcheck.FillDimension(f, nil))
 	})
 
 	t.Run("no dim in schema", func(t *testing.T) {
 		f := &schemapb.FieldSchema{
 			DataType: schemapb.DataType_FloatVector,
 		}
-		assert.Error(t, fillDimension(f, nil))
+		assert.Error(t, indexparamcheck.FillDimension(f, nil))
 	})
 
 	t.Run("dimension mismatch", func(t *testing.T) {
@@ -3263,7 +3547,7 @@ func Test_fillDimension(t *testing.T) {
 				},
 			},
 		}
-		assert.Error(t, fillDimension(f, map[string]string{common.DimKey: "8"}))
+		assert.Error(t, indexparamcheck.FillDimension(f, map[string]string{common.DimKey: "8"}))
 	})
 
 	t.Run("normal", func(t *testing.T) {
@@ -3277,7 +3561,7 @@ func Test_fillDimension(t *testing.T) {
 			},
 		}
 		m := map[string]string{}
-		assert.NoError(t, fillDimension(f, m))
+		assert.NoError(t, indexparamcheck.FillDimension(f, m))
 		assert.Equal(t, "128", m[common.DimKey])
 	})
 }
@@ -3522,18 +3806,69 @@ func Test_dropCollectionTask_PostExecute(t *testing.T) {
 }
 
 func Test_truncateCollectionTask_PreExecute(t *testing.T) {
-	tct := &truncateCollectionTask{TruncateCollectionRequest: &milvuspb.TruncateCollectionRequest{
-		Base:           &commonpb.MsgBase{},
-		CollectionName: "valid",
-	}}
+	mix := NewMixCoordMock()
 	ctx := context.Background()
-	err := tct.PreExecute(ctx)
-	assert.NoError(t, err)
+	require.NoError(t, InitMetaCache(ctx, mix))
 
-	// Test invalid collection name
-	tct.CollectionName = "#0xc0de"
-	err = tct.PreExecute(ctx)
-	assert.Error(t, err)
+	dbName := ""
+	regularName := "regular_truncate_" + funcutil.GenRandomStr()
+	externalName := "ext_truncate_" + funcutil.GenRandomStr()
+
+	regularSchema := constructCollectionSchema("pk", "fvec", 4, regularName)
+	regBytes, err := proto.Marshal(regularSchema)
+	require.NoError(t, err)
+	_, err = mix.CreateCollection(ctx, &milvuspb.CreateCollectionRequest{
+		Base:   &commonpb.MsgBase{MsgType: commonpb.MsgType_CreateCollection},
+		DbName: dbName, CollectionName: regularName, Schema: regBytes, ShardsNum: 1,
+	})
+	require.NoError(t, err)
+
+	extSchema := &schemapb.CollectionSchema{
+		Name:           externalName,
+		ExternalSource: "s3://bucket/path/",
+		ExternalSpec:   `{"format":"parquet"}`,
+		Fields: []*schemapb.FieldSchema{
+			{FieldID: 100, Name: "id", DataType: schemapb.DataType_Int64, IsPrimaryKey: true, ExternalField: "id"},
+			{
+				FieldID: 101, Name: "vec", DataType: schemapb.DataType_FloatVector, ExternalField: "vec",
+				TypeParams: []*commonpb.KeyValuePair{{Key: common.DimKey, Value: "4"}},
+			},
+		},
+	}
+	extBytes, err := proto.Marshal(extSchema)
+	require.NoError(t, err)
+	_, err = mix.CreateCollection(ctx, &milvuspb.CreateCollectionRequest{
+		Base:   &commonpb.MsgBase{MsgType: commonpb.MsgType_CreateCollection},
+		DbName: dbName, CollectionName: externalName, Schema: extBytes, ShardsNum: 1,
+	})
+	require.NoError(t, err)
+
+	t.Run("regular collection passes", func(t *testing.T) {
+		tct := &truncateCollectionTask{TruncateCollectionRequest: &milvuspb.TruncateCollectionRequest{
+			Base: &commonpb.MsgBase{}, DbName: dbName, CollectionName: regularName,
+		}}
+		assert.NoError(t, tct.PreExecute(ctx))
+	})
+
+	t.Run("invalid collection name rejected", func(t *testing.T) {
+		tct := &truncateCollectionTask{TruncateCollectionRequest: &milvuspb.TruncateCollectionRequest{
+			Base: &commonpb.MsgBase{}, CollectionName: "#0xc0de",
+		}}
+		assert.Error(t, tct.PreExecute(ctx))
+	})
+
+	// Truncate is destructive on internal segments and meaningless for
+	// external collections (data lives in user object store). Reject up
+	// front to prevent silent no-op or inconsistent meta state.
+	t.Run("external collection rejected", func(t *testing.T) {
+		tct := &truncateCollectionTask{TruncateCollectionRequest: &milvuspb.TruncateCollectionRequest{
+			Base: &commonpb.MsgBase{}, DbName: dbName, CollectionName: externalName,
+		}}
+		err := tct.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "external collection")
+		assert.Contains(t, err.Error(), "RefreshExternalCollection")
+	})
 }
 
 func Test_truncateCollectionTask_Execute(t *testing.T) {
@@ -5233,6 +5568,105 @@ func TestAlterCollectionTaskValidateTTLAndTTLField(t *testing.T) {
 	})
 }
 
+func TestAlterCollectionTaskValidateDescription(t *testing.T) {
+	qc := NewMixCoordMock()
+	ctx := context.Background()
+	cache := globalMetaCache
+	defer func() { globalMetaCache = cache }()
+	err := InitMetaCache(ctx, qc)
+	assert.NoError(t, err)
+
+	maxLen := Params.ProxyCfg.MaxCollectionDescriptionLength.GetAsInt()
+	oversized := strings.Repeat("a", maxLen+1)
+	differentOversized := strings.Repeat("b", maxLen+1)
+
+	// Create a collection through the mock coordinator directly so we can seed a
+	// pre-existing oversized description, which the proxy CreateCollection guard
+	// would normally reject. This simulates a collection created before the
+	// description length limit existed.
+	createCollection := func(description string) string {
+		collectionName := "alter_description_" + funcutil.GenRandomStr()
+		schema := &schemapb.CollectionSchema{
+			Name:        collectionName,
+			Description: description,
+			AutoID:      false,
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "pk", IsPrimaryKey: true, DataType: schemapb.DataType_Int64},
+				{FieldID: 101, Name: "vec", DataType: schemapb.DataType_FloatVector, TypeParams: []*commonpb.KeyValuePair{{Key: common.DimKey, Value: "8"}}},
+			},
+		}
+		bs, err := proto.Marshal(schema)
+		assert.NoError(t, err)
+		status, err := qc.CreateCollection(ctx, &milvuspb.CreateCollectionRequest{
+			Base:           &commonpb.MsgBase{MsgType: commonpb.MsgType_CreateCollection},
+			DbName:         dbName,
+			CollectionName: collectionName,
+			Schema:         bs,
+			ShardsNum:      1,
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_Success, status.GetErrorCode())
+		return collectionName
+	}
+
+	runAlter := func(collectionName string, properties []*commonpb.KeyValuePair) error {
+		task := &alterCollectionTask{
+			AlterCollectionRequest: &milvuspb.AlterCollectionRequest{
+				Base:           &commonpb.MsgBase{},
+				CollectionName: collectionName,
+				Properties:     properties,
+			},
+			ctx:      ctx,
+			mixCoord: qc,
+		}
+		return task.PreExecute(ctx)
+	}
+
+	// A collection whose stored description is within the limit.
+	validCollection := createCollection("short description")
+	// A collection whose stored description already exceeds the current limit.
+	legacyCollection := createCollection(oversized)
+
+	t.Run("changing a valid description to an oversized one is rejected", func(t *testing.T) {
+		err := runAlter(validCollection, []*commonpb.KeyValuePair{
+			{Key: common.CollectionDescription, Value: oversized},
+		})
+		assert.ErrorIs(t, err, merr.ErrParameterInvalid)
+	})
+
+	t.Run("resending an unchanged oversized description while altering TTL is accepted", func(t *testing.T) {
+		err := runAlter(legacyCollection, []*commonpb.KeyValuePair{
+			{Key: common.CollectionDescription, Value: oversized},
+			{Key: common.CollectionTTLConfigKey, Value: "10"},
+		})
+		assert.NoError(t, err)
+	})
+
+	t.Run("changing an oversized description to a different oversized value is rejected", func(t *testing.T) {
+		err := runAlter(legacyCollection, []*commonpb.KeyValuePair{
+			{Key: common.CollectionDescription, Value: differentOversized},
+		})
+		assert.ErrorIs(t, err, merr.ErrParameterInvalid)
+	})
+
+	t.Run("shrinking an oversized description to a valid value is accepted", func(t *testing.T) {
+		err := runAlter(legacyCollection, []*commonpb.KeyValuePair{
+			{Key: common.CollectionDescription, Value: "now within the limit"},
+		})
+		assert.NoError(t, err)
+	})
+
+	t.Run("with duplicate description keys, a changed oversized value is still rejected", func(t *testing.T) {
+		// The unchanged value is skipped, but the other (changed) oversized value
+		// is still validated per-property, so the alter is rejected.
+		err := runAlter(legacyCollection, []*commonpb.KeyValuePair{
+			{Key: common.CollectionDescription, Value: oversized},
+			{Key: common.CollectionDescription, Value: differentOversized},
+		})
+		assert.ErrorIs(t, err, merr.ErrParameterInvalid)
+	})
+}
+
 func mockVectorIndexForCollection(t *testing.T, ctx context.Context, qc *MixCoordMock, colName string) {
 	t.Helper()
 
@@ -5643,6 +6077,110 @@ func TestAlterCollectionQueryMode(t *testing.T) {
 	})
 }
 
+func TestCollectionNamespaceShardingEnabledValidation(t *testing.T) {
+	qc := NewMixCoordMock()
+	ctx := context.Background()
+	err := InitMetaCache(ctx, qc)
+	assert.NoError(t, err)
+	prefix := "TestNamespaceShardingEnabled"
+
+	getSchemaBytes := func(colName string) []byte {
+		fieldName2Type := map[string]schemapb.DataType{
+			"fvec_field":  schemapb.DataType_FloatVector,
+			"int64_field": schemapb.DataType_Int64,
+		}
+		schema := constructCollectionSchemaByDataType(colName, fieldName2Type, "int64_field", false)
+		marshaledSchema, err := proto.Marshal(schema)
+		assert.NoError(t, err)
+		return marshaledSchema
+	}
+
+	t.Run("create rejects invalid namespace.sharding.enabled", func(t *testing.T) {
+		colName := prefix + funcutil.GenRandomStr()
+		createTask := &createCollectionTask{
+			Condition: NewTaskCondition(ctx),
+			CreateCollectionRequest: &milvuspb.CreateCollectionRequest{
+				Base: &commonpb.MsgBase{
+					MsgID:     UniqueID(uniquegenerator.GetUniqueIntGeneratorIns().GetInt()),
+					Timestamp: Timestamp(time.Now().UnixNano()),
+				},
+				DbName:         "",
+				CollectionName: colName,
+				Schema:         getSchemaBytes(colName),
+				ShardsNum:      1,
+				Properties:     []*commonpb.KeyValuePair{{Key: common.NamespaceShardingEnabledKey, Value: "invalid"}},
+			},
+			ctx:      ctx,
+			mixCoord: qc,
+			result:   nil,
+			schema:   nil,
+		}
+		err := createTask.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid namespace.sharding.enabled")
+	})
+
+	t.Run("alter rejects namespace.sharding.enabled", func(t *testing.T) {
+		colName := prefix + funcutil.GenRandomStr()
+		createColReq := &milvuspb.CreateCollectionRequest{
+			Base: &commonpb.MsgBase{
+				MsgType:   commonpb.MsgType_CreateCollection,
+				MsgID:     100,
+				Timestamp: 100,
+			},
+			DbName:         dbName,
+			CollectionName: colName,
+			Schema:         getSchemaBytes(colName),
+			ShardsNum:      1,
+		}
+		stats, err := qc.CreateCollection(ctx, createColReq)
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_Success, stats.ErrorCode)
+
+		alterTask := &alterCollectionTask{
+			AlterCollectionRequest: &milvuspb.AlterCollectionRequest{
+				Base:           &commonpb.MsgBase{},
+				CollectionName: colName,
+				Properties:     []*commonpb.KeyValuePair{{Key: common.NamespaceShardingEnabledKey, Value: "true"}},
+			},
+			mixCoord: qc,
+		}
+		err = alterTask.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot alter namespace.sharding.enabled")
+	})
+
+	t.Run("alter rejects deleting namespace.sharding.enabled", func(t *testing.T) {
+		colName := prefix + funcutil.GenRandomStr()
+		createColReq := &milvuspb.CreateCollectionRequest{
+			Base: &commonpb.MsgBase{
+				MsgType:   commonpb.MsgType_CreateCollection,
+				MsgID:     101,
+				Timestamp: 101,
+			},
+			DbName:         dbName,
+			CollectionName: colName,
+			Schema:         getSchemaBytes(colName),
+			ShardsNum:      1,
+		}
+		stats, err := qc.CreateCollection(ctx, createColReq)
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_Success, stats.ErrorCode)
+
+		alterTask := &alterCollectionTask{
+			AlterCollectionRequest: &milvuspb.AlterCollectionRequest{
+				Base:           &commonpb.MsgBase{},
+				CollectionName: colName,
+				DeleteKeys:     []string{common.NamespaceShardingEnabledKey},
+			},
+			mixCoord: qc,
+		}
+		err = alterTask.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot delete namespace.sharding.enabled")
+	})
+}
+
 func TestAlterCollectionFieldCheckLoaded(t *testing.T) {
 	qc := NewMixCoordMock()
 	InitMetaCache(context.Background(), qc)
@@ -5696,6 +6234,8 @@ func TestAlterCollectionFieldCheckLoaded(t *testing.T) {
 }
 
 func TestAlterCollectionField(t *testing.T) {
+	paramtable.Init()
+
 	qc := NewMixCoordMock()
 	InitMetaCache(context.Background(), qc)
 	collectionName := "test_alter_collection_field"
@@ -5716,6 +6256,43 @@ func TestAlterCollectionField(t *testing.T) {
 				DataType:    schemapb.DataType_Array,
 				ElementType: schemapb.DataType_Int64,
 				TypeParams:  []*commonpb.KeyValuePair{{Key: "max_capacity", Value: "100"}},
+			},
+			{
+				FieldID:  102,
+				Name:     "text_match_field",
+				DataType: schemapb.DataType_VarChar,
+				TypeParams: []*commonpb.KeyValuePair{
+					{Key: common.MaxLengthKey, Value: "100"},
+					{Key: "enable_match", Value: "true"},
+					{Key: common.EnableAnalyzerKey, Value: "true"},
+					{Key: common.AnalyzerParamKey, Value: `{"tokenizer":"standard"}`},
+				},
+			},
+			{
+				FieldID:  103,
+				Name:     "bm25_input_field",
+				DataType: schemapb.DataType_VarChar,
+				TypeParams: []*commonpb.KeyValuePair{
+					{Key: common.MaxLengthKey, Value: "100"},
+					{Key: common.EnableAnalyzerKey, Value: "true"},
+					{Key: common.AnalyzerParamKey, Value: `{"tokenizer":"standard"}`},
+				},
+			},
+			{
+				FieldID:          104,
+				Name:             "bm25_output_field",
+				DataType:         schemapb.DataType_SparseFloatVector,
+				IsFunctionOutput: true,
+			},
+		},
+		Functions: []*schemapb.FunctionSchema{
+			{
+				Name:             "bm25_func",
+				Type:             schemapb.FunctionType_BM25,
+				InputFieldIds:    []int64{103},
+				InputFieldNames:  []string{"bm25_input_field"},
+				OutputFieldIds:   []int64{104},
+				OutputFieldNames: []string{"bm25_output_field"},
 			},
 		},
 	}
@@ -5781,6 +6358,60 @@ func TestAlterCollectionField(t *testing.T) {
 				{Key: common.MmapEnabledKey, Value: "true"},
 			},
 			expectError: false,
+		},
+		{
+			name:      "update analyzer params on inactive string field",
+			fieldName: "string_field",
+			properties: []*commonpb.KeyValuePair{
+				{Key: common.EnableAnalyzerKey, Value: "true"},
+				{Key: common.AnalyzerParamKey, Value: `{"tokenizer":"standard"}`},
+			},
+			expectError: false,
+		},
+		{
+			name:      "update analyzer params without enable analyzer",
+			fieldName: "string_field",
+			properties: []*commonpb.KeyValuePair{
+				{Key: common.AnalyzerParamKey, Value: `{"tokenizer":"standard"}`},
+			},
+			expectError: false,
+		},
+		{
+			name:      "reject analyzer params on non-string field",
+			fieldName: "array_field",
+			properties: []*commonpb.KeyValuePair{
+				{Key: common.EnableAnalyzerKey, Value: "true"},
+				{Key: common.AnalyzerParamKey, Value: `{"tokenizer":"standard"}`},
+			},
+			expectError: true,
+			errCode:     merr.Code(merr.ErrParameterInvalid),
+		},
+		{
+			name:      "invalid enable analyzer value",
+			fieldName: "string_field",
+			properties: []*commonpb.KeyValuePair{
+				{Key: common.EnableAnalyzerKey, Value: "not_bool"},
+			},
+			expectError: true,
+			errCode:     merr.Code(merr.ErrParameterInvalid),
+		},
+		{
+			name:      "reject analyzer params on text match field",
+			fieldName: "text_match_field",
+			properties: []*commonpb.KeyValuePair{
+				{Key: common.AnalyzerParamKey, Value: `{"tokenizer":"whitespace"}`},
+			},
+			expectError: true,
+			errCode:     merr.Code(merr.ErrParameterInvalid),
+		},
+		{
+			name:      "reject analyzer params on bm25 input field",
+			fieldName: "bm25_input_field",
+			properties: []*commonpb.KeyValuePair{
+				{Key: common.AnalyzerParamKey, Value: `{"tokenizer":"whitespace"}`},
+			},
+			expectError: true,
+			errCode:     merr.Code(merr.ErrParameterInvalid),
 		},
 		{
 			name:      "invalid property key",
@@ -5867,6 +6498,33 @@ func TestAlterCollectionField(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name:        "delete analyzer params on inactive string field",
+			fieldName:   "string_field",
+			deleteKeys:  []string{common.EnableAnalyzerKey, common.AnalyzerParamKey},
+			expectError: false,
+		},
+		{
+			name:        "reject delete analyzer params on non-string field",
+			fieldName:   "array_field",
+			deleteKeys:  []string{common.EnableAnalyzerKey, common.AnalyzerParamKey},
+			expectError: true,
+			errCode:     merr.Code(merr.ErrParameterInvalid),
+		},
+		{
+			name:        "reject delete analyzer params on text match field",
+			fieldName:   "text_match_field",
+			deleteKeys:  []string{common.AnalyzerParamKey},
+			expectError: true,
+			errCode:     merr.Code(merr.ErrParameterInvalid),
+		},
+		{
+			name:        "reject delete analyzer params on bm25 input field",
+			fieldName:   "bm25_input_field",
+			deleteKeys:  []string{common.AnalyzerParamKey},
+			expectError: true,
+			errCode:     merr.Code(merr.ErrParameterInvalid),
+		},
+		{
 			name:        "delete max_length is not allowed",
 			fieldName:   "string_field",
 			deleteKeys:  []string{common.MaxLengthKey},
@@ -5906,6 +6564,27 @@ func TestAlterCollectionField(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("update array field max_capacity with custom limit", func(t *testing.T) {
+		err := paramtable.Get().Save(paramtable.Get().ProxyCfg.MaxArrayCapacity.Key, "5000")
+		assert.NoError(t, err)
+		defer paramtable.Get().Reset(paramtable.Get().ProxyCfg.MaxArrayCapacity.Key)
+
+		task := &alterCollectionFieldTask{
+			AlterCollectionFieldRequest: &milvuspb.AlterCollectionFieldRequest{
+				Base:           &commonpb.MsgBase{},
+				CollectionName: collectionName,
+				FieldName:      "array_field",
+				Properties: []*commonpb.KeyValuePair{
+					{Key: common.MaxCapacityKey, Value: "5000"},
+				},
+			},
+			mixCoord: qc,
+		}
+
+		err = task.PreExecute(context.Background())
+		assert.NoError(t, err)
+	})
 }
 
 // constructCollectionSchemaWithStructArrayField constructs a collection schema specifically for testing StructArrayField
@@ -5965,7 +6644,7 @@ func constructCollectionSchemaWithStructArrayField(collectionName string, struct
 				TypeParams: []*commonpb.KeyValuePair{
 					{
 						Key:   common.MaxCapacityKey,
-						Value: "20",
+						Value: "50",
 					},
 				},
 			},
@@ -5981,7 +6660,7 @@ func constructCollectionSchemaWithStructArrayField(collectionName string, struct
 					},
 					{
 						Key:   common.MaxCapacityKey,
-						Value: "5",
+						Value: "50",
 					},
 				},
 			},
@@ -6108,6 +6787,12 @@ func TestCreateCollectionTaskWithStructArrayField(t *testing.T) {
 							Name:        "field_name", // Duplicate name
 							DataType:    schemapb.DataType_Array,
 							ElementType: schemapb.DataType_Int32,
+							TypeParams: []*commonpb.KeyValuePair{
+								{
+									Key:   common.MaxCapacityKey,
+									Value: "100",
+								},
+							},
 						},
 						{
 							FieldID:     1022,
@@ -6117,6 +6802,10 @@ func TestCreateCollectionTaskWithStructArrayField(t *testing.T) {
 							TypeParams: []*commonpb.KeyValuePair{
 								{
 									Key:   common.MaxLengthKey,
+									Value: "100",
+								},
+								{
+									Key:   common.MaxCapacityKey,
 									Value: "100",
 								},
 							},
@@ -6133,12 +6822,24 @@ func TestCreateCollectionTaskWithStructArrayField(t *testing.T) {
 							Name:        "field_name", // Same name as struct1's field
 							DataType:    schemapb.DataType_Array,
 							ElementType: schemapb.DataType_Float,
+							TypeParams: []*commonpb.KeyValuePair{
+								{
+									Key:   common.MaxCapacityKey,
+									Value: "100",
+								},
+							},
 						},
 						{
 							FieldID:     1032,
 							Name:        "common_field", // Same name as struct1's field
 							DataType:    schemapb.DataType_Array,
 							ElementType: schemapb.DataType_Bool,
+							TypeParams: []*commonpb.KeyValuePair{
+								{
+									Key:   common.MaxCapacityKey,
+									Value: "100",
+								},
+							},
 						},
 					},
 				},
@@ -6744,6 +7445,85 @@ func TestValidateAddFieldRequest(t *testing.T) {
 		assert.ErrorIs(t, err, merr.ErrParameterInvalid)
 	})
 
+	t.Run("external field mapping", func(t *testing.T) {
+		schema := baseSchema()
+		newField := &schemapb.FieldSchema{
+			Name:          "external_field",
+			DataType:      schemapb.DataType_Int64,
+			ExternalField: "remote_field",
+		}
+		err := validateAddFieldRequest(schema, newField)
+		assert.Error(t, err)
+		assert.ErrorIs(t, err, merr.ErrParameterInvalid)
+		assert.Contains(t, err.Error(), "does not support external field mapping")
+	})
+
+	t.Run("external collection requires external field mapping", func(t *testing.T) {
+		schema := baseSchema()
+		for _, field := range schema.GetFields() {
+			field.ExternalField = field.GetName()
+		}
+		newField := &schemapb.FieldSchema{
+			Name:     "score",
+			DataType: schemapb.DataType_Double,
+			Nullable: true,
+		}
+		err := validateAddFieldRequest(schema, newField)
+		assert.Error(t, err)
+		assert.ErrorIs(t, err, merr.ErrParameterInvalid)
+		assert.Contains(t, err.Error(), "requires external_field mapping")
+	})
+
+	t.Run("external collection allows external field mapping", func(t *testing.T) {
+		schema := baseSchema()
+		for _, field := range schema.GetFields() {
+			field.ExternalField = field.GetName()
+		}
+		newField := &schemapb.FieldSchema{
+			Name:          "score",
+			DataType:      schemapb.DataType_Double,
+			Nullable:      true,
+			ExternalField: "score",
+		}
+		err := validateAddFieldRequest(schema, newField)
+		assert.NoError(t, err)
+	})
+
+	t.Run("external collection rejects unsupported field type", func(t *testing.T) {
+		schema := baseSchema()
+		for _, field := range schema.GetFields() {
+			field.ExternalField = field.GetName()
+		}
+		newField := &schemapb.FieldSchema{
+			Name:          "sparse",
+			DataType:      schemapb.DataType_SparseFloatVector,
+			ExternalField: "sparse",
+		}
+		err := validateAddFieldRequest(schema, newField)
+		if assert.Error(t, err) {
+			assert.ErrorIs(t, err, merr.ErrParameterInvalid)
+			assert.Contains(t, err.Error(), "does not support field type")
+		}
+	})
+
+	t.Run("external collection rejects duplicate external field mapping", func(t *testing.T) {
+		schema := baseSchema()
+		for _, field := range schema.GetFields() {
+			field.ExternalField = field.GetName()
+		}
+		newField := &schemapb.FieldSchema{
+			Name:          "score",
+			DataType:      schemapb.DataType_Double,
+			Nullable:      true,
+			ExternalField: "vec",
+		}
+		err := validateAddFieldRequest(schema, newField)
+		if assert.Error(t, err) {
+			assert.ErrorIs(t, err, merr.ErrParameterInvalid)
+			assert.Contains(t, err.Error(), "external_field \"vec\" is mapped by multiple fields")
+		}
+	})
+
 	t.Run("system field name RowID", func(t *testing.T) {
 		schema := baseSchema()
 		newField := &schemapb.FieldSchema{
@@ -6833,6 +7613,13 @@ func TestValidateAddFieldRequest(t *testing.T) {
 }
 
 func TestAlterCollectionSchemaTask(t *testing.T) {
+	// Add-function cases require StorageV3 + schema-bump/storage-version compaction enabled
+	// (validateAddFunctionRequiresStorageV3). storageVersion.enabled defaults true;
+	// bumpSchemaVersion.enabled defaults false, so it must be set explicitly.
+	paramtable.Get().Save(paramtable.Get().CommonCfg.UseLoonFFI.Key, "true")
+	paramtable.Get().Save(paramtable.Get().DataCoordCfg.BumpSchemaVersionCompactionEnabled.Key, "true")
+	defer paramtable.Get().Reset(paramtable.Get().CommonCfg.UseLoonFFI.Key)
+	defer paramtable.Get().Reset(paramtable.Get().DataCoordCfg.BumpSchemaVersionCompactionEnabled.Key)
 	rc := NewMixCoordMock()
 	ctx := context.Background()
 	prefix := "TestAlterCollectionSchemaTask"
@@ -6884,6 +7671,27 @@ func TestAlterCollectionSchemaTask(t *testing.T) {
 		InputFieldNames:  []string{"text"},
 		OutputFieldNames: []string{"sparse_bm25"},
 	}
+	functionOnlyOldSchema := proto.Clone(oldSchema).(*schemapb.CollectionSchema)
+	functionOnlyOldSchema.Fields = append(functionOnlyOldSchema.Fields, &schemapb.FieldSchema{
+		FieldID:  102,
+		Name:     "existing_minhash_output",
+		DataType: schemapb.DataType_BinaryVector,
+		TypeParams: []*commonpb.KeyValuePair{
+			{Key: common.DimKey, Value: "4096"},
+		},
+	})
+	minHashFunctionOnlySchema := &schemapb.FunctionSchema{
+		Name:             "minhash_existing_func",
+		Type:             schemapb.FunctionType_MinHash,
+		InputFieldNames:  []string{"text"},
+		OutputFieldNames: []string{"existing_minhash_output"},
+		Params: []*commonpb.KeyValuePair{
+			{Key: "num_hashes", Value: "128"},
+			{Key: "shingle_size", Value: "3"},
+			{Key: "hash_function", Value: "xxhash64"},
+			{Key: "seed", Value: "42"},
+		},
+	}
 
 	buildValidRequest := func() *milvuspb.AlterCollectionSchemaRequest {
 		return &milvuspb.AlterCollectionSchemaRequest{
@@ -6893,8 +7701,52 @@ func TestAlterCollectionSchemaTask(t *testing.T) {
 				Op: &milvuspb.AlterCollectionSchemaRequest_Action_AddRequest{
 					AddRequest: &milvuspb.AlterCollectionSchemaRequest_AddRequest{
 						FieldInfos: []*milvuspb.AlterCollectionSchemaRequest_FieldInfo{
-							{FieldSchema: sparseOutputField},
+							{
+								FieldSchema: proto.Clone(sparseOutputField).(*schemapb.FieldSchema),
+								ExtraParams: []*commonpb.KeyValuePair{
+									{Key: common.IndexTypeKey, Value: "SPARSE_INVERTED_INDEX"},
+									{Key: common.MetricTypeKey, Value: "BM25"},
+								},
+							},
 						},
+						FuncSchema: []*schemapb.FunctionSchema{proto.Clone(functionSchema).(*schemapb.FunctionSchema)},
+					},
+				},
+			},
+		}
+	}
+
+	buildAddFieldRequest := func(fieldName string, nullable bool, doBackfill bool) *milvuspb.AlterCollectionSchemaRequest {
+		return &milvuspb.AlterCollectionSchemaRequest{
+			DbName:         dbName,
+			CollectionName: collectionName,
+			Action: &milvuspb.AlterCollectionSchemaRequest_Action{
+				Op: &milvuspb.AlterCollectionSchemaRequest_Action_AddRequest{
+					AddRequest: &milvuspb.AlterCollectionSchemaRequest_AddRequest{
+						FieldInfos: []*milvuspb.AlterCollectionSchemaRequest_FieldInfo{
+							{FieldSchema: &schemapb.FieldSchema{
+								Name:     fieldName,
+								DataType: schemapb.DataType_VarChar,
+								Nullable: nullable,
+								TypeParams: []*commonpb.KeyValuePair{
+									{Key: common.MaxLengthKey, Value: "128"},
+								},
+							}},
+						},
+						DoPhysicalBackfill: doBackfill,
+					},
+				},
+			},
+		}
+	}
+
+	buildAddFunctionRequest := func(functionSchema *schemapb.FunctionSchema) *milvuspb.AlterCollectionSchemaRequest {
+		return &milvuspb.AlterCollectionSchemaRequest{
+			DbName:         dbName,
+			CollectionName: collectionName,
+			Action: &milvuspb.AlterCollectionSchemaRequest_Action{
+				Op: &milvuspb.AlterCollectionSchemaRequest_Action_AddRequest{
+					AddRequest: &milvuspb.AlterCollectionSchemaRequest_AddRequest{
 						FuncSchema: []*schemapb.FunctionSchema{functionSchema},
 					},
 				},
@@ -6986,25 +7838,39 @@ func TestAlterCollectionSchemaTask(t *testing.T) {
 		assert.ErrorIs(t, err, merr.ErrParameterInvalid)
 	})
 
-	t.Run("PreExecute zero funcSchemas", func(t *testing.T) {
-		req := &milvuspb.AlterCollectionSchemaRequest{
-			DbName:         dbName,
-			CollectionName: collectionName,
-			Action: &milvuspb.AlterCollectionSchemaRequest_Action{
-				Op: &milvuspb.AlterCollectionSchemaRequest_Action_AddRequest{
-					AddRequest: &milvuspb.AlterCollectionSchemaRequest_AddRequest{
-						FieldInfos: []*milvuspb.AlterCollectionSchemaRequest_FieldInfo{
-							{FieldSchema: sparseOutputField},
-						},
-						FuncSchema: nil, // no functions
-					},
-				},
-			},
-		}
-		task := buildTask(req, oldSchema)
+	t.Run("PreExecute add field without funcSchema", func(t *testing.T) {
+		task := buildTask(buildAddFieldRequest("extra_text", true, false), oldSchema)
+		err := task.PreExecute(ctx)
+		assert.NoError(t, err)
+	})
+
+	t.Run("PreExecute add field without funcSchema ignores physical backfill flag", func(t *testing.T) {
+		task := buildTask(buildAddFieldRequest("extra_text_backfill", true, true), oldSchema)
+		err := task.PreExecute(ctx)
+		assert.NoError(t, err)
+	})
+
+	t.Run("PreExecute add field without funcSchema requires nullable field", func(t *testing.T) {
+		task := buildTask(buildAddFieldRequest("extra_text_not_nullable", false, false), oldSchema)
 		err := task.PreExecute(ctx)
 		assert.Error(t, err)
 		assert.ErrorIs(t, err, merr.ErrParameterInvalid)
+		assert.ErrorContains(t, err, "added field must be nullable")
+	})
+
+	t.Run("PreExecute rejects duplicated add field name", func(t *testing.T) {
+		task := buildTask(buildAddFieldRequest("text", true, false), oldSchema)
+		err := task.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.ErrorIs(t, err, merr.ErrParameterInvalid)
+		assert.ErrorContains(t, err, "duplicated field name")
+	})
+
+	t.Run("PreExecute rejects invalid add field name", func(t *testing.T) {
+		task := buildTask(buildAddFieldRequest("invalid field name", true, false), oldSchema)
+		err := task.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.ErrorContains(t, err, "Invalid field name")
 	})
 
 	t.Run("PreExecute multiple funcSchemas", func(t *testing.T) {
@@ -7028,16 +7894,37 @@ func TestAlterCollectionSchemaTask(t *testing.T) {
 		assert.ErrorIs(t, err, merr.ErrParameterInvalid)
 	})
 
-	t.Run("PreExecute empty fieldInfos", func(t *testing.T) {
+	t.Run("PreExecute nil funcSchema", func(t *testing.T) {
+		task := buildTask(buildAddFunctionRequest(nil), oldSchema)
+		err := task.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.ErrorIs(t, err, merr.ErrParameterInvalid)
+		assert.ErrorContains(t, err, "function schema is nil")
+	})
+
+	t.Run("PreExecute add function without fieldInfos", func(t *testing.T) {
+		task := buildTask(buildAddFunctionRequest(minHashFunctionOnlySchema), functionOnlyOldSchema)
+		err := task.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.ErrorIs(t, err, merr.ErrParameterInvalid)
+		assert.ErrorContains(t, err, "adding a function over existing fields is not supported")
+	})
+
+	t.Run("PreExecute rejects function-only BM25 request", func(t *testing.T) {
+		task := buildTask(buildAddFunctionRequest(functionSchema), oldSchema)
+		err := task.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.ErrorIs(t, err, merr.ErrParameterInvalid)
+		assert.ErrorContains(t, err, "add_function_field")
+	})
+
+	t.Run("PreExecute rejects empty add request", func(t *testing.T) {
 		req := &milvuspb.AlterCollectionSchemaRequest{
 			DbName:         dbName,
 			CollectionName: collectionName,
 			Action: &milvuspb.AlterCollectionSchemaRequest_Action{
 				Op: &milvuspb.AlterCollectionSchemaRequest_Action_AddRequest{
-					AddRequest: &milvuspb.AlterCollectionSchemaRequest_AddRequest{
-						FieldInfos: nil, // empty
-						FuncSchema: []*schemapb.FunctionSchema{functionSchema},
-					},
+					AddRequest: &milvuspb.AlterCollectionSchemaRequest_AddRequest{},
 				},
 			},
 		}
@@ -7120,33 +8007,86 @@ func TestAlterCollectionSchemaTask(t *testing.T) {
 		assert.ErrorIs(t, err, merr.ErrParameterInvalid)
 	})
 
-	t.Run("PreExecute rejects non-BM25 function with DoPhysicalBackfill", func(t *testing.T) {
-		req := &milvuspb.AlterCollectionSchemaRequest{
-			DbName:         dbName,
-			CollectionName: collectionName,
-			Action: &milvuspb.AlterCollectionSchemaRequest_Action{
-				Op: &milvuspb.AlterCollectionSchemaRequest_Action_AddRequest{
-					AddRequest: &milvuspb.AlterCollectionSchemaRequest_AddRequest{
-						DoPhysicalBackfill: true,
-						FieldInfos: []*milvuspb.AlterCollectionSchemaRequest_FieldInfo{
-							{FieldSchema: sparseOutputField},
-						},
-						FuncSchema: []*schemapb.FunctionSchema{
-							{
-								Name:             "text_embedding_func",
-								Type:             schemapb.FunctionType_TextEmbedding,
-								InputFieldNames:  []string{"text"},
-								OutputFieldNames: []string{"sparse_bm25"},
-							},
-						},
-					},
-				},
+	t.Run("PreExecute supports MinHash function with new output field", func(t *testing.T) {
+		req := buildValidRequest()
+		addRequest := req.GetAction().GetAddRequest()
+		addRequest.FieldInfos[0].FieldSchema = &schemapb.FieldSchema{
+			Name:     "binary_minhash",
+			DataType: schemapb.DataType_BinaryVector,
+			TypeParams: []*commonpb.KeyValuePair{
+				{Key: common.DimKey, Value: "4096"},
 			},
 		}
+		addRequest.FieldInfos[0].ExtraParams = []*commonpb.KeyValuePair{
+			{Key: common.IndexTypeKey, Value: "MINHASH_LSH"},
+			{Key: common.MetricTypeKey, Value: "MHJACCARD"},
+		}
+		functionSchema := proto.Clone(addRequest.GetFuncSchema()[0]).(*schemapb.FunctionSchema)
+		functionSchema.Name = "minhash_func"
+		functionSchema.Type = schemapb.FunctionType_MinHash
+		functionSchema.OutputFieldNames = []string{"binary_minhash"}
+		functionSchema.Params = []*commonpb.KeyValuePair{
+			{Key: "num_hashes", Value: "128"},
+			{Key: "shingle_size", Value: "3"},
+			{Key: "hash_function", Value: "xxhash64"},
+			{Key: "seed", Value: "42"},
+		}
+		addRequest.FuncSchema = []*schemapb.FunctionSchema{functionSchema}
+
+		task := buildTask(req, oldSchema)
+		err := task.PreExecute(ctx)
+		assert.NoError(t, err)
+	})
+
+	t.Run("PreExecute rejects unsupported function", func(t *testing.T) {
+		req := buildValidRequest()
+		addRequest := req.GetAction().GetAddRequest()
+		functionSchema := proto.Clone(addRequest.GetFuncSchema()[0]).(*schemapb.FunctionSchema)
+		functionSchema.Type = schemapb.FunctionType_TextEmbedding
+		addRequest.FuncSchema = []*schemapb.FunctionSchema{functionSchema}
+
 		task := buildTask(req, oldSchema)
 		err := task.PreExecute(ctx)
 		assert.Error(t, err)
 		assert.ErrorIs(t, err, merr.ErrParameterInvalid)
+		assert.ErrorContains(t, err, "only BM25 and MinHash functions are supported")
+	})
+
+	t.Run("PreExecute ignores legacy DoPhysicalBackfill", func(t *testing.T) {
+		schema := proto.Clone(oldSchema).(*schemapb.CollectionSchema)
+		schema.DoPhysicalBackfill = true
+		task := buildTask(buildValidRequest(), schema)
+		err := task.PreExecute(ctx)
+		assert.NoError(t, err)
+	})
+
+	t.Run("PreExecute rejects multiple function outputs", func(t *testing.T) {
+		req := buildValidRequest()
+		req.GetAction().GetAddRequest().GetFuncSchema()[0].OutputFieldNames = []string{"sparse_bm25", "sparse_bm25_extra"}
+		task := buildTask(req, oldSchema)
+		err := task.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.ErrorIs(t, err, merr.ErrParameterInvalid)
+		assert.ErrorContains(t, err, "exactly one output field")
+	})
+
+	t.Run("PreExecute rejects function-only request with missing output field", func(t *testing.T) {
+		req := buildAddFunctionRequest(&schemapb.FunctionSchema{
+			Name:             "missing_output_func",
+			Type:             schemapb.FunctionType_MinHash,
+			InputFieldNames:  []string{"text"},
+			OutputFieldNames: []string{"missing_output"},
+			Params: []*commonpb.KeyValuePair{
+				{Key: "num_hashes", Value: "128"},
+				{Key: "shingle_size", Value: "3"},
+				{Key: "hash_function", Value: "xxhash64"},
+				{Key: "seed", Value: "42"},
+			},
+		})
+		task := buildTask(req, oldSchema)
+		err := task.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.ErrorContains(t, err, "adding a function over existing fields is not supported")
 	})
 
 	t.Run("PreExecute happy path", func(t *testing.T) {
@@ -7155,7 +8095,29 @@ func TestAlterCollectionSchemaTask(t *testing.T) {
 		assert.NoError(t, err)
 	})
 
-	t.Run("Execute sets IsFunctionOutput and calls AlterCollectionSchema", func(t *testing.T) {
+	t.Run("PreExecute rejects invalid bound index name", func(t *testing.T) {
+		req := buildValidRequest()
+		req.GetAction().GetAddRequest().GetFieldInfos()[0].IndexName = "1bad-index-name"
+		task := buildTask(req, oldSchema)
+		err := task.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.ErrorIs(t, err, merr.ErrParameterInvalid)
+		assert.ErrorContains(t, err, "Invalid index name")
+	})
+
+	t.Run("PreExecute keeps the user's original index params in the request", func(t *testing.T) {
+		req := buildValidRequest()
+		original := proto.Clone(req.GetAction().GetAddRequest().GetFieldInfos()[0]).(*milvuspb.AlterCollectionSchemaRequest_FieldInfo)
+		task := buildTask(req, oldSchema)
+		err := task.PreExecute(ctx)
+		assert.NoError(t, err)
+		// Validation-only: no normalization write-back, so the persisted
+		// UserIndexParams stay aligned with the create_index convention and a
+		// later create_index with identical params remains idempotent.
+		assert.True(t, proto.Equal(original, req.GetAction().GetAddRequest().GetFieldInfos()[0]))
+	})
+
+	t.Run("Execute leaves function output marker to RootCoord", func(t *testing.T) {
 		req := buildValidRequest()
 		task := buildTask(req, oldSchema)
 
@@ -7166,12 +8128,49 @@ func TestAlterCollectionSchemaTask(t *testing.T) {
 		err = task.Execute(ctx)
 		assert.NoError(t, err)
 
-		// After Execute, the output field should have IsFunctionOutput = true.
 		addReq := req.GetAction().GetAddRequest()
 		assert.NotNil(t, addReq)
 		for _, fi := range addReq.GetFieldInfos() {
-			assert.True(t, fi.GetFieldSchema().GetIsFunctionOutput())
+			assert.False(t, fi.GetFieldSchema().GetIsFunctionOutput())
 		}
+	})
+
+	t.Run("Execute keeps plain added field as non-function output", func(t *testing.T) {
+		req := buildAddFieldRequest("execute_plain_text", true, true)
+		task := buildTask(req, oldSchema)
+
+		err := task.PreExecute(ctx)
+		assert.NoError(t, err)
+
+		err = task.Execute(ctx)
+		assert.NoError(t, err)
+
+		addReq := req.GetAction().GetAddRequest()
+		assert.NotNil(t, addReq)
+		for _, fi := range addReq.GetFieldInfos() {
+			assert.False(t, fi.GetFieldSchema().GetIsFunctionOutput())
+		}
+	})
+
+	t.Run("PreExecute rejects function-only add request", func(t *testing.T) {
+		req := buildAddFunctionRequest(minHashFunctionOnlySchema)
+		task := buildTask(req, functionOnlyOldSchema)
+
+		err := task.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.ErrorContains(t, err, "adding a function over existing fields is not supported")
+	})
+
+	t.Run("Execute skips nil field infos", func(t *testing.T) {
+		req := buildValidRequest()
+		req.GetAction().GetAddRequest().FieldInfos = []*milvuspb.AlterCollectionSchemaRequest_FieldInfo{
+			nil,
+			{FieldSchema: nil},
+		}
+		task := buildTask(req, oldSchema)
+
+		err := task.Execute(ctx)
+		assert.NoError(t, err)
 	})
 
 	t.Run("Execute returns error when mixCoord AlterCollectionSchema fails", func(t *testing.T) {
@@ -7190,5 +8189,842 @@ func TestAlterCollectionSchemaTask(t *testing.T) {
 			err = task.Execute(ctx)
 			assert.Error(t, err)
 		})
+	})
+}
+
+// TestAlterCollection_RejectExternalTupleMutation verifies the proxy-layer
+// guard rejects user alter_collection_properties calls that target the
+// external_source / external_spec tuple. Mutation of this tuple is reserved
+// to RefreshExternalCollection; see issue #49335.
+func TestAlterCollection_RejectExternalTupleMutation(t *testing.T) {
+	ctx := context.Background()
+	task := &alterCollectionTask{
+		AlterCollectionRequest: &milvuspb.AlterCollectionRequest{
+			Base:           &commonpb.MsgBase{MsgType: commonpb.MsgType_AlterCollection},
+			DbName:         dbName,
+			CollectionName: "ext_guard_test",
+		},
+	}
+
+	t.Run("reject properties with external_source", func(t *testing.T) {
+		task.Properties = []*commonpb.KeyValuePair{
+			{Key: common.CollectionExternalSource, Value: "s3://bucket/a/"},
+		}
+		task.DeleteKeys = nil
+		err := task.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "RefreshExternalCollection")
+	})
+
+	t.Run("reject properties with external_spec", func(t *testing.T) {
+		task.Properties = []*commonpb.KeyValuePair{
+			{Key: common.CollectionExternalSpec, Value: `{"format":"parquet"}`},
+		}
+		task.DeleteKeys = nil
+		err := task.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "RefreshExternalCollection")
+	})
+
+	t.Run("reject delete of external_source", func(t *testing.T) {
+		task.Properties = nil
+		task.DeleteKeys = []string{common.CollectionExternalSource}
+		err := task.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "immutable")
+	})
+
+	t.Run("reject delete of external_spec", func(t *testing.T) {
+		task.Properties = nil
+		task.DeleteKeys = []string{common.CollectionExternalSpec}
+		err := task.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "immutable")
+	})
+}
+
+func testDropFieldBaseSchema() *schemapb.CollectionSchema {
+	return &schemapb.CollectionSchema{
+		Name: "test_collection",
+		Fields: []*schemapb.FieldSchema{
+			{FieldID: 100, Name: "id", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+			{FieldID: 101, Name: "vector", DataType: schemapb.DataType_FloatVector, TypeParams: []*commonpb.KeyValuePair{{Key: "dim", Value: "128"}}},
+			{FieldID: 102, Name: "scalar_field", DataType: schemapb.DataType_VarChar},
+			{FieldID: 103, Name: "partition_key", DataType: schemapb.DataType_Int64, IsPartitionKey: true},
+			{FieldID: 104, Name: "clustering_key", DataType: schemapb.DataType_Int64, IsClusteringKey: true},
+			{FieldID: 105, Name: "dynamic_field", DataType: schemapb.DataType_JSON, IsDynamic: true},
+		},
+		Functions: []*schemapb.FunctionSchema{
+			{Name: "test_func", InputFieldNames: []string{"scalar_field"}, OutputFieldNames: []string{"vector"}},
+		},
+	}
+}
+
+func TestValidateDropField(t *testing.T) {
+	baseSchema := testDropFieldBaseSchema()
+
+	t.Run("empty field name", func(t *testing.T) {
+		err := validateDropField(baseSchema, "")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "field name is empty")
+	})
+
+	t.Run("field not found", func(t *testing.T) {
+		err := validateDropField(baseSchema, "nonexistent_field")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "field not found")
+	})
+
+	t.Run("cannot drop primary key", func(t *testing.T) {
+		err := validateDropField(baseSchema, "id")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot drop primary key field")
+	})
+
+	t.Run("cannot drop the last vector field", func(t *testing.T) {
+		err := validateDropField(baseSchema, "vector")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot drop the last vector field")
+	})
+
+	t.Run("can drop vector field when multiple exist", func(t *testing.T) {
+		multiVecSchema := &schemapb.CollectionSchema{
+			Name: "test_collection",
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "id", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+				{FieldID: 101, Name: "vector1", DataType: schemapb.DataType_FloatVector, TypeParams: []*commonpb.KeyValuePair{{Key: "dim", Value: "128"}}},
+				{FieldID: 102, Name: "vector2", DataType: schemapb.DataType_FloatVector, TypeParams: []*commonpb.KeyValuePair{{Key: "dim", Value: "64"}}},
+			},
+		}
+		err := validateDropField(multiVecSchema, "vector2")
+		assert.NoError(t, err)
+	})
+
+	t.Run("cannot drop partition key", func(t *testing.T) {
+		err := validateDropField(baseSchema, "partition_key")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot drop partition key field")
+	})
+
+	t.Run("cannot drop clustering key", func(t *testing.T) {
+		err := validateDropField(baseSchema, "clustering_key")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot drop clustering key field")
+	})
+
+	t.Run("cannot drop dynamic field", func(t *testing.T) {
+		err := validateDropField(baseSchema, "dynamic_field")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot drop dynamic field")
+	})
+
+	t.Run("cannot drop active ttl field", func(t *testing.T) {
+		schema := &schemapb.CollectionSchema{
+			Name: "test_collection",
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "id", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+				{FieldID: 101, Name: "vector", DataType: schemapb.DataType_FloatVector, TypeParams: []*commonpb.KeyValuePair{{Key: "dim", Value: "128"}}},
+				{FieldID: 102, Name: "ttl", DataType: schemapb.DataType_Timestamptz, Nullable: true},
+			},
+			Properties: []*commonpb.KeyValuePair{
+				{Key: common.CollectionTTLFieldKey, Value: "ttl"},
+			},
+		}
+
+		err := validateDropField(schema, "ttl")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "referenced by collection property ttl_field")
+	})
+
+	t.Run("field referenced by function - input", func(t *testing.T) {
+		err := validateDropField(baseSchema, "scalar_field")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "is referenced by function test_func as input")
+	})
+
+	t.Run("field referenced by function - output", func(t *testing.T) {
+		// Need two vector fields so the "last vector field" check passes,
+		// allowing us to reach the output field reference check.
+		schema := &schemapb.CollectionSchema{
+			Name: "test_collection",
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "id", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+				{FieldID: 101, Name: "vec_output", DataType: schemapb.DataType_FloatVector, TypeParams: []*commonpb.KeyValuePair{{Key: "dim", Value: "128"}}},
+				{FieldID: 102, Name: "vec_other", DataType: schemapb.DataType_FloatVector, TypeParams: []*commonpb.KeyValuePair{{Key: "dim", Value: "64"}}},
+				{FieldID: 103, Name: "text", DataType: schemapb.DataType_VarChar},
+			},
+			Functions: []*schemapb.FunctionSchema{
+				{Name: "embed_func", InputFieldNames: []string{"text"}, OutputFieldNames: []string{"vec_output"}},
+			},
+		}
+		err := validateDropField(schema, "vec_output")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "is referenced by function embed_func as output")
+	})
+
+	t.Run("success - field can be dropped", func(t *testing.T) {
+		schemaNoFunc := &schemapb.CollectionSchema{
+			Name: "test_collection",
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "id", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+				{FieldID: 101, Name: "vector", DataType: schemapb.DataType_FloatVector, TypeParams: []*commonpb.KeyValuePair{{Key: "dim", Value: "128"}}},
+				{FieldID: 102, Name: "droppable_field", DataType: schemapb.DataType_VarChar},
+			},
+		}
+		err := validateDropField(schemaNoFunc, "droppable_field")
+		assert.NoError(t, err)
+	})
+
+	t.Run("can drop vector when struct array field also has vector", func(t *testing.T) {
+		// Top-level vector is the only Fields-level vector, but the struct
+		// array field also contains a vector, so total vector count == 2 and
+		// the drop should succeed.
+		schema := &schemapb.CollectionSchema{
+			Name: "test_collection",
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "id", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+				{FieldID: 101, Name: "vec", DataType: schemapb.DataType_FloatVector, TypeParams: []*commonpb.KeyValuePair{{Key: "dim", Value: "128"}}},
+			},
+			StructArrayFields: []*schemapb.StructArrayFieldSchema{
+				{
+					FieldID: 102, Name: "paragraphs",
+					Fields: []*schemapb.FieldSchema{
+						{FieldID: 103, Name: "para_embed", DataType: schemapb.DataType_ArrayOfVector},
+					},
+				},
+			},
+		}
+		err := validateDropField(schema, "vec")
+		assert.NoError(t, err)
+	})
+
+	t.Run("drop whole struct array field by name - success", func(t *testing.T) {
+		// Top-level vector remains after dropping the struct, so the drop is allowed.
+		schema := &schemapb.CollectionSchema{
+			Name: "test_collection",
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "id", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+				{FieldID: 101, Name: "vec", DataType: schemapb.DataType_FloatVector, TypeParams: []*commonpb.KeyValuePair{{Key: "dim", Value: "128"}}},
+			},
+			StructArrayFields: []*schemapb.StructArrayFieldSchema{
+				{
+					FieldID: 102, Name: "paragraphs",
+					Fields: []*schemapb.FieldSchema{
+						{FieldID: 103, Name: "para_text", DataType: schemapb.DataType_Array},
+					},
+				},
+			},
+		}
+		err := validateDropField(schema, "paragraphs")
+		assert.NoError(t, err)
+	})
+
+	t.Run("reject drop struct array field when it holds the only vector", func(t *testing.T) {
+		// The struct contains the only vector in the collection (an ArrayOfVector
+		// sub-field); dropping it would leave no vector field.
+		schema := &schemapb.CollectionSchema{
+			Name: "test_collection",
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "id", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+			},
+			StructArrayFields: []*schemapb.StructArrayFieldSchema{
+				{
+					FieldID: 101, Name: "paragraphs",
+					Fields: []*schemapb.FieldSchema{
+						{FieldID: 102, Name: "para_text", DataType: schemapb.DataType_Array},
+						{FieldID: 103, Name: "para_embed", DataType: schemapb.DataType_ArrayOfVector},
+					},
+				},
+			},
+		}
+		err := validateDropField(schema, "paragraphs")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "would leave no vector field")
+	})
+
+	t.Run("reject drop struct array field with protected sub-field", func(t *testing.T) {
+		schema := &schemapb.CollectionSchema{
+			Name: "test_collection",
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "id", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+				{FieldID: 101, Name: "vec", DataType: schemapb.DataType_FloatVector, TypeParams: []*commonpb.KeyValuePair{{Key: "dim", Value: "128"}}},
+			},
+			StructArrayFields: []*schemapb.StructArrayFieldSchema{
+				{
+					FieldID: 102, Name: "paragraphs",
+					Fields: []*schemapb.FieldSchema{
+						{FieldID: 103, Name: "para_key", DataType: schemapb.DataType_Array, IsPartitionKey: true},
+					},
+				},
+			},
+		}
+		err := validateDropField(schema, "paragraphs")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "sub-field para_key is partition key")
+	})
+
+	t.Run("reject drop struct array field referenced by function", func(t *testing.T) {
+		schema := &schemapb.CollectionSchema{
+			Name: "test_collection",
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "id", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+				{FieldID: 101, Name: "vec", DataType: schemapb.DataType_FloatVector, TypeParams: []*commonpb.KeyValuePair{{Key: "dim", Value: "128"}}},
+			},
+			StructArrayFields: []*schemapb.StructArrayFieldSchema{
+				{
+					FieldID: 102, Name: "paragraphs",
+					Fields: []*schemapb.FieldSchema{
+						{FieldID: 103, Name: "para_text", DataType: schemapb.DataType_Array},
+					},
+				},
+			},
+			Functions: []*schemapb.FunctionSchema{
+				{Name: "embed_func", InputFieldNames: []string{"para_text"}, OutputFieldNames: []string{"vec"}},
+			},
+		}
+		err := validateDropField(schema, "paragraphs")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "sub-field para_text is referenced by function embed_func as input")
+	})
+
+	t.Run("reject drop sub-field of struct array field by name", func(t *testing.T) {
+		schema := &schemapb.CollectionSchema{
+			Name: "test_collection",
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "id", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+				{FieldID: 101, Name: "vec", DataType: schemapb.DataType_FloatVector, TypeParams: []*commonpb.KeyValuePair{{Key: "dim", Value: "128"}}},
+			},
+			StructArrayFields: []*schemapb.StructArrayFieldSchema{
+				{
+					FieldID: 102, Name: "paragraphs",
+					Fields: []*schemapb.FieldSchema{
+						{FieldID: 103, Name: "para_text", DataType: schemapb.DataType_Array},
+					},
+				},
+			},
+		}
+		err := validateDropField(schema, "para_text")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot drop sub-field of struct array field")
+		assert.Contains(t, err.Error(), "paragraphs.para_text")
+	})
+}
+
+func TestAlterCollectionSchemaTask_PreExecute(t *testing.T) {
+	ctx := context.Background()
+	baseSchema := testDropFieldBaseSchema()
+
+	t.Run("nil action", func(t *testing.T) {
+		task := &alterCollectionSchemaTask{
+			ctx:       ctx,
+			oldSchema: baseSchema,
+			AlterCollectionSchemaRequest: &milvuspb.AlterCollectionSchemaRequest{
+				CollectionName: "test_collection",
+				Action:         nil,
+			},
+		}
+		err := task.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "action is nil")
+	})
+
+	t.Run("empty add request fails validation", func(t *testing.T) {
+		task := &alterCollectionSchemaTask{
+			ctx:       ctx,
+			oldSchema: baseSchema,
+			AlterCollectionSchemaRequest: &milvuspb.AlterCollectionSchemaRequest{
+				CollectionName: "test_collection",
+				Action: &milvuspb.AlterCollectionSchemaRequest_Action{
+					Op: &milvuspb.AlterCollectionSchemaRequest_Action_AddRequest{},
+				},
+			},
+		}
+		err := task.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "add_request is nil")
+	})
+
+	t.Run("drop by field_name - validation error", func(t *testing.T) {
+		task := &alterCollectionSchemaTask{
+			ctx:       ctx,
+			oldSchema: baseSchema,
+			AlterCollectionSchemaRequest: &milvuspb.AlterCollectionSchemaRequest{
+				CollectionName: "test_collection",
+				Action: &milvuspb.AlterCollectionSchemaRequest_Action{
+					Op: &milvuspb.AlterCollectionSchemaRequest_Action_DropRequest{
+						DropRequest: &milvuspb.AlterCollectionSchemaRequest_DropRequest{
+							Identifier: &milvuspb.AlterCollectionSchemaRequest_DropRequest_FieldName{
+								FieldName: "id",
+							},
+						},
+					},
+				},
+			},
+		}
+		err := task.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot drop primary key field")
+	})
+
+	t.Run("drop by field_id - success", func(t *testing.T) {
+		schema := &schemapb.CollectionSchema{
+			Name: "test_collection",
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "id", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+				{FieldID: 101, Name: "vector", DataType: schemapb.DataType_FloatVector, TypeParams: []*commonpb.KeyValuePair{{Key: "dim", Value: "128"}}},
+				{FieldID: 102, Name: "droppable", DataType: schemapb.DataType_VarChar},
+			},
+		}
+		task := &alterCollectionSchemaTask{
+			ctx:       ctx,
+			oldSchema: schema,
+			AlterCollectionSchemaRequest: &milvuspb.AlterCollectionSchemaRequest{
+				CollectionName: "test_collection",
+				Action: &milvuspb.AlterCollectionSchemaRequest_Action{
+					Op: &milvuspb.AlterCollectionSchemaRequest_Action_DropRequest{
+						DropRequest: &milvuspb.AlterCollectionSchemaRequest_DropRequest{
+							Identifier: &milvuspb.AlterCollectionSchemaRequest_DropRequest_FieldId{
+								FieldId: 102,
+							},
+						},
+					},
+				},
+			},
+		}
+		err := task.PreExecute(ctx)
+		assert.NoError(t, err)
+	})
+
+	t.Run("drop by field_id - not found", func(t *testing.T) {
+		task := &alterCollectionSchemaTask{
+			ctx:       ctx,
+			oldSchema: baseSchema,
+			AlterCollectionSchemaRequest: &milvuspb.AlterCollectionSchemaRequest{
+				CollectionName: "test_collection",
+				Action: &milvuspb.AlterCollectionSchemaRequest_Action{
+					Op: &milvuspb.AlterCollectionSchemaRequest_Action_DropRequest{
+						DropRequest: &milvuspb.AlterCollectionSchemaRequest_DropRequest{
+							Identifier: &milvuspb.AlterCollectionSchemaRequest_DropRequest_FieldId{
+								FieldId: 999,
+							},
+						},
+					},
+				},
+			},
+		}
+		err := task.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "field not found with id")
+	})
+
+	t.Run("drop by field_name - success", func(t *testing.T) {
+		schema := &schemapb.CollectionSchema{
+			Name: "test_collection",
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "id", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+				{FieldID: 101, Name: "vector", DataType: schemapb.DataType_FloatVector, TypeParams: []*commonpb.KeyValuePair{{Key: "dim", Value: "128"}}},
+				{FieldID: 102, Name: "droppable", DataType: schemapb.DataType_VarChar},
+			},
+		}
+		task := &alterCollectionSchemaTask{
+			ctx:       ctx,
+			oldSchema: schema,
+			AlterCollectionSchemaRequest: &milvuspb.AlterCollectionSchemaRequest{
+				CollectionName: "test_collection",
+				Action: &milvuspb.AlterCollectionSchemaRequest_Action{
+					Op: &milvuspb.AlterCollectionSchemaRequest_Action_DropRequest{
+						DropRequest: &milvuspb.AlterCollectionSchemaRequest_DropRequest{
+							Identifier: &milvuspb.AlterCollectionSchemaRequest_DropRequest_FieldName{
+								FieldName: "droppable",
+							},
+						},
+					},
+				},
+			},
+		}
+		err := task.PreExecute(ctx)
+		assert.NoError(t, err)
+	})
+
+	t.Run("drop by function_name - detach minhash rejected", func(t *testing.T) {
+		schemaWithFunc := &schemapb.CollectionSchema{
+			Name: "test_collection",
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "id", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+				{FieldID: 101, Name: "vector", DataType: schemapb.DataType_FloatVector, TypeParams: []*commonpb.KeyValuePair{{Key: "dim", Value: "128"}}},
+				{FieldID: 102, Name: "text", DataType: schemapb.DataType_VarChar},
+			},
+			Functions: []*schemapb.FunctionSchema{
+				{Name: "minhash_func", Type: schemapb.FunctionType_MinHash},
+			},
+		}
+		task := &alterCollectionSchemaTask{
+			ctx:       ctx,
+			oldSchema: schemaWithFunc,
+			AlterCollectionSchemaRequest: &milvuspb.AlterCollectionSchemaRequest{
+				CollectionName: "test_collection",
+				Action: &milvuspb.AlterCollectionSchemaRequest_Action{
+					Op: &milvuspb.AlterCollectionSchemaRequest_Action_DropRequest{
+						DropRequest: &milvuspb.AlterCollectionSchemaRequest_DropRequest{
+							Identifier: &milvuspb.AlterCollectionSchemaRequest_DropRequest_FunctionName{
+								FunctionName: "minhash_func",
+							},
+						},
+					},
+				},
+			},
+		}
+		err := task.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.ErrorContains(t, err, "detaching a function without dropping its output field is not supported")
+	})
+
+	t.Run("drop by function_name - bm25 function field success", func(t *testing.T) {
+		schemaWithFunc := &schemapb.CollectionSchema{
+			Name: "test_collection",
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "id", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+				{FieldID: 101, Name: "dense_vector", DataType: schemapb.DataType_FloatVector, TypeParams: []*commonpb.KeyValuePair{{Key: "dim", Value: "128"}}},
+				{FieldID: 102, Name: "text", DataType: schemapb.DataType_VarChar},
+				{FieldID: 103, Name: "sparse_vector", DataType: schemapb.DataType_SparseFloatVector},
+			},
+			Functions: []*schemapb.FunctionSchema{
+				{
+					Name:             "bm25_func",
+					Type:             schemapb.FunctionType_BM25,
+					InputFieldNames:  []string{"text"},
+					OutputFieldNames: []string{"sparse_vector"},
+				},
+			},
+		}
+		task := &alterCollectionSchemaTask{
+			ctx:       ctx,
+			oldSchema: schemaWithFunc,
+			AlterCollectionSchemaRequest: &milvuspb.AlterCollectionSchemaRequest{
+				CollectionName: "test_collection",
+				Action: &milvuspb.AlterCollectionSchemaRequest_Action{
+					Op: &milvuspb.AlterCollectionSchemaRequest_Action_DropRequest{
+						DropRequest: &milvuspb.AlterCollectionSchemaRequest_DropRequest{
+							Identifier: &milvuspb.AlterCollectionSchemaRequest_DropRequest_FunctionName{
+								FunctionName: "bm25_func",
+							},
+							DropFunctionOutputFields: true,
+						},
+					},
+				},
+			},
+		}
+		err := task.PreExecute(ctx)
+		assert.NoError(t, err)
+	})
+
+	t.Run("drop by function_name - not found", func(t *testing.T) {
+		task := &alterCollectionSchemaTask{
+			ctx:       ctx,
+			oldSchema: baseSchema,
+			AlterCollectionSchemaRequest: &milvuspb.AlterCollectionSchemaRequest{
+				CollectionName: "test_collection",
+				Action: &milvuspb.AlterCollectionSchemaRequest_Action{
+					Op: &milvuspb.AlterCollectionSchemaRequest_Action_DropRequest{
+						DropRequest: &milvuspb.AlterCollectionSchemaRequest_DropRequest{
+							Identifier: &milvuspb.AlterCollectionSchemaRequest_DropRequest_FunctionName{
+								FunctionName: "nonexistent_func",
+							},
+						},
+					},
+				},
+			},
+		}
+		err := task.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "function not found")
+	})
+
+	t.Run("drop with empty schema", func(t *testing.T) {
+		task := &alterCollectionSchemaTask{
+			ctx:       ctx,
+			oldSchema: nil,
+			AlterCollectionSchemaRequest: &milvuspb.AlterCollectionSchemaRequest{
+				CollectionName: "test_collection",
+				Action: &milvuspb.AlterCollectionSchemaRequest_Action{
+					Op: &milvuspb.AlterCollectionSchemaRequest_Action_DropRequest{
+						DropRequest: &milvuspb.AlterCollectionSchemaRequest_DropRequest{
+							Identifier: &milvuspb.AlterCollectionSchemaRequest_DropRequest_FieldName{
+								FieldName: "field",
+							},
+						},
+					},
+				},
+			},
+		}
+		err := task.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "empty old schema")
+	})
+
+	t.Run("drop by field_id - struct array field success", func(t *testing.T) {
+		schema := &schemapb.CollectionSchema{
+			Name: "test_collection",
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "id", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+				{FieldID: 101, Name: "vec", DataType: schemapb.DataType_FloatVector, TypeParams: []*commonpb.KeyValuePair{{Key: "dim", Value: "128"}}},
+			},
+			StructArrayFields: []*schemapb.StructArrayFieldSchema{
+				{
+					FieldID: 102, Name: "paragraphs",
+					Fields: []*schemapb.FieldSchema{
+						{FieldID: 103, Name: "para_text", DataType: schemapb.DataType_Array},
+					},
+				},
+			},
+		}
+		task := &alterCollectionSchemaTask{
+			ctx:       ctx,
+			oldSchema: schema,
+			AlterCollectionSchemaRequest: &milvuspb.AlterCollectionSchemaRequest{
+				CollectionName: "test_collection",
+				Action: &milvuspb.AlterCollectionSchemaRequest_Action{
+					Op: &milvuspb.AlterCollectionSchemaRequest_Action_DropRequest{
+						DropRequest: &milvuspb.AlterCollectionSchemaRequest_DropRequest{
+							Identifier: &milvuspb.AlterCollectionSchemaRequest_DropRequest_FieldId{
+								FieldId: 102,
+							},
+						},
+					},
+				},
+			},
+		}
+		err := task.PreExecute(ctx)
+		assert.NoError(t, err)
+	})
+
+	t.Run("drop by field_id - reject sub-field of struct array field", func(t *testing.T) {
+		schema := &schemapb.CollectionSchema{
+			Name: "test_collection",
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "id", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+				{FieldID: 101, Name: "vec", DataType: schemapb.DataType_FloatVector, TypeParams: []*commonpb.KeyValuePair{{Key: "dim", Value: "128"}}},
+			},
+			StructArrayFields: []*schemapb.StructArrayFieldSchema{
+				{
+					FieldID: 102, Name: "paragraphs",
+					Fields: []*schemapb.FieldSchema{
+						{FieldID: 103, Name: "para_text", DataType: schemapb.DataType_Array},
+					},
+				},
+			},
+		}
+		task := &alterCollectionSchemaTask{
+			ctx:       ctx,
+			oldSchema: schema,
+			AlterCollectionSchemaRequest: &milvuspb.AlterCollectionSchemaRequest{
+				CollectionName: "test_collection",
+				Action: &milvuspb.AlterCollectionSchemaRequest_Action{
+					Op: &milvuspb.AlterCollectionSchemaRequest_Action_DropRequest{
+						DropRequest: &milvuspb.AlterCollectionSchemaRequest_DropRequest{
+							Identifier: &milvuspb.AlterCollectionSchemaRequest_DropRequest_FieldId{
+								FieldId: 103,
+							},
+						},
+					},
+				},
+			},
+		}
+		err := task.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot drop sub-field of struct array field")
+		assert.Contains(t, err.Error(), "paragraphs.para_text")
+	})
+
+	t.Run("unknown action type", func(t *testing.T) {
+		task := &alterCollectionSchemaTask{
+			ctx:       ctx,
+			oldSchema: baseSchema,
+			AlterCollectionSchemaRequest: &milvuspb.AlterCollectionSchemaRequest{
+				CollectionName: "test_collection",
+				Action:         &milvuspb.AlterCollectionSchemaRequest_Action{},
+			},
+		}
+		err := task.PreExecute(ctx)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "unknown action type")
+	})
+}
+
+func TestValidateDropFunction(t *testing.T) {
+	t.Run("empty function name", func(t *testing.T) {
+		err := validateDropFunction(&schemapb.CollectionSchema{}, "", false)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "function name is empty")
+	})
+
+	t.Run("function not found", func(t *testing.T) {
+		schema := &schemapb.CollectionSchema{
+			Functions: []*schemapb.FunctionSchema{
+				{Name: "embedding_func", Type: schemapb.FunctionType_TextEmbedding},
+			},
+		}
+		err := validateDropFunction(schema, "nonexistent", false)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "function not found")
+	})
+
+	t.Run("detach minhash function rejected", func(t *testing.T) {
+		schema := &schemapb.CollectionSchema{
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "id", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+				{FieldID: 101, Name: "text", DataType: schemapb.DataType_VarChar},
+				{FieldID: 102, Name: "minhash_vec", DataType: schemapb.DataType_BinaryVector},
+			},
+			Functions: []*schemapb.FunctionSchema{
+				{
+					Name: "minhash_func", Type: schemapb.FunctionType_MinHash,
+					InputFieldNames: []string{"text"}, OutputFieldNames: []string{"minhash_vec"},
+				},
+			},
+		}
+		err := validateDropFunction(schema, "minhash_func", false)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "detaching a function without dropping its output field is not supported")
+	})
+
+	t.Run("detach bm25 function rejected", func(t *testing.T) {
+		schema := &schemapb.CollectionSchema{
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "id", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+				{FieldID: 101, Name: "text", DataType: schemapb.DataType_VarChar},
+				{FieldID: 102, Name: "sparse_vec", DataType: schemapb.DataType_SparseFloatVector},
+			},
+			Functions: []*schemapb.FunctionSchema{
+				{
+					Name: "bm25_func", Type: schemapb.FunctionType_BM25,
+					InputFieldNames: []string{"text"}, OutputFieldNames: []string{"sparse_vec"},
+				},
+			},
+		}
+		err := validateDropFunction(schema, "bm25_func", false)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "detaching a function without dropping its output field is not supported")
+	})
+
+	t.Run("detach text embedding function rejected (coupled like all types)", func(t *testing.T) {
+		schema := &schemapb.CollectionSchema{
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "id", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+				{FieldID: 101, Name: "text", DataType: schemapb.DataType_VarChar},
+				{FieldID: 102, Name: "vec_func_out", DataType: schemapb.DataType_FloatVector},
+			},
+			Functions: []*schemapb.FunctionSchema{
+				{
+					Name: "embed_func", Type: schemapb.FunctionType_TextEmbedding,
+					InputFieldNames: []string{"text"}, OutputFieldNames: []string{"vec_func_out"},
+				},
+			},
+		}
+		err := validateDropFunction(schema, "embed_func", false)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "detaching a function without dropping its output field is not supported")
+	})
+
+	t.Run("drop function field leaves another vector field", func(t *testing.T) {
+		schema := &schemapb.CollectionSchema{
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "id", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+				{FieldID: 101, Name: "text", DataType: schemapb.DataType_VarChar},
+				{FieldID: 102, Name: "sparse_vec", DataType: schemapb.DataType_SparseFloatVector},
+				{FieldID: 103, Name: "vec_other", DataType: schemapb.DataType_FloatVector},
+			},
+			Functions: []*schemapb.FunctionSchema{
+				{
+					Name: "bm25_func", Type: schemapb.FunctionType_BM25,
+					InputFieldNames: []string{"text"}, OutputFieldNames: []string{"sparse_vec"},
+				},
+			},
+		}
+		err := validateDropFunction(schema, "bm25_func", true)
+		assert.NoError(t, err)
+	})
+
+	t.Run("drop minhash function field succeeds", func(t *testing.T) {
+		schema := &schemapb.CollectionSchema{
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "id", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+				{FieldID: 101, Name: "text", DataType: schemapb.DataType_VarChar},
+				{FieldID: 102, Name: "minhash_vec", DataType: schemapb.DataType_BinaryVector},
+				{FieldID: 103, Name: "vec_other", DataType: schemapb.DataType_FloatVector},
+			},
+			Functions: []*schemapb.FunctionSchema{
+				{
+					Name: "minhash_func", Type: schemapb.FunctionType_MinHash,
+					InputFieldNames: []string{"text"}, OutputFieldNames: []string{"minhash_vec"},
+				},
+			},
+		}
+		err := validateDropFunction(schema, "minhash_func", true)
+		assert.NoError(t, err)
+	})
+
+	t.Run("drop text embedding function field succeeds", func(t *testing.T) {
+		schema := &schemapb.CollectionSchema{
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "id", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+				{FieldID: 101, Name: "text", DataType: schemapb.DataType_VarChar},
+				{FieldID: 102, Name: "vec_func_out", DataType: schemapb.DataType_FloatVector},
+				{FieldID: 103, Name: "vec_other", DataType: schemapb.DataType_FloatVector},
+			},
+			Functions: []*schemapb.FunctionSchema{
+				{
+					Name: "embed_func", Type: schemapb.FunctionType_TextEmbedding,
+					InputFieldNames: []string{"text"}, OutputFieldNames: []string{"vec_func_out"},
+				},
+			},
+		}
+		err := validateDropFunction(schema, "embed_func", true)
+		assert.NoError(t, err)
+	})
+
+	t.Run("drop function field would leave no vector field", func(t *testing.T) {
+		schema := &schemapb.CollectionSchema{
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "id", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+				{FieldID: 101, Name: "text", DataType: schemapb.DataType_VarChar},
+				{FieldID: 102, Name: "sparse_vec", DataType: schemapb.DataType_SparseFloatVector},
+			},
+			Functions: []*schemapb.FunctionSchema{
+				{
+					Name: "bm25_func", Type: schemapb.FunctionType_BM25,
+					InputFieldNames: []string{"text"}, OutputFieldNames: []string{"sparse_vec"},
+				},
+			},
+		}
+		err := validateDropFunction(schema, "bm25_func", true)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "would leave no vector field")
+	})
+
+	t.Run("drop function field preserves vector in struct array field", func(t *testing.T) {
+		schema := &schemapb.CollectionSchema{
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "id", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+				{FieldID: 101, Name: "text", DataType: schemapb.DataType_VarChar},
+				{FieldID: 102, Name: "sparse_vec", DataType: schemapb.DataType_SparseFloatVector},
+			},
+			StructArrayFields: []*schemapb.StructArrayFieldSchema{
+				{
+					FieldID: 103, Name: "paragraphs",
+					Fields: []*schemapb.FieldSchema{
+						{FieldID: 104, Name: "para_embed", DataType: schemapb.DataType_ArrayOfVector},
+					},
+				},
+			},
+			Functions: []*schemapb.FunctionSchema{
+				{
+					Name: "bm25_func", Type: schemapb.FunctionType_BM25,
+					InputFieldNames: []string{"text"}, OutputFieldNames: []string{"sparse_vec"},
+				},
+			},
+		}
+		err := validateDropFunction(schema, "bm25_func", true)
+		assert.NoError(t, err)
 	})
 }

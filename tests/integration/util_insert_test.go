@@ -22,8 +22,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 func TestGenerateBalancedInt64PKs(t *testing.T) {
@@ -536,7 +536,8 @@ func TestHashPK2ChannelsIntegration(t *testing.T) {
 		}
 
 		// Use actual HashPK2Channels to get channel assignments
-		channelIndices := typeutil.HashPK2Channels(ids, shardNames)
+		channelIndices, err := typeutil.HashPK2Channels(ids, shardNames)
+		assert.NoError(t, err)
 
 		// Count distribution
 		channelCounts := make(map[uint32]int)
@@ -573,7 +574,8 @@ func TestHashPK2ChannelsIntegration(t *testing.T) {
 			shardNames[i] = fmt.Sprintf("shard_%d", i)
 		}
 
-		channelIndices := typeutil.HashPK2Channels(ids, shardNames)
+		channelIndices, err := typeutil.HashPK2Channels(ids, shardNames)
+		assert.NoError(t, err)
 
 		channelCounts := make(map[uint32]int)
 		for _, ch := range channelIndices {
@@ -608,7 +610,8 @@ func TestHashPK2ChannelsIntegration(t *testing.T) {
 			shardNames[i] = fmt.Sprintf("shard_%d", i)
 		}
 
-		channelIndices := typeutil.HashPK2Channels(ids, shardNames)
+		channelIndices, err := typeutil.HashPK2Channels(ids, shardNames)
+		assert.NoError(t, err)
 
 		channelCounts := make(map[uint32]int)
 		for _, ch := range channelIndices {
@@ -643,7 +646,8 @@ func TestHashPK2ChannelsIntegration(t *testing.T) {
 			shardNames[i] = fmt.Sprintf("shard_%d", i)
 		}
 
-		channelIndices := typeutil.HashPK2Channels(ids, shardNames)
+		channelIndices, err := typeutil.HashPK2Channels(ids, shardNames)
+		assert.NoError(t, err)
 
 		channelCounts := make(map[uint32]int)
 		for _, ch := range channelIndices {
@@ -677,7 +681,8 @@ func TestHashPK2ChannelsIntegration(t *testing.T) {
 			shardNames[i] = fmt.Sprintf("shard_%d", i)
 		}
 
-		channelIndices := typeutil.HashPK2Channels(ids, shardNames)
+		channelIndices, err := typeutil.HashPK2Channels(ids, shardNames)
+		assert.NoError(t, err)
 
 		channelCounts := make(map[uint32]int)
 		for _, ch := range channelIndices {
@@ -713,7 +718,8 @@ func TestHashPK2ChannelsIntegration(t *testing.T) {
 			shardNames[i] = fmt.Sprintf("shard_%d", i)
 		}
 
-		channelIndices := typeutil.HashPK2Channels(ids, shardNames)
+		channelIndices, err := typeutil.HashPK2Channels(ids, shardNames)
+		assert.NoError(t, err)
 
 		channelCounts := make(map[uint32]int)
 		for _, ch := range channelIndices {

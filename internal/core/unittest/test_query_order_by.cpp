@@ -10,20 +10,94 @@
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <set>
+#include <vector>
 #include "test_utils/DataGen.h"
 #include "segcore/SegmentSealed.h"
 #include "plan/PlanNode.h"
 #include "plan/PlanNodeIdGenerator.h"
 #include "test_utils/storage_test_utils.h"
 #include "exec/expression/function/FunctionFactory.h"
+#include "exec/QueryContext.h"
 #include "common/Consts.h"
+#include "common/FieldData.h"
+#include "pb/plan.pb.h"
+#include "query/ExecPlanNodeVisitor.h"
 #include "query/PlanImpl.h"
 #include "query/PlanNode.h"
+#include "query/PlanProto.h"
 
 using namespace milvus;
 using namespace milvus::segcore;
 using namespace milvus::plan;
+
+namespace {
+
+void
+SetInt64FieldData(GeneratedData& raw_data,
+                  FieldId field_id,
+                  const std::vector<int64_t>& values) {
+    AssertInfo(raw_data.raw_->num_rows() == values.size(),
+               "values size must match row count");
+    for (int i = 0; i < raw_data.raw_->fields_data_size(); i++) {
+        auto* field_data = raw_data.raw_->mutable_fields_data(i);
+        if (field_data->field_id() != field_id.get()) {
+            continue;
+        }
+        auto* data =
+            field_data->mutable_scalars()->mutable_long_data()->mutable_data();
+        data->Clear();
+        data->Add(values.data(), values.data() + values.size());
+        return;
+    }
+    ThrowInfo(FieldIDInvalid, "field id not found");
+}
+
+void
+SetIntArrayFieldData(GeneratedData& raw_data,
+                     FieldId field_id,
+                     const std::vector<std::vector<int32_t>>& rows) {
+    AssertInfo(raw_data.raw_->num_rows() == rows.size(),
+               "array rows size must match row count");
+    for (int i = 0; i < raw_data.raw_->fields_data_size(); i++) {
+        auto* field_data = raw_data.raw_->mutable_fields_data(i);
+        if (field_data->field_id() != field_id.get()) {
+            continue;
+        }
+        auto* arrays =
+            field_data->mutable_scalars()->mutable_array_data()->mutable_data();
+        arrays->Clear();
+        for (const auto& row : rows) {
+            auto* array_data = arrays->Add();
+            array_data->mutable_int_data()->mutable_data()->Add(
+                row.data(), row.data() + row.size());
+        }
+        return;
+    }
+    ThrowInfo(FieldIDInvalid, "field id not found");
+}
+
+void
+AddPositiveElementFilter(proto::plan::QueryPlanNode* query,
+                         FieldId array_field_id) {
+    auto* element_filter =
+        query->mutable_predicates()->mutable_element_filter_expr();
+    element_filter->set_struct_name("structA");
+
+    auto* unary_range =
+        element_filter->mutable_element_expr()->mutable_unary_range_expr();
+    auto* column_info = unary_range->mutable_column_info();
+    column_info->set_field_id(array_field_id.get());
+    column_info->set_data_type(proto::schema::DataType::Int32);
+    column_info->set_element_type(proto::schema::DataType::Int32);
+    column_info->set_is_element_level(true);
+
+    unary_range->set_op(proto::plan::OpType::GreaterThan);
+    unary_range->mutable_value()->set_int64_val(0);
+}
+
+}  // namespace
 
 class QueryOrderByTest : public testing::TestWithParam<bool> {
  public:
@@ -100,8 +174,49 @@ class QueryOrderByTest : public testing::TestWithParam<bool> {
         return retrieve_plan;
     }
 
-    // Helper: build MvccNode -> ProjectNode -> OrderByNode chain
-    // Projects specified fields + SegmentOffsetFieldID, sorts by sort_field
+    RowVectorPtr
+    runProjectOnlyPlan(const std::vector<FieldId>& field_ids,
+                       const std::vector<std::string>& field_names,
+                       const std::vector<DataType>& field_types) {
+        std::vector<PlanNodePtr> sources;
+        PlanNodePtr mvcc_node =
+            std::make_shared<MvccNode>(GetNextPlanNodeId(), sources);
+        sources = {mvcc_node};
+        PlanNodePtr project_node =
+            std::make_shared<ProjectNode>(GetNextPlanNodeId(),
+                                          std::vector<FieldId>(field_ids),
+                                          std::vector<std::string>(field_names),
+                                          std::vector<DataType>(field_types),
+                                          sources);
+        auto query_context = std::make_shared<milvus::exec::QueryContext>(
+            "test_project_node",
+            segment_.get(),
+            num_rows_,
+            MAX_TIMESTAMP,
+            0,
+            0,
+            query::PlanOptions{false},
+            std::make_shared<milvus::exec::QueryConfig>(
+                std::unordered_map<std::string, std::string>{}));
+        milvus::OpContext op_context;
+        query_context->set_op_context(&op_context);
+        auto plan_fragment = plan::PlanFragment(project_node);
+        return milvus::query::ExecPlanNodeVisitor::ExecuteTask(plan_fragment,
+                                                               query_context);
+    }
+
+    ColumnVectorPtr
+    createInt64FieldDataColumn(const std::vector<int64_t>& data,
+                               TargetBitmap&& valid,
+                               size_t null_count) {
+        FixedVector<int64_t> values(data.size());
+        std::copy(data.begin(), data.end(), values.begin());
+        auto field_data = std::make_shared<FieldData<int64_t>>(
+            DataType::INT64, false, std::move(values));
+        return std::make_shared<ColumnVector>(
+            std::move(field_data), std::move(valid), null_count);
+    }
+
     PlanNodePtr
     buildOrderByPlan(const std::string& sort_field_name,
                      const std::vector<std::string>& project_field_names,
@@ -172,6 +287,131 @@ class QueryOrderByTest : public testing::TestWithParam<bool> {
 INSTANTIATE_TEST_SUITE_P(QueryOrderBySuite,
                          QueryOrderByTest,
                          ::testing::Values(true, false));
+
+TEST_P(QueryOrderByTest, ProjectNodeSegmentOffsetColumnAppendsAfterProjection) {
+    auto output = runProjectOnlyPlan(
+        {SegmentOffsetFieldID}, {"__segment_offset__"}, {DataType::INT64});
+    ASSERT_NE(output, nullptr);
+    ASSERT_EQ(output->size(), num_rows_);
+
+    auto col = std::dynamic_pointer_cast<ColumnVector>(output->child(0));
+    ASSERT_NE(col, nullptr);
+    ASSERT_EQ(col->size(), num_rows_);
+    for (int64_t i = 0; i < num_rows_; ++i) {
+        EXPECT_EQ(col->ValueAt<int64_t>(i), i);
+    }
+
+    auto other =
+        createInt64FieldDataColumn({num_rows_}, TargetBitmap(1, true), 0);
+    ASSERT_NO_THROW(col->append(*other));
+    EXPECT_EQ(col->size(), num_rows_ + 1);
+    EXPECT_EQ(col->ValueAt<int64_t>(num_rows_), num_rows_);
+}
+
+TEST_P(QueryOrderByTest,
+       ProjectNodeMissingFieldAllNullColumnAppendsAfterProjection) {
+    auto missing_field_id = FieldId(1000000);
+    auto output = runProjectOnlyPlan(
+        {missing_field_id}, {"missing_int64"}, {DataType::INT64});
+    ASSERT_NE(output, nullptr);
+    ASSERT_EQ(output->size(), num_rows_);
+
+    auto col = std::dynamic_pointer_cast<ColumnVector>(output->child(0));
+    ASSERT_NE(col, nullptr);
+    ASSERT_EQ(col->size(), num_rows_);
+    ASSERT_EQ(col->nullCount(), num_rows_);
+    for (int64_t i = 0; i < num_rows_; ++i) {
+        EXPECT_FALSE(col->ValidAt(i));
+    }
+
+    auto other = createInt64FieldDataColumn({0}, TargetBitmap(1, false), 1);
+    ASSERT_NO_THROW(col->append(*other));
+    EXPECT_EQ(col->size(), num_rows_ + 1);
+    EXPECT_EQ(col->nullCount(), num_rows_ + 1);
+    EXPECT_FALSE(col->ValidAt(num_rows_));
+}
+
+TEST(QueryOrderByElementLevel, RestoresElementIndicesAfterSorting) {
+    auto schema = std::make_shared<Schema>();
+    schema->AddDebugVectorArrayField(
+        "structA[array_vec]", DataType::VECTOR_FLOAT, 4, knowhere::metric::L2);
+    auto array_fid = schema->AddDebugArrayField(
+        "structA[price_array]", DataType::INT32, false);
+    auto rank_fid = schema->AddDebugField("rank", DataType::INT64);
+    auto pk_fid = schema->AddDebugField("id", DataType::INT64);
+    schema->set_primary_field_id(pk_fid);
+
+    constexpr size_t N = 3;
+    constexpr int array_len = 3;
+    auto raw_data = DataGen(schema, N, 42, 0, 1, array_len);
+    SetInt64FieldData(raw_data, pk_fid, {10, 20, 30});
+    SetInt64FieldData(raw_data, rank_fid, {20, 10, 30});
+    SetIntArrayFieldData(raw_data,
+                         array_fid,
+                         {
+                             {1, 0, 3},
+                             {0, 5, 0},
+                             {7, 8, 0},
+                         });
+    auto segment = SegmentSealedSPtr(
+        CreateSealedWithFieldDataLoaded(schema, raw_data).release());
+
+    proto::plan::PlanNode plan_node;
+    plan_node.add_output_field_ids(pk_fid.get());
+    plan_node.add_output_field_ids(rank_fid.get());
+
+    auto* query = plan_node.mutable_query();
+    query->set_limit(5);
+    AddPositiveElementFilter(query, array_fid);
+    auto* order_by = query->add_order_by_fields();
+    order_by->set_field_id(rank_fid.get());
+    order_by->set_ascending(true);
+    order_by->set_nulls_first(false);
+
+    auto parser = milvus::query::ProtoParser(schema);
+    auto plan = parser.CreateRetrievePlan(plan_node);
+    auto results = segment->Retrieve(
+        nullptr, plan.get(), MAX_TIMESTAMP, DEFAULT_MAX_OUTPUT_SIZE, false);
+
+    ASSERT_EQ(results->fields_data_size(), 2);
+    ASSERT_TRUE(results->element_level());
+    ASSERT_EQ(results->element_indices_size(), 5);
+    ASSERT_EQ(results->offset_size(), 5);
+
+    const auto& pk_data = results->fields_data(0).scalars().long_data().data();
+    const auto& rank_data =
+        results->fields_data(1).scalars().long_data().data();
+    ASSERT_EQ(pk_data.size(), 5);
+    ASSERT_EQ(rank_data.size(), 5);
+
+    EXPECT_EQ(rank_data.Get(0), 10);
+    EXPECT_EQ(pk_data.Get(0), 20);
+    EXPECT_EQ(results->offset(0), 1);
+    ASSERT_EQ(results->element_indices(0).indices_size(), 1);
+    EXPECT_EQ(results->element_indices(0).indices(0), 1);
+
+    for (int i : {1, 2}) {
+        EXPECT_EQ(rank_data.Get(i), 20);
+        EXPECT_EQ(pk_data.Get(i), 10);
+        EXPECT_EQ(results->offset(i), 0);
+        ASSERT_EQ(results->element_indices(i).indices_size(), 1);
+    }
+    std::set<int32_t> rank20_indices;
+    rank20_indices.insert(results->element_indices(1).indices(0));
+    rank20_indices.insert(results->element_indices(2).indices(0));
+    EXPECT_EQ(rank20_indices, (std::set<int32_t>{0, 2}));
+
+    for (int i : {3, 4}) {
+        EXPECT_EQ(rank_data.Get(i), 30);
+        EXPECT_EQ(pk_data.Get(i), 30);
+        EXPECT_EQ(results->offset(i), 2);
+        ASSERT_EQ(results->element_indices(i).indices_size(), 1);
+    }
+    std::set<int32_t> rank30_indices;
+    rank30_indices.insert(results->element_indices(3).indices(0));
+    rank30_indices.insert(results->element_indices(4).indices(0));
+    EXPECT_EQ(rank30_indices, (std::set<int32_t>{0, 1}));
+}
 
 TEST_P(QueryOrderByTest, OrderBySingleInt64Asc) {
     auto nullable = GetParam();

@@ -21,12 +21,10 @@ import (
 	"fmt"
 	"strings"
 
-	"go.uber.org/zap"
-
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 // Msg keys used by pipeline nodes for output data.
@@ -98,7 +96,8 @@ func (t *PipelineTrace) traceReduce(opName string, msg opMsg) {
 		topks := rd.GetTopks()
 		t.Set(prefix+".topks", topks)
 		t.Set(prefix+".totalIDs", typeutil.GetSizeOfIDs(rd.GetIds()))
-		if gbv := rd.GetGroupByFieldValue(); gbv != nil {
+		if gbvs := rd.GetGroupByFieldValues(); len(gbvs) > 0 {
+			gbv := gbvs[0]
 			t.Set(prefix+".groupByRows", fieldDataLen(gbv))
 			t.Set(prefix+".groupByCards", scalarGroupByCards(gbv.GetScalars(), topks, gbv.GetValidData()))
 		}
@@ -123,7 +122,8 @@ func (t *PipelineTrace) traceSearchResult(prefix string, msg opMsg, key string) 
 	t.Set(prefix+".topks", topks)
 	t.Set(prefix+".totalIDs", typeutil.GetSizeOfIDs(rd.GetIds()))
 	t.Set(prefix+".fields", len(rd.GetFieldsData()))
-	if gbv := rd.GetGroupByFieldValue(); gbv != nil {
+	if gbvs := rd.GetGroupByFieldValues(); len(gbvs) > 0 {
+		gbv := gbvs[0]
 		t.Set(prefix+".groupByRows", fieldDataLen(gbv))
 		t.Set(prefix+".groupByCards", scalarGroupByCards(gbv.GetScalars(), topks, gbv.GetValidData()))
 	}
@@ -159,7 +159,7 @@ func (t *PipelineTrace) LogIfEnabled(ctx context.Context, pipelineName string) {
 	if t == nil {
 		return
 	}
-	log.Ctx(ctx).Debug("PipelineTrace", zap.String("pipeline", pipelineName), zap.String("trace", t.String()))
+	mlog.Debug(ctx, "PipelineTrace", mlog.String("pipeline", pipelineName), mlog.String("trace", t.String()))
 }
 
 // String formats all entries as a single log line.

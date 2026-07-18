@@ -44,8 +44,50 @@ namespace milvus {
 using ArrowSchemaPtr = std::shared_ptr<arrow::Schema>;
 static int64_t debug_id = START_USER_FIELDID;
 
+std::optional<FieldId>
+ParseFieldIdColumnName(const std::string& column_name);
+
+bool
+IsMilvusTableExternalSpec(const std::string& external_spec);
+
+// Physical column mapping for a schema field in external storage manifests.
+struct PhysicalColumnMapping {
+    std::string schema_column_name;
+    std::string storage_column_name;
+    bool is_external_column = false;
+};
+
+PhysicalColumnMapping
+ResolvePhysicalColumnMapping(
+    bool is_milvus_table,
+    const milvus::proto::schema::FieldSchema& field_schema);
+
+inline std::optional<std::string>
+GetStructNameForArrayField(const FieldMeta& field_meta) {
+    auto data_type = field_meta.get_data_type();
+    if (data_type != DataType::ARRAY && data_type != DataType::VECTOR_ARRAY) {
+        return std::nullopt;
+    }
+
+    const auto& field_name = field_meta.get_name().get();
+    auto left = field_name.find('[');
+    auto right = field_name.find(']', left == std::string::npos ? 0 : left);
+    if (left == std::string::npos || right == std::string::npos || left == 0) {
+        return std::nullopt;
+    }
+
+    return field_name.substr(0, left);
+}
+
 class Schema {
  public:
+    Schema() = default;
+
+    Schema(const Schema& other);
+
+    Schema&
+    operator=(const Schema& other);
+
     FieldId
     AddDebugField(const std::string& name,
                   DataType data_type,
@@ -142,7 +184,8 @@ class Schema {
     AddDebugVectorArrayField(const std::string& name,
                              DataType element_type,
                              int64_t dim,
-                             std::optional<knowhere::MetricType> metric_type) {
+                             std::optional<knowhere::MetricType> metric_type,
+                             bool nullable = false) {
         auto field_id = FieldId(debug_id);
         debug_id++;
         auto field_meta = FieldMeta(FieldName(name),
@@ -150,7 +193,8 @@ class Schema {
                                     DataType::VECTOR_ARRAY,
                                     element_type,
                                     dim,
-                                    metric_type);
+                                    metric_type,
+                                    nullable);
         this->AddField(std::move(field_meta));
         return field_id;
     }
@@ -307,6 +351,22 @@ class Schema {
         return fields_.size();
     }
 
+    size_t
+    get_field_id_bitset_size() const {
+        size_t bitset_size = 0;
+        for (const auto& field_id : field_ids_) {
+            if (field_id.get() < START_USER_FIELDID) {
+                continue;
+            }
+            auto required_size =
+                static_cast<size_t>(field_id.get() - START_USER_FIELDID + 1);
+            if (required_size > bitset_size) {
+                bitset_size = required_size;
+            }
+        }
+        return bitset_size;
+    }
+
     const FieldMeta&
     operator[](FieldId field_id) const {
         Assert(field_id.get() >= 0);
@@ -327,6 +387,11 @@ class Schema {
     const std::unordered_map<FieldId, FieldMeta>&
     get_fields() const {
         return fields_;
+    }
+
+    bool
+    has_field(FieldId field_id) const {
+        return fields_.count(field_id) > 0;
     }
 
     const std::unordered_map<FieldId, FieldMeta>
@@ -387,27 +452,63 @@ class Schema {
     }
 
     void
-    set_external_spec(const std::string& spec) {
-        external_spec_ = spec;
+    set_external_spec(const std::string& spec);
+
+    bool
+    is_milvus_table_external_collection() const {
+        return is_external_collection() && is_milvus_table_external_;
     }
 
     const ArrowSchemaPtr
     ConvertToArrowSchema() const;
 
     /// Convert to Arrow schema with field ID strings as field names,
-    /// used by Loon FFI / milvus-storage Reader.
+    /// used by Loon FFI / milvus-storage Reader. Internal StorageV3 TEXT
+    /// column groups store encoded LOB references as binary bytes, so callers
+    /// loading those column groups can request TEXT fields as Binary.
     const ArrowSchemaPtr
-    ConvertToLoonArrowSchema() const;
+    ConvertToLoonArrowSchema(bool text_lob_as_binary = false) const;
 
-    // Get the list of external column names (parquet column names) for
-    // external collections. Used as needed_columns for schemaless Reader.
+    // Mirrors pkg/util/typeutil.StorageColumnResolver in Go. Keep both sides
+    // aligned when changing external physical-column rules.
+    //
+    // Get the list of physical columns for external collections. Source
+    // fields use their external storage column names, while Milvus-generated
+    // function outputs use numeric field IDs because they are stored by
+    // Milvus, not read from the original external source schema.
     std::shared_ptr<std::vector<std::string>>
     GetExternalColumnNames() const;
 
+    // Whether the field is backed by the user's external source data.
+    // For milvus-table collections, source fields are addressed by source
+    // field ID strings; generated function outputs are not source fields.
+    bool
+    IsExternalDataField(FieldId field_id) const;
+
+    // Whether an external segment reader can read the field from the segment
+    // manifest. This includes source-backed external fields and
+    // Milvus-generated function outputs stored under numeric field IDs.
+    bool
+    IsExternalManifestStoredField(FieldId field_id) const;
+
+    // Real-PK milvus-table segments import source delete logs, so they must
+    // also read the source insert timestamp column to keep delete/reinsert
+    // ordering identical to the source Milvus segment.
+    bool
+    RequiresSourceInsertTimestamps() const;
+
+    // Return the physical column name used by external readers. Milvus-table
+    // source fields use field ID strings; mapped external fields use
+    // external_field; function outputs and internal storage columns use field
+    // ID strings.
+    std::string
+    GetPhysicalColumnName(FieldId field_id) const;
+
     // Resolve a column group column name to a FieldId.
     // Normal collections: column name is the numeric field ID string.
-    // External collections: column name is the parquet field name mapped
-    // via external_field metadata.
+    // External collections: milvus-table source columns prefer numeric field
+    // ID strings; other source formats use external_field metadata; function
+    // outputs use numeric field ID strings.
     FieldId
     ResolveColumnFieldId(const std::string& column_name) const;
 
@@ -424,6 +525,9 @@ class Schema {
 
     bool
     ShouldLoadField(FieldId field_id) {
+        if (bm25_function_output_fields_.count(field_id) > 0) {
+            return false;
+        }
         auto it = fields_.find(field_id);
         if (it != fields_.end() && !it->second.NeedLoad()) {
             return false;
@@ -446,6 +550,7 @@ class Schema {
 
     void
     AddField(FieldMeta&& field_meta) {
+        std::atomic_store(&loon_arrow_lob_schema_cache_, ArrowSchemaPtr{});
         auto field_name = field_meta.get_name();
         auto field_id = field_meta.get_id();
         AssertInfo(!name_ids_.count(field_name), "duplicated field name");
@@ -453,20 +558,13 @@ class Schema {
         name_ids_.emplace(field_name, field_id);
         id_names_.emplace(field_id, field_name);
 
-        // Build struct_array_field_cache_ for ARRAY/VECTOR_ARRAY fields
-        // Field name format: "struct_name[0].field_name"
-        auto data_type = field_meta.get_data_type();
-        if (data_type == DataType::ARRAY ||
-            data_type == DataType::VECTOR_ARRAY) {
-            const std::string& name_str = field_name.get();
-            auto bracket_pos = name_str.find('[');
-            if (bracket_pos != std::string::npos && bracket_pos > 0) {
-                std::string struct_name = name_str.substr(0, bracket_pos);
-                // Only cache the first array field for each struct
-                if (struct_array_field_cache_.find(struct_name) ==
-                    struct_array_field_cache_.end()) {
-                    struct_array_field_cache_[struct_name] = field_id;
-                }
+        // Build struct_array_field_cache_ for ARRAY/VECTOR_ARRAY fields.
+        if (auto struct_name = GetStructNameForArrayField(field_meta);
+            struct_name.has_value()) {
+            // Only cache the first array field for each struct.
+            if (struct_array_field_cache_.find(*struct_name) ==
+                struct_array_field_cache_.end()) {
+                struct_array_field_cache_[*struct_name] = field_id;
             }
         }
 
@@ -539,7 +637,35 @@ class Schema {
     std::pair<bool, std::string>
     WarmupPolicy(const FieldId& field, bool is_vector, bool is_index) const;
 
+    std::pair<bool, std::string>
+    CollectionWarmupPolicy(bool is_vector, bool is_index) const;
+
+    // True if the field carries FieldSchema::is_function_output.
+    bool
+    is_function_output(const FieldId& field_id) const {
+        return function_output_field_ids_.count(field_id) > 0;
+    }
+
+    const std::unordered_set<FieldId>&
+    function_output_field_ids() const {
+        return function_output_field_ids_;
+    }
+
+    void
+    add_function_output_field_id(const FieldId& field_id) {
+        function_output_field_ids_.insert(field_id);
+    }
+
+    // Storage column name used by packed manifests for a given field.
+    std::string
+    get_storage_column_name(const FieldId& field_id) const {
+        return GetPhysicalColumnName(field_id);
+    }
+
  private:
+    // Keep Schema's copy constructor and assignment operator in sync with
+    // these members. Runtime-only caches, such as loon_arrow_lob_schema_cache_,
+    // are intentionally reset instead of copied.
     int64_t debug_id = START_USER_FIELDID;
     std::vector<FieldId> field_ids_;
 
@@ -558,6 +684,7 @@ class Schema {
     // field partial load list
     // work as hint now
     std::unordered_set<FieldId> load_fields_;
+    std::unordered_set<FieldId> bm25_function_output_fields_;
 
     // schema_version_, currently marked with update timestamp
     uint64_t schema_version_;
@@ -585,6 +712,13 @@ class Schema {
         external_source_;  // External data source identifier (e.g., S3 path, table name)
     std::string
         external_spec_;  // External data source specification (JSON format)
+
+    // Field IDs marked as function outputs by FieldSchema::is_function_output.
+    std::unordered_set<FieldId> function_output_field_ids_;
+
+    bool is_milvus_table_external_ = false;
+
+    mutable ArrowSchemaPtr loon_arrow_lob_schema_cache_;
 };
 
 using SchemaPtr = std::shared_ptr<Schema>;

@@ -6,9 +6,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/json"
-	"github.com/milvus-io/milvus/pkg/v2/proto/planpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/planpb"
 )
 
 func Test_relationalCompatible(t *testing.T) {
@@ -1029,6 +1029,12 @@ func Test_checkValidPoint(t *testing.T) {
 		err := checkValidPoint("POINT( 1  2 )")
 		assert.NoError(t, err)
 	})
+
+	t.Run("valid non-point WKT", func(t *testing.T) {
+		err := checkValidPoint("POLYGON((0 0, 1 0, 1 1, 0 0))")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "only supports POINT geometry")
+	})
 }
 
 // Test_convertHanToASCII_FastPath tests the Chinese character to Unicode escape conversion
@@ -1070,6 +1076,44 @@ func Test_convertHanToASCII_FastPath(t *testing.T) {
 		input := "\\x"
 		result := convertHanToASCII(input)
 		assert.Equal(t, input, result)
+	})
+}
+
+// Test_convertHanToASCII_RawSpans verifies that raw-string literals (r"..."/R'...')
+// are left verbatim (their CJK is NOT rewritten to \uXXXX), while CJK everywhere
+// else still converts. This is what lets a raw string stay verbatim end-to-end
+// (issue #43864).
+func Test_convertHanToASCII_RawSpans(t *testing.T) {
+	t.Run("CJK inside a raw string is preserved verbatim", func(t *testing.T) {
+		assert.Equal(t, `A == r"中"`, convertHanToASCII(`A == r"中"`))
+		assert.Equal(t, `A like R'中%'`, convertHanToASCII(`A like R'中%'`))
+	})
+
+	t.Run("CJK outside raw strings still converts", func(t *testing.T) {
+		// bare identifier (field name) and normal string literal
+		assert.Contains(t, convertHanToASCII(`中 == 1`), `\u`)
+		assert.Contains(t, convertHanToASCII(`A == "中"`), `\u`)
+	})
+
+	t.Run("r as an identifier tail is not a raw prefix", func(t *testing.T) {
+		// `myr"中"` lexes as identifier `myr` + normal string "中", so the CJK in
+		// the normal string must still convert.
+		assert.Contains(t, convertHanToASCII(`myr"中"`), `\u`)
+	})
+
+	t.Run("backslash inside a raw string does not terminate it", func(t *testing.T) {
+		// `\"` escapes the quote, so the string continues and the later CJK stays
+		// verbatim — the whole expression is returned unchanged.
+		assert.Equal(t, `A == r"中\"文"`, convertHanToASCII(`A == r"中\"文"`))
+	})
+
+	t.Run("raw and normal strings in one expression are independent", func(t *testing.T) {
+		// The scanner must reset state between strings: the raw CJK stays verbatim
+		// while the normal-string CJK still converts, in the same expression.
+		got := convertHanToASCII(`A == r"中" and B == "文"`)
+		assert.Contains(t, got, `中`)
+		assert.NotContains(t, got, `文`)
+		assert.Contains(t, got, `\u6587`)
 	})
 }
 
@@ -1175,6 +1219,48 @@ func Test_checkValidModArith(t *testing.T) {
 			schemapb.DataType_Float, schemapb.DataType_None)
 		assert.NoError(t, err)
 	})
+}
+
+// Test_checkValidBitwiseArith tests bitwise operation validation.
+// Bitwise operators, like modulo, can only be applied to integer types.
+func Test_checkValidBitwiseArith(t *testing.T) {
+	bitwiseOps := []planpb.ArithOpType{
+		planpb.ArithOpType_BitAnd,
+		planpb.ArithOpType_BitOr,
+		planpb.ArithOpType_BitXor,
+	}
+	for _, op := range bitwiseOps {
+		op := op
+		t.Run(op.String()+" with integers is valid", func(t *testing.T) {
+			err := checkValidModArith(op,
+				schemapb.DataType_Int64, schemapb.DataType_None,
+				schemapb.DataType_Int64, schemapb.DataType_None)
+			assert.NoError(t, err)
+		})
+
+		t.Run(op.String()+" with integer array element is valid", func(t *testing.T) {
+			err := checkValidModArith(op,
+				schemapb.DataType_Array, schemapb.DataType_Int32,
+				schemapb.DataType_Int64, schemapb.DataType_None)
+			assert.NoError(t, err)
+		})
+
+		t.Run(op.String()+" with float left is invalid", func(t *testing.T) {
+			err := checkValidModArith(op,
+				schemapb.DataType_Float, schemapb.DataType_None,
+				schemapb.DataType_Int64, schemapb.DataType_None)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "bitwise operations can only apply on integer types")
+		})
+
+		t.Run(op.String()+" with double right is invalid", func(t *testing.T) {
+			err := checkValidModArith(op,
+				schemapb.DataType_Int64, schemapb.DataType_None,
+				schemapb.DataType_Double, schemapb.DataType_None)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "bitwise operations can only apply on integer types")
+		})
+	}
 }
 
 // Test_castRangeValue tests value casting for range operations

@@ -62,7 +62,8 @@ DefaultValueChunkTranslator::DefaultValueChunkTranslator(
                 IsVectorDataType(field_meta.get_data_type()),
                 /* is_index */ false,
                 /* in_load_list, set to false to reduce memory usage */ false),
-            /* support_eviction */ false) {
+            /* support_eviction */ false,
+            field_data_info.shard) {
     // Split rows into ~64KB cells according to value_size().
     // Fallback to single-cell if value_size() is not well-defined.
     auto vsize = this->value_size();
@@ -184,6 +185,12 @@ DefaultValueChunkTranslator::value_size() const {
         case milvus::DataType::ARRAY:
             value_size = sizeof(Array);
             break;
+        case milvus::DataType::VECTOR_ARRAY:
+            AssertInfo(field_meta_.is_nullable(),
+                       "only nullable vector array fields can be "
+                       "dynamically added");
+            value_size = 0;
+            break;
         case milvus::DataType::VECTOR_FLOAT:
         case milvus::DataType::VECTOR_BINARY:
         case milvus::DataType::VECTOR_FLOAT16:
@@ -231,7 +238,16 @@ DefaultValueChunkTranslator::build_buffer_for_rows(
     auto data_type = field_meta_.get_data_type();
     std::shared_ptr<arrow::ArrayBuilder> builder;
 
-    if (IsVectorDataType(data_type)) {
+    if (data_type == milvus::DataType::VECTOR_ARRAY) {
+        AssertInfo(field_meta_.is_nullable(),
+                   "only nullable vector array fields can be "
+                   "dynamically added");
+        builder =
+            milvus::storage::CreateArrowBuilder(data_type,
+                                                field_meta_.get_element_type(),
+                                                field_meta_.get_dim(),
+                                                true);
+    } else if (IsVectorDataType(data_type)) {
         AssertInfo(field_meta_.is_nullable(),
                    "only nullable vector fields can be dynamically added");
         builder = std::make_shared<arrow::BinaryBuilder>();

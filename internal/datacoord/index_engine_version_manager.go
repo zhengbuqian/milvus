@@ -1,15 +1,18 @@
 package datacoord
 
 import (
+	"context"
 	"math"
 
 	"github.com/blang/semver/v4"
 	"github.com/samber/lo"
-	"go.uber.org/zap"
+	"golang.org/x/time/rate"
 
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/util/lock"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/indexpb"
+	"github.com/milvus-io/milvus/pkg/v3/util/lock"
 )
 
 // IndexEngineVersionManager manages the index engine versions reported by all QueryNodes in the cluster.
@@ -33,6 +36,7 @@ type IndexEngineVersionManager interface {
 	AddNode(session *sessionutil.Session)
 	RemoveNode(session *sessionutil.Session)
 	Update(session *sessionutil.Session)
+	GetClusterMinIndexStorePathVersion() indexpb.IndexStorePathVersion
 
 	// Vector index version methods (from knowhere library)
 	GetCurrentIndexEngineVersion() int32
@@ -121,14 +125,29 @@ func (m *versionManagerImpl) Update(session *sessionutil.Session) {
 	m.addOrUpdate(session)
 }
 
+func (m *versionManagerImpl) GetClusterMinIndexStorePathVersion() indexpb.IndexStorePathVersion {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if len(m.sessionVersion) == 0 {
+		return indexpb.IndexStorePathVersion_INDEX_STORE_PATH_VERSION_BUILD_ROOTED
+	}
+	for _, version := range m.sessionVersion {
+		if version.LT(common.Version) {
+			return indexpb.IndexStorePathVersion_INDEX_STORE_PATH_VERSION_BUILD_ROOTED
+		}
+	}
+	return indexpb.IndexStorePathVersion_INDEX_STORE_PATH_VERSION_COLLECTION_ROOTED
+}
+
 func (m *versionManagerImpl) addOrUpdate(session *sessionutil.Session) {
-	log.Info("addOrUpdate version", zap.Int64("nodeId", session.ServerID),
-		zap.String("sessionVersion", session.Version.String()),
-		zap.Int32("minimal", session.IndexEngineVersion.MinimalIndexVersion),
-		zap.Int32("current", session.IndexEngineVersion.CurrentIndexVersion),
-		zap.Int32("maximum", session.IndexEngineVersion.MaximumIndexVersion),
-		zap.Int32("currentScalar", session.ScalarIndexEngineVersion.CurrentIndexVersion),
-		zap.Int32("maximumScalar", session.ScalarIndexEngineVersion.MaximumIndexVersion))
+	mlog.Info(context.TODO(), "addOrUpdate version", mlog.Int64("nodeId", session.ServerID),
+		mlog.String("sessionVersion", session.Version.String()),
+		mlog.Int32("minimal", session.IndexEngineVersion.MinimalIndexVersion),
+		mlog.Int32("current", session.IndexEngineVersion.CurrentIndexVersion),
+		mlog.Int32("maximum", session.IndexEngineVersion.MaximumIndexVersion),
+		mlog.Int32("currentScalar", session.ScalarIndexEngineVersion.CurrentIndexVersion),
+		mlog.Int32("maximumScalar", session.ScalarIndexEngineVersion.MaximumIndexVersion))
 	m.versions[session.ServerID] = session.IndexEngineVersion
 	m.scalarIndexVersions[session.ServerID] = session.ScalarIndexEngineVersion
 	m.indexNonEncoding[session.ServerID] = session.IndexNonEncoding
@@ -227,20 +246,7 @@ func (m *versionManagerImpl) GetMaximumIndexEngineVersion() int32 {
 }
 
 func (m *versionManagerImpl) getMaximumVersion() int32 {
-	if len(m.versions) == 0 {
-		return math.MaxInt32
-	}
-
-	maximum := int32(math.MaxInt32)
-	for _, version := range m.versions {
-		if version.MaximumIndexVersion == 0 {
-			continue
-		}
-		if version.MaximumIndexVersion < maximum {
-			maximum = version.MaximumIndexVersion
-		}
-	}
-	return maximum
+	return getMaximumVersionFrom(m.versions)
 }
 
 func (m *versionManagerImpl) GetMaximumScalarIndexEngineVersion() int32 {
@@ -251,17 +257,25 @@ func (m *versionManagerImpl) GetMaximumScalarIndexEngineVersion() int32 {
 }
 
 func (m *versionManagerImpl) getMaximumScalarVersion() int32 {
-	if len(m.scalarIndexVersions) == 0 {
+	return getMaximumVersionFrom(m.scalarIndexVersions)
+}
+
+func getMaximumVersionFrom(versions map[int64]sessionutil.IndexEngineVersion) int32 {
+	if len(versions) == 0 {
 		return math.MaxInt32
 	}
 
 	maximum := int32(math.MaxInt32)
-	for _, version := range m.scalarIndexVersions {
-		if version.MaximumIndexVersion == 0 {
+	for _, version := range versions {
+		// Old QueryNodes do not report MaximumIndexVersion. In that case, use
+		// CurrentIndexVersion as the conservative upper bound; maxVersion should
+		// never be lower than the current version that the node already supports.
+		maxVersion := max(version.CurrentIndexVersion, version.MaximumIndexVersion)
+		if maxVersion == 0 {
 			continue
 		}
-		if version.MaximumIndexVersion < maximum {
-			maximum = version.MaximumIndexVersion
+		if maxVersion < maximum {
+			maximum = maxVersion
 		}
 	}
 	return maximum
@@ -270,13 +284,13 @@ func (m *versionManagerImpl) getMaximumScalarVersion() int32 {
 // clampVersion clamps v into [minV, maxV], logging a rate-limited warning on each adjustment.
 func clampVersion(v, minV, maxV int32, name string) int32 {
 	if v < minV {
-		log.RatedWarn(60, name+" below cluster minimum, clamping",
-			zap.Int32("target", v), zap.Int32("minimum", minV))
+		mlog.RatedWarn(context.TODO(), rate.Limit(60), name+" below cluster minimum, clamping",
+			mlog.Int32("target", v), mlog.Int32("minimum", minV))
 		v = minV
 	}
 	if v > maxV {
-		log.RatedWarn(60, name+" exceeds cluster maximum, clamping",
-			zap.Int32("target", v), zap.Int32("maximum", maxV))
+		mlog.RatedWarn(context.TODO(), rate.Limit(60), name+" exceeds cluster maximum, clamping",
+			mlog.Int32("target", v), mlog.Int32("maximum", maxV))
 		v = maxV
 	}
 	return v
@@ -320,7 +334,7 @@ func (m *versionManagerImpl) GetIndexNonEncoding() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if len(m.indexNonEncoding) == 0 {
-		log.Info("indexNonEncoding map is empty")
+		mlog.Info(context.TODO(), "indexNonEncoding map is empty")
 		// by default, we fall back to old index format for safety
 		return false
 	}

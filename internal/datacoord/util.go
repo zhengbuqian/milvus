@@ -24,21 +24,21 @@ import (
 	"time"
 
 	"github.com/samber/lo"
-	"go.uber.org/zap"
+	"golang.org/x/time/rate"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
 	"github.com/milvus-io/milvus/internal/util/vecindexmgr"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/tsoutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/metrics"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/indexpb"
+	"github.com/milvus-io/milvus/pkg/v3/util/funcutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/tsoutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 // Response response interface for verification
@@ -98,7 +98,7 @@ func FilterInIndexedSegments(ctx context.Context, handler Handler, mt *meta, ski
 		coll, err := handler.GetCollection(timeoutCtx, collection)
 		cancel()
 		if err != nil {
-			log.Warn("failed to get collection schema", zap.Error(err))
+			mlog.Warn(ctx, "failed to get collection schema", mlog.Err(err))
 			continue
 		}
 
@@ -242,6 +242,12 @@ func mergeFieldBinlogs(currentBinlogs []*datapb.FieldBinlog, newBinlogs []*datap
 		if fieldBinlogs == nil {
 			currentBinlogs = append(currentBinlogs, newBinlog)
 		} else {
+			if len(fieldBinlogs.ChildFields) == 0 {
+				fieldBinlogs.ChildFields = newBinlog.GetChildFields()
+			}
+			if fieldBinlogs.Format == "" {
+				fieldBinlogs.Format = newBinlog.GetFormat()
+			}
 			fieldBinlogs.Binlogs = append(fieldBinlogs.Binlogs, newBinlog.Binlogs...)
 		}
 	}
@@ -282,8 +288,10 @@ func filterDuplicateFieldBinlogs(existingLogs, newLogs []*datapb.FieldBinlog) []
 		}
 		if len(filteredBinlogs) > 0 {
 			result = append(result, &datapb.FieldBinlog{
-				FieldID: fb.GetFieldID(),
-				Binlogs: filteredBinlogs,
+				FieldID:     fb.GetFieldID(),
+				ChildFields: fb.GetChildFields(),
+				Format:      fb.GetFormat(),
+				Binlogs:     filteredBinlogs,
 			})
 		}
 	}
@@ -347,11 +355,11 @@ func CheckCheckPointsHealth(meta *meta) error {
 	for channel, cp := range meta.GetChannelCheckpoints() {
 		collectionID := funcutil.GetCollectionIDFromVChannel(channel)
 		if collectionID == -1 {
-			log.RatedWarn(60, "can't parse collection id from vchannel, skip check cp lag", zap.String("vchannel", channel))
+			mlog.RatedWarn(context.TODO(), rate.Limit(60), "can't parse collection id from vchannel, skip check cp lag", mlog.FieldVChannel(channel))
 			continue
 		}
 		if meta.GetCollection(collectionID) == nil {
-			log.RatedWarn(60, "corresponding the collection doesn't exists, skip check cp lag", zap.String("vchannel", channel))
+			mlog.RatedWarn(context.TODO(), rate.Limit(60), "corresponding the collection doesn't exists, skip check cp lag", mlog.FieldVChannel(channel))
 			continue
 		}
 		ts, _ := tsoutil.ParseTS(cp.Timestamp)

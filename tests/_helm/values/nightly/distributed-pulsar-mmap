@@ -84,7 +84,12 @@ extraConfigFiles:
     common:
       storage:
         enablev2: true
+        # enable storage v3
+        useLoonFFI: true
     dataCoord:
+      compaction:
+        bumpSchemaVersion:
+          enabled: true
       gc:
         interval: 1800
         missingTolerance: 1800

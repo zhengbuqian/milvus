@@ -1,23 +1,23 @@
 package proxy
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"reflect"
 
 	"github.com/samber/lo"
-	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/util/nullutil"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/parameterutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/timestamptz"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/util/funcutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/parameterutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/timestamptz"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 type validateUtil struct {
@@ -61,8 +61,8 @@ func validateGeometryFieldSearchResult(fieldData **schemapb.FieldData) error {
 	_, ok := (*fieldData).GetScalars().Data.(*schemapb.ScalarField_GeometryWktData)
 	if ok {
 		// Already in WKT format, no conversion needed
-		log.Debug("Geometry field data already contains WKT data, skipping conversion",
-			zap.String("fieldName", (*fieldData).GetFieldName()))
+		mlog.Debug(context.TODO(), "Geometry field data already contains WKT data, skipping conversion",
+			mlog.String("fieldName", (*fieldData).GetFieldName()))
 		return nil
 	}
 	wkbArray := (*fieldData).GetScalars().GetGeometryData().GetData()
@@ -74,7 +74,7 @@ func validateGeometryFieldSearchResult(fieldData **schemapb.FieldData) error {
 		}
 		wktStr, err := common.ConvertWKBToWKT(data)
 		if err != nil {
-			log.Error("translate the geomery  into its wkt failed")
+			mlog.Error(context.TODO(), "translate the geomery  into its wkt failed")
 			return err
 		}
 		wktArray[i] = wktStr
@@ -404,6 +404,16 @@ func (v *validateUtil) checkAligned(data []*schemapb.FieldData, schema *typeutil
 			if err != nil {
 				return err
 			}
+
+			// ArrayOfVector is dense after fillWithValue: null rows are filled with empty
+			// per-row VectorField placeholders, so Data length must equal numRows.
+			if field.GetVectors() == nil || field.GetVectors().GetVectorArray() == nil {
+				if numRows != 0 {
+					return errNumRowsMismatch(field.GetFieldName(), 0)
+				}
+				continue
+			}
+
 			dim, err := typeutil.GetDim(f)
 			if err != nil {
 				return err
@@ -427,9 +437,9 @@ func (v *validateUtil) checkAligned(data []*schemapb.FieldData, schema *typeutil
 			}
 
 			if n != numRows {
-				log.Warn("the num_rows of field is not equal to passed num_rows", zap.String("fieldName", field.GetFieldName()),
-					zap.Int64("fieldNumRows", int64(n)), zap.Int64("passedNumRows", int64(numRows)),
-					zap.Bools("ValidData", field.GetValidData()))
+				mlog.Warn(context.TODO(), "the num_rows of field is not equal to passed num_rows", mlog.String("fieldName", field.GetFieldName()),
+					mlog.Int64("fieldNumRows", int64(n)), mlog.Int64("passedNumRows", int64(numRows)),
+					mlog.Bools("ValidData", field.GetValidData()))
 				return errNumRowsMismatch(field.GetFieldName(), n)
 			}
 		}
@@ -550,15 +560,56 @@ func FillWithNullValue(field *schemapb.FieldData, fieldSchema *schemapb.FieldSch
 				return err
 			}
 		default:
-			return merr.WrapErrParameterInvalidMsg(fmt.Sprintf("undefined data type:%s", field.Type.String()))
+			return merr.WrapErrParameterInvalidMsg("undefined data type:%s", field.Type.String())
 		}
 
 	case *schemapb.FieldData_Vectors:
+		// Only ArrayOfVector needs null-expansion. Regular vectors stay compact and
+		// rely on ValidData + isNullRow to carry null semantics downstream.
+		// ArrayOfVector is treated as a per-row array whose null rows are represented
+		// by an empty VectorField placeholder, so downstream consumers can read it
+		// uniformly as "row has zero vectors" without special null handling.
+		if field.Type == schemapb.DataType_ArrayOfVector {
+			vectorArray := field.GetVectors().GetVectorArray()
+			if vectorArray == nil {
+				return merr.WrapErrParameterInvalidMsg("array of vector data is nil, field: %s", field.GetFieldName())
+			}
+			expanded, err := fillVectorArrayNullValueImpl(vectorArray.GetData(), field.GetValidData(), vectorArray.GetDim(), vectorArray.GetElementType())
+			if err != nil {
+				return err
+			}
+			vectorArray.Data = expanded
+		}
 	default:
-		return merr.WrapErrParameterInvalidMsg(fmt.Sprintf("undefined data type:%s", field.Type.String()))
+		return merr.WrapErrParameterInvalidMsg("undefined data type:%s", field.Type.String())
 	}
 
 	return nil
+}
+
+func fillVectorArrayNullValueImpl(array []*schemapb.VectorField, validData []bool, dim int64, elementType schemapb.DataType) ([]*schemapb.VectorField, error) {
+	n := getValidNumber(validData)
+	if len(array) != n {
+		return nil, merr.WrapErrParameterInvalid(n, len(array), "the length of field is wrong")
+	}
+	if n == len(validData) {
+		return array, nil
+	}
+	res := make([]*schemapb.VectorField, len(validData))
+	srcIdx := 0
+	for i, v := range validData {
+		if v {
+			res[i] = array[srcIdx]
+			srcIdx++
+		} else {
+			emptyRow, err := typeutil.NewEmptyArrayOfVectorRow(dim, elementType)
+			if err != nil {
+				return nil, err
+			}
+			res[i] = emptyRow
+		}
+	}
+	return res, nil
 }
 
 func FillWithDefaultValue(field *schemapb.FieldData, fieldSchema *schemapb.FieldSchema, numRows int) error {
@@ -666,7 +717,7 @@ func FillWithDefaultValue(field *schemapb.FieldData, fieldSchema *schemapb.Field
 
 		case *schemapb.ScalarField_ArrayData:
 			// Todo: support it
-			log.Error("array type not support default value", zap.String("fieldSchemaName", field.GetFieldName()))
+			mlog.Error(context.TODO(), "array type not support default value", mlog.String("fieldSchemaName", field.GetFieldName()))
 			return merr.WrapErrParameterInvalid("not set default value", "", "array type not support default value")
 
 		case *schemapb.ScalarField_JsonData:
@@ -688,7 +739,7 @@ func FillWithDefaultValue(field *schemapb.FieldData, fieldSchema *schemapb.Field
 			defaultValue := fieldSchema.GetDefaultValue().GetStringData()
 			defaultValueWkbBytes, err := common.ConvertWKTToWKB(defaultValue)
 			if err != nil {
-				log.Warn("invalid default value for geometry field", zap.Error(err))
+				mlog.Warn(context.TODO(), "invalid default value for geometry field", mlog.Err(err))
 				return merr.WrapErrParameterInvalidMsg("invalid default value for geometry field")
 			}
 			sd.GeometryData.Data, err = fillWithDefaultValueImpl(sd.GeometryData.Data, defaultValueWkbBytes, field.GetValidData())
@@ -697,15 +748,15 @@ func FillWithDefaultValue(field *schemapb.FieldData, fieldSchema *schemapb.Field
 			}
 
 		default:
-			return merr.WrapErrParameterInvalidMsg(fmt.Sprintf("undefined data type:%s", field.Type.String()))
+			return merr.WrapErrParameterInvalidMsg("undefined data type:%s", field.Type.String())
 		}
 
 	case *schemapb.FieldData_Vectors:
-		log.Error("vector not support default value", zap.String("fieldSchemaName", field.GetFieldName()))
+		mlog.Error(context.TODO(), "vector not support default value", mlog.String("fieldSchemaName", field.GetFieldName()))
 		return merr.WrapErrParameterInvalidMsg("vector type not support default value")
 
 	default:
-		return merr.WrapErrParameterInvalidMsg(fmt.Sprintf("undefined data type:%s", field.Type.String()))
+		return merr.WrapErrParameterInvalidMsg("undefined data type:%s", field.Type.String())
 	}
 
 	if !typeutil.IsVectorType(field.Type) {
@@ -889,17 +940,7 @@ func (v *validateUtil) checkTextFieldData(field *schemapb.FieldData, fieldSchema
 		return merr.WrapErrParameterInvalid("need text array", msg)
 	}
 
-	if v.checkMaxLen {
-		maxLength, err := parameterutil.GetMaxLength(fieldSchema)
-		if err != nil {
-			return err
-		}
-
-		if i, ok := verifyLengthPerRow(strArr, maxLength); !ok {
-			return merr.WrapErrParameterInvalidMsg("length of text field %s exceeds max length, row number: %d, length: %d, max length: %d",
-				fieldSchema.GetName(), i, len(strArr[i]), maxLength)
-		}
-	}
+	// Text type does not require max_length validation
 	return nil
 }
 
@@ -916,8 +957,8 @@ func (v *validateUtil) checkGeometryFieldData(field *schemapb.FieldData, fieldSc
 		// fmt.Println(strings.Trim(string(wktdata), "\""))
 		wkbArray[index], err = common.ConvertWKTToWKB(wktdata)
 		if err != nil {
-			log.Warn("insert invalid Geometry data!! Transform to wkb failed, has errors", zap.Error(err))
-			return merr.WrapErrIoFailedReason(err.Error())
+			mlog.Warn(context.TODO(), "insert invalid Geometry data!! Transform to wkb failed, has errors", mlog.Err(err))
+			return merr.WrapErrParameterInvalidMsg("invalid Geometry data, transform to wkb failed: %s", err.Error())
 		}
 	}
 	// replace the field data with wkb data array
@@ -1141,6 +1182,39 @@ func (v *validateUtil) checkArrayOfVectorFieldData(field *schemapb.FieldData, fi
 		return merr.WrapErrParameterInvalid(expectStr, "got nil", msg)
 	}
 
+	dim, err := typeutil.GetDim(fieldSchema)
+	if err != nil {
+		return err
+	}
+
+	var maxCapacity int64
+	if v.checkMaxCap {
+		maxCapacity, err = parameterutil.GetMaxCapacity(fieldSchema)
+		if err != nil {
+			return err
+		}
+	}
+
+	checkCapacity := func(vectorCount int) error {
+		if !v.checkMaxCap || int64(vectorCount) <= maxCapacity {
+			return nil
+		}
+		msg := fmt.Sprintf("the length (%d) of array of vector field %s exceeds max capacity (%d)", vectorCount, field.GetFieldName(), maxCapacity)
+		return merr.WrapErrParameterInvalid("valid length array", "array length exceeds max capacity", msg)
+	}
+
+	validateVectorCount := func(payloadLength int, elementsPerVector int) (int, error) {
+		if elementsPerVector <= 0 {
+			return 0, merr.WrapErrParameterInvalidMsg("invalid dim %d for array of vector field %s", dim, field.GetFieldName())
+		}
+		if payloadLength%elementsPerVector != 0 {
+			msg := fmt.Sprintf("array of vector field %s has invalid payload length %d, should be divisible by vector width %d",
+				field.GetFieldName(), payloadLength, elementsPerVector)
+			return 0, merr.WrapErrParameterInvalid("valid array of vector payload length", "invalid payload length", msg)
+		}
+		return payloadLength / elementsPerVector, nil
+	}
+
 	switch fieldSchema.GetElementType() {
 	case schemapb.DataType_FloatVector:
 		for _, vector := range data.GetData() {
@@ -1148,6 +1222,13 @@ func (v *validateUtil) checkArrayOfVectorFieldData(field *schemapb.FieldData, fi
 			if floatVector == nil {
 				msg := fmt.Sprintf("array of vector field '%v' is illegal, array type mismatch", field.GetFieldName())
 				return merr.WrapErrParameterInvalid("need float vector array", "got nil", msg)
+			}
+			vectorCount, err := validateVectorCount(len(floatVector.GetData()), int(dim))
+			if err != nil {
+				return err
+			}
+			if err := checkCapacity(vectorCount); err != nil {
+				return err
 			}
 			if v.checkNAN {
 				if err := typeutil.VerifyFloats32(floatVector.GetData()); err != nil {
@@ -1163,6 +1244,13 @@ func (v *validateUtil) checkArrayOfVectorFieldData(field *schemapb.FieldData, fi
 				msg := fmt.Sprintf("array of vector field '%v' is illegal, array type mismatch", field.GetFieldName())
 				return merr.WrapErrParameterInvalid("need binary vector array", "got nil", msg)
 			}
+			vectorCount, err := validateVectorCount(len(binaryVector), int((dim+7)/8))
+			if err != nil {
+				return err
+			}
+			if err := checkCapacity(vectorCount); err != nil {
+				return err
+			}
 		}
 		return nil
 	case schemapb.DataType_Float16Vector:
@@ -1171,6 +1259,13 @@ func (v *validateUtil) checkArrayOfVectorFieldData(field *schemapb.FieldData, fi
 			if float16Vector == nil {
 				msg := fmt.Sprintf("array of vector field '%v' is illegal, array type mismatch", field.GetFieldName())
 				return merr.WrapErrParameterInvalid("need float16 vector array", "got nil", msg)
+			}
+			vectorCount, err := validateVectorCount(len(float16Vector), int(dim)*2)
+			if err != nil {
+				return err
+			}
+			if err := checkCapacity(vectorCount); err != nil {
+				return err
 			}
 			if v.checkNAN {
 				if err := typeutil.VerifyFloats16(float16Vector); err != nil {
@@ -1186,6 +1281,13 @@ func (v *validateUtil) checkArrayOfVectorFieldData(field *schemapb.FieldData, fi
 				msg := fmt.Sprintf("array of vector field '%v' is illegal, array type mismatch", field.GetFieldName())
 				return merr.WrapErrParameterInvalid("need bfloat16 vector array", "got nil", msg)
 			}
+			vectorCount, err := validateVectorCount(len(bfloat16Vector), int(dim)*2)
+			if err != nil {
+				return err
+			}
+			if err := checkCapacity(vectorCount); err != nil {
+				return err
+			}
 			if v.checkNAN {
 				if err := typeutil.VerifyBFloats16(bfloat16Vector); err != nil {
 					return err
@@ -1199,6 +1301,13 @@ func (v *validateUtil) checkArrayOfVectorFieldData(field *schemapb.FieldData, fi
 			if int8Vector == nil {
 				msg := fmt.Sprintf("array of vector field '%v' is illegal, array type mismatch", field.GetFieldName())
 				return merr.WrapErrParameterInvalid("need int8 vector array", "got nil", msg)
+			}
+			vectorCount, err := validateVectorCount(len(int8Vector), int(dim))
+			if err != nil {
+				return err
+			}
+			if err := checkCapacity(vectorCount); err != nil {
+				return err
 			}
 		}
 		return nil
@@ -1214,7 +1323,7 @@ func (v *validateUtil) checkTimestamptzFieldData(field *schemapb.FieldData, time
 	// 1. Structural Check: Data must be present and must be a string array
 	scalarField := field.GetScalars()
 	if scalarField == nil || scalarField.GetStringData() == nil {
-		log.Warn("timestamptz field data is not string array", zap.String("fieldName", field.GetFieldName()))
+		mlog.Warn(context.TODO(), "timestamptz field data is not string array", mlog.String("fieldName", field.GetFieldName()))
 		return merr.WrapErrParameterInvalidMsg("timestamptz field data must be a string array")
 	}
 
@@ -1226,7 +1335,7 @@ func (v *validateUtil) checkTimestamptzFieldData(field *schemapb.FieldData, time
 		// Use the centralized parser (timestamptz.ParseTimeTz) for validation and parsing.
 		t, err := timestamptz.ParseTimeTz(isoStr, timezone)
 		if err != nil {
-			log.Info("cannot parse timestamptz string", zap.String("timestamp_string", isoStr), zap.String("timezone", timezone), zap.Error(err))
+			mlog.Info(context.TODO(), "cannot parse timestamptz string", mlog.String("timestamp_string", isoStr), mlog.String("timezone", timezone), mlog.Err(err))
 			// Use the recommended refined error message structure
 			const invalidMsg = "invalid timezone name; must be a valid IANA Time Zone ID (e.g., 'Asia/Shanghai' or 'UTC')"
 			return merr.WrapErrParameterInvalidMsg("got invalid timestamptz string '%s': %s", isoStr, invalidMsg)

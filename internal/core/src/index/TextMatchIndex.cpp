@@ -10,6 +10,7 @@
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
 #include <boost/uuid/random_generator.hpp>
+#include "common/FastMem.h"
 #include <boost/uuid/uuid_io.hpp>
 #include <memory>
 #include <shared_mutex>
@@ -20,10 +21,23 @@
 #include "storage/ThreadPools.h"
 
 namespace milvus::index {
+
+namespace {
+std::string
+StripTextLogPrefix(const std::string& path, const std::string& base_prefix) {
+    if (path.size() > base_prefix.size() &&
+        path.compare(0, base_prefix.size(), base_prefix) == 0) {
+        return path.substr(base_prefix.size());
+    }
+    return path;
+}
+}  // namespace
+
 TextMatchIndex::TextMatchIndex(int64_t commit_interval_in_ms,
                                const char* unique_id,
                                const char* analyzer_name,
-                               const char* analyzer_params)
+                               const char* analyzer_params,
+                               bool enable_background_merge)
     : commit_interval_in_ms_(commit_interval_in_ms),
       last_commit_time_(stdclock::now()) {
     d_type_ = TantivyDataType::Text;
@@ -34,7 +48,11 @@ TextMatchIndex::TextMatchIndex(int64_t commit_interval_in_ms,
         TANTIVY_INDEX_LATEST_VERSION /* Growing segment has no reason to use old version index*/
         ,
         analyzer_name,
-        analyzer_params);
+        analyzer_params,
+        /*analyzer_extra_info=*/"",
+        milvus::tantivy::DEFAULT_NUM_THREADS,
+        milvus::tantivy::DEFAULT_OVERALL_MEMORY_BUDGET_IN_BYTES,
+        enable_background_merge);
     set_is_growing(true);
 }
 
@@ -127,26 +145,37 @@ TextMatchIndex::Upload(const Config& config) {
     // This makes the returned paths consistent with JsonKeyStats::Upload()
     // which also returns relative paths.
     auto base_prefix = disk_file_manager_->GetRemoteTextLogPrefix() + "/";
-    auto strip_prefix = [&base_prefix](const std::string& path) -> std::string {
-        if (path.size() > base_prefix.size() &&
-            path.compare(0, base_prefix.size(), base_prefix) == 0) {
-            return path.substr(base_prefix.size());
-        }
-        return path;
-    };
 
     std::vector<SerializedIndexFileInfo> index_files;
     index_files.reserve(remote_paths_to_size.size() +
                         remote_mem_path_to_size.size());
     for (auto& file : remote_paths_to_size) {
-        index_files.emplace_back(strip_prefix(file.first), file.second);
+        index_files.emplace_back(StripTextLogPrefix(file.first, base_prefix),
+                                 file.second);
     }
     for (auto& file : remote_mem_path_to_size) {
-        index_files.emplace_back(strip_prefix(file.first), file.second);
+        index_files.emplace_back(StripTextLogPrefix(file.first, base_prefix),
+                                 file.second);
     }
     return IndexStats::New(this->file_manager_->GetAddedTotalMemSize() +
                                disk_file_manager_->GetAddedTotalFileSize(),
                            std::move(index_files));
+}
+
+IndexStatsPtr
+TextMatchIndex::UploadUnified(const Config& config) {
+    auto stats = ScalarIndex<std::string>::UploadUnified(config);
+
+    auto base_prefix = this->file_manager_->GetRemoteTextLogPrefix() + "/";
+    std::vector<SerializedIndexFileInfo> index_files;
+    const auto& uploaded = stats->GetSerializedIndexFileInfo();
+    index_files.reserve(uploaded.size());
+    for (const auto& file : uploaded) {
+        index_files.emplace_back(
+            StripTextLogPrefix(file.file_name, base_prefix), file.file_size);
+    }
+
+    return IndexStats::New(stats->GetMemSize(), std::move(index_files));
 }
 
 void
@@ -203,9 +232,9 @@ TextMatchIndex::Load(const Config& config) {
         index_datas.clear();
         auto index_valid_data = binary_set.GetByName("index_null_offset");
         null_offset_.resize((size_t)index_valid_data->size / sizeof(size_t));
-        memcpy(null_offset_.data(),
-               index_valid_data->data.get(),
-               (size_t)index_valid_data->size);
+        milvus::fastmem::FastMemcpy(null_offset_.data(),
+                                    index_valid_data->data.get(),
+                                    (size_t)index_valid_data->size);
     }
     disk_file_manager_->CacheTextLogToDisk(files_value, load_priority);
     AssertInfo(
@@ -349,19 +378,22 @@ TextMatchIndex::RegisterAnalyzer(const char* analyzer_name,
     wrapper_->register_tokenizer(analyzer_name, analyzer_params);
 }
 
+// Refresh a growing index if due, then allocate the result bitset. Shared by
+// the text-index query methods so the commit/reload logic lives in one place.
 TargetBitmap
-TextMatchIndex::MatchQuery(const std::string& query,
-                           uint32_t min_should_match) {
-    tracer::AutoSpan span("TextMatchIndex::MatchQuery", tracer::GetRootSpan());
+TextMatchIndex::PrepareBitset() {
     if (shouldTriggerCommit()) {
         Commit();
         Reload();
     }
+    return TargetBitmap{static_cast<size_t>(Count())};
+}
 
-    TargetBitmap bitset{static_cast<size_t>(Count())};
-    // The count operation of tantivy may be get older cnt if the index is committed with new tantivy segment.
-    // So we cannot use the count operation to get the total count for bitmap.
-    // Just use the maximum offset of hits to get the total count for bitmap here.
+TargetBitmap
+TextMatchIndex::MatchQuery(const std::string& query,
+                           uint32_t min_should_match) {
+    tracer::AutoSpan span("TextMatchIndex::MatchQuery", tracer::GetRootSpan());
+    TargetBitmap bitset = PrepareBitset();
     wrapper_->match_query(query, min_should_match, &bitset);
     return bitset;
 }
@@ -370,16 +402,18 @@ TargetBitmap
 TextMatchIndex::PhraseMatchQuery(const std::string& query, uint32_t slop) {
     tracer::AutoSpan span("TextMatchIndex::PhraseMatchQuery",
                           tracer::GetRootSpan());
-    if (shouldTriggerCommit()) {
-        Commit();
-        Reload();
-    }
-
-    TargetBitmap bitset{static_cast<size_t>(Count())};
-    // The count operation of tantivy may be get older cnt if the index is committed with new tantivy segment.
-    // So we cannot use the count operation to get the total count for bitmap.
-    // Just use the maximum offset of hits to get the total count for bitmap here.
+    TargetBitmap bitset = PrepareBitset();
     wrapper_->phrase_match_query(query, slop, &bitset);
+    return bitset;
+}
+
+TargetBitmap
+TextMatchIndex::FuzzyMatchQuery(const std::string& query,
+                                uint32_t max_edit_distance) {
+    tracer::AutoSpan span("TextMatchIndex::FuzzyMatchQuery",
+                          tracer::GetRootSpan());
+    TargetBitmap bitset = PrepareBitset();
+    wrapper_->fuzzy_match_query(query, max_edit_distance, &bitset);
     return bitset;
 }
 

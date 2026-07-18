@@ -31,6 +31,7 @@ impl IndexWriterWrapper {
         overall_memory_budget_in_bytes: usize,
         tanviy_index_version: TantivyIndexVersion,
         enable_user_specified_doc_id: bool,
+        enable_background_merge: bool,
     ) -> Result<IndexWriterWrapper> {
         init_log();
         match tanviy_index_version {
@@ -41,6 +42,7 @@ impl IndexWriterWrapper {
                     path,
                     num_threads,
                     overall_memory_budget_in_bytes,
+                    enable_background_merge,
                 )?;
                 Ok(IndexWriterWrapper::V5(writer))
             }
@@ -52,6 +54,7 @@ impl IndexWriterWrapper {
                     num_threads,
                     overall_memory_budget_in_bytes,
                     enable_user_specified_doc_id,
+                    enable_background_merge,
                 )?;
                 Ok(IndexWriterWrapper::V7(writer))
             }
@@ -112,6 +115,17 @@ impl IndexWriterWrapper {
                 ));
             }
             IndexWriterWrapper::V7(writer) => writer.add_json(data, offset.unwrap() as u32),
+        }
+    }
+
+    pub fn add_json_batch(&mut self, datas: &[*const c_char], offset_begin: i64) -> Result<()> {
+        match self {
+            IndexWriterWrapper::V5(_) => {
+                return Err(TantivyBindingError::InternalError(
+                    "add json batch with tantivy index version 5 is not supported".into(),
+                ));
+            }
+            IndexWriterWrapper::V7(writer) => writer.add_json_batch(datas, offset_begin as u32),
         }
     }
 
@@ -225,6 +239,7 @@ mod tests {
                 50_000_000,
                 TantivyIndexVersion::V5,
                 false,
+                false,
             )
             .unwrap();
 
@@ -306,6 +321,7 @@ mod tests {
                 "",
                 1,
                 50_000_000,
+                false,
                 false,
                 TantivyIndexVersion::V5,
             )
@@ -397,6 +413,7 @@ mod tests {
                 100_000_000,
                 TantivyIndexVersion::V7,
                 enable,
+                false,
             )
             .unwrap();
 

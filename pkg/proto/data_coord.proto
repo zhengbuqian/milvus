@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package milvus.proto.data;
 
-option go_package = "github.com/milvus-io/milvus/pkg/v2/proto/datapb";
+option go_package = "github.com/milvus-io/milvus/pkg/v3/proto/datapb";
 
 import "common.proto";
 import "internal.proto";
@@ -111,17 +111,26 @@ service DataCoord {
   rpc ListSnapshots(ListSnapshotsRequest) returns(ListSnapshotsResponse){}
   rpc DescribeSnapshot(DescribeSnapshotRequest) returns(DescribeSnapshotResponse){}
   rpc RestoreSnapshot(RestoreSnapshotRequest) returns(RestoreSnapshotResponse){}
+  rpc ExportSnapshot(ExportSnapshotRequest) returns(ExportSnapshotResponse){}
   rpc GetRestoreSnapshotState(GetRestoreSnapshotStateRequest) returns(GetRestoreSnapshotStateResponse){}
   rpc ListRestoreSnapshotJobs(ListRestoreSnapshotJobsRequest) returns(ListRestoreSnapshotJobsResponse){}
   rpc PinSnapshotData(PinSnapshotDataRequest) returns(PinSnapshotDataResponse){}
   rpc UnpinSnapshotData(UnpinSnapshotDataRequest) returns(common.Status){}
   // batch update manifest
   rpc BatchUpdateManifest(BatchUpdateManifestRequest) returns(common.Status){}
+  // commit backfill result (reads result JSON from object storage and dispatches
+  // V2/V3 segment updates through the broadcaster)
+  rpc CommitBackfillResult(CommitBackfillResultRequest) returns(CommitBackfillResultResponse){}
 
   // External Table Refresh APIs
   rpc RefreshExternalCollection(RefreshExternalCollectionRequest) returns(RefreshExternalCollectionResponse){}
   rpc GetRefreshExternalCollectionProgress(GetRefreshExternalCollectionProgressRequest) returns(GetRefreshExternalCollectionProgressResponse){}
   rpc ListRefreshExternalCollectionJobs(ListRefreshExternalCollectionJobsRequest) returns(ListRefreshExternalCollectionJobsResponse){}
+
+  // Import 2PC RPCs — internal only, not exposed in public MilvusService
+  rpc CommitImport(CommitImportRequest)                 returns (common.Status) {}
+  rpc AbortImport(AbortImportRequest)                   returns (common.Status) {}
+  rpc HandleCommitVchannel(HandleCommitVchannelRequest) returns (common.Status) {}
 }
 
 service DataNode {
@@ -446,6 +455,19 @@ message SegmentInfo {
   repeated int64 expirQuantiles = 33;
   int32 schema_version = 34;
   int32 data_version = 35;
+  // commit_timestamp is the transaction timestamp for import/CDC segments.
+  // When non-zero, it overrides start_position.Timestamp, dml_position.Timestamp,
+  // and binlog.TimestampFrom/TimestampTo for all temporal decisions (delete
+  // filtering, snapshot visibility, compaction selection, GC).
+  // Zero means normal segment.
+  // Non-L0 compaction normalizes import/CDC segments by rewriting output row
+  // timestamps to commit_timestamp, then clears this field back to 0. L0 delete
+  // compaction is excluded because it only compacts delete logs.
+  uint64 commit_timestamp = 36;
+  // child_manifest_paths is a load-time delete overlay for compaction fallback.
+  // It is populated only on cloned SegmentInfo responses from GetSegmentInfo
+  // with includeUnHealthy=true.
+  repeated string child_manifest_paths = 37;
 }
 
 message SegmentStartPosition {
@@ -525,6 +547,7 @@ message FieldBinlog{
   int64 fieldID = 1;
   repeated Binlog binlogs = 2;
   repeated int64 child_fields = 3;
+  string format = 4;
 }
 
 message TextIndexStats {
@@ -663,7 +686,7 @@ enum CompactionType {
   SortCompaction = 9;
   PartitionKeySortCompaction = 10;
   ClusteringPartitionKeySortCompaction = 11;
-  BackfillCompaction = 12;
+  BumpSchemaVersionCompaction = 12;
 }
 
 message CompactionStateRequest {
@@ -712,6 +735,11 @@ message CompactionSegmentBinlogs {
   // at the 20%, 40%, 60%, 80%, and 100% data distribution levels
   repeated int64 expirQuantiles = 12;
   bool is_sorted_by_namespace = 13;
+  // commit_timestamp mirrors SegmentInfo.commit_timestamp.
+  // DataNode uses it to protect import/CDC segment rows from premature TTL
+  // expiry during compaction: isEntityExpired uses max(row_ts, commit_ts)
+  // so stale row timestamps never cause rows to be silently dropped.
+  uint64 commit_timestamp = 14;
 }
 
 message CompactionPlan {
@@ -760,6 +788,11 @@ message CompactionSegment {
   string manifest = 12;
   repeated int64 expirQuantiles = 13;
   bool is_sorted_by_namespace = 14;
+  // base_manifest is the manifest the in-place schema-bump result was built
+  // on (the plan-pinned base). DataCoord adopts the result only if it still
+  // equals the segment's current manifest (optimistic-concurrency CAS),
+  // mirroring StatsResult.base_manifest.
+  string base_manifest = 15;
 }
 
 message CompactionPlanResult {
@@ -1050,6 +1083,14 @@ message CopySegmentSource {
   // Storage version: 0=V1(legacy binlog), 2=V2(packed parquet), 3=V3(loon manifest)
   // When storage_version >= 3, binlog paths must be resolved from manifest_path
   int64 storage_version = 12;
+
+  // Whether the source segment belongs to an external collection.
+  bool is_external_collection = 13;
+
+  // Optional source root path for external snapshot restore.
+  // When set, DataNode rewrites this prefix to the target root path before
+  // replacing collection/partition/segment IDs.
+  string source_root_path = 14;
 }
 
 message CopySegmentTarget {
@@ -1057,6 +1098,7 @@ message CopySegmentTarget {
   int64 partition_id = 2;   // target partition ID
   int64 segment_id = 3;     // target segment ID
   map<int64, int64> new_build_ids = 4;  // srcBuildID -> newBuildID mapping for target segment indexes
+  string target_root_path = 5; // target root path for external snapshot restore
 }
 
 message CopySegmentRequest {
@@ -1070,6 +1112,7 @@ message CopySegmentRequest {
 
   index.StorageConfig storage_config = 6;
   int64 task_slot = 7;
+  string external_spec = 8;
 }
 
 message QueryCopySegmentRequest {
@@ -1105,6 +1148,7 @@ message VectorScalarIndexInfo {
   int32 current_index_version = 7;         // Index engine version
   int32 current_scalar_index_version = 8;  // Scalar index engine version
   string index_name = 9;                   // Index name for multi-index-per-field lookup
+  index.IndexStorePathVersion index_store_path_version = 10;
 }
 
 // CopySegmentResult contains the complete result of a copy segment operation
@@ -1234,6 +1278,12 @@ message CopySegmentJob {
   // dropped (by DropSnapshot RPC, drop-collection cascade, or GC) while this
   // job is still reading its data.
   int64 pin_id = 18;
+
+  // External snapshot restore reads snapshot metadata directly from object
+  // storage instead of local snapshot catalog.
+  bool external = 19;
+  string snapshot_s3_location = 20;
+  string external_spec = 21;
 }
 
 message ImportJob {
@@ -1255,6 +1305,8 @@ message ImportJob {
   string create_time = 16;
   repeated string ready_vchannels = 17;
   uint64 data_ts = 18;
+  repeated string committed_vchannels = 19;
+  bool            auto_commit         = 20;
 }
 
 enum ImportTaskStateV2 {
@@ -1399,6 +1451,8 @@ message RefreshExternalCollectionTaskRequest {
   string explore_manifest_path = 11;      // S3 manifest path for file discovery
   int64 file_index_begin = 12;            // File range start for this task
   int64 file_index_end = 13;              // File range end for this task
+  int64 partitionID = 14;                 // target partition for manifest path
+  int64 target_rows_per_segment = 15;     // target row count for segment organization
 }
 
 message RefreshExternalCollectionTaskResponse {
@@ -1432,6 +1486,7 @@ message GetRefreshExternalCollectionProgressRequest {
 // ExternalCollectionRefreshJob - Job level abstraction for API tracking and user queries
 // A Job represents a user-initiated refresh operation and can contain multiple tasks (1:N)
 message ExternalCollectionRefreshJob {
+  reserved 12;                   // removed: schema_version
   int64 job_id = 1;              // Unique job identifier for API tracking
   int64 collection_id = 2;
   string collection_name = 3;
@@ -1454,6 +1509,7 @@ message ExternalFileInfo {
 }
 
 message ExternalCollectionRefreshTask {
+  reserved 18;                   // removed: schema_version
   int64 task_id = 1;             // Unique task identifier
   int64 job_id = 2;              // Parent job ID
   int64 collection_id = 3;
@@ -1468,6 +1524,9 @@ message ExternalCollectionRefreshTask {
   string explore_manifest_path = 12;  // S3 manifest path for this job
   int64 file_index_begin = 13;        // File range start for this task
   int64 file_index_end = 14;          // File range end for this task
+  repeated int64 kept_segments = 15;  // Segment IDs kept by this task result
+  repeated SegmentInfo updated_segments = 16;  // Segment upsert payload produced by this task result
+  bool result_ready = 17;  // True once this task has persisted job-level refresh result payload
 }
 
 message GetRefreshExternalCollectionProgressResponse {
@@ -1513,6 +1572,19 @@ message ListSnapshotsResponse {
   repeated string snapshots = 2;
 }
 
+message ExportSnapshotRequest {
+  common.MsgBase base = 1;
+  string name = 2; // snapshot name
+  int64 collection_id = 3; // source collection id
+  string target_s3_path = 4; // target root path for the exported snapshot bundle
+  string external_spec = 5; // optional external storage spec for cross-bucket export target
+}
+
+message ExportSnapshotResponse {
+  common.Status status = 1;
+  string snapshot_metadata_uri = 2;
+}
+
 message SegmentDescription {
   int64 segment_id = 1; // segment id
   int64 partition_id = 2; // partition id
@@ -1531,6 +1603,10 @@ message SegmentDescription {
   int64 storage_version = 15; // storage version
   bool is_sorted = 16; // whether the segment is sorted by primary key
   string manifest_path = 17; // StorageV2 manifest file path
+  // commit_timestamp mirrors SegmentInfo.commit_timestamp.
+  // Must be preserved across snapshot/restore so temporal protections
+  // (GC, TTL, MVCC) are not lost on the restored segments.
+  uint64 commit_timestamp = 18;
 }
 
 message CollectionDescription {
@@ -1549,13 +1625,18 @@ message SnapshotInfo {
   string description = 3; // user-defined snapshot description
   int64 collection_id = 4; // collection id
   repeated int64 partition_ids = 5; // partition ids
-  int64 create_ts = 6; // create timestamp, all stream data before this timestamp will be flushed to segment list.
+  // create_ts is a compatibility summary timestamp. For new snapshots it is
+  // min(channel_seek_positions.timestamp), not a global cross-channel boundary.
+  int64 create_ts = 6;
   string s3_location = 7; // s3 location of the snapshot meta file if snapshot is exported to s3.
   SnapshotState state = 8; // snapshot state for 2PC commit (Pending/Committed)
   int64 pending_start_time = 9; // timestamp when pending started, for GC timeout
   uint64 compaction_expire_time = 10;       // absolute expiry timestamp (Unix seconds) for compaction protection, 0 = no protection
   repeated int64 pin_ids = 11;              // active pin IDs (crypto-random, unique per pin operation)
   map<int64, int64> pin_expire_at_ms = 12;  // pin_id -> expiry timestamp (ms), 0 = no expiry
+  // Per-channel snapshot boundaries. Each position records the seek point used
+  // to decide which segments from that channel are included in the snapshot.
+  repeated msg.MsgPosition channel_seek_positions = 13;
 }
 
 // StorageV2SegmentManifest maps a segment ID to its StorageV2 manifest file path.
@@ -1563,6 +1644,12 @@ message SnapshotInfo {
 message StorageV2SegmentManifest {
   int64 segment_id = 1;
   string manifest = 2;
+}
+
+enum SnapshotLayout {
+  SnapshotLayoutUnknown = 0;
+  SnapshotLayoutReferenced = 1;
+  SnapshotLayoutSelfContained = 2;
 }
 
 // SnapshotMetadata is the root structure for snapshot metadata JSON file.
@@ -1582,6 +1669,7 @@ message SnapshotMetadata {
   repeated StorageV2SegmentManifest storagev2_manifest_list = 6;
   repeated int64 segment_ids = 7;
   repeated int64 build_ids = 8;
+  SnapshotLayout layout = 9;
 }
 
 message RestoreSnapshotInfo {
@@ -1620,6 +1708,9 @@ message RestoreSnapshotRequest {
   string target_db_name = 3; // target database name (where to restore to)
   string target_collection_name = 4; // target collection name (must not exist)
   int64 source_collection_id = 5; // source collection id for per-collection snapshot name lookup
+  bool external = 6; // true when restoring from an external snapshot metadata URI
+  string snapshot_s3_location = 7; // metadata file path for external snapshot restore
+  string external_spec = 8; // optional external storage spec for cross-bucket restore source
 }
 
 message RestoreSnapshotResponse {
@@ -1660,6 +1751,34 @@ message BatchUpdateManifestItem {
   int64 manifest_version = 2;
 }
 
+// CommitBackfillResultRequest is sent by the proxy management HTTP endpoint to
+// hand off the path of a BackfillResult JSON file on object storage. DataCoord
+// downloads the JSON, classifies each segment entry (V2/V3), and dispatches
+// the resulting operators through the BatchUpdateManifest broadcast pipeline.
+message CommitBackfillResultRequest {
+  common.MsgBase base = 1;
+  // Accepted forms:
+  //   s3a://<bucket>/<key>   (canonical form produced by Spark)
+  //   s3://<bucket>/<key>
+  //   /<key>                 (bucket implied)
+  string result_path = 2;
+}
+
+message CommitBackfillResultSegmentStatus {
+  int64  segment_id = 1;
+  bool   ok         = 2;
+  string reason     = 3;
+  string kind       = 4;  // "v2" | "v3"
+}
+
+message CommitBackfillResultResponse {
+  common.Status status = 1;
+  int32 total_segments     = 2;
+  int32 committed_segments = 3;
+  int32 failed_segments    = 4;
+  repeated CommitBackfillResultSegmentStatus segment_statuses = 5;
+}
+
 message PinSnapshotDataRequest {
   common.MsgBase base = 1;
   string name = 2;                  // snapshot name
@@ -1675,4 +1794,23 @@ message PinSnapshotDataResponse {
 message UnpinSnapshotDataRequest {
   common.MsgBase base = 1;
   int64 pin_id = 2;                 // pin ID from PinSnapshotData response
+}
+
+message CommitImportRequest {
+  common.MsgBase base   = 1;
+  int64          job_id = 2;
+}
+
+message AbortImportRequest {
+  common.MsgBase base   = 1;
+  int64          job_id = 2;
+}
+
+message HandleCommitVchannelRequest {
+  common.MsgBase base             = 1;
+  int64          job_id           = 2;
+  string         vchannel         = 3;
+  // commit_timestamp is the WAL message timestamp of the CommitImportMessage.
+  // This becomes the segment's commit_timestamp for MVCC/TTL/delete correctness.
+  uint64         commit_timestamp = 4;
 }

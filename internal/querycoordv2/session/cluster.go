@@ -18,29 +18,21 @@ package session
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
-	"github.com/cockroachdb/errors"
-	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
 	grpcquerynodeclient "github.com/milvus-io/milvus/internal/distributed/querynode/client"
 	"github.com/milvus-io/milvus/internal/types"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/internalpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/querypb"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
 )
-
-var ErrNodeNotFound = errors.New("NodeNotFound")
-
-func WrapErrNodeNotFound(nodeID int64) error {
-	return fmt.Errorf("%w(%v)", ErrNodeNotFound, nodeID)
-}
 
 type Cluster interface {
 	WatchDmChannels(ctx context.Context, nodeID int64, req *querypb.WatchDmChannelsRequest) (*commonpb.Status, error)
@@ -57,6 +49,7 @@ type Cluster interface {
 	RunAnalyzer(ctx context.Context, nodeID int64, req *querypb.RunAnalyzerRequest) (*milvuspb.RunAnalyzerResponse, error)
 	ValidateAnalyzer(ctx context.Context, nodeID int64, req *querypb.ValidateAnalyzerRequest) (*querypb.ValidateAnalyzerResponse, error)
 	SyncFileResource(ctx context.Context, nodeID int64, req *internalpb.SyncFileResourceRequest) (*commonpb.Status, error)
+	ClearReadTaskQueue(ctx context.Context, nodeID int64, req *internalpb.ClearReadTaskQueueRequest) (*internalpb.ClearReadTaskQueueResponse, error)
 	ComputePhraseMatchSlop(ctx context.Context, nodeID int64, req *querypb.ComputePhraseMatchSlopRequest) (*querypb.ComputePhraseMatchSlopResponse, error)
 	Start()
 	Stop()
@@ -107,7 +100,7 @@ func (c *QueryCluster) updateLoop() {
 	for {
 		select {
 		case <-c.ch:
-			log.Info("cluster closed")
+			mlog.Info(context.TODO(), "cluster closed")
 			return
 		case <-ticker.C:
 			nodes := c.getAllNodeIDs()
@@ -333,6 +326,22 @@ func (c *QueryCluster) SyncFileResource(ctx context.Context, nodeID int64, req *
 	return resp, err
 }
 
+func (c *QueryCluster) ClearReadTaskQueue(ctx context.Context, nodeID int64, req *internalpb.ClearReadTaskQueueRequest) (*internalpb.ClearReadTaskQueueResponse, error) {
+	var (
+		resp *internalpb.ClearReadTaskQueueResponse
+		err  error
+	)
+
+	req = proto.Clone(req).(*internalpb.ClearReadTaskQueueRequest)
+	err1 := c.send(ctx, nodeID, func(cli types.QueryNodeClient) {
+		resp, err = cli.ClearReadTaskQueue(ctx, req)
+	})
+	if err1 != nil {
+		return nil, err1
+	}
+	return resp, err
+}
+
 func (c *QueryCluster) ComputePhraseMatchSlop(ctx context.Context, nodeID int64, req *querypb.ComputePhraseMatchSlopRequest) (*querypb.ComputePhraseMatchSlopResponse, error) {
 	var (
 		resp *querypb.ComputePhraseMatchSlopResponse
@@ -351,7 +360,7 @@ func (c *QueryCluster) ComputePhraseMatchSlop(ctx context.Context, nodeID int64,
 func (c *QueryCluster) send(ctx context.Context, nodeID int64, fn func(cli types.QueryNodeClient)) error {
 	node := c.nodeManager.Get(nodeID)
 	if node == nil {
-		return WrapErrNodeNotFound(nodeID)
+		return merr.WrapErrNodeNotFound(nodeID)
 	}
 
 	cli, err := c.getOrCreate(ctx, node)
@@ -420,7 +429,7 @@ func (c *clients) close(nodeID int64) {
 	defer c.Unlock()
 	if cli, ok := c.clients[nodeID]; ok {
 		if err := cli.Close(); err != nil {
-			log.Warn("error occurred during stopping client", zap.Int64("nodeID", nodeID), zap.Error(err))
+			mlog.Warn(context.TODO(), "error occurred during stopping client", mlog.Int64("nodeID", nodeID), mlog.Err(err))
 		}
 		delete(c.clients, nodeID)
 	}
@@ -431,7 +440,7 @@ func (c *clients) closeAll() {
 	defer c.Unlock()
 	for nodeID, cli := range c.clients {
 		if err := cli.Close(); err != nil {
-			log.Warn("error occurred during stopping client", zap.Int64("nodeID", nodeID), zap.Error(err))
+			mlog.Warn(context.TODO(), "error occurred during stopping client", mlog.Int64("nodeID", nodeID), mlog.Err(err))
 		}
 	}
 }

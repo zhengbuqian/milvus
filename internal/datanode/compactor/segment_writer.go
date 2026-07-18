@@ -25,20 +25,20 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/samber/lo"
 	"go.uber.org/atomic"
-	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/allocator"
 	"github.com/milvus-io/milvus/internal/compaction"
 	"github.com/milvus-io/milvus/internal/flushcommon/io"
 	"github.com/milvus-io/milvus/internal/flushcommon/writebuffer"
 	"github.com/milvus-io/milvus/internal/storage"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/etcdpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/etcdpb"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 // Not concurrent safe.
@@ -71,9 +71,12 @@ type MultiSegmentWriter struct {
 }
 
 type compactionAlloactor struct {
-	segmentAlloc allocator.Interface
-	logIDAlloc   allocator.Interface
+	segmentAlloc             allocator.Interface
+	logIDAlloc               allocator.Interface
+	segmentIDBudgetExhausted bool
 }
+
+var errCompactionSegmentIDsExhausted = errors.New("pre-allocated compaction segment IDs exhausted")
 
 func NewCompactionAllocator(segmentAlloc, logIDAlloc allocator.Interface) *compactionAlloactor {
 	return &compactionAlloactor{
@@ -83,7 +86,18 @@ func NewCompactionAllocator(segmentAlloc, logIDAlloc allocator.Interface) *compa
 }
 
 func (alloc *compactionAlloactor) allocSegmentID() (typeutil.UniqueID, error) {
+	if alloc.isSegmentIDBudgetExhausted() {
+		return 0, errCompactionSegmentIDsExhausted
+	}
 	return alloc.segmentAlloc.AllocOne()
+}
+
+func (alloc *compactionAlloactor) isSegmentIDBudgetExhausted() bool {
+	return alloc.segmentIDBudgetExhausted
+}
+
+func (alloc *compactionAlloactor) markSegmentIDBudgetExhausted() {
+	alloc.segmentIDBudgetExhausted = true
 }
 
 func NewMultiSegmentWriter(ctx context.Context, binlogIO io.BinlogIO, allocator *compactionAlloactor, segmentSize int64,
@@ -115,17 +129,21 @@ func NewMultiSegmentWriter(ctx context.Context, binlogIO io.BinlogIO, allocator 
 
 func (w *MultiSegmentWriter) closeWriter() error {
 	if w.writer != nil {
-		if err := w.writer.Close(); err != nil {
+		writer := w.writer
+		w.writer = nil
+		if err := writer.Close(); err != nil {
 			return err
 		}
 
-		fieldBinlogs, statsLog, bm25Logs, manifest, expirQuantiles := w.writer.GetLogs()
+		fieldBinlogs, statsLog, bm25Logs, manifest, expirQuantiles := writer.GetLogs()
+		rowNum := writer.GetRowNum()
+		writtenUncompressed := writer.GetWrittenUncompressed()
 
 		result := &datapb.CompactionSegment{
 			SegmentID:           w.currentSegmentID,
 			InsertLogs:          storage.SortFieldBinlogs(fieldBinlogs),
 			Field2StatslogPaths: []*datapb.FieldBinlog{statsLog},
-			NumOfRows:           w.writer.GetRowNum(),
+			NumOfRows:           rowNum,
 			Channel:             w.channel,
 			Bm25Logs:            lo.Values(bm25Logs),
 			StorageVersion:      w.storageVersion,
@@ -135,27 +153,29 @@ func (w *MultiSegmentWriter) closeWriter() error {
 
 		w.res = append(w.res, result)
 
-		log.Info("created new segment",
-			zap.Int64("segmentID", w.currentSegmentID),
-			zap.String("channel", w.channel),
-			zap.Int64("totalRows", w.writer.GetRowNum()),
-			zap.Uint64("totalSize", w.writer.GetWrittenUncompressed()),
-			zap.Int64("expected segment size", w.segmentSize),
-			zap.Int64("storageVersion", w.storageVersion))
+		mlog.Info(w.ctx, "created new segment",
+			mlog.FieldSegmentID(w.currentSegmentID),
+			mlog.String("channel", w.channel),
+			mlog.Int64("totalRows", rowNum),
+			mlog.Uint64("totalSize", writtenUncompressed),
+			mlog.Int64("expected segment size", w.segmentSize),
+			mlog.Int64("storageVersion", w.storageVersion))
 	}
 	return nil
 }
 
 func (w *MultiSegmentWriter) rotateWriter() error {
-	if err := w.closeWriter(); err != nil {
+	newSegmentID, err := w.allocator.allocSegmentID()
+	if err != nil {
+		if allocator.IsIDExhausted(err) {
+			return errors.Mark(err, errCompactionSegmentIDsExhausted)
+		}
 		return err
 	}
 
-	newSegmentID, err := w.allocator.allocSegmentID()
-	if err != nil {
+	if err := w.closeWriter(); err != nil {
 		return err
 	}
-	w.currentSegmentID = newSegmentID
 
 	chunkSize := w.binLogMaxSize
 
@@ -172,7 +192,38 @@ func (w *MultiSegmentWriter) rotateWriter() error {
 		return err
 	}
 
+	w.currentSegmentID = newSegmentID
 	w.writer = storage.NewBinlogValueWriter(rw, w.batchSize)
+	return nil
+}
+
+func (w *MultiSegmentWriter) rotateWriterOrGrowCurrent() error {
+	if w.writer == nil {
+		return w.rotateWriter()
+	}
+	if w.allocator.isSegmentIDBudgetExhausted() {
+		return nil
+	}
+	if w.writer.GetWrittenUncompressed() < uint64(w.segmentSize) {
+		return nil
+	}
+
+	if err := w.rotateWriter(); err != nil {
+		if !errors.Is(err, errCompactionSegmentIDsExhausted) {
+			return err
+		}
+
+		w.allocator.markSegmentIDBudgetExhausted()
+		writtenUncompressed := w.writer.GetWrittenUncompressed()
+		mlog.Warn(w.ctx, "pre-allocated compaction segment IDs exhausted, continue writing current segment",
+			mlog.Int64("collectionID", w.collectionID),
+			mlog.Int64("partitionID", w.partitionID),
+			mlog.String("channel", w.channel),
+			mlog.Int64("segmentID", w.currentSegmentID),
+			mlog.Uint64("currentSize", writtenUncompressed),
+			mlog.Int64("expectedSegmentSize", w.segmentSize),
+			mlog.Err(err))
+	}
 	return nil
 }
 
@@ -195,19 +246,15 @@ func (w *MultiSegmentWriter) GetCompactionSegments() []*datapb.CompactionSegment
 }
 
 func (w *MultiSegmentWriter) Write(r storage.Record) error {
-	if w.writer == nil || w.writer.GetWrittenUncompressed() >= uint64(w.segmentSize) {
-		if err := w.rotateWriter(); err != nil {
-			return err
-		}
+	if err := w.rotateWriterOrGrowCurrent(); err != nil {
+		return err
 	}
 	return w.writer.Write(r)
 }
 
 func (w *MultiSegmentWriter) WriteValue(v *storage.Value) error {
-	if w.writer == nil || w.writer.GetWrittenUncompressed() >= uint64(w.segmentSize) {
-		if err := w.rotateWriter(); err != nil {
-			return err
-		}
+	if err := w.rotateWriterOrGrowCurrent(); err != nil {
+		return err
 	}
 
 	return w.writer.WriteValue(v)
@@ -314,7 +361,7 @@ func (w *SegmentWriter) WriteRecord(r storage.Record) error {
 		for fieldID, stats := range w.bm25Stats {
 			field, ok := r.Column(fieldID).(*array.Binary)
 			if !ok {
-				return errors.New("bm25 field value not found")
+				return merr.WrapErrServiceInternalMsg("bm25 field value not found")
 			}
 			stats.AppendBytes(field.Value(i))
 		}
@@ -337,12 +384,12 @@ func (w *SegmentWriter) Write(v *storage.Value) error {
 	for fieldID, stats := range w.bm25Stats {
 		data, ok := v.Value.(map[storage.FieldID]interface{})[fieldID]
 		if !ok {
-			return errors.New("bm25 field value not found")
+			return merr.WrapErrServiceInternalMsg("bm25 field value not found")
 		}
 
 		bytes, ok := data.([]byte)
 		if !ok {
-			return errors.New("bm25 field value not sparse bytes")
+			return merr.WrapErrServiceInternalMsg("bm25 field value not sparse bytes")
 		}
 		stats.AppendBytes(bytes)
 	}
@@ -453,7 +500,7 @@ func NewSegmentWriter(sch *schemapb.CollectionSchema, maxCount int64, batchSize 
 
 	pkField, err := typeutil.GetPrimaryFieldSchema(sch)
 	if err != nil {
-		log.Warn("failed to get pk field from schema")
+		mlog.Warn(context.TODO(), "failed to get pk field from schema")
 		return nil, err
 	}
 
@@ -495,5 +542,5 @@ func newBinlogWriter(collID, partID, segID int64, schema *schemapb.CollectionSch
 		closers = append(closers, w.Finalize)
 	}
 	writer, err = storage.NewBinlogSerializeWriter(schema, partID, segID, fieldWriters, batchSize)
-	return
+	return writer, closers, err
 }

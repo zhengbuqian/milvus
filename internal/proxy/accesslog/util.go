@@ -21,12 +21,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cockroachdb/errors"
 	"github.com/gin-gonic/gin"
 	"google.golang.org/grpc"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/hook"
 	"github.com/milvus-io/milvus/internal/proxy/accesslog/info"
+	"github.com/milvus-io/milvus/internal/util/hookutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
 )
 
 type AccessKey struct{}
@@ -54,6 +56,11 @@ func AccessLogMiddleware(ctx *gin.Context) {
 	ctx.Next()
 	accessInfo.InitReq()
 	_globalL.Write(accessInfo)
+
+	// Plugin pulls req / status / err / path from the gin context — the
+	// middleware only needs to surface it through the stdlib context.
+	reqCtx := context.WithValue(ctx.Request.Context(), hook.GinParamsKey, ctx)
+	hookutil.GetExtension().ReportAction(reqCtx, nil, nil, nil, "", hookutil.ActionRestfulReturn)
 }
 
 func SetHTTPParams(ctx *gin.Context, p *gin.LogFormatterParams) {
@@ -75,10 +82,10 @@ func join(path1, path2 string) string {
 
 func timeFromName(filename, prefix, ext string) (time.Time, error) {
 	if !strings.HasPrefix(filename, prefix) {
-		return time.Time{}, errors.New("mismatched prefix")
+		return time.Time{}, merr.WrapErrParameterInvalidMsg("mismatched prefix")
 	}
 	if !strings.HasSuffix(filename, ext) {
-		return time.Time{}, errors.New("mismatched extension")
+		return time.Time{}, merr.WrapErrParameterInvalidMsg("mismatched extension")
 	}
 	ts := filename[len(prefix) : len(filename)-len(ext)]
 	return time.Parse(timeNameFormat, ts)

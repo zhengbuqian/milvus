@@ -31,13 +31,12 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
 	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/msgpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/distributed/streaming"
 	"github.com/milvus-io/milvus/internal/json"
 	"github.com/milvus-io/milvus/internal/mocks/distributed/mock_streaming"
@@ -48,22 +47,22 @@ import (
 	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/streamingutil/util"
 	"github.com/milvus-io/milvus/internal/util/streamrpc"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/util/conc"
-	"github.com/milvus-io/milvus/pkg/v2/util/etcd"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/metautil"
-	"github.com/milvus-io/milvus/pkg/v2/util/metricsinfo"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/indexpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/internalpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/querypb"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/message"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/types"
+	"github.com/milvus-io/milvus/pkg/v3/util/conc"
+	"github.com/milvus-io/milvus/pkg/v3/util/etcd"
+	"github.com/milvus-io/milvus/pkg/v3/util/funcutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/metautil"
+	"github.com/milvus-io/milvus/pkg/v3/util/metricsinfo"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 type ServiceSuite struct {
@@ -777,24 +776,10 @@ func (suite *ServiceSuite) TestLoadDeltaVarchar() {
 	suite.Equal(commonpb.ErrorCode_Success, status.GetErrorCode())
 }
 
-func (suite *ServiceSuite) TestLoadIndex_Success() {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	schema := mock_segcore.GenTestCollectionSchema(suite.collectionName, schemapb.DataType_Int64, false)
-
-	indexInfos := mock_segcore.GenTestIndexInfoList(suite.collectionID, schema)
-	infos := suite.genSegmentLoadInfos(schema, indexInfos)
-	infos = lo.Map(infos, func(info *querypb.SegmentLoadInfo, _ int) *querypb.SegmentLoadInfo {
-		info.SegmentID = info.SegmentID + 1000
-		return info
-	})
-	rawInfo := lo.Map(infos, func(info *querypb.SegmentLoadInfo, _ int) *querypb.SegmentLoadInfo {
-		info = typeutil.Clone(info)
-		info.IndexInfos = nil
-		return info
-	})
-
+func (suite *ServiceSuite) TestLoadSegmentsRejectsUnknownScope() {
+	ctx := context.Background()
+	schema := mock_segcore.GenTestCollectionSchema(
+		suite.collectionName, schemapb.DataType_Int64, false)
 	req := &querypb.LoadSegmentsRequest{
 		Base: &commonpb.MsgBase{
 			MsgID:    rand.Int63(),
@@ -802,123 +787,46 @@ func (suite *ServiceSuite) TestLoadIndex_Success() {
 		},
 		CollectionID:  suite.collectionID,
 		DstNodeID:     suite.node.session.ServerID,
-		Infos:         rawInfo,
+		Infos:         suite.genSegmentLoadInfos(schema, nil),
 		Schema:        schema,
 		NeedTransfer:  false,
-		LoadScope:     querypb.LoadScope_Full,
-		IndexInfoList: indexInfos,
+		LoadScope:     querypb.LoadScope(99),
+		IndexInfoList: []*indexpb.IndexInfo{{}},
 	}
 
-	// Load segment
 	status, err := suite.node.LoadSegments(ctx, req)
-	suite.Require().NoError(err)
-	suite.Require().Equal(commonpb.ErrorCode_Success, status.GetErrorCode())
+	suite.NoError(err)
+	suite.NotEqual(commonpb.ErrorCode_Success, status.GetErrorCode())
+	suite.Contains(status.GetReason(), "unsupported segment load scope")
+}
 
-	for _, segmentID := range lo.Map(infos, func(info *querypb.SegmentLoadInfo, _ int) int64 {
-		return info.GetSegmentID()
-	}) {
-		suite.Equal(0, len(suite.node.manager.Segment.Get(segmentID).Indexes()))
-	}
-
-	req = &querypb.LoadSegmentsRequest{
+func (suite *ServiceSuite) TestLoadSegmentsRejectsLegacyIndexScope() {
+	ctx := context.Background()
+	schema := mock_segcore.GenTestCollectionSchema(
+		suite.collectionName, schemapb.DataType_Int64, false)
+	req := &querypb.LoadSegmentsRequest{
 		Base: &commonpb.MsgBase{
 			MsgID:    rand.Int63(),
 			TargetID: suite.node.session.ServerID,
 		},
 		CollectionID:  suite.collectionID,
 		DstNodeID:     suite.node.session.ServerID,
-		Infos:         infos,
+		Infos:         suite.genSegmentLoadInfos(schema, nil),
 		Schema:        schema,
 		NeedTransfer:  false,
-		LoadScope:     querypb.LoadScope_Index,
+		LoadScope:     legacyLoadScopeIndex,
 		IndexInfoList: []*indexpb.IndexInfo{{}},
 	}
 
-	// Load segment
-	status, err = suite.node.LoadSegments(ctx, req)
-	suite.Require().NoError(err)
-	suite.Require().Equal(commonpb.ErrorCode_Success, status.GetErrorCode())
+	loader := suite.node.loader
+	suite.node.loader = segments.NewMockLoader(suite.T())
+	defer func() { suite.node.loader = loader }()
 
-	for _, segmentID := range lo.Map(infos, func(info *querypb.SegmentLoadInfo, _ int) int64 {
-		return info.GetSegmentID()
-	}) {
-		suite.T().Log(segmentID)
-		suite.T().Log(len(suite.node.manager.Segment.Get(segmentID).Indexes()))
-		suite.Greater(len(suite.node.manager.Segment.Get(segmentID).Indexes()), 0)
-	}
-}
-
-func (suite *ServiceSuite) TestLoadIndex_Failed() {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	schema := mock_segcore.GenTestCollectionSchema(suite.collectionName, schemapb.DataType_Int64, false)
-
-	suite.Run("load_non_exist_segment", func() {
-		indexInfos := mock_segcore.GenTestIndexInfoList(suite.collectionID, schema)
-		infos := suite.genSegmentLoadInfos(schema, indexInfos)
-		infos = lo.Map(infos, func(info *querypb.SegmentLoadInfo, _ int) *querypb.SegmentLoadInfo {
-			info.SegmentID = info.SegmentID + 1000
-			return info
-		})
-		rawInfo := lo.Map(infos, func(info *querypb.SegmentLoadInfo, _ int) *querypb.SegmentLoadInfo {
-			info = typeutil.Clone(info)
-			info.IndexInfos = nil
-			return info
-		})
-		req := &querypb.LoadSegmentsRequest{
-			Base: &commonpb.MsgBase{
-				MsgID:    rand.Int63(),
-				TargetID: suite.node.session.ServerID,
-			},
-			CollectionID:  suite.collectionID,
-			DstNodeID:     suite.node.session.ServerID,
-			Infos:         rawInfo,
-			Schema:        schema,
-			NeedTransfer:  false,
-			LoadScope:     querypb.LoadScope_Index,
-			IndexInfoList: indexInfos,
-		}
-
-		// Load segment
-		status, err := suite.node.LoadSegments(ctx, req)
-		suite.Require().NoError(err)
-		// Ignore segment missing
-		suite.Require().Equal(commonpb.ErrorCode_Success, status.GetErrorCode())
-	})
-
-	suite.Run("loader_returns_error", func() {
-		suite.TestLoadSegments_Int64()
-		loader := suite.node.loader
-		mockLoader := segments.NewMockLoader(suite.T())
-		suite.node.loader = mockLoader
-		defer func() {
-			suite.node.loader = loader
-		}()
-
-		mockLoader.EXPECT().LoadIndex(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(errors.New("mocked error"))
-
-		indexInfos := mock_segcore.GenTestIndexInfoList(suite.collectionID, schema)
-		infos := suite.genSegmentLoadInfos(schema, indexInfos)
-		req := &querypb.LoadSegmentsRequest{
-			Base: &commonpb.MsgBase{
-				MsgID:    rand.Int63(),
-				TargetID: suite.node.session.ServerID,
-			},
-			CollectionID:  suite.collectionID,
-			DstNodeID:     suite.node.session.ServerID,
-			Infos:         infos,
-			Schema:        schema,
-			NeedTransfer:  false,
-			LoadScope:     querypb.LoadScope_Index,
-			IndexInfoList: indexInfos,
-		}
-
-		// Load segment
-		status, err := suite.node.LoadSegments(ctx, req)
-		suite.Require().NoError(err)
-		suite.Require().NotEqual(commonpb.ErrorCode_Success, status.GetErrorCode())
-	})
+	status, err := suite.node.LoadSegments(ctx, req)
+	suite.NoError(err)
+	suite.ErrorIs(merr.Error(status), merr.ErrServiceInternal)
+	suite.Contains(status.GetReason(), "legacy segment index load scope 2")
+	suite.Contains(status.GetReason(), "use LoadScope_Reopen")
 }
 
 func (suite *ServiceSuite) TestLoadSegments_Failed() {
@@ -1359,7 +1267,7 @@ func (suite *ServiceSuite) TestSearch_Failed() {
 		CollectionID: suite.collectionID,
 		PartitionIDs: suite.partitionIDs,
 	}
-	indexMeta := suite.node.composeIndexMeta(ctx, mock_segcore.GenTestIndexInfoList(suite.collectionID, schema), schema)
+	indexMeta := segments.ComposeIndexMeta(ctx, mock_segcore.GenTestIndexInfoList(suite.collectionID, schema), schema)
 	suite.node.manager.Collection.PutOrRef(suite.collectionID, schema, indexMeta, LoadMeta)
 
 	// Delegator not found
@@ -1926,7 +1834,7 @@ func (suite *ServiceSuite) TestGetMetric_Failed() {
 	req.Request = "---"
 	resp, err = suite.node.GetMetrics(ctx, req)
 	suite.NoError(err)
-	suite.Equal(commonpb.ErrorCode_UnexpectedError, resp.GetStatus().GetErrorCode())
+	suite.Equal(commonpb.ErrorCode_IllegalArgument, resp.GetStatus().GetErrorCode())
 
 	// node unhealthy
 	suite.node.UpdateStateCode(commonpb.StateCode_Abnormal)
@@ -2062,7 +1970,7 @@ func (suite *ServiceSuite) TestSyncDistribution_Normal() {
 	mockDelegator := delegator.NewMockShardDelegator(suite.T())
 	mockDelegator.EXPECT().LoadSegments(mock.Anything, mock.Anything).
 		RunAndReturn(func(ctx context.Context, req *querypb.LoadSegmentsRequest) error {
-			log.Info("version", zap.Int64("versionInload", req.GetVersion()))
+			mlog.Info(context.TODO(), "version", mlog.Int64("versionInload", req.GetVersion()))
 			versionMatch = req.GetVersion() == segmentVersion
 			return nil
 		})
@@ -2423,10 +2331,12 @@ func (suite *ServiceSuite) TestUpdateSchema() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	schema := mock_segcore.GenTestCollectionSchema(suite.collectionName, schemapb.DataType_Int64, false)
+	schema.Version = 100
 	req := &querypb.UpdateSchemaRequest{
-		CollectionID: suite.collectionID,
-		Schema:       suite.schema,
-		Version:      uint64(100),
+		CollectionID:    suite.collectionID,
+		Schema:          schema,
+		SchemaBarrierTs: uint64(100),
 	}
 	manager := suite.node.manager.Collection
 	// reset manager to align default teardown logic
@@ -2437,14 +2347,28 @@ func (suite *ServiceSuite) TestUpdateSchema() {
 	suite.node.manager.Collection = mockManager
 
 	suite.Run("normal", func() {
-		mockManager.EXPECT().UpdateSchema(suite.collectionID, suite.schema, uint64(100)).Return(nil).Once()
+		mockManager.EXPECT().UpdateSchema(suite.collectionID, schema, uint64(100)).Return(nil).Once()
+
+		status, err := suite.node.UpdateSchema(ctx, req)
+		suite.NoError(merr.CheckRPCCall(status, err))
+	})
+
+	suite.Run("passes_barrier_to_collection_manager", func() {
+		schema := mock_segcore.GenTestCollectionSchema(suite.collectionName, schemapb.DataType_Int64, false)
+		schema.Version = 2
+		req := &querypb.UpdateSchemaRequest{
+			CollectionID:    suite.collectionID,
+			Schema:          schema,
+			SchemaBarrierTs: uint64(100),
+		}
+		mockManager.EXPECT().UpdateSchema(suite.collectionID, schema, uint64(100)).Return(nil).Once()
 
 		status, err := suite.node.UpdateSchema(ctx, req)
 		suite.NoError(merr.CheckRPCCall(status, err))
 	})
 
 	suite.Run("manager_returns_error", func() {
-		mockManager.EXPECT().UpdateSchema(suite.collectionID, suite.schema, uint64(100)).Return(merr.WrapErrServiceInternal("mocked")).Once()
+		mockManager.EXPECT().UpdateSchema(suite.collectionID, schema, uint64(100)).Return(merr.WrapErrServiceInternal("mocked")).Once()
 
 		status, err := suite.node.UpdateSchema(ctx, req)
 		suite.Error(merr.CheckRPCCall(status, err))
@@ -2608,6 +2532,7 @@ func TestQueryNodeService(t *testing.T) {
 	wal := mock_streaming.NewMockWALAccesser(t)
 	local := mock_streaming.NewMockLocal(t)
 	local.EXPECT().GetLatestMVCCTimestampIfLocal(mock.Anything, mock.Anything).Return(0, nil).Maybe()
+	local.EXPECT().PrepareReleaseManualFlushIfLocal(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(false, nil).Maybe()
 	local.EXPECT().GetMetricsIfLocal(mock.Anything).Return(&types.StreamingNodeMetrics{}, nil).Maybe()
 	wal.EXPECT().Local().Return(local).Maybe()
 	scanner := mock_streaming.NewMockScanner(t)

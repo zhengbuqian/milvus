@@ -1,11 +1,11 @@
 package message
 
 import (
-	"go.uber.org/zap/zapcore"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/messagespb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/messagespb"
 )
 
 var (
@@ -17,7 +17,7 @@ var (
 
 // BasicMessage is the basic interface of message.
 type BasicMessage interface {
-	zapcore.ObjectMarshaler
+	mlog.ObjectMarshaler
 
 	// MessageType returns the type of message.
 	MessageType() MessageType
@@ -42,6 +42,9 @@ type BasicMessage interface {
 	// Properties returns the message properties.
 	// Should be used with read-only promise.
 	Properties() RProperties
+
+	// IsUnreplicable returns true if the message cannot be replicated to a secondary cluster.
+	IsUnreplicable() bool
 
 	// TimeTick returns the time tick of current message.
 	// Available only when the message's version greater than 0.

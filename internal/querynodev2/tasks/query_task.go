@@ -10,20 +10,19 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
 	"github.com/milvus-io/milvus/internal/querynodev2/segments"
 	"github.com/milvus-io/milvus/internal/util/searchutil/scheduler"
-	"github.com/milvus-io/milvus/internal/util/segcore"
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/planpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/segcorepb"
-	"github.com/milvus-io/milvus/pkg/v2/util/contextutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/timerecord"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/metrics"
+	"github.com/milvus-io/milvus/pkg/v3/proto/internalpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/planpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/querypb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/segcorepb"
+	"github.com/milvus-io/milvus/pkg/v3/util/contextutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/timerecord"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 var _ scheduler.Task = &QueryTask{}
@@ -66,6 +65,10 @@ func (t *QueryTask) Username() string {
 
 func (t *QueryTask) IsGpuIndex() bool {
 	return false
+}
+
+func (t *QueryTask) Context() context.Context {
+	return t.ctx
 }
 
 // PreExecute the task, only call once.
@@ -111,15 +114,7 @@ func (t *QueryTask) Execute() error {
 	}
 	tr := timerecord.NewTimeRecorderWithTrace(t.ctx, "QueryTask")
 
-	retrievePlan, err := segcore.NewRetrievePlan(
-		t.collection.GetCCollection(),
-		t.req.Req.GetSerializedExprPlan(),
-		t.req.Req.GetMvccTimestamp(),
-		t.req.Req.Base.GetMsgID(),
-		t.req.Req.GetConsistencyLevel(),
-		t.req.Req.GetCollectionTtlTimestamps(),
-		t.req.Req.GetEntityTtlPhysicalTime(),
-	)
+	retrievePlan, err := t.collection.NewRetrievePlan(t.req)
 	if err != nil {
 		return err
 	}
@@ -180,10 +175,6 @@ func (t *QueryTask) Execute() error {
 
 func (t *QueryTask) Done(err error) {
 	t.notifier <- err
-}
-
-func (t *QueryTask) Canceled() error {
-	return t.ctx.Err()
 }
 
 func (t *QueryTask) Wait() error {

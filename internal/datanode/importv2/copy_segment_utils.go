@@ -18,21 +18,22 @@ package importv2
 
 import (
 	"context"
-	"fmt"
 	"path"
 	"strconv"
 	"strings"
 
-	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/milvus-io/milvus/internal/compaction"
 	"github.com/milvus-io/milvus/internal/metastore/kv/binlog"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/storagev2/packed"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexpb"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/indexpb"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/metautil"
 )
 
 // SegmentFiles organizes source files by type for copy operations.
@@ -41,6 +42,9 @@ import (
 type SegmentFiles struct {
 	// From manifest (when storage_version >= StorageV3) or pb (when < StorageV3)
 	InsertBinlogs []string
+
+	// LOB files at partition level (only for StorageV3+ with TEXT fields)
+	LobFiles []string
 
 	// Always from pb
 	DeltaBinlogs      []string
@@ -100,7 +104,7 @@ type SegmentFiles struct {
 //
 // Process:
 // 1. Unmarshal JSON to get base_path and version
-// 2. Replace collection/partition/segment IDs in base_path using generateTargetPath
+// 2. Replace collection/partition/segment IDs in base_path
 // 3. Marshal back to JSON
 func transformManifestPath(
 	manifestPath string,
@@ -109,12 +113,12 @@ func transformManifestPath(
 ) (string, error) {
 	basePath, version, err := packed.UnmarshalManifestPath(manifestPath)
 	if err != nil {
-		return "", fmt.Errorf("failed to unmarshal manifest path: %w", err)
+		return "", merr.Wrap(err, "failed to unmarshal manifest path")
 	}
 
 	targetBasePath, err := generateTargetPath(basePath, source, target)
 	if err != nil {
-		return "", fmt.Errorf("failed to generate target base path: %w", err)
+		return "", merr.Wrap(err, "failed to generate target base path")
 	}
 
 	targetManifestPath := packed.MarshalManifestPath(targetBasePath, version)
@@ -160,6 +164,16 @@ func extractIndexFiles(indexInfos []*indexpb.IndexFilePathInfo) []string {
 		paths = append(paths, info.GetIndexFilePaths()...)
 	}
 	return paths
+}
+
+func buildIndexPathVersionByFile(source *datapb.CopySegmentSource) map[string]indexpb.IndexStorePathVersion {
+	versions := make(map[string]indexpb.IndexStorePathVersion)
+	for _, indexInfo := range source.GetIndexFiles() {
+		for _, filePath := range indexInfo.GetIndexFilePaths() {
+			versions[filePath] = indexInfo.GetIndexStorePathVersion()
+		}
+	}
+	return versions
 }
 
 // extractTextIndexFiles extracts text index file paths.
@@ -212,32 +226,52 @@ func collectSegmentFiles(
 		// StorageV3+: binlog paths MUST come from manifest
 		manifestPath := source.GetManifestPath()
 		if manifestPath == "" {
-			return nil, fmt.Errorf("storage_version=%d requires manifest_path but it is empty (segmentID=%d)",
+			return nil, merr.WrapErrParameterInvalidMsg("storage_version=%d requires manifest_path but it is empty (segmentID=%d)",
 				source.GetStorageVersion(), source.GetSegmentId())
 		}
 
 		basePath, _, err := packed.UnmarshalManifestPath(manifestPath)
 		if err != nil {
-			return nil, fmt.Errorf("failed to unmarshal manifest path %q for segment %d: %w", manifestPath, source.GetSegmentId(), err)
+			return nil, merr.Wrapf(err, "failed to unmarshal manifest path %q for segment %d", manifestPath, source.GetSegmentId())
 		}
 
 		allFiles, listErr := listAllFiles(ctx, cm, basePath)
 		if listErr != nil {
-			return nil, fmt.Errorf("failed to list files from manifest base path %q for segment %d: %w", basePath, source.GetSegmentId(), listErr)
+			return nil, merr.Wrapf(listErr, "failed to list files from manifest base path %q for segment %d", basePath, source.GetSegmentId())
 		}
 
 		// Empty file list is OK for V3 — segment may have only deltas and no insert binlogs
 		files.InsertBinlogs = allFiles
-		log.Info("collected InsertBinlogs from manifest",
-			zap.String("basePath", basePath),
-			zap.Int("fileCount", len(allFiles)),
-			zap.Int64("storageVersion", source.GetStorageVersion()))
+		mlog.Info(context.TODO(), "collected InsertBinlogs from manifest",
+			mlog.String("basePath", basePath),
+			mlog.Int("fileCount", len(allFiles)),
+			mlog.Int64("storageVersion", source.GetStorageVersion()))
+
+		// Collect LOB files owned by THIS segment from the manifest.
+		// LOB files live at partition level ({root}/insert_log/{coll}/{part}/lobs/),
+		// but multiple segments share that directory. We must only copy the files
+		// referenced by this segment's manifest to preserve the invariant that
+		// each LOB file belongs to exactly one segment.
+		storageConfig := compaction.CreateStorageConfig()
+		lobFileInfos, lobErr := packed.GetManifestLobFiles(manifestPath, storageConfig)
+		if lobErr != nil {
+			mlog.Debug(context.TODO(), "no LOB files found in manifest (may not have TEXT fields)",
+				mlog.String("manifestPath", manifestPath),
+				mlog.Err(lobErr))
+		} else if len(lobFileInfos) > 0 {
+			// GetManifestLobFiles returns absolute paths (the manifest
+			// deserializer calls ToAbsolute internally), so use them directly.
+			files.LobFiles = lobFileInfosToPaths(lobFileInfos)
+			mlog.Info(context.TODO(), "collected LOB files from segment manifest",
+				mlog.String("manifestPath", manifestPath),
+				mlog.Int("lobFileCount", len(files.LobFiles)))
+		}
 	} else {
 		// StorageV1/V2: use pb paths (traditional non-packed format)
 		files.InsertBinlogs = extractFromPb(source.GetInsertBinlogs())
-		log.Info("using InsertBinlogs from pb",
-			zap.Int("fileCount", len(files.InsertBinlogs)),
-			zap.Int64("storageVersion", source.GetStorageVersion()))
+		mlog.Info(context.TODO(), "using InsertBinlogs from pb",
+			mlog.Int("fileCount", len(files.InsertBinlogs)),
+			mlog.Int64("storageVersion", source.GetStorageVersion()))
 	}
 
 	// Other types from pb
@@ -265,6 +299,7 @@ func generateMappingsFromFiles(
 	target *datapb.CopySegmentTarget,
 ) (map[string]string, error) {
 	mappings := make(map[string]string)
+	indexPathVersions := buildIndexPathVersionByFile(source)
 
 	// Helper to add mappings with error handling
 	addMappings := func(srcPaths []string, fileType string) error {
@@ -274,14 +309,16 @@ func generateMappingsFromFiles(
 
 			// Determine path generation logic based on file type
 			switch fileType {
-			case IndexTypeVectorScalar, IndexTypeText, IndexTypeJSONKey, IndexTypeJSONStats:
-				dstPath, err = generateTargetIndexPath(srcPath, source, target, fileType)
+			case IndexTypeVectorScalarV0, IndexTypeText, IndexTypeJSONKey, IndexTypeJSONStats:
+				dstPath, err = generateTargetIndexPath(srcPath, source, target, fileType, indexPathVersions[srcPath])
+			case FileTypeLOB:
+				dstPath, err = generateTargetLOBPath(srcPath, source, target)
 			default:
 				dstPath, err = generateTargetPath(srcPath, source, target)
 			}
 
 			if err != nil {
-				return fmt.Errorf("failed to generate target path for %s file %s: %w", fileType, srcPath, err)
+				return merr.Wrapf(err, "failed to generate target path for %s file %s", fileType, srcPath)
 			}
 			mappings[srcPath] = dstPath
 		}
@@ -301,7 +338,9 @@ func generateMappingsFromFiles(
 	if err := addMappings(files.Bm25Binlogs, BinlogTypeBM25); err != nil {
 		return nil, err
 	}
-	if err := addMappings(files.VectorScalarIndex, IndexTypeVectorScalar); err != nil {
+	// Vector/scalar index copy uses the v0 type as the logical input; the
+	// per-file IndexStorePathVersion switches storage matching to index_v1 when needed.
+	if err := addMappings(files.VectorScalarIndex, IndexTypeVectorScalarV0); err != nil {
 		return nil, err
 	}
 	if err := addMappings(files.TextIndex, IndexTypeText); err != nil {
@@ -313,6 +352,9 @@ func generateMappingsFromFiles(
 	if err := addMappings(files.JSONStats, IndexTypeJSONStats); err != nil {
 		return nil, err
 	}
+	if err := addMappings(files.LobFiles, FileTypeLOB); err != nil {
+		return nil, err
+	}
 
 	return mappings, nil
 }
@@ -322,47 +364,48 @@ func CopySegmentAndIndexFiles(
 	cm storage.ChunkManager,
 	source *datapb.CopySegmentSource,
 	target *datapb.CopySegmentTarget,
-	logFields []zap.Field,
+	logFields []mlog.Field,
 ) (*datapb.CopySegmentResult, []string, error) {
 	segmentID := source.GetSegmentId()
 	useManifest := source.GetStorageVersion() >= storage.StorageV3
 
-	log.Info("start copying segment and index files",
-		zap.Int64("sourceSegmentID", segmentID),
-		zap.Int64("storageVersion", source.GetStorageVersion()),
-		zap.Bool("useManifest", useManifest))
+	mlog.Info(context.TODO(), "start copying segment and index files",
+		mlog.Int64("sourceSegmentID", segmentID),
+		mlog.Int64("storageVersion", source.GetStorageVersion()),
+		mlog.Bool("useManifest", useManifest),
+		mlog.Bool("isExternalCollection", source.GetIsExternalCollection()))
 
 	// Step 1: Collect all files to copy
 	files, err := collectSegmentFiles(ctx, cm, source)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to collect segment files: %w", err)
+		return nil, nil, merr.Wrap(err, "failed to collect segment files")
 	}
 
 	// Step 2: Generate src->dst mappings for file copying
 	mappings, err := generateMappingsFromFiles(files, source, target)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to generate file mappings: %w", err)
+		return nil, nil, merr.Wrap(err, "failed to generate file mappings")
 	}
 
 	// Step 3: Execute all copy operations
 	copiedFiles := make([]string, 0, len(mappings))
 	for src, dst := range mappings {
-		log.Debug("copying file",
-			zap.String("src", src),
-			zap.String("dst", dst))
+		mlog.Debug(context.TODO(), "copying file",
+			mlog.String("src", src),
+			mlog.String("dst", dst))
 
 		if err := copyFile(ctx, cm, src, dst); err != nil {
-			fields := make([]zap.Field, 0, len(logFields)+3)
+			fields := make([]mlog.Field, 0, len(logFields)+3)
 			fields = append(fields, logFields...)
-			fields = append(fields, zap.String("src", src), zap.String("dst", dst), zap.Error(err))
-			log.Warn("failed to copy file", fields...)
-			return nil, copiedFiles, fmt.Errorf("failed to copy file from %s to %s: %w", src, dst, err)
+			fields = append(fields, mlog.String("src", src), mlog.String("dst", dst), mlog.Err(err))
+			mlog.Warn(context.TODO(), "failed to copy file", fields...)
+			return nil, copiedFiles, merr.Wrapf(err, "failed to copy file from %s to %s", src, dst)
 		}
 		copiedFiles = append(copiedFiles, dst)
 	}
 
-	log.Info("all files copied successfully",
-		zap.Int("fileCount", len(mappings)))
+	mlog.Info(context.TODO(), "all files copied successfully",
+		mlog.Int("fileCount", len(mappings)))
 
 	// Step 3.5: When manifest is used (StorageV3+), InsertBinlogs were collected from manifest
 	// (actual file paths under base_path including _data/ and _metadata/), but
@@ -374,32 +417,32 @@ func CopySegmentAndIndexFiles(
 			if _, exists := mappings[srcPath]; !exists {
 				dstPath, pathErr := generateTargetPath(srcPath, source, target)
 				if pathErr != nil {
-					return nil, copiedFiles, fmt.Errorf("failed to generate target path for pb insert binlog %s: %w", srcPath, pathErr)
+					return nil, copiedFiles, merr.Wrapf(pathErr, "failed to generate target path for pb insert binlog %s", srcPath)
 				}
 				mappings[srcPath] = dstPath
 			}
 		}
-		log.Info("added logical insert binlog mappings for manifest segment",
-			zap.Int("pbPathCount", len(pbInsertPaths)))
+		mlog.Info(context.TODO(), "added logical insert binlog mappings for manifest segment",
+			mlog.Int("pbPathCount", len(pbInsertPaths)))
 	}
 
 	// Step 4: Build index metadata from source
 	indexInfos, textIndexInfos, jsonKeyIndexInfos, err := buildIndexInfoFromSource(source, target, mappings)
 	if err != nil {
-		return nil, copiedFiles, fmt.Errorf("failed to build index info: %w", err)
+		return nil, copiedFiles, merr.Wrap(err, "failed to build index info")
 	}
 
 	// Step 5: Generate segment metadata with path mappings
 	segmentInfo, err := generateSegmentInfoFromSource(source, target, mappings)
 	if err != nil {
-		return nil, copiedFiles, fmt.Errorf("failed to generate segment info: %w", err)
+		return nil, copiedFiles, merr.Wrap(err, "failed to generate segment info")
 	}
 
 	// Step 6: Compress paths
 	err = binlog.CompressBinLogs(segmentInfo.GetBinlogs(), segmentInfo.GetStatslogs(),
 		segmentInfo.GetDeltalogs(), segmentInfo.GetBm25Logs())
 	if err != nil {
-		return nil, copiedFiles, fmt.Errorf("failed to compress binlog paths: %w", err)
+		return nil, copiedFiles, merr.Wrap(err, "failed to compress binlog paths")
 	}
 
 	for _, indexInfo := range indexInfos {
@@ -408,10 +451,10 @@ func CopySegmentAndIndexFiles(
 
 	jsonKeyIndexInfos = shortenJSONStatsPath(jsonKeyIndexInfos)
 
-	log.Info("path compression completed",
-		zap.Int("binlogFields", len(segmentInfo.GetBinlogs())),
-		zap.Int("indexCount", len(indexInfos)),
-		zap.Int("jsonStatsCount", len(jsonKeyIndexInfos)))
+	mlog.Info(context.TODO(), "path compression completed",
+		mlog.Int("binlogFields", len(segmentInfo.GetBinlogs())),
+		mlog.Int("indexCount", len(indexInfos)),
+		mlog.Int("jsonStatsCount", len(jsonKeyIndexInfos)))
 
 	// Step 7: Build result
 	result := &datapb.CopySegmentResult{
@@ -430,13 +473,13 @@ func CopySegmentAndIndexFiles(
 	if useManifest {
 		targetManifestPath, err := transformManifestPath(source.GetManifestPath(), source, target)
 		if err != nil {
-			return nil, copiedFiles, fmt.Errorf("failed to transform manifest path: %w", err)
+			return nil, copiedFiles, merr.Wrap(err, "failed to transform manifest path")
 		}
 		result.ManifestPath = targetManifestPath
 	}
 
-	log.Info("copy segment and index files completed successfully",
-		zap.Int64("importedRows", result.ImportedRows))
+	mlog.Info(context.TODO(), "copy segment and index files completed successfully",
+		mlog.Int64("importedRows", result.ImportedRows))
 
 	return result, copiedFiles, nil
 }
@@ -452,6 +495,8 @@ func CopySegmentAndIndexFiles(
 //   - srcFieldBinlogs: Source field binlogs with original paths
 //   - mappings: Pre-calculated map of source path -> target path
 //   - countRows: If true, accumulate total row count from EntriesNum (for insert logs only)
+//   - isExternalTable: If true, skip path mapping because external table insert
+//     binlogs carry row metadata without physical log paths
 //
 // Returns:
 //   - []*datapb.FieldBinlog: Transformed binlog list with target paths
@@ -460,7 +505,8 @@ func CopySegmentAndIndexFiles(
 func transformFieldBinlogs(
 	srcFieldBinlogs []*datapb.FieldBinlog,
 	mappings map[string]string,
-	countRows bool, // true for insert logs to count total rows
+	countRows bool,
+	isExternalTable bool,
 ) ([]*datapb.FieldBinlog, int64, error) {
 	result := make([]*datapb.FieldBinlog, 0, len(srcFieldBinlogs))
 	var totalRows int64
@@ -470,18 +516,23 @@ func transformFieldBinlogs(
 		dstFieldBinlog.Binlogs = make([]*datapb.Binlog, 0, len(srcFieldBinlog.GetBinlogs()))
 
 		for _, srcBinlog := range srcFieldBinlog.GetBinlogs() {
-			if srcPath := srcBinlog.GetLogPath(); srcPath != "" {
+			dstBinlog := proto.Clone(srcBinlog).(*datapb.Binlog)
+
+			if !isExternalTable {
+				srcPath := srcBinlog.GetLogPath()
+				if srcPath == "" {
+					continue
+				}
 				dstPath, ok := mappings[srcPath]
 				if !ok {
-					return nil, 0, fmt.Errorf("no mapping found for source path: %s", srcPath)
+					return nil, 0, merr.WrapErrServiceInternalMsg("no mapping found for source path: %s", srcPath)
 				}
-				dstBinlog := proto.Clone(srcBinlog).(*datapb.Binlog)
 				dstBinlog.LogPath = dstPath
-				dstFieldBinlog.Binlogs = append(dstFieldBinlog.Binlogs, dstBinlog)
+			}
 
-				if countRows {
-					totalRows += srcBinlog.GetEntriesNum()
-				}
+			dstFieldBinlog.Binlogs = append(dstFieldBinlog.Binlogs, dstBinlog)
+			if countRows {
+				totalRows += srcBinlog.GetEntriesNum()
 			}
 		}
 
@@ -529,31 +580,31 @@ func generateSegmentInfoFromSource(
 	}
 
 	// Process insert binlogs (count rows)
-	binlogs, totalRows, err := transformFieldBinlogs(source.GetInsertBinlogs(), mappings, true)
+	binlogs, totalRows, err := transformFieldBinlogs(source.GetInsertBinlogs(), mappings, true, source.GetIsExternalCollection())
 	if err != nil {
-		return nil, fmt.Errorf("failed to transform insert binlogs: %w", err)
+		return nil, merr.Wrap(err, "failed to transform insert binlogs")
 	}
 	segmentInfo.Binlogs = binlogs
 	segmentInfo.ImportedRows = totalRows
 
 	// Process stats binlogs (no row counting)
-	statslogs, _, err := transformFieldBinlogs(source.GetStatsBinlogs(), mappings, false)
+	statslogs, _, err := transformFieldBinlogs(source.GetStatsBinlogs(), mappings, false, false)
 	if err != nil {
-		return nil, fmt.Errorf("failed to transform stats binlogs: %w", err)
+		return nil, merr.Wrap(err, "failed to transform stats binlogs")
 	}
 	segmentInfo.Statslogs = statslogs
 
 	// Process delta binlogs (no row counting)
-	deltalogs, _, err := transformFieldBinlogs(source.GetDeltaBinlogs(), mappings, false)
+	deltalogs, _, err := transformFieldBinlogs(source.GetDeltaBinlogs(), mappings, false, false)
 	if err != nil {
-		return nil, fmt.Errorf("failed to transform delta binlogs: %w", err)
+		return nil, merr.Wrap(err, "failed to transform delta binlogs")
 	}
 	segmentInfo.Deltalogs = deltalogs
 
 	// Process BM25 binlogs (no row counting)
-	bm25logs, _, err := transformFieldBinlogs(source.GetBm25Binlogs(), mappings, false)
+	bm25logs, _, err := transformFieldBinlogs(source.GetBm25Binlogs(), mappings, false, false)
 	if err != nil {
-		return nil, fmt.Errorf("failed to transform BM25 binlogs: %w", err)
+		return nil, merr.Wrap(err, "failed to transform BM25 binlogs")
 	}
 	segmentInfo.Bm25Logs = bm25logs
 
@@ -583,7 +634,7 @@ func generateTargetPath(sourcePath string, source *datapb.CopySegmentSource, tar
 	}
 
 	if logTypeIndex == -1 || logTypeIndex+3 >= len(parts) {
-		return "", fmt.Errorf("invalid binlog path structure: %s (expected log_type at a valid position)", sourcePath)
+		return "", merr.WrapErrParameterInvalidMsg("invalid binlog path structure: %s (expected log_type at a valid position)", sourcePath)
 	}
 
 	// Replace IDs in order: collectionID, partitionID, segmentID
@@ -594,6 +645,32 @@ func generateTargetPath(sourcePath string, source *datapb.CopySegmentSource, tar
 	parts[logTypeIndex+1] = targetCollectionIDStr
 	parts[logTypeIndex+2] = targetPartitionIDStr
 	parts[logTypeIndex+3] = targetSegmentIDStr
+
+	return path.Join(parts...), nil
+}
+
+// generateTargetLOBPath replaces collection and partition IDs in a LOB file path.
+// LOB path structure: {root}/insert_log/{coll}/{part}/lobs/{field}/_data/{file}.vx
+// Unlike segment paths, LOB paths have no segment ID component.
+func generateTargetLOBPath(sourcePath string, source *datapb.CopySegmentSource, target *datapb.CopySegmentTarget) (string, error) {
+	parts := strings.Split(sourcePath, "/")
+
+	logTypeIndex := -1
+	for i, part := range parts {
+		if part == BinlogTypeInsert {
+			logTypeIndex = i
+			break
+		}
+	}
+
+	// Path: .../{insert_log}/{coll}/{part}/lobs/...
+	// Need at least logTypeIndex + 2 (coll and part) after insert_log
+	if logTypeIndex == -1 || logTypeIndex+2 >= len(parts) {
+		return "", merr.WrapErrParameterInvalidMsg("invalid LOB path structure: %s", sourcePath)
+	}
+
+	parts[logTypeIndex+1] = strconv.FormatInt(target.GetCollectionId(), 10)
+	parts[logTypeIndex+2] = strconv.FormatInt(target.GetPartitionId(), 10)
 
 	return path.Join(parts...), nil
 }
@@ -631,7 +708,7 @@ func buildIndexInfoFromSource(
 		for _, srcPath := range srcIndex.GetIndexFilePaths() {
 			targetPath, ok := mappings[srcPath]
 			if !ok {
-				return nil, nil, nil, fmt.Errorf("no mapping found for index file: %s", srcPath)
+				return nil, nil, nil, merr.WrapErrServiceInternalMsg("no mapping found for index file: %s", srcPath)
 			}
 			targetPaths = append(targetPaths, targetPath)
 		}
@@ -652,6 +729,7 @@ func buildIndexInfoFromSource(
 			CurrentIndexVersion:       srcIndex.GetCurrentIndexVersion(),
 			CurrentScalarIndexVersion: srcIndex.GetCurrentScalarIndexVersion(),
 			IndexName:                 srcIndex.GetIndexName(),
+			IndexStorePathVersion:     srcIndex.GetIndexStorePathVersion(),
 		}
 	}
 
@@ -674,7 +752,7 @@ func buildIndexInfoFromSource(
 			for _, srcFile := range srcText.GetFiles() {
 				targetFile, ok := mappings[srcFile]
 				if !ok {
-					return nil, nil, nil, fmt.Errorf("no mapping found for text index file: %s", srcFile)
+					return nil, nil, nil, merr.WrapErrServiceInternalMsg("no mapping found for text index file: %s", srcFile)
 				}
 				targetFiles = append(targetFiles, targetFile)
 			}
@@ -706,7 +784,7 @@ func buildIndexInfoFromSource(
 			for _, srcFile := range srcJSON.GetFiles() {
 				targetFile, ok := mappings[srcFile]
 				if !ok {
-					return nil, nil, nil, fmt.Errorf("no mapping found for JSON index file: %s", srcFile)
+					return nil, nil, nil, merr.WrapErrServiceInternalMsg("no mapping found for JSON index file: %s", srcFile)
 				}
 				targetFiles = append(targetFiles, targetFile)
 			}
@@ -727,26 +805,42 @@ func buildIndexInfoFromSource(
 // File Type Constants
 // ============================================================================
 
+// lobFileInfosToPaths extracts absolute file paths from LobFileInfo structs.
+// GetManifestLobFiles returns paths that have already been resolved to absolute
+// form by the C++ manifest deserializer (Manifest::ToAbsolutePaths), so we use
+// them directly without any path concatenation.
+func lobFileInfosToPaths(infos []packed.LobFileInfo) []string {
+	paths := make([]string, 0, len(infos))
+	for _, info := range infos {
+		paths = append(paths, info.Path)
+	}
+	return paths
+}
+
 // File type constants used for path identification and generation.
 // These constants match the directory names in Milvus storage paths.
 const (
-	BinlogTypeInsert      = "insert_log"
-	BinlogTypeStats       = "stats_log"
-	BinlogTypeDelta       = "delta_log"
-	BinlogTypeBM25        = "bm25_stats"
-	IndexTypeVectorScalar = "index_files"
-	IndexTypeText         = "text_log"
-	IndexTypeJSONKey      = "json_key_index_log" // Legacy: JSON Key Inverted Index
-	IndexTypeJSONStats    = "json_stats"         // New: JSON Stats with Shredding Design
+	BinlogTypeInsert        = "insert_log"
+	BinlogTypeStats         = "stats_log"
+	BinlogTypeDelta         = "delta_log"
+	BinlogTypeBM25          = "bm25_stats"
+	IndexTypeVectorScalarV0 = "index_files"
+	IndexTypeVectorScalarV1 = "index_v1"
+	IndexTypeText           = "text_log"
+	IndexTypeJSONKey        = "json_key_index_log" // Legacy: JSON Key Inverted Index
+	IndexTypeJSONStats      = "json_stats"         // New: JSON Stats with Shredding Design
+	FileTypeLOB             = "lob"                // LOB files at partition level for TEXT fields
 )
 
 // generateTargetIndexPath is the unified function for generating target paths for all index types
 // The indexType parameter specifies which type of index path to generate
 //
 // Supported index types (use constants):
-//   - IndexTypeVectorScalar: Vector/Scalar Index path format (from BuildSegmentIndexFilePaths)
+//   - IndexTypeVectorScalarV0: Vector/Scalar v0 path format (legacy index_files prefix)
 //     {rootPath}/index_files/{build_id}/{index_version}/{partition_id}/{segment_id}/file
 //     Note: collectionID is NOT in the path, only partitionID and segmentID are replaced
+//   - IndexTypeVectorScalarV1: Vector/Scalar v1 path format (index_v1 prefix)
+//     {rootPath}/index_v1/{collection_id}/{partition_id}/{segment_id}/{build_id}/{index_version}/file
 //   - IndexTypeText: Text Index path format
 //     {rootPath}/text_log/{build_id}/{version}/{collection_id}/{partition_id}/{segment_id}/{field_id}/file
 //   - IndexTypeJSONKey: JSON Key Index path format (legacy)
@@ -755,7 +849,7 @@ const (
 //     {rootPath}/json_stats/{data_format_version}/{build_id}/{version}/{collection_id}/{partition_id}/{segment_id}/{field_id}/(shared_key_index|shredding_data)/...
 //
 // Examples:
-// generateTargetIndexPath(..., IndexTypeVectorScalar):
+// generateTargetIndexPath(..., IndexTypeVectorScalarV0):
 //
 //	files/index_files/1001/1/222/333/scalar_index -> files/index_files/1001/1/bbb/ccc/scalar_index
 //
@@ -775,6 +869,7 @@ func generateTargetIndexPath(
 	source *datapb.CopySegmentSource,
 	target *datapb.CopySegmentTarget,
 	indexType string,
+	pathVersion indexpb.IndexStorePathVersion,
 ) (string, error) {
 	// Split path into parts
 	parts := strings.Split(sourcePath, "/")
@@ -783,55 +878,66 @@ func generateTargetIndexPath(
 	var keywordIdx int
 	var collectionOffset, partitionOffset, segmentOffset int
 
+	keyword := indexType
+	if indexType == IndexTypeVectorScalarV0 && metautil.IsCollectionRooted(pathVersion) {
+		// The caller still passes the vector/scalar logical type, but v1 files
+		// live under a different object-storage prefix.
+		keyword = IndexTypeVectorScalarV1
+	}
+
 	// Find the keyword position in the path
 	keywordIdx = -1
 	for i, part := range parts {
-		if part == indexType {
+		if part == keyword {
 			keywordIdx = i
 			break
 		}
 	}
 
 	if keywordIdx == -1 {
-		return "", fmt.Errorf("keyword '%s' not found in path: %s", indexType, sourcePath)
+		return "", merr.WrapErrServiceInternalMsg("keyword '%s' not found in path: %s", keyword, sourcePath)
 	}
 
 	// Set offsets based on index type
 	// collectionOffset = -1 means collectionID is not present in the path
+	var buildIDOffset int
 	switch indexType {
-	case IndexTypeVectorScalar:
-		// Vector/Scalar index: index_files/{buildID}/{indexVersion}/{partID}/{segID}/{fileKey}
-		// Path generated by BuildSegmentIndexFilePaths - no collectionID in path
-		collectionOffset = -1
-		partitionOffset = 3
-		segmentOffset = 4
+	case IndexTypeVectorScalarV0:
+		if metautil.IsCollectionRooted(pathVersion) {
+			collectionOffset = 1
+			partitionOffset = 2
+			segmentOffset = 3
+			buildIDOffset = 4
+		} else {
+			collectionOffset = -1
+			partitionOffset = 3
+			segmentOffset = 4
+			buildIDOffset = 1
+		}
 	case IndexTypeText, IndexTypeJSONKey:
 		// Text/JSON index: text_log|json_key_index_log/build/ver/coll/part/seg/field
 		collectionOffset = 3
 		partitionOffset = 4
 		segmentOffset = 5
+		buildIDOffset = 1
 	case IndexTypeJSONStats:
 		// JSON Stats: json_stats/data_format_ver/build/ver/coll/part/seg/field/(shared_key_index|shredding_data)/...
 		collectionOffset = 4 // One more level than legacy (data_format_version)
 		partitionOffset = 5
 		segmentOffset = 6
+		buildIDOffset = 2
 	default:
-		return "", fmt.Errorf("unsupported index type: %s (expected '%s', '%s', '%s', or '%s')",
-			indexType, IndexTypeVectorScalar, IndexTypeText, IndexTypeJSONKey, IndexTypeJSONStats)
+		return "", merr.WrapErrParameterInvalidMsg("unsupported index type: %s (expected '%s', '%s', '%s', or '%s')",
+			indexType, IndexTypeVectorScalarV0, IndexTypeText, IndexTypeJSONKey, IndexTypeJSONStats)
 	}
 
 	// Validate path structure has enough components
 	if keywordIdx+segmentOffset >= len(parts) {
-		return "", fmt.Errorf("invalid %s path structure: %s (expected '%s' with at least %d components after it)",
+		return "", merr.WrapErrParameterInvalidMsg("invalid %s path structure: %s (expected '%s' with at least %d components after it)",
 			indexType, sourcePath, indexType, segmentOffset+1)
 	}
 
 	// Replace buildID if a mapping exists in target.NewBuildIds
-	// All index types have buildID at offset 1, except JSONStats which has it at offset 2
-	buildIDOffset := 1
-	if indexType == IndexTypeJSONStats {
-		buildIDOffset = 2
-	}
 	if keywordIdx+buildIDOffset < len(parts) {
 		oldBuildIDStr := parts[keywordIdx+buildIDOffset]
 		oldBuildID, parseErr := strconv.ParseInt(oldBuildIDStr, 10, 64)

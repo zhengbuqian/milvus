@@ -126,6 +126,7 @@ class ContainsAllMatcher {
 
 void
 PhyJsonContainsFilterExpr::Eval(EvalCtx& context, VectorPtr& result) {
+    WaitPrefetch();
     tracer::AutoSpan span(
         "PhyJsonContainsFilterExpr::Eval", tracer::GetRootSpan(), true);
     span.GetSpan()->SetAttribute("data_type",
@@ -167,9 +168,27 @@ PhyJsonContainsFilterExpr::Eval(EvalCtx& context, VectorPtr& result) {
         }
         case DataType::JSON: {
             if (exec_path_ == ExprExecPath::ScalarIndex && !has_offset_input_) {
-                result = EvalArrayContainsForIndexSegment(
-                    value_type_ == DataType::INT64 ? DataType::DOUBLE
-                                                   : value_type_);
+                const auto has_unsafe_int_literal =
+                    std::any_of(expr_->vals_.begin(),
+                                expr_->vals_.end(),
+                                [this](const auto& value) {
+                                    return value.has_int64_val() &&
+                                           !IsInt64SafeForJsonDoubleIndex(
+                                               value.int64_val());
+                                });
+                const auto all_int_literals = std::all_of(
+                    expr_->vals_.begin(),
+                    expr_->vals_.end(),
+                    [](const auto& value) { return value.has_int64_val(); });
+                if (all_int_literals && PinnedJsonIndexIsFlat()) {
+                    result = EvalArrayContainsForIndexSegment(DataType::INT64);
+                } else if (has_unsafe_int_literal) {
+                    result = EvalJsonContainsForDataSegment(context);
+                } else {
+                    result = EvalArrayContainsForIndexSegment(
+                        value_type_ == DataType::INT64 ? DataType::DOUBLE
+                                                       : value_type_);
+                }
             } else {
                 result = EvalJsonContainsForDataSegment(context);
             }
@@ -200,7 +219,9 @@ PhyJsonContainsFilterExpr::EvalJsonContainsForDataSegment(EvalCtx& context) {
                     case DataType::INT64: {
                         return ExecArrayContains<int64_t>(context);
                     }
-                    case DataType::FLOAT:
+                    case DataType::FLOAT: {
+                        return ExecArrayContains<float>(context);
+                    }
                     case DataType::DOUBLE: {
                         return ExecArrayContains<double>(context);
                     }
@@ -255,7 +276,9 @@ PhyJsonContainsFilterExpr::EvalJsonContainsForDataSegment(EvalCtx& context) {
                     case DataType::INT64: {
                         return ExecArrayContainsAll<int64_t>(context);
                     }
-                    case DataType::FLOAT:
+                    case DataType::FLOAT: {
+                        return ExecArrayContainsAll<float>(context);
+                    }
                     case DataType::DOUBLE: {
                         return ExecArrayContainsAll<double>(context);
                     }
@@ -311,6 +334,23 @@ PhyJsonContainsFilterExpr::ExecArrayContains(EvalCtx& context) {
         std::conditional_t<std::is_same_v<ExprValueType, std::string>,
                            std::string_view,
                            ExprValueType>;
+
+    // Typed cached set used directly inside the array scan loop, mirroring
+    // the pattern in ExecArrayContainsAll. Skips the MultiElement variant
+    // round-trip, virtual dispatch and runtime type checks in In().
+    //   string: owning std::string set with transparent hash, so string_view
+    //           lookups are zero-copy and the set never holds dangling views.
+    //   bool:   std::unordered_set<bool>, since std::hash<bool> is safe.
+    //           ankerl::unordered_dense::set<bool> is avoided for the same
+    //           reason as SetElement<bool> in Element.h (wyhash 8-byte read).
+    //   other:  ankerl::unordered_dense::set<ExprValueType>.
+    using TypedSet = std::conditional_t<
+        std::is_same_v<ExprValueType, std::string>,
+        ankerl::unordered_dense::set<std::string, StringHash, std::equal_to<>>,
+        std::conditional_t<std::is_same_v<ExprValueType, bool>,
+                           std::unordered_set<bool>,
+                           ankerl::unordered_dense::set<ExprValueType>>>;
+
     auto* input = context.get_offset_input();
     const auto& bitmap_input = context.get_bitmap_input();
     auto real_batch_size =
@@ -328,9 +368,15 @@ PhyJsonContainsFilterExpr::ExecArrayContains(EvalCtx& context) {
     TargetBitmapView valid_res(res_vec->GetValidRawData(), real_batch_size);
 
     if (!arg_inited_) {
-        arg_set_ = std::make_shared<SetElement<GetType>>(expr_->vals_);
+        auto elements = std::make_shared<TypedSet>();
+        elements->max_load_factor(0.5f);
+        for (const auto& val : expr_->vals_) {
+            elements->insert(GetValueWithCastNumber<ExprValueType>(val));
+        }
+        arg_cached_set_ = elements;
         arg_inited_ = true;
     }
+    auto elements = std::static_pointer_cast<TypedSet>(arg_cached_set_);
 
     int processed_cursor = 0;
     auto execute_sub_batch =
@@ -342,7 +388,7 @@ PhyJsonContainsFilterExpr::ExecArrayContains(EvalCtx& context) {
             const int size,
             TargetBitmapView res,
             TargetBitmapView valid_res,
-            const std::shared_ptr<MultiElement>& elements) {
+            const TypedSet& elements) {
         // If data is nullptr, this chunk was skipped by SkipIndex.
         // We only need to update processed_cursor for bitmap_input indexing.
         if (data == nullptr) {
@@ -352,7 +398,8 @@ PhyJsonContainsFilterExpr::ExecArrayContains(EvalCtx& context) {
         auto executor = [&](size_t i) {
             const auto& array = data[i];
             for (int j = 0; j < array.length(); ++j) {
-                if (elements->In(array.template get_data<GetType>(j))) {
+                if (elements.find(array.template get_data<GetType>(j)) !=
+                    elements.end()) {
                     return true;
                 }
             }
@@ -384,10 +431,10 @@ PhyJsonContainsFilterExpr::ExecArrayContains(EvalCtx& context) {
                                                     input,
                                                     res,
                                                     valid_res,
-                                                    arg_set_);
+                                                    *elements);
     } else {
         processed_size = ProcessDataChunks<milvus::ArrayView>(
-            execute_sub_batch, std::nullptr_t{}, res, valid_res, arg_set_);
+            execute_sub_batch, std::nullptr_t{}, res, valid_res, *elements);
     }
     AssertInfo(processed_size == real_batch_size,
                "internal error: expr processed rows {} not equal "
@@ -459,7 +506,7 @@ PhyJsonContainsFilterExpr::ExecJsonContains(EvalCtx& context) {
             auto doc = data[i].doc();
             auto array = doc.at_pointer(pointer).get_array();
             if (array.error()) {
-                return false;
+                return std::make_pair(false, false);
             }
             for (auto&& it : array) {
                 auto val = it.template get<GetType>();
@@ -471,17 +518,17 @@ PhyJsonContainsFilterExpr::ExecJsonContains(EvalCtx& context) {
                                 std::floor(double_val.value())) {
                             if (elements->In(static_cast<int64_t>(
                                     double_val.value())) > 0) {
-                                return true;
+                                return std::make_pair(true, true);
                             }
                         }
                     }
                     continue;
                 }
                 if (elements->In(val.value()) > 0) {
-                    return true;
+                    return std::make_pair(true, true);
                 }
             }
-            return false;
+            return std::make_pair(true, false);
         };
         bool has_bitmap_input = !bitmap_input.empty();
         for (size_t i = 0; i < size; ++i) {
@@ -496,7 +543,12 @@ PhyJsonContainsFilterExpr::ExecJsonContains(EvalCtx& context) {
             if (has_bitmap_input && !bitmap_input[processed_cursor + i]) {
                 continue;
             }
-            res[i] = executor(offset);
+            auto [valid, matched] = executor(offset);
+            if (!valid) {
+                res[i] = valid_res[i] = false;
+                continue;
+            }
+            res[i] = matched;
         }
         processed_cursor += size;
     };
@@ -541,19 +593,6 @@ PhyJsonContainsFilterExpr::ExecJsonContainsByStats() {
     auto pointer = milvus::Json::pointer(expr_->column_.nested_path_);
     if (!arg_inited_) {
         arg_set_ = std::make_shared<SetElement<GetType>>(expr_->vals_);
-        if constexpr (std::is_same_v<GetType, int64_t>) {
-            // for int64_t, we need to a double vector to store the values
-            auto int_arg_set =
-                std::dynamic_pointer_cast<SetElement<int64_t>>(arg_set_);
-            std::vector<double> double_vals;
-            double_vals.reserve(int_arg_set->GetElements().size());
-            for (const auto& val : int_arg_set->GetElements()) {
-                double_vals.emplace_back(static_cast<double>(val));
-            }
-            arg_set_double_ = std::make_shared<SetElement<double>>(double_vals);
-        } else if constexpr (std::is_same_v<GetType, double>) {
-            arg_set_double_ = arg_set_;
-        }
         arg_inited_ = true;
     }
 
@@ -564,8 +603,11 @@ PhyJsonContainsFilterExpr::ExecJsonContainsByStats() {
             TargetBitmap(real_batch_size, true));
     }
 
-    if (cached_index_chunk_id_ != 0 &&
-        segment_->type() == SegmentType::Sealed) {
+    if (cached_index_chunk_id_ != 0 && TryCacheGet()) {
+        // Cache hit — skip Stats computation.
+    } else if (cached_index_chunk_id_ != 0 &&
+               segment_->type() == SegmentType::Sealed) {
+        auto cache_compute_start = CacheClock::now();
         auto* segment = dynamic_cast<const segcore::SegmentSealed*>(segment_);
         auto field_id = expr_->column_.field_id_;
         auto index = segment->GetJsonStats(op_ctx_, field_id);
@@ -573,7 +615,7 @@ PhyJsonContainsFilterExpr::ExecJsonContainsByStats() {
 
         cached_index_chunk_res_ = std::make_shared<TargetBitmap>(active_count_);
         cached_index_chunk_valid_res_ =
-            std::make_shared<TargetBitmap>(active_count_, true);
+            std::make_shared<TargetBitmap>(active_count_);
         TargetBitmapView res_view(*cached_index_chunk_res_);
         TargetBitmapView valid_res_view(*cached_index_chunk_valid_res_);
         // process shredding data for ARRAY type (non-shared)
@@ -584,36 +626,43 @@ PhyJsonContainsFilterExpr::ExecJsonContainsByStats() {
             auto target_field = index->GetShreddingField(
                 pointer, milvus::index::JSONType::ARRAY);
             if (!target_field.empty()) {
+                TargetBitmap target_res(active_count_, false);
+                TargetBitmapView target_res_view(target_res);
+                TargetBitmap target_valid(active_count_, true);
+                TargetBitmapView target_valid_view(target_valid);
                 ShreddingArrayBsonContainsAnyExecutor<GetType> executor(
-                    arg_set_, arg_set_double_);
+                    arg_set_);
 
                 index->ExecutorForShreddingData<std::string_view>(
                     op_ctx_,
                     target_field,
                     executor,
                     nullptr,
-                    res_view,
-                    valid_res_view);
+                    target_res_view,
+                    target_valid_view);
+                res_view.inplace_or_with_count(target_res_view, active_count_);
+                valid_res_view.inplace_or_with_count(target_valid_view,
+                                                     active_count_);
             }
         }
         // process shared data
-        auto shared_executor = [this, &res_view](milvus::BsonView bson,
-                                                 uint32_t row_offset,
-                                                 uint32_t value_offset) {
+        auto shared_executor = [this, &res_view, &valid_res_view](
+                                   milvus::BsonView bson,
+                                   uint32_t row_offset,
+                                   uint32_t value_offset) {
             auto val = bson.ParseAsArrayAtOffset(value_offset);
 
             if (!val.has_value()) {
-                res_view[row_offset] = false;
                 return;
             }
+            valid_res_view[row_offset] = true;
 
             for (const auto& element : val.value()) {
                 if constexpr (std::is_same_v<GetType, int64_t> ||
                               std::is_same_v<GetType, double>) {
-                    auto value = milvus::BsonView::GetValueFromBsonView<double>(
-                        element.get_value());
-                    if (value.has_value() &&
-                        this->arg_set_double_->In(value.value())) {
+                    auto value =
+                        GetBsonNumberExact<GetType>(element.get_value());
+                    if (value.has_value() && this->arg_set_->In(*value)) {
                         res_view[row_offset] = true;
                         return;
                     }
@@ -637,10 +686,13 @@ PhyJsonContainsFilterExpr::ExecJsonContainsByStats() {
                 op_ctx_, bson_index_, pointer, shared_executor);
         }
         cached_index_chunk_id_ = 0;
+        CachePut(CacheElapsedUs(cache_compute_start));
     }
 
-    auto res = MoveOrSliceBitmap(
-        *cached_index_chunk_res_, current_data_global_pos_, real_batch_size);
+    auto res = MoveOrSliceBitmap(*cached_index_chunk_res_,
+                                 *cached_index_chunk_valid_res_,
+                                 current_data_global_pos_,
+                                 real_batch_size);
     MoveCursor();
     return res;
 }
@@ -704,11 +756,11 @@ PhyJsonContainsFilterExpr::ExecJsonContainsArray(EvalCtx& context) {
             processed_cursor += size;
             return;
         }
-        auto executor = [&](size_t i) -> bool {
+        auto executor = [&](size_t i) {
             auto doc = data[i].doc();
             auto array = doc.at_pointer(pointer).get_array();
             if (array.error()) {
-                return false;
+                return std::make_pair(false, false);
             }
             for (auto&& it : array) {
                 auto val = it.get_array();
@@ -724,11 +776,11 @@ PhyJsonContainsFilterExpr::ExecJsonContainsArray(EvalCtx& context) {
                 }
                 for (auto const& element : elements) {
                     if (CompareTwoJsonArray(json_array, element)) {
-                        return true;
+                        return std::make_pair(true, true);
                     }
                 }
             }
-            return false;
+            return std::make_pair(true, false);
         };
         bool has_bitmap_input = !bitmap_input.empty();
         for (size_t i = 0; i < size; ++i) {
@@ -743,7 +795,12 @@ PhyJsonContainsFilterExpr::ExecJsonContainsArray(EvalCtx& context) {
             if (has_bitmap_input && !bitmap_input[processed_cursor + i]) {
                 continue;
             }
-            res[i] = executor(offset);
+            auto [valid, matched] = executor(offset);
+            if (!valid) {
+                res[i] = valid_res[i] = false;
+                continue;
+            }
+            res[i] = matched;
         }
         processed_cursor += size;
     };
@@ -792,8 +849,11 @@ PhyJsonContainsFilterExpr::ExecJsonContainsArrayByStats() {
             TargetBitmap(real_batch_size, true));
     }
 
-    if (cached_index_chunk_id_ != 0 &&
-        segment_->type() == SegmentType::Sealed) {
+    if (cached_index_chunk_id_ != 0 && TryCacheGet()) {
+        // Cache hit — skip Stats computation.
+    } else if (cached_index_chunk_id_ != 0 &&
+               segment_->type() == SegmentType::Sealed) {
+        auto cache_compute_start = CacheClock::now();
         auto* segment = dynamic_cast<const segcore::SegmentSealed*>(segment_);
         auto field_id = expr_->column_.field_id_;
         auto index = segment->GetJsonStats(op_ctx_, field_id);
@@ -801,7 +861,7 @@ PhyJsonContainsFilterExpr::ExecJsonContainsArrayByStats() {
 
         cached_index_chunk_res_ = std::make_shared<TargetBitmap>(active_count_);
         cached_index_chunk_valid_res_ =
-            std::make_shared<TargetBitmap>(active_count_, true);
+            std::make_shared<TargetBitmap>(active_count_);
         TargetBitmapView res_view(*cached_index_chunk_res_);
         TargetBitmapView valid_res_view(*cached_index_chunk_valid_res_);
 
@@ -813,40 +873,50 @@ PhyJsonContainsFilterExpr::ExecJsonContainsArrayByStats() {
             auto target_field = index->GetShreddingField(
                 pointer, milvus::index::JSONType::ARRAY);
             if (!target_field.empty()) {
+                TargetBitmap target_res(active_count_, false);
+                TargetBitmapView target_res_view(target_res);
+                TargetBitmap target_valid(active_count_, true);
+                TargetBitmapView target_valid_view(target_valid);
                 ShreddingArrayBsonContainsArrayExecutor executor(elements);
                 index->ExecutorForShreddingData<std::string_view>(
                     op_ctx_,
                     target_field,
                     executor,
                     nullptr,
-                    res_view,
-                    valid_res_view);
+                    target_res_view,
+                    target_valid_view);
+                res_view.inplace_or_with_count(target_res_view, active_count_);
+                valid_res_view.inplace_or_with_count(target_valid_view,
+                                                     active_count_);
             }
         }
 
-        auto shared_executor = [&elements, &res_view](milvus::BsonView bson,
-                                                      uint32_t row_offset,
-                                                      uint32_t value_offset) {
+        auto shared_executor = [&elements, &res_view, &valid_res_view](
+                                   milvus::BsonView bson,
+                                   uint32_t row_offset,
+                                   uint32_t value_offset) {
             auto array = bson.ParseAsArrayAtOffset(value_offset);
 
             if (!array.has_value()) {
-                res_view[row_offset] = false;
+                return;
             }
+            valid_res_view[row_offset] = true;
 
             for (const auto& sub_value : array.value()) {
                 auto sub_array = milvus::BsonView::GetValueFromBsonView<
-                    bsoncxx::array::view>(sub_value.get_value());
+                    milvus::bson::array_view>(sub_value.get_value());
 
                 if (!sub_array.has_value())
                     continue;
 
                 for (const auto& element : elements) {
                     if (CompareTwoJsonArray(sub_array.value(), element)) {
-                        return true;
+                        res_view[row_offset] = true;
+                        return;
                     }
                 }
             }
-            return false;
+            res_view[row_offset] = false;
         };
         {
             milvus::ScopedTimer timer(
@@ -856,10 +926,13 @@ PhyJsonContainsFilterExpr::ExecJsonContainsArrayByStats() {
                 op_ctx_, bson_index_, pointer, shared_executor);
         }
         cached_index_chunk_id_ = 0;
+        CachePut(CacheElapsedUs(cache_compute_start));
     }
 
-    auto res = MoveOrSliceBitmap(
-        *cached_index_chunk_res_, current_data_global_pos_, real_batch_size);
+    auto res = MoveOrSliceBitmap(*cached_index_chunk_res_,
+                                 *cached_index_chunk_valid_res_,
+                                 current_data_global_pos_,
+                                 real_batch_size);
     MoveCursor();
     return res;
 }
@@ -1051,11 +1124,11 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAll(EvalCtx& context) {
             processed_cursor += size;
             return;
         }
-        auto executor = [&](const size_t i) -> bool {
+        auto executor = [&](const size_t i) {
             auto doc = data[i].doc();
             auto array = doc.at_pointer(pointer).get_array();
             if (array.error()) {
-                return false;
+                return std::make_pair(false, false);
             }
             if (matcher.use_small()) {
                 uint64_t found = 0;
@@ -1071,17 +1144,17 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAll(EvalCtx& context) {
                                         static_cast<int64_t>(
                                             double_val.value()),
                                         found)) {
-                                    return true;
+                                    return std::make_pair(true, true);
                                 }
                             }
                         }
                         continue;
                     }
                     if (matcher.set_if_found(val.value(), found)) {
-                        return true;
+                        return std::make_pair(true, true);
                     }
                 }
-                return found == matcher.full_mask();
+                return std::make_pair(true, found == matcher.full_mask());
             } else {
                 std::fill(found_large.begin(), found_large.end(), 0);
                 size_t remaining = matcher.target_count();
@@ -1098,7 +1171,7 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAll(EvalCtx& context) {
                                             double_val.value()),
                                         found_large,
                                         remaining)) {
-                                    return true;
+                                    return std::make_pair(true, true);
                                 }
                             }
                         }
@@ -1106,10 +1179,10 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAll(EvalCtx& context) {
                     }
                     if (matcher.set_if_found(
                             val.value(), found_large, remaining)) {
-                        return true;
+                        return std::make_pair(true, true);
                     }
                 }
-                return remaining == 0;
+                return std::make_pair(true, remaining == 0);
             }
         };
         bool has_bitmap_input = !bitmap_input.empty();
@@ -1125,7 +1198,12 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAll(EvalCtx& context) {
             if (has_bitmap_input && !bitmap_input[processed_cursor + i]) {
                 continue;
             }
-            res[i] = executor(offset);
+            auto [valid, matched] = executor(offset);
+            if (!valid) {
+                res[i] = valid_res[i] = false;
+                continue;
+            }
+            res[i] = matched;
         }
         processed_cursor += size;
     };
@@ -1185,8 +1263,11 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAllByStats() {
             TargetBitmap(real_batch_size, true));
     }
 
-    if (cached_index_chunk_id_ != 0 &&
-        segment_->type() == SegmentType::Sealed) {
+    if (cached_index_chunk_id_ != 0 && TryCacheGet()) {
+        // Cache hit — skip Stats computation.
+    } else if (cached_index_chunk_id_ != 0 &&
+               segment_->type() == SegmentType::Sealed) {
+        auto cache_compute_start = CacheClock::now();
         auto* segment = dynamic_cast<const segcore::SegmentSealed*>(segment_);
         auto field_id = expr_->column_.field_id_;
         auto index = segment->GetJsonStats(op_ctx_, field_id);
@@ -1194,7 +1275,7 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAllByStats() {
 
         cached_index_chunk_res_ = std::make_shared<TargetBitmap>(active_count_);
         cached_index_chunk_valid_res_ =
-            std::make_shared<TargetBitmap>(active_count_, true);
+            std::make_shared<TargetBitmap>(active_count_);
         TargetBitmapView res_view(*cached_index_chunk_res_);
         TargetBitmapView valid_res_view(*cached_index_chunk_valid_res_);
         // process shredding data for ARRAY type (non-shared)
@@ -1205,6 +1286,10 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAllByStats() {
             auto target_field = index->GetShreddingField(
                 pointer, milvus::index::JSONType::ARRAY);
             if (!target_field.empty()) {
+                TargetBitmap target_res(active_count_, false);
+                TargetBitmapView target_res_view(target_res);
+                TargetBitmap target_valid(active_count_, true);
+                TargetBitmapView target_valid_view(target_valid);
                 ShreddingArrayBsonContainsAllExecutor<GetType> executor(
                     *elements);
 
@@ -1213,8 +1298,11 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAllByStats() {
                     target_field,
                     executor,
                     nullptr,
-                    res_view,
-                    valid_res_view);
+                    target_res_view,
+                    target_valid_view);
+                res_view.inplace_or_with_count(target_res_view, active_count_);
+                valid_res_view.inplace_or_with_count(target_valid_view,
+                                                     active_count_);
             }
         }
         // process shared data
@@ -1223,39 +1311,31 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAllByStats() {
             shared_matcher.use_small() ? 0 : shared_matcher.num_words());
         auto shared_executor = [&shared_matcher,
                                 &res_view,
+                                &valid_res_view,
                                 &shared_found_large](milvus::BsonView bson,
                                                      uint32_t row_offset,
                                                      uint32_t value_offset) {
             auto val = bson.ParseAsArrayAtOffset(value_offset);
 
             if (!val.has_value()) {
-                res_view[row_offset] = false;
                 return;
             }
+            valid_res_view[row_offset] = true;
 
             if (shared_matcher.use_small()) {
                 uint64_t found = 0;
                 for (const auto& element : val.value()) {
-                    auto value =
-                        milvus::BsonView::GetValueFromBsonView<GetType>(
-                            element.get_value());
-                    if (!value.has_value()) {
-                        if constexpr (std::is_same_v<GetType, int64_t>) {
-                            auto double_value =
-                                milvus::BsonView::GetValueFromBsonView<double>(
-                                    element.get_value());
-                            if (double_value.has_value() &&
-                                double_value.value() ==
-                                    std::floor(double_value.value())) {
-                                if (shared_matcher.set_if_found(
-                                        static_cast<int64_t>(
-                                            double_value.value()),
-                                        found)) {
-                                    res_view[row_offset] = true;
-                                    return;
-                                }
-                            }
+                    auto value = [&]() -> std::optional<GetType> {
+                        if constexpr (std::is_same_v<GetType, int64_t> ||
+                                      std::is_same_v<GetType, double>) {
+                            return GetBsonNumberExact<GetType>(
+                                element.get_value());
+                        } else {
+                            return milvus::BsonView::GetValueFromBsonView<
+                                GetType>(element.get_value());
                         }
+                    }();
+                    if (!value.has_value()) {
                         continue;
                     }
                     if (shared_matcher.set_if_found(value.value(), found)) {
@@ -1269,27 +1349,17 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAllByStats() {
                     shared_found_large.begin(), shared_found_large.end(), 0);
                 size_t remaining = shared_matcher.target_count();
                 for (const auto& element : val.value()) {
-                    auto value =
-                        milvus::BsonView::GetValueFromBsonView<GetType>(
-                            element.get_value());
-                    if (!value.has_value()) {
-                        if constexpr (std::is_same_v<GetType, int64_t>) {
-                            auto double_value =
-                                milvus::BsonView::GetValueFromBsonView<double>(
-                                    element.get_value());
-                            if (double_value.has_value() &&
-                                double_value.value() ==
-                                    std::floor(double_value.value())) {
-                                if (shared_matcher.set_if_found(
-                                        static_cast<int64_t>(
-                                            double_value.value()),
-                                        shared_found_large,
-                                        remaining)) {
-                                    res_view[row_offset] = true;
-                                    return;
-                                }
-                            }
+                    auto value = [&]() -> std::optional<GetType> {
+                        if constexpr (std::is_same_v<GetType, int64_t> ||
+                                      std::is_same_v<GetType, double>) {
+                            return GetBsonNumberExact<GetType>(
+                                element.get_value());
+                        } else {
+                            return milvus::BsonView::GetValueFromBsonView<
+                                GetType>(element.get_value());
                         }
+                    }();
+                    if (!value.has_value()) {
                         continue;
                     }
                     if (shared_matcher.set_if_found(
@@ -1309,10 +1379,13 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAllByStats() {
                 op_ctx_, bson_index_, pointer, shared_executor);
         }
         cached_index_chunk_id_ = 0;
+        CachePut(CacheElapsedUs(cache_compute_start));
     }
 
-    auto res = MoveOrSliceBitmap(
-        *cached_index_chunk_res_, current_data_global_pos_, real_batch_size);
+    auto res = MoveOrSliceBitmap(*cached_index_chunk_res_,
+                                 *cached_index_chunk_valid_res_,
+                                 current_data_global_pos_,
+                                 real_batch_size);
     MoveCursor();
     return res;
 }
@@ -1371,12 +1444,12 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAllWithDiffType(EvalCtx& context) {
             processed_cursor += size;
             return;
         }
-        auto executor = [&](size_t i) -> bool {
+        auto executor = [&](size_t i) {
             const auto& json = data[i];
             auto doc = json.dom_doc();
             auto array = doc.at_pointer(pointer).get_array();
             if (array.error()) {
-                return false;
+                return std::make_pair(false, false);
             }
             std::unordered_set<int> tmp_elements_index(elements_index);
             for (auto&& it : array) {
@@ -1445,14 +1518,14 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAllWithDiffType(EvalCtx& context) {
                                       element.val_case());
                     }
                     if (tmp_elements_index.size() == 0) {
-                        return true;
+                        return std::make_pair(true, true);
                     }
                 }
                 if (tmp_elements_index.size() == 0) {
-                    return true;
+                    return std::make_pair(true, true);
                 }
             }
-            return tmp_elements_index.size() == 0;
+            return std::make_pair(true, tmp_elements_index.size() == 0);
         };
         bool has_bitmap_input = !bitmap_input.empty();
         for (size_t i = 0; i < size; ++i) {
@@ -1468,7 +1541,12 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAllWithDiffType(EvalCtx& context) {
                 continue;
             }
 
-            res[i] = executor(offset);
+            auto [valid, matched] = executor(offset);
+            if (!valid) {
+                res[i] = valid_res[i] = false;
+                continue;
+            }
+            res[i] = matched;
         }
         processed_cursor += size;
     };
@@ -1519,8 +1597,11 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAllWithDiffTypeByStats() {
             TargetBitmap(real_batch_size, true));
     }
 
-    if (cached_index_chunk_id_ != 0 &&
-        segment_->type() == SegmentType::Sealed) {
+    if (cached_index_chunk_id_ != 0 && TryCacheGet()) {
+        // Cache hit — skip Stats computation.
+    } else if (cached_index_chunk_id_ != 0 &&
+               segment_->type() == SegmentType::Sealed) {
+        auto cache_compute_start = CacheClock::now();
         auto* segment = dynamic_cast<const segcore::SegmentSealed*>(segment_);
         auto field_id = expr_->column_.field_id_;
         auto index = segment->GetJsonStats(op_ctx_, field_id);
@@ -1528,7 +1609,7 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAllWithDiffTypeByStats() {
 
         cached_index_chunk_res_ = std::make_shared<TargetBitmap>(active_count_);
         cached_index_chunk_valid_res_ =
-            std::make_shared<TargetBitmap>(active_count_, true);
+            std::make_shared<TargetBitmap>(active_count_);
         TargetBitmapView res_view(*cached_index_chunk_res_);
         TargetBitmapView valid_res_view(*cached_index_chunk_valid_res_);
 
@@ -1540,6 +1621,10 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAllWithDiffTypeByStats() {
             auto target_field = index->GetShreddingField(
                 pointer, milvus::index::JSONType::ARRAY);
             if (!target_field.empty()) {
+                TargetBitmap target_res(active_count_, false);
+                TargetBitmapView target_res_view(target_res);
+                TargetBitmap target_valid(active_count_, true);
+                TargetBitmapView target_valid_view(target_valid);
                 ShreddingArrayBsonContainsAllWithDiffTypeExecutor executor(
                     elements, elements_index);
                 index->ExecutorForShreddingData<std::string_view>(
@@ -1547,21 +1632,26 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAllWithDiffTypeByStats() {
                     target_field,
                     executor,
                     nullptr,
-                    res_view,
-                    valid_res_view);
+                    target_res_view,
+                    target_valid_view);
+                res_view.inplace_or_with_count(target_res_view, active_count_);
+                valid_res_view.inplace_or_with_count(target_valid_view,
+                                                     active_count_);
             }
         }
 
-        auto shared_executor = [&elements, &elements_index, &res_view](
-                                   milvus::BsonView bson,
-                                   uint32_t row_offset,
-                                   uint32_t value_offset) {
+        auto shared_executor = [&elements,
+                                &elements_index,
+                                &res_view,
+                                &valid_res_view](milvus::BsonView bson,
+                                                 uint32_t row_offset,
+                                                 uint32_t value_offset) {
             std::set<int> tmp_elements_index(elements_index);
             auto array = bson.ParseAsArrayAtOffset(value_offset);
             if (!array.has_value()) {
-                res_view[row_offset] = false;
                 return;
             }
+            valid_res_view[row_offset] = true;
 
             for (const auto& sub_value : array.value()) {
                 int i = -1;
@@ -1581,26 +1671,17 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAllWithDiffTypeByStats() {
                             break;
                         }
                         case proto::plan::GenericValue::kInt64Val: {
-                            // get double/int64 from bson
-                            auto val =
-                                milvus::BsonView::GetValueFromBsonView<double>(
-                                    sub_value.get_value());
-                            if (!val.has_value()) {
-                                continue;
-                            }
-                            if (val.value() == element.int64_val()) {
+                            auto comparison = CompareBsonNumberToBound(
+                                sub_value.get_value(), element);
+                            if (comparison.has_value() && *comparison == 0) {
                                 tmp_elements_index.erase(i);
                             }
                             break;
                         }
                         case proto::plan::GenericValue::kFloatVal: {
-                            auto val =
-                                milvus::BsonView::GetValueFromBsonView<double>(
-                                    sub_value.get_value());
-                            if (!val.has_value()) {
-                                continue;
-                            }
-                            if (val.value() == element.float_val()) {
+                            auto comparison = CompareBsonNumberToBound(
+                                sub_value.get_value(), element);
+                            if (comparison.has_value() && *comparison == 0) {
                                 tmp_elements_index.erase(i);
                             }
                             break;
@@ -1618,7 +1699,8 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAllWithDiffTypeByStats() {
                         }
                         case proto::plan::GenericValue::kArrayVal: {
                             auto val = milvus::BsonView::GetValueFromBsonView<
-                                bsoncxx::array::view>(sub_value.get_value());
+                                milvus::bson::array_view>(
+                                sub_value.get_value());
                             if (!val.has_value()) {
                                 continue;
                             }
@@ -1653,10 +1735,13 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAllWithDiffTypeByStats() {
                 op_ctx_, bson_index_, pointer, shared_executor);
         }
         cached_index_chunk_id_ = 0;
+        CachePut(CacheElapsedUs(cache_compute_start));
     }
 
-    auto res = MoveOrSliceBitmap(
-        *cached_index_chunk_res_, current_data_global_pos_, real_batch_size);
+    auto res = MoveOrSliceBitmap(*cached_index_chunk_res_,
+                                 *cached_index_chunk_valid_res_,
+                                 current_data_global_pos_,
+                                 real_batch_size);
     MoveCursor();
     return res;
 }
@@ -1719,7 +1804,7 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAllArray(EvalCtx& context) {
             auto doc = data[i].doc();
             auto array = doc.at_pointer(pointer).get_array();
             if (array.error()) {
-                return false;
+                return std::make_pair(false, false);
             }
             std::unordered_set<int> exist_elements_index;
             for (auto&& it : array) {
@@ -1740,10 +1825,11 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAllArray(EvalCtx& context) {
                     }
                 }
                 if (exist_elements_index.size() == elements.size()) {
-                    return true;
+                    return std::make_pair(true, true);
                 }
             }
-            return exist_elements_index.size() == elements.size();
+            return std::make_pair(
+                true, exist_elements_index.size() == elements.size());
         };
         bool has_bitmap_input = !bitmap_input.empty();
         for (size_t i = 0; i < size; ++i) {
@@ -1759,7 +1845,12 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAllArray(EvalCtx& context) {
                 continue;
             }
 
-            res[i] = executor(offset);
+            auto [valid, matched] = executor(offset);
+            if (!valid) {
+                res[i] = valid_res[i] = false;
+                continue;
+            }
+            res[i] = matched;
         }
         processed_cursor += size;
     };
@@ -1808,8 +1899,11 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAllArrayByStats() {
             TargetBitmap(real_batch_size, true));
     }
 
-    if (cached_index_chunk_id_ != 0 &&
-        segment_->type() == SegmentType::Sealed) {
+    if (cached_index_chunk_id_ != 0 && TryCacheGet()) {
+        // Cache hit — skip Stats computation.
+    } else if (cached_index_chunk_id_ != 0 &&
+               segment_->type() == SegmentType::Sealed) {
+        auto cache_compute_start = CacheClock::now();
         auto* segment = dynamic_cast<const segcore::SegmentSealed*>(segment_);
         auto field_id = expr_->column_.field_id_;
         auto index = segment->GetJsonStats(op_ctx_, field_id);
@@ -1817,7 +1911,7 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAllArrayByStats() {
 
         cached_index_chunk_res_ = std::make_shared<TargetBitmap>(active_count_);
         cached_index_chunk_valid_res_ =
-            std::make_shared<TargetBitmap>(active_count_, true);
+            std::make_shared<TargetBitmap>(active_count_);
         TargetBitmapView res_view(*cached_index_chunk_res_);
         TargetBitmapView valid_res_view(*cached_index_chunk_valid_res_);
 
@@ -1829,30 +1923,38 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAllArrayByStats() {
             auto target_field = index->GetShreddingField(
                 pointer, milvus::index::JSONType::ARRAY);
             if (!target_field.empty()) {
+                TargetBitmap target_res(active_count_, false);
+                TargetBitmapView target_res_view(target_res);
+                TargetBitmap target_valid(active_count_, true);
+                TargetBitmapView target_valid_view(target_valid);
                 ShreddingArrayBsonContainsAllArrayExecutor executor(elements);
                 index->ExecutorForShreddingData<std::string_view>(
                     op_ctx_,
                     target_field,
                     executor,
                     nullptr,
-                    res_view,
-                    valid_res_view);
+                    target_res_view,
+                    target_valid_view);
+                res_view.inplace_or_with_count(target_res_view, active_count_);
+                valid_res_view.inplace_or_with_count(target_valid_view,
+                                                     active_count_);
             }
         }
 
-        auto shared_executor = [&elements, &res_view](milvus::BsonView bson,
-                                                      uint32_t row_offset,
-                                                      uint32_t value_offset) {
+        auto shared_executor = [&elements, &res_view, &valid_res_view](
+                                   milvus::BsonView bson,
+                                   uint32_t row_offset,
+                                   uint32_t value_offset) {
             auto array = bson.ParseAsArrayAtOffset(value_offset);
             if (!array.has_value()) {
-                res_view[row_offset] = false;
                 return;
             }
+            valid_res_view[row_offset] = true;
 
             std::set<int> exist_elements_index;
             for (const auto& sub_value : array.value()) {
                 auto sub_array = milvus::BsonView::GetValueFromBsonView<
-                    bsoncxx::array::view>(sub_value.get_value());
+                    milvus::bson::array_view>(sub_value.get_value());
 
                 if (!sub_array.has_value())
                     continue;
@@ -1879,10 +1981,13 @@ PhyJsonContainsFilterExpr::ExecJsonContainsAllArrayByStats() {
                 op_ctx_, bson_index_, pointer, shared_executor);
         }
         cached_index_chunk_id_ = 0;
+        CachePut(CacheElapsedUs(cache_compute_start));
     }
 
-    auto res = MoveOrSliceBitmap(
-        *cached_index_chunk_res_, current_data_global_pos_, real_batch_size);
+    auto res = MoveOrSliceBitmap(*cached_index_chunk_res_,
+                                 *cached_index_chunk_valid_res_,
+                                 current_data_global_pos_,
+                                 real_batch_size);
     MoveCursor();
     return res;
 }
@@ -1942,7 +2047,7 @@ PhyJsonContainsFilterExpr::ExecJsonContainsWithDiffType(EvalCtx& context) {
             auto doc = json.dom_doc();
             auto array = doc.at_pointer(pointer).get_array();
             if (array.error()) {
-                return false;
+                return std::make_pair(false, false);
             }
             // Note: array can only be iterated once
             for (auto&& it : array) {
@@ -1954,7 +2059,7 @@ PhyJsonContainsFilterExpr::ExecJsonContainsWithDiffType(EvalCtx& context) {
                                 continue;
                             }
                             if (val.value() == element.bool_val()) {
-                                return true;
+                                return std::make_pair(true, true);
                             }
                             break;
                         }
@@ -1964,12 +2069,12 @@ PhyJsonContainsFilterExpr::ExecJsonContainsWithDiffType(EvalCtx& context) {
                                 auto double_val = it.template get<double>();
                                 if (!double_val.error() &&
                                     double_val.value() == element.int64_val()) {
-                                    return true;
+                                    return std::make_pair(true, true);
                                 }
                                 continue;
                             }
                             if (val.value() == element.int64_val()) {
-                                return true;
+                                return std::make_pair(true, true);
                             }
                             break;
                         }
@@ -1979,7 +2084,7 @@ PhyJsonContainsFilterExpr::ExecJsonContainsWithDiffType(EvalCtx& context) {
                                 continue;
                             }
                             if (val.value() == element.float_val()) {
-                                return true;
+                                return std::make_pair(true, true);
                             }
                             break;
                         }
@@ -1989,7 +2094,7 @@ PhyJsonContainsFilterExpr::ExecJsonContainsWithDiffType(EvalCtx& context) {
                                 continue;
                             }
                             if (val.value() == element.string_val()) {
-                                return true;
+                                return std::make_pair(true, true);
                             }
                             break;
                         }
@@ -1999,7 +2104,7 @@ PhyJsonContainsFilterExpr::ExecJsonContainsWithDiffType(EvalCtx& context) {
                                 continue;
                             }
                             if (CompareTwoJsonArray(val, element.array_val())) {
-                                return true;
+                                return std::make_pair(true, true);
                             }
                             break;
                         }
@@ -2010,7 +2115,7 @@ PhyJsonContainsFilterExpr::ExecJsonContainsWithDiffType(EvalCtx& context) {
                     }
                 }
             }
-            return false;
+            return std::make_pair(true, false);
         };
         bool has_bitmap_input = !bitmap_input.empty();
         for (size_t i = 0; i < size; ++i) {
@@ -2026,7 +2131,12 @@ PhyJsonContainsFilterExpr::ExecJsonContainsWithDiffType(EvalCtx& context) {
                 continue;
             }
 
-            res[i] = executor(offset);
+            auto [valid, matched] = executor(offset);
+            if (!valid) {
+                res[i] = valid_res[i] = false;
+                continue;
+            }
+            res[i] = matched;
         }
         processed_cursor += size;
     };
@@ -2071,8 +2181,11 @@ PhyJsonContainsFilterExpr::ExecJsonContainsWithDiffTypeByStats() {
             TargetBitmap(real_batch_size, true));
     }
 
-    if (cached_index_chunk_id_ != 0 &&
-        segment_->type() == SegmentType::Sealed) {
+    if (cached_index_chunk_id_ != 0 && TryCacheGet()) {
+        // Cache hit — skip Stats computation.
+    } else if (cached_index_chunk_id_ != 0 &&
+               segment_->type() == SegmentType::Sealed) {
+        auto cache_compute_start = CacheClock::now();
         auto* segment = dynamic_cast<const segcore::SegmentSealed*>(segment_);
         auto field_id = expr_->column_.field_id_;
         auto index = segment->GetJsonStats(op_ctx_, field_id);
@@ -2080,7 +2193,7 @@ PhyJsonContainsFilterExpr::ExecJsonContainsWithDiffTypeByStats() {
 
         cached_index_chunk_res_ = std::make_shared<TargetBitmap>(active_count_);
         cached_index_chunk_valid_res_ =
-            std::make_shared<TargetBitmap>(active_count_, true);
+            std::make_shared<TargetBitmap>(active_count_);
         TargetBitmapView res_view(*cached_index_chunk_res_);
         TargetBitmapView valid_res_view(*cached_index_chunk_valid_res_);
 
@@ -2092,6 +2205,10 @@ PhyJsonContainsFilterExpr::ExecJsonContainsWithDiffTypeByStats() {
             auto target_field = index->GetShreddingField(
                 pointer, milvus::index::JSONType::ARRAY);
             if (!target_field.empty()) {
+                TargetBitmap target_res(active_count_, false);
+                TargetBitmapView target_res_view(target_res);
+                TargetBitmap target_valid(active_count_, true);
+                TargetBitmapView target_valid_view(target_valid);
                 ShreddingArrayBsonContainsAnyWithDiffTypeExecutor executor(
                     elements);
                 index->ExecutorForShreddingData<std::string_view>(
@@ -2099,19 +2216,23 @@ PhyJsonContainsFilterExpr::ExecJsonContainsWithDiffTypeByStats() {
                     target_field,
                     executor,
                     nullptr,
-                    res_view,
-                    valid_res_view);
+                    target_res_view,
+                    target_valid_view);
+                res_view.inplace_or_with_count(target_res_view, active_count_);
+                valid_res_view.inplace_or_with_count(target_valid_view,
+                                                     active_count_);
             }
         }
 
-        auto shared_executor = [&elements, &res_view](milvus::BsonView bson,
-                                                      uint32_t row_offset,
-                                                      uint32_t value_offset) {
+        auto shared_executor = [&elements, &res_view, &valid_res_view](
+                                   milvus::BsonView bson,
+                                   uint32_t row_offset,
+                                   uint32_t value_offset) {
             auto array = bson.ParseAsArrayAtOffset(value_offset);
             if (!array.has_value()) {
-                res_view[row_offset] = false;
                 return;
             }
+            valid_res_view[row_offset] = true;
 
             for (const auto& sub_value : array.value()) {
                 for (auto const& element : elements) {
@@ -2130,26 +2251,18 @@ PhyJsonContainsFilterExpr::ExecJsonContainsWithDiffTypeByStats() {
                             break;
                         }
                         case proto::plan::GenericValue::kInt64Val: {
-                            auto val =
-                                milvus::BsonView::GetValueFromBsonView<double>(
-                                    sub_value.get_value());
-                            if (!val.has_value()) {
-                                continue;
-                            }
-                            if (val.value() == element.int64_val()) {
+                            auto comparison = CompareBsonNumberToBound(
+                                sub_value.get_value(), element);
+                            if (comparison.has_value() && *comparison == 0) {
                                 res_view[row_offset] = true;
                                 return;
                             }
                             break;
                         }
                         case proto::plan::GenericValue::kFloatVal: {
-                            auto val =
-                                milvus::BsonView::GetValueFromBsonView<double>(
-                                    sub_value.get_value());
-                            if (!val.has_value()) {
-                                continue;
-                            }
-                            if (val.value() == element.float_val()) {
+                            auto comparison = CompareBsonNumberToBound(
+                                sub_value.get_value(), element);
+                            if (comparison.has_value() && *comparison == 0) {
                                 res_view[row_offset] = true;
                                 return;
                             }
@@ -2169,7 +2282,8 @@ PhyJsonContainsFilterExpr::ExecJsonContainsWithDiffTypeByStats() {
                         }
                         case proto::plan::GenericValue::kArrayVal: {
                             auto val = milvus::BsonView::GetValueFromBsonView<
-                                bsoncxx::array::view>(sub_value.get_value());
+                                milvus::bson::array_view>(
+                                sub_value.get_value());
                             if (!val.has_value()) {
                                 continue;
                             }
@@ -2196,10 +2310,13 @@ PhyJsonContainsFilterExpr::ExecJsonContainsWithDiffTypeByStats() {
                 op_ctx_, bson_index_, pointer, shared_executor);
         }
         cached_index_chunk_id_ = 0;
+        CachePut(CacheElapsedUs(cache_compute_start));
     }
 
-    auto res = MoveOrSliceBitmap(
-        *cached_index_chunk_res_, current_data_global_pos_, real_batch_size);
+    auto res = MoveOrSliceBitmap(*cached_index_chunk_res_,
+                                 *cached_index_chunk_valid_res_,
+                                 current_data_global_pos_,
+                                 real_batch_size);
     MoveCursor();
     return res;
 }
@@ -2311,8 +2428,11 @@ PhyJsonContainsFilterExpr::ExecArrayContainsForIndexSegmentImpl() {
     };
 
     // Use WithRowLevel version since func handles element-to-row conversion for nested index
-    auto res =
-        ProcessIndexChunksWithRowLevel<GetType>(execute_sub_batch, elems);
+    auto validity_mode = field_type_ == DataType::JSON
+                             ? IndexValidityMode::JsonExactPath
+                             : IndexValidityMode::Default;
+    auto res = ProcessIndexChunksWithRowLevel<GetType>(
+        execute_sub_batch, validity_mode, elems);
     AssertInfo(res->size() == real_batch_size,
                "internal error: expr processed rows {} not equal "
                "expect batch size {}",

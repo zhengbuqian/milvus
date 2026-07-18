@@ -11,7 +11,6 @@
 
 #include <folly/ExceptionWrapper.h>
 #include <algorithm>
-#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -51,7 +50,7 @@ namespace milvus::query {
 
 void
 SearchOnSealedIndex(const Schema& schema,
-                    const segcore::SealedIndexingRecord& record,
+                    const segcore::SealedIndexingEntry& entry,
                     const SearchInfo& search_info,
                     const void* query_data,
                     const size_t* query_offsets,
@@ -60,7 +59,6 @@ SearchOnSealedIndex(const Schema& schema,
                     milvus::OpContext* op_context,
                     SearchResult& search_result) {
     auto topK = search_info.topk_;
-    auto round_decimal = search_info.round_decimal_;
 
     auto field_id = search_info.field_id_;
     auto& field = schema[field_id];
@@ -68,13 +66,10 @@ SearchOnSealedIndex(const Schema& schema,
     // TODO(SPARSE): see todo in PlanImpl.h::PlaceHolder.
     auto dim = is_sparse ? 0 : field.get_dim();
 
-    AssertInfo(record.is_ready(field_id), "[SearchOnSealed]Record isn't ready");
-    // Keep the field_indexing smart pointer, until all reference by raw dropped.
-    auto field_indexing = record.get_field_indexing(field_id);
-    AssertInfo(field_indexing->metric_type_ == search_info.metric_type_,
+    AssertInfo(entry.metric_type_ == search_info.metric_type_,
                "Metric type of field index isn't the same with search info,"
                "field index: {}, search info: {}",
-               field_indexing->metric_type_,
+               entry.metric_type_,
                search_info.metric_type_);
 
     knowhere::DataSetPtr dataset;
@@ -87,33 +82,43 @@ SearchOnSealedIndex(const Schema& schema,
         auto num_vectors = query_offsets[num_queries];
         dataset = knowhere::GenDataSet(num_vectors, dim, query_data);
         dataset->Set(knowhere::meta::EMB_LIST_OFFSET, query_offsets);
+        dataset->Set(knowhere::meta::NQ, num_queries);
     }
 
     dataset->SetIsSparse(is_sparse);
-    auto accessor =
-        SemiInlineGet(field_indexing->indexing_->PinCells(nullptr, {0}));
+    auto accessor = SemiInlineGet(entry.indexing_->PinCells(op_context, {0}));
     auto vec_index =
         dynamic_cast<index::VectorIndex*>(accessor->get_cell_of(0));
 
     const auto& offset_mapping = vec_index->GetOffsetMapping();
+    const bool is_element_level_search = search_info.array_offsets_ != nullptr;
+    search_result.element_level_ = is_element_level_search;
     TargetBitmap transformed_bitset;
     BitsetView search_bitset = bitset;
-    if (offset_mapping.IsEnabled()) {
-        transformed_bitset = TransformBitset(bitset, offset_mapping);
-        search_bitset = BitsetView(transformed_bitset);
+    const auto has_offset_mapping =
+        offset_mapping.IsEnabled() && !is_element_level_search;
+    if (has_offset_mapping) {
         if (offset_mapping.GetValidCount() == 0) {
-            auto total_num = num_queries * topK;
-            search_result.seg_offsets_.resize(total_num, INVALID_SEG_OFFSET);
-            search_result.distances_.resize(total_num, 0.0f);
-            search_result.total_nq_ = num_queries;
-            search_result.unity_topK_ = topK;
+            FillEmptySearchResult(search_result, num_queries, topK);
             return;
+        }
+        if (!bitset.empty()) {
+            auto status =
+                offset_mapping.TransformBitset(bitset, transformed_bitset);
+            if (status == OffsetMapping::BitsetTransformStatus::AllFiltered) {
+                FillEmptySearchResult(search_result, num_queries, topK);
+                return;
+            }
+            search_bitset =
+                status == OffsetMapping::BitsetTransformStatus::NoFilter
+                    ? BitsetView{}
+                    : search_result.PinBitset(std::move(transformed_bitset));
         }
     }
 
     if (search_info.iterator_v2_info_.has_value()) {
         CachedSearchIterator cached_iter(
-            *vec_index, dataset, search_info, search_bitset);
+            *vec_index, dataset, search_info, search_bitset, op_context);
         cached_iter.NextBatch(search_info, search_result);
         FinalizeVectorSearchOffsets(
             search_result, offset_mapping, search_info.array_offsets_.get());
@@ -126,19 +131,11 @@ SearchOnSealedIndex(const Schema& schema,
                                                       dataset,
                                                       search_result,
                                                       search_bitset,
-                                                      *vec_index);
+                                                      *vec_index,
+                                                      op_context);
     if (!use_iterator) {
         vec_index->Query(
             dataset, search_info, search_bitset, op_context, search_result);
-        float* distances = search_result.distances_.data();
-        auto total_num = num_queries * topK;
-        if (round_decimal != -1) {
-            const float multiplier = pow(10.0, round_decimal);
-            for (int i = 0; i < total_num; i++) {
-                distances[i] =
-                    std::round(distances[i] * multiplier) / multiplier;
-            }
-        }
     }
     FinalizeVectorSearchOffsets(
         search_result,
@@ -179,33 +176,52 @@ SearchOnSealedColumn(const Schema& schema,
 
     CheckBruteForceSearchParam(field, search_info);
 
+    // Nullable plain-vector chunks compact away NULL rows and therefore need
+    // physical/logical row mapping. VECTOR_ARRAY raw chunks keep one list
+    // offset per logical row; NULL and empty rows are represented by
+    // zero-length lists, so row mapping must not be built or applied here.
+    const bool needs_offset_mapping =
+        column->IsNullable() && data_type != DataType::VECTOR_ARRAY;
+    if (needs_offset_mapping) {
+        column->BuildValidRowIds(op_context);
+    }
+
     // Check for nullable vector field with all null values - must be done before creating iterators
     const auto& offset_mapping = column->GetOffsetMapping();
+    // Element-level VECTOR_ARRAY search has already expanded the row bitset
+    // to element IDs. OffsetMapping is row-level, so only use it for row-level
+    // vector searches.
+    bool is_element_level_search =
+        field.get_data_type() == DataType::VECTOR_ARRAY &&
+        search_info.array_offsets_ != nullptr;
+    result.element_level_ = is_element_level_search;
     TargetBitmap transformed_bitset;
     BitsetView search_bitview = bitview;
-    if (offset_mapping.IsEnabled()) {
-        for (int64_t c = 0; c < column->num_chunks(); ++c) {
-            column->EnsureChunkOffsetMapping(c, op_context);
-        }
-        transformed_bitset = TransformBitset(bitview, offset_mapping);
-        search_bitview = BitsetView(transformed_bitset);
+    const auto has_offset_mapping =
+        needs_offset_mapping && offset_mapping.IsEnabled();
+    if (has_offset_mapping) {
         if (offset_mapping.GetValidCount() == 0) {
             // All vectors are null, return empty result
-            auto total_num = num_queries * search_info.topk_;
-            result.seg_offsets_.resize(total_num, INVALID_SEG_OFFSET);
-            result.distances_.resize(total_num, 0.0f);
-            result.total_nq_ = num_queries;
-            result.unity_topK_ = search_info.topk_;
+            FillEmptySearchResult(result, num_queries, search_info.topk_);
             return;
+        }
+        if (!bitview.empty()) {
+            auto status =
+                offset_mapping.TransformBitset(bitview, transformed_bitset);
+            if (status == OffsetMapping::BitsetTransformStatus::AllFiltered) {
+                FillEmptySearchResult(result, num_queries, search_info.topk_);
+                return;
+            }
+            search_bitview =
+                status == OffsetMapping::BitsetTransformStatus::NoFilter
+                    ? BitsetView{}
+                    : result.PinBitset(std::move(transformed_bitset));
         }
     }
 
     // For element-level search (embedding-search-embedding), the underlying
     // knowhere search is keyed by the scalar element type rather than
     // VECTOR_ARRAY, and per-chunk sizes must be counted in elements.
-    bool is_element_level_search =
-        field.get_data_type() == DataType::VECTOR_ARRAY &&
-        query_offsets == nullptr;
     if (is_element_level_search) {
         data_type = element_type;
     }
@@ -231,6 +247,8 @@ SearchOnSealedColumn(const Schema& schema,
         return;
     }
 
+    const bool use_vector_iterator =
+        milvus::exec::UseVectorIterator(search_info);
     auto num_chunk = column->num_chunks();
 
     SubSearchResult final_qr(num_queries,
@@ -240,13 +258,12 @@ SearchOnSealedColumn(const Schema& schema,
 
     auto offset = 0;
     auto vector_chunks = column->GetAllChunks(op_context);
-    const auto& valid_count_per_chunk = column->GetValidCountPerChunk();
     for (int i = 0; i < num_chunk; ++i) {
         const auto& pw = vector_chunks[i];
         auto vec_data = pw.get()->Data();
         auto chunk_size = column->chunk_row_nums(i);
-        if (offset_mapping.IsEnabled() && !valid_count_per_chunk.empty()) {
-            chunk_size = valid_count_per_chunk[i];
+        if (has_offset_mapping) {
+            chunk_size = column->GetValidCountInChunk(i);
         }
 
         // For element-level search, get element count from VectorArrayOffsets
@@ -267,9 +284,13 @@ SearchOnSealedColumn(const Schema& schema,
 
             offsets_pw = column->VectorArrayOffsets(op_context, i);
             raw_dataset.raw_data_offsets = offsets_pw.get();
+            if (raw_dataset.raw_data_offsets[chunk_size] == 0) {
+                offset += chunk_size;
+                continue;
+            }
         }
 
-        if (milvus::exec::UseVectorIterator(search_info)) {
+        if (use_vector_iterator) {
             AssertInfo(data_type != DataType::VECTOR_ARRAY,
                        "vector array(embedding list) is not supported for "
                        "vector iterator");
@@ -294,12 +315,14 @@ SearchOnSealedColumn(const Schema& schema,
         }
         offset += chunk_size;
     }
-    if (milvus::exec::UseVectorIterator(search_info)) {
+    if (use_vector_iterator) {
         bool larger_is_closer = PositivelyRelated(search_info.metric_type_);
         // Element-level search skips row-level mapping (element IDs are
         // not row-aligned); see ChunkMergeIterator ctor.
         const milvus::OffsetMapping* iter_offset_mapping =
-            search_info.array_offsets_ != nullptr ? nullptr : &offset_mapping;
+            (search_info.array_offsets_ != nullptr || !has_offset_mapping)
+                ? nullptr
+                : &offset_mapping;
         result.AssembleChunkVectorIterators(num_queries,
                                             num_chunk,
                                             final_qr.chunk_iterators(),
@@ -314,9 +337,10 @@ SearchOnSealedColumn(const Schema& schema,
                     search_info.array_offsets_.get());
             result.seg_offsets_ = std::move(seg_offsets);
             result.element_indices_ = std::move(elem_indicies);
+            result.element_level_ = true;
         } else {
-            if (offset_mapping.IsEnabled()) {
-                TransformOffset(final_qr.mutable_offsets(), offset_mapping);
+            if (has_offset_mapping) {
+                offset_mapping.TransformOffsets(final_qr.mutable_offsets());
             }
             result.seg_offsets_ = std::move(final_qr.mutable_offsets());
         }

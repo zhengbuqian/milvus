@@ -7,6 +7,7 @@ expr:
 	| FloatingConstant										                                                # Floating
 	| BooleanConstant										                                                # Boolean
 	| StringLiteral											                                                # String
+	| RawStringLiteral										                                                # RawString
 	| (Identifier|Meta)           			      							                                # Identifier
 	| JSONIdentifier                                                                                        # JSONIdentifier
 	| StructFieldIdentifier                                                                                 # StructField
@@ -17,9 +18,12 @@ expr:
 	| '[' expr (',' expr)* ','? ']'                                                                         # Array
 	| EmptyArray                                                                                            # EmptyArray
 	| EXISTS expr                                                                                           # Exists
-	| expr LIKE StringLiteral                                                                               # Like
-	| TEXTMATCH'('Identifier',' StringLiteral (',' textMatchOption)? ')'                                    # TextMatch
-	| PHRASEMATCH'('Identifier',' StringLiteral (',' expr)? ')'       			                            # PhraseMatch
+	| expr LIKE expr                                                                                        # Like
+	| expr REGEXMATCH expr                                                                                  # RegexMatch
+	| expr REGEXNOTMATCH expr                                                                               # RegexNotMatch
+	| TEXTMATCH'('Identifier',' expr (',' textMatchOption)? ')'                                             # TextMatch
+	| TEXTMATCHFUZZY'('Identifier',' expr ',' Identifier ASSIGN IntegerConstant ')'                         # TextMatchFuzzy
+	| PHRASEMATCH'('Identifier',' expr (',' expr)? ')'       			                                    # PhraseMatch
 	| RANDOMSAMPLE'(' expr ')'						     						                            # RandomSample
 	| ElementFilter'('Identifier',' expr')'                                	                                # ElementFilter
 	| op=(MATCH_ALL | MATCH_ANY) '(' Identifier ',' expr ')'                                                 # MatchSimple
@@ -34,8 +38,8 @@ expr:
 	| (JSONContains | ArrayContains)'('expr',' expr')'                                                      # JSONContains
 	| (JSONContainsAll | ArrayContainsAll)'('expr',' expr')'                                                # JSONContainsAll
 	| (JSONContainsAny | ArrayContainsAny)'('expr',' expr')'                                                # JSONContainsAny
-	| op=(STEuqals | STTouches | STOverlaps | STCrosses | STContains | STIntersects | STWithin) '(' Identifier ',' StringLiteral ')'  # SpatialBinary
-	| STDWithin'('Identifier','StringLiteral',' expr')'                                                     # STDWithin
+	| op=(STEuqals | STTouches | STOverlaps | STCrosses | STContains | STIntersects | STWithin) '(' Identifier ',' expr ')'  # SpatialBinary
+	| STDWithin'('Identifier',' expr',' expr')'                                                             # STDWithin
 	| STIsValid'('Identifier')'                                  			 	                            # STIsValid
 	| ArrayLength'('(Identifier | JSONIdentifier | StructFieldIdentifier)')'                                 # ArrayLength
 	| Identifier '(' ( expr (',' expr )* ','? )? ')'                                                        # Call
@@ -67,6 +71,7 @@ NE: '!=';
 LIKE: 'like' | 'LIKE';
 EXISTS: 'exists' | 'EXISTS';
 TEXTMATCH: 'text_match'|'TEXT_MATCH';
+TEXTMATCHFUZZY: 'text_match_fuzzy'|'TEXT_MATCH_FUZZY';
 PHRASEMATCH: 'phrase_match'|'PHRASE_MATCH';
 RANDOMSAMPLE: 'random_sample' | 'RANDOM_SAMPLE';
 MATCH_ALL: 'match_all' | 'MATCH_ALL';
@@ -78,6 +83,8 @@ INTERVAL: 'interval' | 'INTERVAL';
 ISO: 'iso' | 'ISO';
 MINIMUM_SHOULD_MATCH: 'minimum_should_match' | 'MINIMUM_SHOULD_MATCH';
 THRESHOLD: 'threshold' | 'THRESHOLD';
+REGEXMATCH: '=~';
+REGEXNOTMATCH: '!~';
 ASSIGN: '=';
 
 ADD: '+';
@@ -140,7 +147,8 @@ Identifier: Nondigit (Nondigit | Digit)*;
 Meta: '$meta';
 
 StringLiteral: EncodingPrefix? ('"' DoubleSCharSequence? '"' | '\'' SingleSCharSequence? '\'');
-JSONIdentifier: (Identifier | Meta)('[' (StringLiteral | DecimalConstant) ']')+;
+RawStringLiteral: [rR] ('"' DoubleRChar* '"' | '\'' SingleRChar* '\'');
+JSONIdentifier: (Identifier | Meta)('[' (StringLiteral | RawStringLiteral | DecimalConstant) ']')+;
 StructIndexFieldIdentifier: Identifier '[' DecimalConstant ']' '[' Identifier ']';
 StructFieldIdentifier: Identifier '[' Identifier ']';
 StructSubFieldIdentifier: '$[' Identifier ']';
@@ -152,6 +160,10 @@ fragment SingleSCharSequence: SingleSChar+;
 
 fragment DoubleSChar: ~["\\\r\n] | EscapeSequence | '\\\n' | '\\\r\n';
 fragment SingleSChar: ~['\\\r\n] | EscapeSequence | '\\\n' | '\\\r\n';
+// Raw string chars: a backslash is kept verbatim (no unescaping). A backslash
+// before the delimiter only prevents termination; both bytes stay in the token.
+fragment DoubleRChar: ~["\\\r\n] | '\\' ~[\r\n];
+fragment SingleRChar: ~['\\\r\n] | '\\' ~[\r\n];
 fragment Nondigit: [a-zA-Z_];
 fragment Digit: [0-9];
 fragment BinaryConstant: '0' [bB] [0-1]+;
@@ -188,7 +200,8 @@ fragment EscapeSequence:
 	'\\' ['"?abfnrtv\\]
 	| '\\' OctalDigit OctalDigit? OctalDigit?
 	| '\\x' HexadecimalDigitSequence
-	| UniversalCharacterName;
+	| UniversalCharacterName
+	| '\\' ~[\r\n];
 
 Whitespace: [ \t]+ -> skip;
 

@@ -18,63 +18,93 @@ package externalspec
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/externalspec/specutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
 )
 
 // File formats supported by external collections. Mirror of LOON_FORMAT_*
 // in the C++ FFI layer — keep the two in sync.
 const (
-	FormatParquet      = "parquet"
-	FormatLanceTable   = "lance-table"
-	FormatVortex       = "vortex"
-	FormatIcebergTable = "iceberg-table"
+	FormatParquet      = specutil.FormatParquet
+	FormatLanceTable   = specutil.FormatLanceTable
+	FormatVortex       = specutil.FormatVortex
+	FormatIcebergTable = specutil.FormatIcebergTable
+	FormatMilvusTable  = specutil.FormatMilvusTable
 )
 
-// ExternalSpec represents the parsed external collection specification
-type ExternalSpec struct {
-	Format     string            `json:"format"`                // one of Format* constants
-	Columns    []string          `json:"columns"`               // optional: specific columns to load
-	Extfs      map[string]string `json:"extfs,omitempty"`       // optional: extfs config overrides (non-sensitive only)
-	SnapshotID *int64            `json:"snapshot_id,omitempty"` // Iceberg snapshot ID (required for iceberg-table)
+// ExtfsKey* are the canonical spec.extfs key names. Use these instead of
+// string literals; keep in sync with kAllowedExtfsSpecKeys / kExtfsFields in
+// internal/core/src/storage/loon_ffi/util.cpp.
+const (
+	ExtfsKeyAccessKeyID             = specutil.ExtfsKeyAccessKeyID
+	ExtfsKeyAccessKeyValue          = specutil.ExtfsKeyAccessKeyValue
+	ExtfsKeyRoleARN                 = specutil.ExtfsKeyRoleARN
+	ExtfsKeySessionName             = specutil.ExtfsKeySessionName
+	ExtfsKeyExternalID              = specutil.ExtfsKeyExternalID
+	ExtfsKeyUseIAM                  = specutil.ExtfsKeyUseIAM
+	ExtfsKeyAnonymous               = specutil.ExtfsKeyAnonymous
+	ExtfsKeyGCPTargetServiceAccount = specutil.ExtfsKeyGCPTargetServiceAccount
+	ExtfsKeyRegion                  = specutil.ExtfsKeyRegion
+	ExtfsKeyCloudProvider           = specutil.ExtfsKeyCloudProvider
+	ExtfsKeyBucketName              = specutil.ExtfsKeyBucketName
+	ExtfsKeyIAMEndpoint             = specutil.ExtfsKeyIAMEndpoint
+	ExtfsKeyStorageType             = specutil.ExtfsKeyStorageType
+	ExtfsKeySSLCACert               = specutil.ExtfsKeySSLCACert
+	ExtfsKeyUseSSL                  = specutil.ExtfsKeyUseSSL
+	ExtfsKeyUseVirtualHost          = specutil.ExtfsKeyUseVirtualHost
+	ExtfsKeyLoadFrequency           = specutil.ExtfsKeyLoadFrequency
+)
+
+// Scheme* are URL schemes accepted in external_source.
+const (
+	SchemeAWS   = "aws"
+	SchemeS3    = "s3"
+	SchemeS3A   = "s3a"
+	SchemeGS    = "gs"
+	SchemeGCS   = "gcs"
+	SchemeMinIO = "minio"
+	SchemeOSS   = "oss"
+	SchemeCOS   = "cos"
+	SchemeOBS   = "obs"
+	SchemeAzure = "azure"
+)
+
+// CloudProvider* are values accepted for extfs.cloud_provider.
+const (
+	CloudProviderAWS     = "aws"
+	CloudProviderGCP     = "gcp"
+	CloudProviderAliyun  = "aliyun"
+	CloudProviderTencent = "tencent"
+	CloudProviderHuawei  = "huawei"
+	CloudProviderAzure   = "azure"
+	// CloudProviderMinIO opts the request into Milvus-form URI parsing
+	// (scheme://endpoint/bucket/key). Use for self-hosted S3-compatible
+	// stores (MinIO, Ceph RGW, Garage, etc.) where no canonical cloud
+	// endpoint exists and the URI host must be treated as the endpoint.
+	CloudProviderMinIO = "minio"
+)
+
+// validCloudProviders gates extfs.cloud_provider values. Inference from URI
+// scheme was previously allowed but produced silent misconfiguration when a
+// scheme mapped to multiple providers (s3:// → AWS S3 vs self-hosted MinIO).
+// Forcing an explicit value moves the disambiguation to the API boundary.
+var validCloudProviders = map[string]bool{
+	CloudProviderAWS:     true,
+	CloudProviderGCP:     true,
+	CloudProviderAliyun:  true,
+	CloudProviderTencent: true,
+	CloudProviderHuawei:  true,
+	CloudProviderAzure:   true,
+	CloudProviderMinIO:   true,
 }
 
-// supportedFormats lists the file formats supported for external collections
-var supportedFormats = map[string]bool{
-	FormatParquet:      true,
-	FormatLanceTable:   true,
-	FormatVortex:       true,
-	FormatIcebergTable: true,
-}
-
-// allowedExtfsKeys lists extfs configuration keys that can be passed via ExternalSpec.
-// Credential keys are allowed because cross-bucket scenarios require different
-// authentication from the main Milvus storage (e.g., local MinIO vs external AWS S3).
-// Note: these values are stored in etcd as part of CollectionSchema.
-var allowedExtfsKeys = map[string]bool{
-	"use_iam":          true,
-	"use_ssl":          true,
-	"use_virtual_host": true,
-	"region":           true,
-	"cloud_provider":   true,
-	"iam_endpoint":     true,
-	"storage_type":     true,
-	"ssl_ca_cert":      true,
-	"access_key_id":    true,
-	"access_key_value": true,
-}
-
-// booleanExtfsKeys lists extfs keys that only accept "true" or "false".
-var booleanExtfsKeys = map[string]bool{
-	"use_iam":          true,
-	"use_ssl":          true,
-	"use_virtual_host": true,
-}
+// ExternalSpec represents the parsed external collection specification.
+type ExternalSpec = specutil.ExternalSpec
 
 // allowedExternalSourceSchemes lists URL schemes accepted in ExternalSource.
 // This is a defense-in-depth allowlist to prevent unvalidated SSRF / arbitrary
@@ -88,13 +118,16 @@ var booleanExtfsKeys = map[string]bool{
 // via those schemes are not rejected by Proxy/RootCoord with a misleading
 // "scheme not allowed" error.
 var allowedExternalSourceSchemes = map[string]bool{
-	"s3":    true, // S3-compatible (AWS S3, MinIO, Tencent COS via s3, etc.)
-	"s3a":   true, // Hadoop-style S3
-	"aws":   true, // milvus-storage loon FFI native AWS prefix
-	"minio": true, // milvus-storage loon FFI native MinIO prefix
-	"oss":   true, // Aliyun OSS
-	"gs":    true, // Google Cloud Storage
-	"gcs":   true, // Google Cloud Storage (alias)
+	SchemeS3:    true,
+	SchemeS3A:   true,
+	SchemeAWS:   true,
+	SchemeMinIO: true,
+	SchemeOSS:   true,
+	SchemeCOS:   true,
+	SchemeOBS:   true,
+	SchemeGS:    true,
+	SchemeGCS:   true,
+	SchemeAzure: true,
 }
 
 // secretExtfsKeys lists extfs keys whose values are sensitive credentials
@@ -103,66 +136,19 @@ var allowedExternalSourceSchemes = map[string]bool{
 // through the FFI layer for actual storage authentication; this set only
 // gates the redaction path used by RedactExternalSpec.
 var secretExtfsKeys = map[string]bool{
-	"access_key_id":    true,
-	"access_key_value": true,
-	"ssl_ca_cert":      true,
+	ExtfsKeyAccessKeyID:    true,
+	ExtfsKeyAccessKeyValue: true,
+	ExtfsKeySSLCACert:      true,
+	ExtfsKeyExternalID:     true, // STS shared secret; confused-deputy guard.
 }
 
 // ParseExternalSpec parses the JSON external spec string
 func ParseExternalSpec(specStr string) (*ExternalSpec, error) {
-	if specStr == "" {
-		return &ExternalSpec{Format: FormatParquet}, nil // default
+	spec, err := specutil.ParseExternalSpec(specStr)
+	if err != nil {
+		return nil, merr.Wrap(err, "parse external spec")
 	}
-
-	var spec ExternalSpec
-	if err := json.Unmarshal([]byte(specStr), &spec); err != nil {
-		return nil, merr.WrapErrParameterInvalidMsg("invalid external spec JSON: %s", err.Error())
-	}
-
-	if spec.Format == "" {
-		spec.Format = FormatParquet // default format
-	}
-
-	if !supportedFormats[spec.Format] {
-		return nil, merr.WrapErrParameterInvalidMsg("unsupported format %q, supported formats: %s",
-			spec.Format, strings.Join(sortedKeys(supportedFormats), ", "))
-	}
-
-	for key, val := range spec.Extfs {
-		if !allowedExtfsKeys[key] {
-			return nil, merr.WrapErrParameterInvalidMsg("extfs key %q is not allowed; allowed keys: %s",
-				key, strings.Join(sortedKeys(allowedExtfsKeys), ", "))
-		}
-		if booleanExtfsKeys[key] && val != "true" && val != "false" {
-			return nil, merr.WrapErrParameterInvalidMsg("extfs key %q must be \"true\" or \"false\", got %q", key, val)
-		}
-	}
-
-	return &spec, nil
-}
-
-// PropertyIcebergSnapshotID is the property key for the Iceberg snapshot ID.
-const PropertyIcebergSnapshotID = "iceberg.snapshot_id"
-
-// BuildFormatProperties returns format-specific properties for the milvus-storage FFI layer.
-func (s *ExternalSpec) BuildFormatProperties() map[string]string {
-	props := make(map[string]string)
-	if s.Format == FormatIcebergTable && s.SnapshotID != nil {
-		props[PropertyIcebergSnapshotID] = strconv.FormatInt(*s.SnapshotID, 10)
-	}
-	return props
-}
-
-// BuildExtfsOverrides returns the extfs map with the given prefix prepended to each key.
-func (s *ExternalSpec) BuildExtfsOverrides(prefix string) map[string]string {
-	if len(s.Extfs) == 0 {
-		return nil
-	}
-	m := make(map[string]string, len(s.Extfs))
-	for k, v := range s.Extfs {
-		m[prefix+k] = v
-	}
-	return m
+	return spec, nil
 }
 
 func sortedKeys(m map[string]bool) []string {
@@ -174,98 +160,334 @@ func sortedKeys(m map[string]bool) []string {
 	return keys
 }
 
-// ValidateExternalSource enforces a scheme allowlist on the user-supplied
-// external_source URL. This is the first line of defense against SSRF /
-// arbitrary endpoint injection: without it a malicious caller could point
-// the storage layer at internal services (http://169.254.169.254/,
-// gopher://, etc.). The C++ extfs layer has its own defense-in-depth check,
-// but the Go-side allowlist must reject the request before any FFI call is
-// made.
+// ValidateExternalSource requires a fully-qualified URI: non-empty,
+// allowlisted scheme (SSRF guard), non-empty host, no embedded userinfo.
+// Accepts two URI shapes — Milvus form (host=endpoint, path[0]=bucket) and
+// AWS form (host=bucket, endpoint from spec.extfs).
 //
-// Beyond the scheme check, this function also rejects shapes that are
-// unambiguously unsafe or ambiguous:
-//   - URLs with embedded userinfo (`s3://user:pass@bucket/...`): credentials
-//     in URLs tend to leak into access logs, error messages, and audit
-//     trails. Cross-bucket credentials MUST flow through the extfs path so
-//     that they can be redacted by RedactExternalSpec.
-//   - URLs that fail to parse or have empty scheme.
-//
-// Empty input is rejected — an external collection must have a source.
+// For minio://, URI.host is treated as the endpoint; callers should use
+// minio://<endpoint>/<bucket>/<key>.
 func ValidateExternalSource(source string) error {
 	if source == "" {
-		return fmt.Errorf("external_source is empty")
+		return merr.WrapErrParameterInvalidMsg("external_source is empty")
 	}
 	u, err := url.Parse(source)
 	if err != nil {
-		return fmt.Errorf("invalid external_source URL: %w", err)
+		return merr.Wrap(err, "invalid external_source URL")
 	}
 	scheme := strings.ToLower(u.Scheme)
 	if scheme == "" {
-		// No scheme = same-bucket relative path (e.g. "my-data/parquet/").
-		// This is the original format supported since Part1. The path is
-		// relative to Milvus's own storage bucket and root path.
-		return nil
+		return merr.WrapErrParameterInvalidMsg("external_source must have an explicit scheme (e.g. s3://, aws://, gs://)")
 	}
 	if !allowedExternalSourceSchemes[scheme] {
-		return fmt.Errorf("external_source scheme %q is not allowed; allowed schemes: %s",
+		return merr.WrapErrParameterInvalidMsg("external_source scheme %q is not allowed; allowed schemes: %s",
 			scheme, strings.Join(sortedKeys(allowedExternalSourceSchemes), ", "))
 	}
-	// Reject URL-embedded userinfo. The URL-parsing library strips the
-	// credentials into u.User; they are then silently ignored by the
-	// storage layer, but they travel through logs first. Force callers to
-	// put credentials in the extfs map so RedactExternalSpec can scrub them.
 	if u.User != nil {
-		return fmt.Errorf("external_source must not embed credentials in the URL (use extfs.access_key_id / extfs.access_key_value instead)")
+		return merr.WrapErrParameterInvalidMsg("external_source must not embed credentials in the URL (use extfs.access_key_id / extfs.access_key_value instead)")
 	}
-	// Empty host allowed: `s3:///bucket/path` means same-endpoint cross-bucket
-	// (uses Milvus's own storage endpoint; BuildExtfsOverrides skips address
-	// override when host is empty).
+	if u.Host == "" {
+		return merr.WrapErrParameterInvalidMsg("external_source must have a non-empty host (e.g. s3://bucket/key, s3://endpoint/bucket/key, or minio://endpoint/bucket/key)")
+	}
 	return nil
 }
 
-// ValidateSourceAndSpec validates both the external_source URL and the
-// external_spec JSON of a schema in one call. It is used by both Proxy
-// and RootCoord (defense in depth) on the create-collection path.
-// The returned error is already wrapped via merr.WrapErrParameterInvalid
-// so callers can return it directly.
+// ValidateSourceAndSpec validates URL + JSON shape + ValidateExtfsComplete.
+// Errors are wrapped via merr.WrapErrParameterInvalid for direct return.
+// Called from Proxy and RootCoord (defense in depth) on create-collection.
 func ValidateSourceAndSpec(externalSource, externalSpec string) error {
 	if err := ValidateExternalSource(externalSource); err != nil {
 		return merr.WrapErrParameterInvalid("valid external_source", externalSource, err.Error())
 	}
-	if _, err := ParseExternalSpec(externalSpec); err != nil {
+	spec, err := ParseExternalSpec(externalSpec)
+	if err != nil {
+		return merr.WrapErrParameterInvalid("valid external_spec", "<redacted>", err.Error())
+	}
+	if err := ValidateExtfsComplete(externalSource, spec.Extfs); err != nil {
 		return merr.WrapErrParameterInvalid("valid external_spec", "<redacted>", err.Error())
 	}
 	return nil
 }
 
+// ValidateExtfsComplete requires spec.extfs to be self-sufficient: exactly one
+// credential mode (AK/SK, role_arn, use_iam=true, gcp_target_service_account,
+// anonymous=true), and region for AWS-family schemes. role_arn subsumes
+// use_iam (do not double-count). No inheritance from Milvus fs.* config.
+func ValidateExtfsComplete(externalSource string, extfs map[string]string) error {
+	// Parse once; caller's ValidateExternalSource has already guaranteed a scheme.
+	u, err := url.Parse(externalSource)
+	scheme := ""
+	if err == nil {
+		scheme = strings.ToLower(u.Scheme)
+	}
+
+	// extfs.cloud_provider is required and must be from the allowed set, except
+	// for minio:// where the scheme selects MinIO validation semantics. This is
+	// a local classification only; it is not written back to external_spec.
+	// Inferring cloud_provider from s3:// is ambiguous (AWS S3 vs self-hosted
+	// MinIO), so s3-family URIs still require the caller to be explicit.
+	cp := strings.ToLower(extfs[ExtfsKeyCloudProvider])
+	if scheme == SchemeMinIO && cp == "" {
+		cp = CloudProviderMinIO
+	}
+	if cp == "" {
+		return merr.WrapErrParameterMissingMsg("extfs.cloud_provider is required: one of [aws, gcp, aliyun, tencent, huawei, azure, minio]; inferring from URI scheme is ambiguous (e.g. s3:// matches both AWS S3 and self-hosted MinIO)")
+	}
+	if !validCloudProviders[cp] {
+		return merr.WrapErrParameterInvalidMsg("extfs.cloud_provider=%q is not supported: must be one of [aws, gcp, aliyun, tencent, huawei, azure, minio]", cp)
+	}
+	if scheme == SchemeMinIO && cp != CloudProviderMinIO {
+		return merr.WrapErrParameterInvalidMsg("scheme=minio requires extfs.cloud_provider=%q, got %q", CloudProviderMinIO, cp)
+	}
+
+	hasAKSK := extfs[ExtfsKeyAccessKeyID] != "" && extfs[ExtfsKeyAccessKeyValue] != ""
+	hasAKOnly := (extfs[ExtfsKeyAccessKeyID] != "") != (extfs[ExtfsKeyAccessKeyValue] != "")
+	hasRoleARN := extfs[ExtfsKeyRoleARN] != ""
+	hasUseIAMAlone := extfs[ExtfsKeyUseIAM] == "true" && !hasRoleARN
+	hasGCPImpersonation := extfs[ExtfsKeyGCPTargetServiceAccount] != ""
+	hasAnonymous := extfs[ExtfsKeyAnonymous] == "true"
+
+	if hasAKOnly {
+		return merr.WrapErrParameterMissingMsg("extfs.access_key_id and extfs.access_key_value must be set together (found one without the other)")
+	}
+
+	modes := 0
+	for _, set := range []bool{hasAKSK, hasRoleARN, hasUseIAMAlone, hasGCPImpersonation, hasAnonymous} {
+		if set {
+			modes++
+		}
+	}
+	if modes == 0 {
+		return merr.WrapErrParameterInvalidMsg("extfs credential mode missing: set exactly one of {access_key_id+access_key_value}, role_arn, use_iam=true, gcp_target_service_account, or anonymous=true")
+	}
+	if modes > 1 {
+		return merr.WrapErrParameterInvalidMsg("extfs credential modes are mutually exclusive: set exactly one of AK/SK, role_arn, use_iam=true, gcp_target_service_account, or anonymous=true")
+	}
+
+	if hasGCPImpersonation {
+		if scheme != "" && scheme != SchemeGS && scheme != SchemeGCS && cp != CloudProviderGCP {
+			return merr.WrapErrParameterInvalidMsg("extfs.gcp_target_service_account is only valid for GCP (scheme=gs/gcs or cloud_provider=gcp), got scheme=%q cloud_provider=%q", scheme, cp)
+		}
+		sa := extfs[ExtfsKeyGCPTargetServiceAccount]
+		if !strings.Contains(sa, "@") || !strings.HasSuffix(sa, ".gserviceaccount.com") {
+			return merr.WrapErrParameterInvalidMsg("extfs.gcp_target_service_account must be a GCP service account email ending in .gserviceaccount.com, got %q", sa)
+		}
+	}
+
+	if awsFamilyScheme[scheme] && extfs[ExtfsKeyRegion] == "" {
+		return merr.WrapErrParameterMissingMsg("extfs.region is required for scheme %q (AWS-family schemes need region for SigV4 signing)", scheme)
+	}
+
+	// Azure consistency: scheme=azure requires cloud_provider=azure, and
+	// cloud_provider=azure requires scheme=azure. Pairing guards against
+	// misconfigured dispatch to a non-Azure storage backend.
+	if scheme == SchemeAzure && cp != CloudProviderAzure {
+		return merr.WrapErrParameterInvalidMsg("scheme=azure requires extfs.cloud_provider=%q, got %q", CloudProviderAzure, cp)
+	}
+	if cp == CloudProviderAzure && scheme != "" && scheme != SchemeAzure {
+		return merr.WrapErrParameterInvalidMsg("extfs.cloud_provider=azure requires scheme=azure, got scheme=%q", scheme)
+	}
+
+	// Two-form URI contract: Milvus-form (scheme://endpoint/bucket/key) has
+	// URI.host either a cloud-family endpoint (e.g. *.amazonaws.com,
+	// *.aliyuncs.com) or a custom endpoint containing path-segment count
+	// >= 2. AWS-form (scheme://bucket/key) has a bucket-like URI.host (not
+	// cloud-family) and endpoint must be derivable from cloud_provider +
+	// region. Reject AWS-form configurations whose DeriveEndpoint returns
+	// empty — the endpoint would resolve to the URI host (= bucket) at
+	// runtime and fail opaquely.
+	if u != nil {
+		// Cloud-family URI.host → Milvus-form, URI is authoritative.
+		// Covers global/accelerate/dualstack/FIPS/VPC/sovereign endpoint
+		// variants that DeriveEndpoint does not produce verbatim.
+		if IsCloudEndpointHost(u.Host) {
+			return nil
+		}
+		pathSegs := len(strings.Split(strings.Trim(u.Path, "/"), "/"))
+		if strings.Trim(u.Path, "/") == "" {
+			pathSegs = 0
+		}
+		if pathSegs <= 1 {
+			// AWS-form: endpoint must be derivable from the user-supplied
+			// cloud_provider + region. cp=minio has no canonical endpoint
+			// and must use Milvus-form URI to embed the host explicitly.
+			if DeriveEndpoint(cp, extfs[ExtfsKeyRegion]) == "" {
+				return merr.WrapErrParameterInvalidMsg("cannot resolve endpoint for %q with cloud_provider=%q: set extfs.region, or use Milvus-form URI scheme://<endpoint>/<bucket>/<key>", externalSource, cp)
+			}
+		}
+	}
+	return nil
+}
+
+// IsCloudEndpointHost returns true when host matches a known cloud provider
+// domain family (AWS / GCP / Aliyun / Tencent / Huawei / Azure — all
+// endpoint variants including global, accelerate, dualstack, FIPS, VPC,
+// sovereign). Used by AWS-form disambiguation: when URI.host belongs to a
+// cloud family, the URI is treated as Milvus-form regardless of whether
+// DeriveEndpoint(cp, region) string-matches.
+// Keep list in sync with C++ IsCloudEndpointHost in loon_ffi/util.cpp.
+func IsCloudEndpointHost(host string) bool {
+	h := strings.ToLower(host)
+	suffixes := []string{
+		".amazonaws.com", ".amazonaws.com.cn",
+		".googleapis.com",
+		".aliyuncs.com",
+		".myqcloud.com",
+		".myhuaweicloud.com",
+		".core.windows.net", ".core.chinacloudapi.cn",
+		".core.usgovcloudapi.net", ".core.cloudapi.de",
+	}
+	for _, s := range suffixes {
+		if strings.HasSuffix(h, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// DeriveEndpoint mirrors C++ externalspec::DeriveEndpoint in
+// internal/core/src/storage/loon_ffi/util.cpp. Keep the two in lockstep.
+// Returns empty string when the (cloud_provider, region) pair does not
+// resolve to a concrete endpoint; callers must treat empty as "not derivable"
+// and require the user to supply a Milvus-form URI instead.
+func DeriveEndpoint(cloudProvider, region string) string {
+	cp := strings.ToLower(cloudProvider)
+	switch cp {
+	case CloudProviderAWS:
+		if region == "" {
+			return ""
+		}
+		if strings.HasPrefix(region, "cn-") {
+			return "https://s3." + region + ".amazonaws.com.cn"
+		}
+		return "https://s3." + region + ".amazonaws.com"
+	case CloudProviderGCP:
+		return "https://storage.googleapis.com"
+	case CloudProviderAliyun:
+		if region == "" {
+			return ""
+		}
+		return "https://oss-" + region + ".aliyuncs.com"
+	case CloudProviderTencent:
+		if region == "" {
+			return ""
+		}
+		return "https://cos." + region + ".myqcloud.com"
+	case CloudProviderHuawei:
+		if region == "" {
+			return ""
+		}
+		return "https://obs." + region + ".myhuaweicloud.com"
+	case CloudProviderAzure:
+		// Empty region returns empty — Milvus-form URI is required for
+		// non-public Azure deployments. Public cloud callers can pass an
+		// explicit region prefix ("public" etc.) or just use Milvus-form
+		// URI azure://core.windows.net/<container>/<blob>.
+		r := strings.ToLower(region)
+		if r == "" {
+			return ""
+		}
+		if strings.HasPrefix(r, "china") {
+			return "core.chinacloudapi.cn"
+		}
+		if strings.HasPrefix(r, "usgov") || strings.HasPrefix(r, "usdod") {
+			return "core.usgovcloudapi.net"
+		}
+		if strings.HasPrefix(r, "germany") {
+			return "core.cloudapi.de"
+		}
+		return "core.windows.net"
+	}
+	return ""
+}
+
+// awsFamilyScheme lists schemes that use AWS SigV4 signing (region required).
+var awsFamilyScheme = map[string]bool{
+	SchemeS3:  true,
+	SchemeS3A: true,
+	SchemeAWS: true,
+}
+
 // RedactExternalSpec returns a log-safe representation of an external spec
 // JSON string. Secret extfs values (see secretExtfsKeys) are replaced with
-// "***" so that AK/SK/PEM material never reaches log sinks. On parse failure
-// it returns "<invalid spec>" rather than the raw input — the input itself
-// may already contain a partially-recognized credential blob, so we never
-// echo it back. Empty input returns empty string for log readability.
+// "***" so that AK/SK/PEM material never reaches log sinks. Unknown fields
+// are preserved so API callers can still observe extension metadata. On parse
+// failure it returns "<invalid spec>" rather than the raw input — the input
+// itself may already contain a partially-recognized credential blob, so we
+// never echo it back. Empty input returns empty string for log readability.
 func RedactExternalSpec(specStr string) string {
 	if specStr == "" {
 		return ""
 	}
-	var spec ExternalSpec
+	var spec map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(specStr), &spec); err != nil {
 		return "<invalid spec>"
 	}
-	if len(spec.Extfs) > 0 {
-		redacted := make(map[string]string, len(spec.Extfs))
-		for k, v := range spec.Extfs {
-			if secretExtfsKeys[k] && v != "" {
-				redacted[k] = "***"
-			} else {
-				redacted[k] = v
-			}
-		}
-		spec.Extfs = redacted
+	if err := normalizeInt64Field(spec, "snapshot_id"); err != nil {
+		return "<invalid spec>"
+	}
+	if err := redactExtfsSecrets(spec); err != nil {
+		return "<invalid spec>"
 	}
 	out, err := json.Marshal(spec)
 	if err != nil {
 		return "<marshal error>"
 	}
 	return string(out)
+}
+
+func normalizeInt64Field(spec map[string]json.RawMessage, field string) error {
+	raw, ok := spec[field]
+	if !ok || len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+
+	var n int64
+	if err := json.Unmarshal(raw, &n); err == nil {
+		spec[field] = quotedInt64JSON(n)
+		return nil
+	}
+
+	var str string
+	if err := json.Unmarshal(raw, &str); err != nil {
+		return err
+	}
+	parsed, err := strconv.ParseInt(str, 10, 64)
+	if err != nil {
+		return err
+	}
+	spec[field] = quotedInt64JSON(parsed)
+	return nil
+}
+
+func quotedInt64JSON(v int64) json.RawMessage {
+	return json.RawMessage(strconv.Quote(strconv.FormatInt(v, 10)))
+}
+
+func redactExtfsSecrets(spec map[string]json.RawMessage) error {
+	extfsRaw, ok := spec["extfs"]
+	if !ok || len(extfsRaw) == 0 || string(extfsRaw) == "null" {
+		return nil
+	}
+
+	var extfs map[string]json.RawMessage
+	if err := json.Unmarshal(extfsRaw, &extfs); err != nil {
+		return err
+	}
+	for k, v := range extfs {
+		if !secretExtfsKeys[k] {
+			continue
+		}
+		var str string
+		if err := json.Unmarshal(v, &str); err == nil && str == "" {
+			continue
+		}
+		extfs[k] = json.RawMessage(`"***"`)
+	}
+	redactedExtfs, err := json.Marshal(extfs)
+	if err != nil {
+		return err
+	}
+	spec["extfs"] = redactedExtfs
+	return nil
 }

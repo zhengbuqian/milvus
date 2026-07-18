@@ -34,12 +34,11 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/msgpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/coordinator/snmanager"
 	"github.com/milvus-io/milvus/internal/datacoord/allocator"
 	"github.com/milvus-io/milvus/internal/datacoord/broker"
@@ -55,20 +54,21 @@ import (
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/workerpb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls/impls/walimplstest"
-	"github.com/milvus-io/milvus/pkg/v2/util/etcd"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/metricsinfo"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/tikv"
-	"github.com/milvus-io/milvus/pkg/v2/util/tsoutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/indexpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/internalpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/workerpb"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/message"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/walimpls/impls/walimplstest"
+	"github.com/milvus-io/milvus/pkg/v3/util/etcd"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/metricsinfo"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/tikv"
+	"github.com/milvus-io/milvus/pkg/v3/util/tsoutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 const maxOperationsPerTxn = int64(64)
@@ -1008,9 +1008,9 @@ func TestServer_GetMetrics(t *testing.T) {
 	resp, err = svr.GetMetrics(svr.ctx, req)
 	assert.NoError(t, err)
 	assert.Equal(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
-	log.Info("TestServer_GetMetrics",
-		zap.String("name", resp.ComponentName),
-		zap.String("response", resp.Response))
+	mlog.Info(context.TODO(), "TestServer_GetMetrics",
+		mlog.String("name", resp.ComponentName),
+		mlog.String("response", resp.Response))
 }
 
 func TestServer_getSystemInfoMetrics(t *testing.T) {
@@ -1528,7 +1528,9 @@ func TestGetRecoveryInfo(t *testing.T) {
 			CollectionID: 0,
 			Field2BinlogPaths: []*datapb.FieldBinlog{
 				{
-					FieldID: 1,
+					FieldID:     1,
+					ChildFields: []int64{1, 2},
+					Format:      "parquet",
 					Binlogs: []*datapb.Binlog{
 						{
 							LogPath: "/binlog/1",
@@ -1604,6 +1606,8 @@ func TestGetRecoveryInfo(t *testing.T) {
 		assert.EqualValues(t, binlogReq.SegmentID, resp.GetBinlogs()[0].GetSegmentID())
 		assert.EqualValues(t, 1, len(resp.GetBinlogs()[0].GetFieldBinlogs()))
 		assert.EqualValues(t, 1, resp.GetBinlogs()[0].GetFieldBinlogs()[0].GetFieldID())
+		assert.ElementsMatch(t, []int64{1, 2}, resp.GetBinlogs()[0].GetFieldBinlogs()[0].GetChildFields())
+		assert.Equal(t, "parquet", resp.GetBinlogs()[0].GetFieldBinlogs()[0].GetFormat())
 		for _, binlog := range resp.GetBinlogs()[0].GetFieldBinlogs()[0].GetBinlogs() {
 			assert.Equal(t, "", binlog.GetLogPath())
 		}
@@ -1835,7 +1839,7 @@ func TestGetCompactionState(t *testing.T) {
 func TestManualCompaction(t *testing.T) {
 	paramtable.Get().Save(Params.DataCoordCfg.EnableCompaction.Key, "true")
 	defer paramtable.Get().Reset(Params.DataCoordCfg.EnableCompaction.Key)
-	t.Run("test manual compaction successfully", func(t *testing.T) {
+	t.Run("target size zero routes to ordinary manual compaction", func(t *testing.T) {
 		svr := &Server{allocator: allocator.NewMockAllocator(t)}
 		svr.stateCode.Store(commonpb.StateCode_Healthy)
 		svr.meta = &meta{collections: typeutil.NewConcurrentMap[UniqueID, *collectionInfo]()}
@@ -1845,7 +1849,12 @@ func TestManualCompaction(t *testing.T) {
 		})
 		mockTrigger := NewMockTrigger(t)
 		svr.compactionTrigger = mockTrigger
-		mockTrigger.EXPECT().TriggerCompaction(mock.Anything, mock.Anything).Return(1, nil)
+		mockTrigger.EXPECT().TriggerCompaction(mock.Anything, mock.MatchedBy(func(signal *compactionSignal) bool {
+			return signal.collectionID == 1 && signal.isForce
+		})).Return(1, nil).Once()
+
+		mockTriggerManager := NewMockTriggerManager(t)
+		svr.compactionTriggerManager = mockTriggerManager
 
 		mockHandler := NewMockCompactionInspector(t)
 		mockHandler.EXPECT().getCompactionTasksNumBySignalID(mock.Anything).Return(1)
@@ -1853,9 +1862,11 @@ func TestManualCompaction(t *testing.T) {
 		resp, err := svr.ManualCompaction(context.TODO(), &milvuspb.ManualCompactionRequest{
 			CollectionID: 1,
 			Timetravel:   1,
+			TargetSize:   0,
 		})
 		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
+		mockTriggerManager.AssertNotCalled(t, "ManualTrigger", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	})
 
 	t.Run("test manual l0 compaction successfully", func(t *testing.T) {
@@ -2007,6 +2018,8 @@ func TestHandleSessionEvent(t *testing.T) {
 	svr := newTestServer(t)
 	defer closeTestServer(t, svr)
 	t.Run("handle events", func(t *testing.T) {
+		svr.indexEngineVersionManager = newIndexEngineVersionManager()
+
 		// None event
 		evt := &sessionutil.SessionEvent{
 			EventType: sessionutil.SessionNoneEvent,
@@ -2037,20 +2050,52 @@ func TestHandleSessionEvent(t *testing.T) {
 		assert.NoError(t, err)
 		dataNodes := svr.nodeManager.GetClientIDs()
 		assert.EqualValues(t, 1, len(dataNodes))
+		assert.Equal(t, indexpb.IndexStorePathVersion_INDEX_STORE_PATH_VERSION_BUILD_ROOTED, svr.indexEngineVersionManager.GetClusterMinIndexStorePathVersion())
 
 		evt = &sessionutil.SessionEvent{
-			EventType: sessionutil.SessionDelEvent,
+			EventType: sessionutil.SessionAddEvent,
 			Session: &sessionutil.Session{
 				SessionRaw: sessionutil.SessionRaw{
-					ServerID:   101,
-					ServerName: "DN101",
-					Address:    "DN127.0.0.101",
+					ServerID:   102,
+					ServerName: "DN102",
+					Address:    "DN127.0.0.102",
 					Exclusive:  false,
 				},
 			},
 		}
 		err = svr.handleSessionEvent(context.Background(), typeutil.DataNodeRole, evt)
 		assert.NoError(t, err)
+		assert.Equal(t, indexpb.IndexStorePathVersion_INDEX_STORE_PATH_VERSION_BUILD_ROOTED, svr.indexEngineVersionManager.GetClusterMinIndexStorePathVersion())
+
+		evt = &sessionutil.SessionEvent{
+			EventType: sessionutil.SessionUpdateEvent,
+			Session: &sessionutil.Session{
+				SessionRaw: sessionutil.SessionRaw{
+					ServerID:   102,
+					ServerName: "DN102",
+					Address:    "DN127.0.0.102",
+					Exclusive:  false,
+				},
+			},
+		}
+		err = svr.handleSessionEvent(context.Background(), typeutil.DataNodeRole, evt)
+		assert.NoError(t, err)
+		assert.Equal(t, indexpb.IndexStorePathVersion_INDEX_STORE_PATH_VERSION_BUILD_ROOTED, svr.indexEngineVersionManager.GetClusterMinIndexStorePathVersion())
+
+		evt = &sessionutil.SessionEvent{
+			EventType: sessionutil.SessionDelEvent,
+			Session: &sessionutil.Session{
+				SessionRaw: sessionutil.SessionRaw{
+					ServerID:   102,
+					ServerName: "DN102",
+					Address:    "DN127.0.0.102",
+					Exclusive:  false,
+				},
+			},
+		}
+		err = svr.handleSessionEvent(context.Background(), typeutil.DataNodeRole, evt)
+		assert.NoError(t, err)
+		assert.Equal(t, indexpb.IndexStorePathVersion_INDEX_STORE_PATH_VERSION_BUILD_ROOTED, svr.indexEngineVersionManager.GetClusterMinIndexStorePathVersion())
 		_ = svr.nodeManager.GetClientIDs()
 	})
 
@@ -2446,6 +2491,7 @@ func TestServer_rewatchDataNodes_Success(t *testing.T) {
 
 	err := server.rewatchDataNodes(sessions)
 	assert.NoError(t, err)
+	assert.Equal(t, indexpb.IndexStorePathVersion_INDEX_STORE_PATH_VERSION_BUILD_ROOTED, server.indexEngineVersionManager.GetClusterMinIndexStorePathVersion())
 }
 
 func TestServer_rewatchDataNodes_EmptySession(t *testing.T) {
@@ -2497,6 +2543,46 @@ func TestServer_rewatchDataNodes_ClusterStartupFails(t *testing.T) {
 	assert.Contains(t, err.Error(), "cluster startup failed")
 }
 
+func TestServer_initServiceDiscovery_BindIndexNodeDoesNotAffectQueryNodePathVersionGate(t *testing.T) {
+	paramtable.Get().Save(Params.DataCoordCfg.BindIndexNodeMode.Key, "true")
+	paramtable.Get().Save(Params.DataCoordCfg.IndexNodeID.Key, "10001")
+	paramtable.Get().Save(Params.DataCoordCfg.IndexNodeAddress.Key, "localhost:10001")
+	defer paramtable.Get().Reset(Params.DataCoordCfg.BindIndexNodeMode.Key)
+	defer paramtable.Get().Reset(Params.DataCoordCfg.IndexNodeID.Key)
+	defer paramtable.Get().Reset(Params.DataCoordCfg.IndexNodeAddress.Key)
+
+	mockSession := sessionutil.NewMockSession(t)
+	mockSession.EXPECT().
+		GetSessionsWithVersionRange(typeutil.DataNodeRole, mock.Anything).
+		Return(map[string]*sessionutil.Session{}, int64(10), nil)
+	mockSession.EXPECT().
+		GetSessions(mock.Anything, typeutil.QueryNodeRole).
+		Return(map[string]*sessionutil.Session{
+			"qn1": {
+				Version: common.Version,
+				SessionRaw: sessionutil.SessionRaw{
+					ServerID: 1,
+				},
+			},
+		}, int64(20), nil)
+	mockSession.EXPECT().
+		WatchServicesWithVersionRange(typeutil.QueryNodeRole, mock.Anything, int64(21), mock.Anything).
+		Return(sessionutil.EmptySessionWatcher())
+
+	server := &Server{
+		ctx:                       context.Background(),
+		session:                   mockSession,
+		indexEngineVersionManager: newIndexEngineVersionManager(),
+	}
+	server.nodeManager = session.NewNodeManager(func(ctx context.Context, addr string, nodeID int64) (types.DataNodeClient, error) {
+		return nil, nil
+	})
+
+	err := server.initServiceDiscovery()
+	assert.NoError(t, err)
+	assert.Equal(t, indexpb.IndexStorePathVersion_INDEX_STORE_PATH_VERSION_COLLECTION_ROOTED, server.indexEngineVersionManager.GetClusterMinIndexStorePathVersion())
+}
+
 func Test_CheckHealth(t *testing.T) {
 	collections := typeutil.NewConcurrentMap[UniqueID, *collectionInfo]()
 	collections.Insert(449684528748778322, &collectionInfo{
@@ -2523,7 +2609,7 @@ func Test_CheckHealth(t *testing.T) {
 			channelCPs: &channelCPs{
 				checkpoints: map[string]*msgpb.MsgPosition{
 					"cluster-id-rootcoord-dm_3_449684528748778322v0": {
-						Timestamp: tsoutil.ComposeTSByTime(time.Now().Add(-1000*time.Hour), 0),
+						Timestamp: tsoutil.ComposeTSByTime(time.Now().Add(-1000 * time.Hour)),
 						MsgID:     []byte{1, 2, 3, 4},
 					},
 				},
@@ -2545,15 +2631,15 @@ func Test_CheckHealth(t *testing.T) {
 			channelCPs: &channelCPs{
 				checkpoints: map[string]*msgpb.MsgPosition{
 					"cluster-id-rootcoord-dm_3_449684528748778322v0": {
-						Timestamp: tsoutil.ComposeTSByTime(time.Now(), 0),
+						Timestamp: tsoutil.ComposeTSByTime(time.Now()),
 						MsgID:     []byte{1, 2, 3, 4},
 					},
 					"cluster-id-rootcoord-dm_3_449684528748778323v0": {
-						Timestamp: tsoutil.ComposeTSByTime(time.Now(), 0),
+						Timestamp: tsoutil.ComposeTSByTime(time.Now()),
 						MsgID:     []byte{1, 2, 3, 4},
 					},
 					"invalid-vchannel-name": {
-						Timestamp: tsoutil.ComposeTSByTime(time.Now(), 0),
+						Timestamp: tsoutil.ComposeTSByTime(time.Now()),
 						MsgID:     []byte{1, 2, 3, 4},
 					},
 				},

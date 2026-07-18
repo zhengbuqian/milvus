@@ -27,14 +27,14 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/storagecommon"
 	"github.com/milvus-io/milvus/internal/storagev2/packed"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/indexpb"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 func TestCommonSuite(t *testing.T) {
@@ -386,7 +386,7 @@ func (s *CommonSuite) createBaseManifest(basePath string, storageConfig *indexpb
 		{Columns: []int{0, 1}, GroupID: storagecommon.DefaultShortColumnGroupID},
 	}
 
-	pw, err := packed.NewFFIPackedWriter(basePath, 0, arrowSchema, columnGroups, storageConfig, nil)
+	pw, err := packed.NewFFIPackedWriter(basePath, arrowSchema, columnGroups, storageConfig, nil)
 	require.NoError(t, err)
 
 	// Write minimal data to create a valid manifest
@@ -401,7 +401,12 @@ func (s *CommonSuite) createBaseManifest(basePath string, storageConfig *indexpb
 	err = pw.WriteRecordBatch(rec)
 	require.NoError(t, err)
 
-	manifestPath, err := pw.Close()
+	out, err := pw.Close()
+	require.NoError(t, err)
+	defer out.Destroy()
+
+	manifestPath, err := packed.CommitManifestUpdates(basePath, packed.ManifestEarliest, storageConfig,
+		&packed.ManifestUpdates{NewFiles: out})
 	require.NoError(t, err)
 
 	return manifestPath

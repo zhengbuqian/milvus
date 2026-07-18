@@ -1,8 +1,8 @@
 package indexparamcheck
 
 import (
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/util/metric"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/util/metric"
 )
 
 const (
@@ -59,6 +59,13 @@ var (
 	BinaryVectorMetrics      = []string{metric.HAMMING, metric.JACCARD, metric.SUBSTRUCTURE, metric.SUPERSTRUCTURE, metric.MHJACCARD}
 	IntVectorMetrics         = []string{metric.L2, metric.IP, metric.COSINE}
 	EmbListMetrics           = []string{metric.MaxSim, metric.MaxSimCosine, metric.MaxSimL2, metric.MaxSimIP, metric.MaxSimHamming, metric.MaxSimJaccard}
+
+	ArrayOfVectorFloatMetrics  = []string{metric.L2, metric.IP, metric.COSINE, metric.MaxSim, metric.MaxSimCosine, metric.MaxSimL2, metric.MaxSimIP}
+	ArrayOfVectorBinaryMetrics = []string{
+		metric.HAMMING, metric.JACCARD, metric.SUBSTRUCTURE, metric.SUPERSTRUCTURE, metric.MHJACCARD,
+		metric.MaxSimHamming, metric.MaxSimJaccard,
+	}
+	ArrayOfVectorIntMetrics = []string{metric.L2, metric.IP, metric.COSINE, metric.MaxSim, metric.MaxSimCosine, metric.MaxSimL2, metric.MaxSimIP}
 )
 
 // BinIDMapMetrics is a set of all metric types supported for binary vector.

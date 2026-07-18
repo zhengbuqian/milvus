@@ -19,7 +19,8 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates && \
     sed -i 's/http:/https:/g' /etc/apt/sources.list && \
     apt-get update && \
-    apt-get install -y --no-install-recommends gpgv curl libaio-dev libgomp1 libopenblas-dev && \
+    apt-get upgrade -y openssl libssl3 && \
+    apt-get install -y --no-install-recommends gpgv curl libaio-dev libgomp1 && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tzdata && \
         ln -sf /usr/share/zoneinfo/Etc/UTC /etc/localtime && \
         echo "Etc/UTC" > /etc/timezone && \

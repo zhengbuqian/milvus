@@ -31,9 +31,9 @@ import (
 	"github.com/stretchr/testify/mock"
 	"go.uber.org/atomic"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/msgpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/datacoord/allocator"
 	"github.com/milvus-io/milvus/internal/datacoord/broker"
 	"github.com/milvus-io/milvus/internal/datacoord/session"
@@ -42,13 +42,13 @@ import (
 	mocks2 "github.com/milvus-io/milvus/internal/mocks"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/importutilv2"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/rootcoordpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/metricsinfo"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/timerecord"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/internalpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/rootcoordpb"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/metricsinfo"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/timerecord"
 )
 
 func TestImportUtil_NewPreImportTasks(t *testing.T) {
@@ -378,6 +378,90 @@ func TestImportUtil_AssembleRequestWithDataTt(t *testing.T) {
 	assert.Equal(t, task.GetCollectionID(), importReq.GetCollectionID())
 	assert.Equal(t, job.GetPartitionIDs(), importReq.GetPartitionIDs())
 	assert.Equal(t, job.GetVchannels(), importReq.GetVchannels())
+}
+
+func TestImportUtil_L0ImportUsesStorageV2WhenLoonFFIEnabled(t *testing.T) {
+	paramtable.Get().Save(paramtable.Get().CommonCfg.UseLoonFFI.Key, "true")
+	defer paramtable.Get().Reset(paramtable.Get().CommonCfg.UseLoonFFI.Key)
+
+	job := &importJob{
+		ImportJob: &datapb.ImportJob{
+			JobID:        1,
+			CollectionID: 2,
+			PartitionIDs: []int64{3},
+			Vchannels:    []string{"c0"},
+			Options: []*commonpb.KeyValuePair{
+				{Key: importutilv2.L0Import, Value: "true"},
+			},
+			Schema: &schemapb.CollectionSchema{
+				Fields: []*schemapb.FieldSchema{
+					{
+						FieldID:      100,
+						Name:         "pk",
+						DataType:     schemapb.DataType_Int64,
+						IsPrimaryKey: true,
+					},
+				},
+			},
+		},
+	}
+	taskProto := &datapb.ImportTaskV2{
+		JobID:        job.GetJobID(),
+		TaskID:       4,
+		CollectionID: job.GetCollectionID(),
+		FileStats: []*datapb.ImportFileStats{
+			{
+				ImportFile: &internalpb.ImportFile{Id: 0, Paths: []string{"l0-prefix"}},
+				HashedStats: map[string]*datapb.PartitionImportStats{
+					"c0": {PartitionDataSize: map[int64]int64{3: 1}},
+				},
+			},
+		},
+	}
+	importMeta := NewMockImportMeta(t)
+	importMeta.EXPECT().GetJob(mock.Anything, mock.Anything).Return(job)
+	task := &importTask{
+		importMeta: importMeta,
+	}
+	task.task.Store(taskProto)
+
+	alloc := allocator.NewMockAllocator(t)
+	alloc.EXPECT().AllocID(mock.Anything).Return(int64(10), nil)
+	alloc.EXPECT().AllocTimestamp(mock.Anything).Return(uint64(100), nil)
+	alloc.EXPECT().AllocN(mock.Anything).RunAndReturn(func(n int64) (int64, int64, error) {
+		return 1000, 1000 + n, nil
+	})
+
+	catalog := mocks.NewDataCoordCatalog(t)
+	catalog.EXPECT().ListChannelCheckpoint(mock.Anything).Return(nil, nil)
+	catalog.EXPECT().ListIndexes(mock.Anything).Return(nil, nil)
+	catalog.EXPECT().ListSegmentIndexes(mock.Anything, mock.Anything).Return(nil, nil).Maybe()
+	catalog.EXPECT().AddSegment(mock.Anything, mock.Anything).Return(nil)
+	catalog.EXPECT().ListAnalyzeTasks(mock.Anything).Return(nil, nil)
+	catalog.EXPECT().ListCompactionTask(mock.Anything).Return(nil, nil)
+	catalog.EXPECT().ListPartitionStatsInfos(mock.Anything).Return(nil, nil)
+	catalog.EXPECT().ListStatsTasks(mock.Anything).Return(nil, nil)
+	catalog.EXPECT().ListSnapshots(mock.Anything).Return(nil, nil)
+	catalog.EXPECT().ListExternalCollectionRefreshJobs(mock.Anything).Return(nil, nil)
+	catalog.EXPECT().ListExternalCollectionRefreshTasks(mock.Anything).Return(nil, nil)
+
+	broker := broker.NewMockBroker(t)
+	broker.EXPECT().ShowCollectionIDs(mock.Anything).Return(nil, nil)
+	meta, err := newMeta(context.TODO(), catalog, nil, broker)
+	assert.NoError(t, err)
+
+	segments, err := AssignSegments(job, task, alloc, meta, 1024)
+	assert.NoError(t, err)
+	assert.Equal(t, []int64{10}, segments)
+	segment := meta.GetSegment(context.Background(), 10)
+	assert.NotNil(t, segment)
+	assert.Equal(t, datapb.SegmentLevel_L0, segment.GetLevel())
+	assert.EqualValues(t, storage.StorageV2, segment.GetStorageVersion())
+
+	importReq, err := AssembleImportRequest(task, job, meta, alloc)
+	assert.NoError(t, err)
+	assert.EqualValues(t, storage.StorageV2, importReq.GetStorageVersion())
+	assert.False(t, importReq.GetUseLoonFfi())
 }
 
 func TestImportUtil_RegroupImportFiles(t *testing.T) {
@@ -877,6 +961,39 @@ func TestImportUtil_GetImportProgress(t *testing.T) {
 	progress, state, _, _, reason = GetJobProgress(ctx, job.GetJobID(), importMeta, meta)
 	assert.Equal(t, int64(10+30+30+10), progress)
 	assert.Equal(t, internalpb.ImportJobState_Importing, state)
+	assert.Equal(t, "", reason)
+
+	// auto-commit jobs should not expose transient commit states to progress callers.
+	err = importMeta.UpdateJob(context.TODO(), job.GetJobID(), func(job ImportJob) {
+		job.(*importJob).AutoCommit = true
+	}, UpdateJobState(internalpb.ImportJobState_Uncommitted))
+	assert.NoError(t, err)
+	progress, state, _, _, reason = GetJobProgress(ctx, job.GetJobID(), importMeta, meta)
+	assert.Equal(t, int64(99), progress)
+	assert.Equal(t, internalpb.ImportJobState_Importing, state)
+	assert.Equal(t, "", reason)
+
+	err = importMeta.UpdateJob(context.TODO(), job.GetJobID(), UpdateJobState(internalpb.ImportJobState_Committing))
+	assert.NoError(t, err)
+	progress, state, _, _, reason = GetJobProgress(ctx, job.GetJobID(), importMeta, meta)
+	assert.Equal(t, int64(99), progress)
+	assert.Equal(t, internalpb.ImportJobState_Importing, state)
+	assert.Equal(t, "", reason)
+
+	err = importMeta.UpdateJob(context.TODO(), job.GetJobID(), func(job ImportJob) {
+		job.(*importJob).AutoCommit = false
+	}, UpdateJobState(internalpb.ImportJobState_Uncommitted))
+	assert.NoError(t, err)
+	progress, state, _, _, reason = GetJobProgress(ctx, job.GetJobID(), importMeta, meta)
+	assert.Equal(t, int64(99), progress)
+	assert.Equal(t, internalpb.ImportJobState_Uncommitted, state)
+	assert.Equal(t, "", reason)
+
+	err = importMeta.UpdateJob(context.TODO(), job.GetJobID(), UpdateJobState(internalpb.ImportJobState_Committing))
+	assert.NoError(t, err)
+	progress, state, _, _, reason = GetJobProgress(ctx, job.GetJobID(), importMeta, meta)
+	assert.Equal(t, int64(99), progress)
+	assert.Equal(t, internalpb.ImportJobState_Committing, state)
 	assert.Equal(t, "", reason)
 
 	// completed state

@@ -22,13 +22,14 @@ import (
 	"time"
 
 	"github.com/samber/lo"
-	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/util/searchutil/optimizers"
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/metrics"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/internalpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/querypb"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
 )
 
 // executeFilterStage executes the filter-only stage of two-stage search.
@@ -39,8 +40,14 @@ func (sd *shardDelegator) executeFilterStage(
 	sealed []SnapshotItem,
 	sealedRowCount map[int64]int64,
 ) ([]int64, error) {
+	originalFilterOnly := req.FilterOnly
+	originalEnableExprCache := req.EnableExprCache
 	req.FilterOnly = true
-	defer func() { req.FilterOnly = false }()
+	req.EnableExprCache = true
+	defer func() {
+		req.FilterOnly = originalFilterOnly
+		req.EnableExprCache = originalEnableExprCache
+	}()
 	// filteronly stage only need to search sealed segments.
 	// filterResults are proto messages whose slices (e.g. FilterValidCounts,
 	// SegmentIDs) are owned by the proto and may share backing arrays across
@@ -49,7 +56,7 @@ func (sd *shardDelegator) executeFilterStage(
 	filterResults, err := sd.executeSearchSubTasks(ctx, req, sealed, []SegmentEntry{}, sealedRowCount)
 	if err != nil {
 		log := sd.getLogger(ctx)
-		log.Warn("Two-stage search: filter stage failed", zap.Error(err))
+		log.Warn(ctx, "Two-stage search: filter stage failed", mlog.Err(err))
 		return nil, err
 	}
 
@@ -63,7 +70,7 @@ func (sd *shardDelegator) executeFilterStage(
 	for _, result := range filterResults {
 		for _, vc := range result.GetFilterValidCounts() {
 			if vc < 0 {
-				return nil, fmt.Errorf("filter stage returned negative valid_count %d, segment may not support filter-only search", vc)
+				return nil, merr.WrapErrServiceInternalMsg("filter stage returned negative valid_count %d, segment may not support filter-only search", vc)
 			}
 			validCounts = append(validCounts, vc)
 		}
@@ -74,7 +81,9 @@ func (sd *shardDelegator) executeFilterStage(
 // twoStageSearch implements the two-stage search flow:
 // Stage 1: Execute filter-only on all segments to get actual filter statistics
 // Stage 2: Optimize search params using actual filter stats, execute normal search (filter re-executed)
-// Note: Bitsets are NOT cached since filtering is lightweight and can be re-executed in stage 2
+// Note: Filter bitsets are cached via the process-level ExprResCacheManager
+// (Stage 1 writes, Stage 2 reads). Cross-query reuse comes for free when the
+// same predicate runs on the same sealed segment.
 // twoStageSearch returns (results, fallback, error). When fallback is true,
 // the caller should continue with the normal single-stage search path;
 // results will be nil in that case.
@@ -102,14 +111,13 @@ func (sd *shardDelegator) twoStageSearch(
 	// In a mixed-version cluster, old workers may not populate
 	// FilterValidCounts for some or all segments. When the count is
 	// incomplete, the optimizer would work with wrong data, so signal the
-	// caller to fall back to normal single-stage search.
-	// Reset FilterOnly before any return so the caller never sees a stale flag.
-	req.FilterOnly = false
+	// caller to fall back to normal single-stage search. executeFilterStage
+	// restores request flags before returning so fallback sees the original mode.
 	expectedSegments := lo.SumBy(sealed, func(item SnapshotItem) int { return len(item.Segments) })
 	if len(validCounts) != expectedSegments {
-		log.Debug("Two-stage search: FilterValidCounts incomplete, falling back to normal search",
-			zap.Int("expected", expectedSegments),
-			zap.Int("got", len(validCounts)),
+		log.Debug(ctx, "Two-stage search: FilterValidCounts incomplete, falling back to normal search",
+			mlog.Int("expected", expectedSegments),
+			mlog.Int("got", len(validCounts)),
 		)
 		metrics.QueryNodeTwoStageSearchFallbackCount.WithLabelValues(nodeID, collectionID, "incomplete_filter_counts").Inc()
 		return nil, true, nil
@@ -117,33 +125,34 @@ func (sd *shardDelegator) twoStageSearch(
 
 	effectiveSegmentNum := optimizers.CalculateEffectiveSegmentNum(sd.queryHook, validCounts, req.GetReq().GetTopk())
 
-	log.Debug("Two-stage search: filter stage completed",
-		zap.Int64s("validCounts", validCounts),
-		zap.Int("effectiveSegmentNum", effectiveSegmentNum),
+	log.Debug(ctx, "Two-stage search: filter stage completed",
+		mlog.Int64s("validCounts", validCounts),
+		mlog.Int("effectiveSegmentNum", effectiveSegmentNum),
 	)
 
 	// ==================== Optimize with actual stats ====================
-	log.Debug("Optimizing search params with actual stats")
+	log.Debug(ctx, "Optimizing search params with actual stats")
 	const isSecondStageSearch = true
 	optimizedReq, err := optimizers.OptimizeSearchParams(ctx, req, sd.queryHook, effectiveSegmentNum, isSecondStageSearch, sd.getVectorFieldDim)
 	if err != nil {
-		log.Warn("Two-stage search: failed to optimize search params", zap.Error(err))
+		log.Warn(ctx, "Two-stage search: failed to optimize search params", mlog.Err(err))
 		return nil, false, err
 	}
 
 	// ==================== STAGE 2: Normal Search with optimized params ====================
-	// Filter is re-executed (lightweight) since we could enable expr cache
-	log.Debug("Starting vector search stage with optimized params")
+	// Filter bitset is read from ExprResCacheManager (cached in Stage 1), skipping re-execution
+	log.Debug(ctx, "Starting vector search stage with optimized params")
+	optimizedReq.EnableExprCache = true
 	// vector search stage need to search both sealed and growing segments
 	stage2Start := time.Now()
 	results, err := sd.executeSearchSubTasks(ctx, optimizedReq, sealed, growing, sealedRowCount)
 	stage2Dur := float64(time.Since(stage2Start).Milliseconds())
 	metrics.QueryNodeTwoStageSearchLatency.WithLabelValues(nodeID, collectionID).Observe(stage2Dur)
 	if err != nil {
-		log.Warn("Two-stage search: vector search stage failed", zap.Error(err))
+		log.Warn(ctx, "Two-stage search: vector search stage failed", mlog.Err(err))
 		return nil, false, err
 	}
 
-	log.Debug("Two-stage search completed", zap.Int("results", len(results)))
+	log.Debug(ctx, "Two-stage search completed", mlog.Int("results", len(results)))
 	return results, false, nil
 }

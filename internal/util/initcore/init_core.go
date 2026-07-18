@@ -32,22 +32,18 @@ import "C"
 import (
 	"context"
 	"encoding/base64"
-	"fmt"
 	"strconv"
 	"sync"
 	"time"
 	"unsafe"
 
-	"github.com/cockroachdb/errors"
-	"go.uber.org/zap"
-
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	_ "github.com/milvus-io/milvus/internal/util/cgo"
 	"github.com/milvus-io/milvus/internal/util/hookutil"
 	"github.com/milvus-io/milvus/internal/util/pathutil"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/util/hardware"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/util/hardware"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
 )
 
 func InitExecExpressionFunctionFactory() {
@@ -155,10 +151,16 @@ func InitStorageV2FileSystem(params *paramtable.ComponentParam) error {
 }
 
 func InitLocalArrowFileSystem(path string) error {
-	CLocalRootPath := C.CString(path)
-	defer C.free(unsafe.Pointer(CLocalRootPath))
-	status := C.InitLocalArrowFileSystemSingleton(CLocalRootPath)
-	return HandleCStatus(&status, "InitLocalArrowFileSystemSingleton failed")
+	cRootPath := C.CString(path)
+	cStorageType := C.CString("local")
+	defer C.free(unsafe.Pointer(cRootPath))
+	defer C.free(unsafe.Pointer(cStorageType))
+	storageConfig := C.CStorageConfig{
+		root_path:    cRootPath,
+		storage_type: cStorageType,
+	}
+	status := C.InitArrowFileSystem(storageConfig)
+	return HandleCStatus(&status, "InitArrowFileSystem failed")
 }
 
 func InitRemoteArrowFileSystem(params *paramtable.ComponentParam) error {
@@ -211,8 +213,8 @@ func InitRemoteArrowFileSystem(params *paramtable.ComponentParam) error {
 		use_crc32c_checksum:    C.bool(params.MinioCfg.UseCRC32C.GetAsBool()),
 	}
 
-	status := C.InitRemoteArrowFileSystemSingleton(storageConfig)
-	return HandleCStatus(&status, "InitRemoteArrowFileSystemSingleton failed")
+	status := C.InitArrowFileSystem(storageConfig)
+	return HandleCStatus(&status, "InitArrowFileSystem failed")
 }
 
 func InitRemoteChunkManager(params *paramtable.ComponentParam) error {
@@ -277,8 +279,10 @@ func InitMmapManager(params *paramtable.ComponentParam, nodeID int64) error {
 	growingMMapDir := pathutil.GetPath(pathutil.GrowingMMapPath, nodeID)
 	cGrowingMMapDir := C.CString(growingMMapDir)
 	cCacheReadAheadPolicy := C.CString(params.QueryNodeCfg.ReadAheadPolicy.GetValue())
+	cJSONStatsMmapPath := C.CString(params.QueryNodeCfg.MmapDirPath.GetValue())
 	defer C.free(unsafe.Pointer(cGrowingMMapDir))
 	defer C.free(unsafe.Pointer(cCacheReadAheadPolicy))
+	defer C.free(unsafe.Pointer(cJSONStatsMmapPath))
 	diskCapacity := params.QueryNodeCfg.DiskCapacityLimit.GetAsUint64()
 	diskLimit := uint64(float64(params.QueryNodeCfg.MaxMmapDiskPercentageForMmapManager.GetAsUint64()*diskCapacity) * 0.01)
 	mmapFileSize := params.QueryNodeCfg.FixedFileSizeForMmapManager.GetAsFloat() * 1024 * 1024
@@ -293,6 +297,8 @@ func InitMmapManager(params *paramtable.ComponentParam, nodeID int64) error {
 		vector_index_enable_mmap: C.bool(params.QueryNodeCfg.MmapVectorIndex.GetAsBool()),
 		vector_field_enable_mmap: C.bool(params.QueryNodeCfg.MmapVectorField.GetAsBool()),
 		mmap_populate:            C.bool(params.QueryNodeCfg.MmapPopulate.GetAsBool()),
+		json_stats_enable_mmap:   C.bool(params.QueryNodeCfg.MmapJSONStats.GetAsBool()),
+		json_stats_mmap_path:     cJSONStatsMmapPath,
 	}
 	status := C.InitMmapManager(mmapConfig)
 	return HandleCStatus(&status, "InitMmapManager failed")
@@ -307,7 +313,7 @@ func ConvertCacheWarmupPolicy(policy string) (C.CacheWarmupPolicy, error) {
 	case "disable":
 		return C.CacheWarmupPolicy_Disable, nil
 	default:
-		return C.CacheWarmupPolicy_Disable, fmt.Errorf("invalid Tiered Storage cache warmup policy: %s", policy)
+		return C.CacheWarmupPolicy_Disable, merr.WrapErrParameterInvalidMsg("invalid Tiered Storage cache warmup policy: %s", policy)
 	}
 }
 
@@ -324,12 +330,12 @@ func InitTieredStorage(params *paramtable.ComponentParam) error {
 	deprecatedCacheWarmupPolicy := params.QueryNodeCfg.ChunkCacheWarmingUp.GetValue()
 	switch deprecatedCacheWarmupPolicy {
 	case "sync":
-		log.Warn("queryNode.cache.warmup is being deprecated, use queryNode.segcore.tieredStorage.warmup.vectorField instead.")
-		log.Warn("for now, if queryNode.cache.warmup is set to sync, it will override queryNode.segcore.tieredStorage.warmup.vectorField to sync.")
-		log.Warn("otherwise, queryNode.cache.warmup will be ignored")
+		mlog.Warn(context.TODO(), "queryNode.cache.warmup is being deprecated, use queryNode.segcore.tieredStorage.warmup.vectorField instead.")
+		mlog.Warn(context.TODO(), "for now, if queryNode.cache.warmup is set to sync, it will override queryNode.segcore.tieredStorage.warmup.vectorField to sync.")
+		mlog.Warn(context.TODO(), "otherwise, queryNode.cache.warmup will be ignored")
 		vectorFieldCacheWarmupPolicy = C.CacheWarmupPolicy_Sync
 	case "async":
-		log.Warn("queryNode.cache.warmup is being deprecated and ignored, use queryNode.segcore.tieredStorage.warmup.vectorField instead.")
+		mlog.Warn(context.TODO(), "queryNode.cache.warmup is being deprecated and ignored, use queryNode.segcore.tieredStorage.warmup.vectorField instead.")
 	}
 	scalarIndexCacheWarmupPolicy, err := ConvertCacheWarmupPolicy(params.QueryNodeCfg.TieredWarmupScalarIndex.GetValue())
 	if err != nil {
@@ -350,23 +356,23 @@ func InitTieredStorage(params *paramtable.ComponentParam) error {
 	diskMaxRatio := params.QueryNodeCfg.MaxDiskUsagePercentage.GetAsFloat()
 
 	if memoryLowWatermarkRatio > memoryHighWatermarkRatio {
-		return errors.New("memoryLowWatermarkRatio should not be greater than memoryHighWatermarkRatio")
+		return merr.WrapErrParameterInvalidMsg("memoryLowWatermarkRatio should not be greater than memoryHighWatermarkRatio")
 	}
 	if memoryHighWatermarkRatio > memoryMaxRatio {
-		return errors.New("memoryHighWatermarkRatio should not be greater than memoryMaxRatio")
+		return merr.WrapErrParameterInvalidMsg("memoryHighWatermarkRatio should not be greater than memoryMaxRatio")
 	}
 	if memoryMaxRatio >= 1 {
-		return errors.New("memoryMaxRatio should not be greater than 1")
+		return merr.WrapErrParameterInvalidMsg("memoryMaxRatio should not be greater than 1")
 	}
 
 	if diskLowWatermarkRatio > diskHighWatermarkRatio {
-		return errors.New("diskLowWatermarkRatio should not be greater than diskHighWatermarkRatio")
+		return merr.WrapErrParameterInvalidMsg("diskLowWatermarkRatio should not be greater than diskHighWatermarkRatio")
 	}
 	if diskHighWatermarkRatio > diskMaxRatio {
-		return errors.New("diskHighWatermarkRatio should not be greater than diskMaxRatio")
+		return merr.WrapErrParameterInvalidMsg("diskHighWatermarkRatio should not be greater than diskMaxRatio")
 	}
 	if diskMaxRatio >= 1 {
-		return errors.New("diskMaxRatio should not be greater than 1")
+		return merr.WrapErrParameterInvalidMsg("diskMaxRatio should not be greater than 1")
 	}
 
 	memoryLowWatermarkBytes := C.int64_t(memoryLowWatermarkRatio * float64(osMemBytes))
@@ -386,6 +392,7 @@ func InitTieredStorage(params *paramtable.ComponentParam) error {
 	loadingResourceFactor := C.float(params.QueryNodeCfg.TieredLoadingResourceFactor.GetAsFloat())
 	loadingTimeoutMs := C.int64_t(params.QueryNodeCfg.TieredLoadingTimeoutMs.GetAsInt64())
 	warmupLoadingTimeoutMs := C.int64_t(params.QueryNodeCfg.TieredWarmupLoadingTimeoutMs.GetAsInt64())
+	rejectRemoteVectorOutput := C.bool(params.QueryNodeCfg.TieredRejectRemoteVectorOutput.GetAsBool())
 	overloadedMemoryThresholdPercentage := C.float(memoryMaxRatio)
 	maxDiskUsagePercentage := C.float(diskMaxRatio)
 	diskPath := C.CString(params.LocalStorageCfg.Path.GetValue())
@@ -403,14 +410,14 @@ func InitTieredStorage(params *paramtable.ComponentParam) error {
 		evictionEnabled, cacheTouchWindowMs,
 		backgroundEvictionEnabled, evictionIntervalMs, cacheCellUnaccessedSurvivalTime,
 		overloadedMemoryThresholdPercentage, loadingResourceFactor, maxDiskUsagePercentage, diskPath,
-		loadingTimeoutMs, warmupLoadingTimeoutMs, prefetchPoolThreads)
+		loadingTimeoutMs, warmupLoadingTimeoutMs, rejectRemoteVectorOutput, prefetchPoolThreads)
 
 	tieredEvictableMemoryCacheRatio := params.QueryNodeCfg.TieredEvictableMemoryCacheRatio.GetAsFloat()
 	tieredEvictableDiskCacheRatio := params.QueryNodeCfg.TieredEvictableDiskCacheRatio.GetAsFloat()
 
-	log.Info("tiered storage eviction cache ratio configured",
-		zap.Float64("tieredEvictableMemoryCacheRatio", tieredEvictableMemoryCacheRatio),
-		zap.Float64("tieredEvictableDiskCacheRatio", tieredEvictableDiskCacheRatio),
+	mlog.Info(context.TODO(), "tiered storage eviction cache ratio configured",
+		mlog.Float64("tieredEvictableMemoryCacheRatio", tieredEvictableMemoryCacheRatio),
+		mlog.Float64("tieredEvictableDiskCacheRatio", tieredEvictableDiskCacheRatio),
 	)
 
 	return nil
@@ -428,12 +435,12 @@ func UpdateTieredStorageConfig(params *paramtable.ComponentParam) error {
 	deprecatedCacheWarmupPolicy := params.QueryNodeCfg.ChunkCacheWarmingUp.GetValue()
 	switch deprecatedCacheWarmupPolicy {
 	case "sync":
-		log.Warn("queryNode.cache.warmup is being deprecated, use queryNode.segcore.tieredStorage.warmup.vectorField instead.")
-		log.Warn("for now, if queryNode.cache.warmup is set to sync, it will override queryNode.segcore.tieredStorage.warmup.vectorField to sync.")
-		log.Warn("otherwise, queryNode.cache.warmup will be ignored")
+		mlog.Warn(context.TODO(), "queryNode.cache.warmup is being deprecated, use queryNode.segcore.tieredStorage.warmup.vectorField instead.")
+		mlog.Warn(context.TODO(), "for now, if queryNode.cache.warmup is set to sync, it will override queryNode.segcore.tieredStorage.warmup.vectorField to sync.")
+		mlog.Warn(context.TODO(), "otherwise, queryNode.cache.warmup will be ignored")
 		vectorFieldCacheWarmupPolicy = C.CacheWarmupPolicy_Sync
 	case "async":
-		log.Warn("queryNode.cache.warmup is being deprecated and ignored, use queryNode.segcore.tieredStorage.warmup.vectorField instead.")
+		mlog.Warn(context.TODO(), "queryNode.cache.warmup is being deprecated and ignored, use queryNode.segcore.tieredStorage.warmup.vectorField instead.")
 	}
 	scalarIndexCacheWarmupPolicy, err := ConvertCacheWarmupPolicy(params.QueryNodeCfg.TieredWarmupScalarIndex.GetValue())
 	if err != nil {
@@ -447,11 +454,13 @@ func UpdateTieredStorageConfig(params *paramtable.ComponentParam) error {
 	loadingTimeoutMs := C.int64_t(params.QueryNodeCfg.TieredLoadingTimeoutMs.GetAsInt64())
 	warmupLoadingTimeoutMs := C.int64_t(params.QueryNodeCfg.TieredWarmupLoadingTimeoutMs.GetAsInt64())
 	storageUsageTrackingEnabled := C.bool(params.QueryNodeCfg.StorageUsageTrackingEnabled.GetAsBool())
+	rejectRemoteVectorOutput := C.bool(params.QueryNodeCfg.TieredRejectRemoteVectorOutput.GetAsBool())
 
 	C.UpdateTieredStorageConfig(
 		loadingTimeoutMs,
 		warmupLoadingTimeoutMs,
 		storageUsageTrackingEnabled,
+		rejectRemoteVectorOutput,
 		scalarFieldCacheWarmupPolicy,
 		vectorFieldCacheWarmupPolicy,
 		scalarIndexCacheWarmupPolicy,
@@ -492,6 +501,15 @@ func InitDiskFileWriterConfig(params *paramtable.ComponentParam) error {
 	return HandleCStatus(&status, "InitDiskFileWriterConfig failed")
 }
 
+func InitArrowReaderConfig(params *paramtable.ComponentParam) error {
+	arrowReaderConfig := C.CArrowReaderConfig{
+		hole_size_limit_bytes:  C.int64_t(params.CommonCfg.ArrowReaderHoleSizeLimitBytes.GetAsInt64()),
+		range_size_limit_bytes: C.int64_t(params.CommonCfg.ArrowReaderRangeSizeLimitBytes.GetAsInt64()),
+	}
+	status := C.InitArrowReaderConfig(arrowReaderConfig)
+	return HandleCStatus(&status, "InitArrowReaderConfig failed")
+}
+
 var coreParamCallbackInitOnce sync.Once
 
 func SetupCoreConfigChangelCallback() {
@@ -502,6 +520,11 @@ func SetupCoreConfigChangelCallback() {
 				return err
 			}
 			UpdateIndexSliceSize(size)
+			return nil
+		})
+
+		paramtable.Get().CommonCfg.LoadTransientBudgetBytes.RegisterCallback(func(ctx context.Context, key, oldValue, newValue string) error {
+			UpdateLoadTransientBudgetBytes(paramtable.Get().CommonCfg.LoadTransientBudgetBytes.GetAsInt64())
 			return nil
 		})
 
@@ -516,7 +539,7 @@ func SetupCoreConfigChangelCallback() {
 				factor = 32
 			}
 			knowhereThreadPoolSize := uint32(float64(hardware.GetCPUNum()) * factor)
-			log.Info("UpdateKnowhereThreadPoolSize", zap.Uint32("knowhereThreadPoolSize", knowhereThreadPoolSize))
+			mlog.Info(context.TODO(), "UpdateKnowhereThreadPoolSize", mlog.Uint32("knowhereThreadPoolSize", knowhereThreadPoolSize))
 			C.SegcoreSetKnowhereSearchThreadPoolNum(C.uint32_t(knowhereThreadPoolSize))
 			return nil
 		})
@@ -532,7 +555,7 @@ func SetupCoreConfigChangelCallback() {
 				factor = 32
 			}
 			knowhereFetchThreadPoolSize := uint32(float64(hardware.GetCPUNum()) * factor)
-			log.Info("UpdateKnowhereFetchThreadPoolSize", zap.Uint32("knowhereFetchThreadPoolSize", knowhereFetchThreadPoolSize))
+			mlog.Info(context.TODO(), "UpdateKnowhereFetchThreadPoolSize", mlog.Uint32("knowhereFetchThreadPoolSize", knowhereFetchThreadPoolSize))
 			C.SegcoreSetKnowhereFetchThreadPoolNum(C.uint32_t(knowhereFetchThreadPoolSize))
 			return nil
 		})
@@ -579,6 +602,24 @@ func SetupCoreConfigChangelCallback() {
 				return err
 			}
 			UpdateDefaultOptimizeExprEnable(enable)
+			return nil
+		})
+
+		paramtable.Get().CommonCfg.EnableDriverPrefetch.RegisterCallback(func(ctx context.Context, key, oldValue, newValue string) error {
+			enable, err := strconv.ParseBool(newValue)
+			if err != nil {
+				return err
+			}
+			UpdateDefaultDriverPrefetchEnable(enable)
+			return nil
+		})
+
+		paramtable.Get().CommonCfg.EnabledJSONKeyStats.RegisterCallback(func(ctx context.Context, key, oldValue, newValue string) error {
+			enable, err := strconv.ParseBool(newValue)
+			if err != nil {
+				return err
+			}
+			UpdateDefaultJSONKeyStatsEnable(enable)
 			return nil
 		})
 
@@ -637,17 +678,25 @@ func SetupCoreConfigChangelCallback() {
 				return err
 			}
 			UpdateExprResCacheEnable(enable)
+			if enable {
+				UpdateExprResCacheConfig()
+			}
 			return nil
 		})
 
-		paramtable.Get().QueryNodeCfg.ExprResCacheCapacityBytes.RegisterCallback(func(ctx context.Context, key, oldValue, newValue string) error {
-			capacity, err := strconv.Atoi(newValue)
-			if err != nil {
-				return err
+		updateExprResCacheConfigCallback := func(ctx context.Context, key, oldValue, newValue string) error {
+			if paramtable.Get().QueryNodeCfg.ExprResCacheEnabled.GetAsBool() {
+				UpdateExprResCacheConfig()
 			}
-			UpdateExprResCacheCapacityBytes(capacity)
 			return nil
-		})
+		}
+		paramtable.Get().QueryNodeCfg.ExprResCacheMode.RegisterCallback(updateExprResCacheConfigCallback)
+		paramtable.Get().QueryNodeCfg.ExprResCacheMinEvalDurationUs.RegisterCallback(updateExprResCacheConfigCallback)
+		paramtable.Get().QueryNodeCfg.ExprResCacheAdmissionThreshold.RegisterCallback(updateExprResCacheConfigCallback)
+		paramtable.Get().QueryNodeCfg.ExprResCacheMemMaxBytes.RegisterCallback(updateExprResCacheConfigCallback)
+		paramtable.Get().QueryNodeCfg.ExprResCacheMemCompressionEnabled.RegisterCallback(updateExprResCacheConfigCallback)
+		paramtable.Get().QueryNodeCfg.ExprResCacheDiskMaxBytes.RegisterCallback(updateExprResCacheConfigCallback)
+		paramtable.Get().QueryNodeCfg.ExprResCacheDiskMaxFileSizeBytes.RegisterCallback(updateExprResCacheConfigCallback)
 
 		updateTieredStorageConfigCallback := func(ctx context.Context, key, oldValue, newValue string) error {
 			return UpdateTieredStorageConfig(paramtable.Get())
@@ -655,6 +704,7 @@ func SetupCoreConfigChangelCallback() {
 		paramtable.Get().QueryNodeCfg.TieredLoadingTimeoutMs.RegisterCallback(updateTieredStorageConfigCallback)
 		paramtable.Get().QueryNodeCfg.TieredWarmupLoadingTimeoutMs.RegisterCallback(updateTieredStorageConfigCallback)
 		paramtable.Get().QueryNodeCfg.StorageUsageTrackingEnabled.RegisterCallback(updateTieredStorageConfigCallback)
+		paramtable.Get().QueryNodeCfg.TieredRejectRemoteVectorOutput.RegisterCallback(updateTieredStorageConfigCallback)
 		paramtable.Get().QueryNodeCfg.TieredWarmupScalarField.RegisterCallback(updateTieredStorageConfigCallback)
 		paramtable.Get().QueryNodeCfg.TieredWarmupVectorField.RegisterCallback(updateTieredStorageConfigCallback)
 		paramtable.Get().QueryNodeCfg.TieredWarmupScalarIndex.RegisterCallback(updateTieredStorageConfigCallback)
@@ -720,18 +770,17 @@ func HandleCStatus(status *C.CStatus, extraInfo string) error {
 	if status.error_code == 0 {
 		return nil
 	}
-	errorCode := status.error_code
-	errorName, ok := commonpb.ErrorCode_name[int32(errorCode)]
-	if !ok {
-		errorName = "UnknownError"
-	}
+	errorCode := int32(status.error_code)
 	errorMsg := C.GoString(status.error_msg)
 	defer C.free(unsafe.Pointer(status.error_msg))
 
-	finalMsg := fmt.Sprintf("[%s] %s", errorName, errorMsg)
-	logMsg := fmt.Sprintf("%s, C Runtime Exception: %s\n", extraInfo, finalMsg)
-	log.Warn(logMsg)
-	return errors.New(finalMsg)
+	// SegcoreError classifies the raw C++ code (2000-2099) into the right merr
+	// sentinel + retriability instead of looking it up in the unrelated
+	// commonpb.ErrorCode enum and flattening it to ServiceInternal; the caller
+	// breadcrumb stays in the mlog.
+	err := merr.SegcoreError(errorCode, errorMsg)
+	mlog.Warn(context.TODO(), "C runtime exception", mlog.Err(err), mlog.String("extra", extraInfo))
+	return err
 }
 
 // tlsMinVersionForStorage converts minio config's TLS min version value
@@ -759,7 +808,7 @@ func serializeHeaders(headerstr string) string {
 func InitPluginLoader() error {
 	if hookutil.IsClusterEncryptionEnabled() {
 		cSoPath := C.CString(paramtable.GetCipherParams().SoPathCpp.GetValue())
-		log.Info("Init PluginLoader", zap.String("soPath", paramtable.GetCipherParams().SoPathCpp.GetValue()))
+		mlog.Info(context.TODO(), "Init PluginLoader", mlog.String("soPath", paramtable.GetCipherParams().SoPathCpp.GetValue()))
 		defer C.free(unsafe.Pointer(cSoPath))
 		status := C.InitPluginLoader(cSoPath)
 		return HandleCStatus(&status, "InitPluginLoader failed")

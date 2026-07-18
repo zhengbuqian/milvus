@@ -12,12 +12,12 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/util/function/rerank"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/proto/planpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/proto/planpb"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 func newTestSchema(EnableDynamicField bool) *schemapb.CollectionSchema {
@@ -135,6 +135,148 @@ func TestExpr_Term(t *testing.T) {
 	for _, exprStr := range exprStrs {
 		assertValidExpr(t, helper, exprStr)
 	}
+}
+
+// assertNullLiteralRejected checks that the expression is rejected specifically
+// because of the bare-NULL reserved-word guard, i.e. it returns the actionable
+// message rather than the misleading "field NULL not exist" (issue #50882).
+func assertNullLiteralRejected(t *testing.T, helper *typeutil.SchemaHelper, exprStr string) {
+	_, err := ParseExpr(helper, exprStr, nil)
+	if assert.Error(t, err, exprStr) {
+		assert.Contains(t, err.Error(), "NULL literal is not supported in expressions", exprStr)
+	}
+}
+
+func TestExpr_NullLiteral(t *testing.T) {
+	// NULL is not a value literal. It is lexed as a bare identifier, so it must be
+	// rejected wherever it appears in column/value position (issue #50882). The
+	// behavior must be identical whether or not a dynamic field is present: without
+	// one a bare NULL fails a field lookup; with one it would otherwise be silently
+	// mistaken for a dynamic JSON key named "NULL". Use `<field> is null` /
+	// `is not null` to compare against null instead.
+	rejected := []string{
+		// inside an `in [...]` value list (the exact shape from the issue)
+		`Int64Field in [6560, NULL, 6722, -7856, -6757]`,
+		`Int64Field in [null]`,
+		`Int64Field in [NULL]`,
+		`Int64Field not in [1, Null]`,
+		`VarCharField in ["a", null, "b"]`,
+		`(not (not ((Int64Field is not null) and (Int64Field in [1, NULL, 2]))))`,
+		// NULL as the tested column on the left of `in`
+		`NULL in [1, 2]`,
+		// binary comparison, either side
+		`Int64Field == NULL`,
+		`NULL == Int64Field`,
+		`NULL > 5`,
+		`Int64Field != NULL`,
+		// range comparison
+		`1 < NULL < 5`,
+		`Int64Field < NULL`,
+		// logical / unary operands
+		`NULL and Int64Field > 0`,
+		`Int64Field > 0 or NULL`,
+		`not NULL`,
+		// function arguments
+		`array_length(NULL) > 0`,
+		`array_contains(NULL, 1)`,
+		// `is null` / `is not null` with NULL as the target (nonsensical)
+		`NULL is null`,
+		`NULL is not null`,
+		// NULL as a JSON / array subscript base — a separate lookup path
+		// (getColumnInfoFromJSONIdentifier) that bypasses translateIdentifier
+		`NULL["x"] == 1`,
+		`NULL[0] > 1`,
+		// case-insensitive: any casing of the reserved word is rejected
+		`Int64Field == Null`,
+		`Int64Field == nUlL`,
+		`Int64Field == NuLL`,
+	}
+
+	// Valid expressions that must NOT be affected by the guard.
+	validBoth := []string{
+		// the real "is null" predicates the guard points users to
+		`Int64Field is null`,
+		`Int64Field is not null`,
+		`JSONField["a"] is null`,
+		// a JSON key literally named "null" stays reachable via quoting: the base
+		// identifier is the field name, not "null"
+		`JSONField["null"] == 1`,
+		`JSONField['null'] == 1`,
+		// the string literal "null" is a value, not an identifier
+		`VarCharField == "null"`,
+		`VarCharField in ["null", "NULL"]`,
+	}
+	// Only valid when the dynamic field exists.
+	validDynamicOnly := []string{
+		`$meta["null"] == 1`,
+		`A == 1`, // sanity: an arbitrary dynamic key still resolves
+	}
+
+	for _, dynamic := range []bool{true, false} {
+		t.Run(fmt.Sprintf("dynamic=%v", dynamic), func(t *testing.T) {
+			helper, err := typeutil.CreateSchemaHelper(newTestSchema(dynamic))
+			assert.NoError(t, err)
+
+			for _, exprStr := range rejected {
+				assertNullLiteralRejected(t, helper, exprStr)
+			}
+			for _, exprStr := range validBoth {
+				assertValidExpr(t, helper, exprStr)
+			}
+			if dynamic {
+				for _, exprStr := range validDynamicOnly {
+					assertValidExpr(t, helper, exprStr)
+				}
+			}
+		})
+	}
+}
+
+// TestExpr_NullLiteral_LegacyNullField locks the schema-aware side of the
+// bare-NULL guard: "null" only became a create-time keyword together with this
+// guard, so a legacy collection may own a field literally named "null", and the
+// bare identifier is the ONLY syntax that can reference a top-level scalar
+// field (quoting like field["null"] reaches JSON sub-keys only). Such a field
+// must stay queryable; the strict GetFieldFromName check makes it resolve while
+// everything else keeps the reserved-word rejection (see errNullLiteral).
+func TestExpr_NullLiteral_LegacyNullField(t *testing.T) {
+	withNullField := func(dataType schemapb.DataType) *typeutil.SchemaHelper {
+		schema := newTestSchema(true)
+		schema.Fields = append(schema.Fields, &schemapb.FieldSchema{
+			FieldID: 199, Name: "null", Description: "legacy field literally named null", DataType: dataType,
+		})
+		helper, err := typeutil.CreateSchemaHelper(schema)
+		require.NoError(t, err)
+		return helper
+	}
+
+	t.Run("scalar field named null", func(t *testing.T) {
+		helper := withNullField(schemapb.DataType_Int64)
+
+		// The bare identifier resolves to the declared field, as before the guard.
+		assertValidExpr(t, helper, `null > 5`)
+		assertValidExpr(t, helper, `null in [1, 2]`)
+		assertValidExpr(t, helper, `Int64Field == null`)
+		// The guard previously rejected these outright; schema-aware turns them
+		// into valid "is the null-named field NULL?" predicates.
+		assertValidExpr(t, helper, `null is null`)
+		assertValidExpr(t, helper, `null is not null`)
+		// Strict lookup is exact-case: a differently-cased NULL does not match the
+		// declared field and keeps the reserved-word rejection (pre-guard it would
+		// have been misparsed as the dynamic JSON key $meta["NULL"]).
+		assertNullLiteralRejected(t, helper, `NULL > 5`)
+		assertNullLiteralRejected(t, helper, `Int64Field == Null`)
+	})
+
+	t.Run("json field named null", func(t *testing.T) {
+		helper := withNullField(schemapb.DataType_JSON)
+
+		// The subscript base resolves via the same schema-aware guard in
+		// getColumnInfoFromJSONIdentifier.
+		assertValidExpr(t, helper, `null["x"] == 1`)
+		assertValidExpr(t, helper, `null["x"] is null`)
+		assertNullLiteralRejected(t, helper, `NULL["x"] == 1`)
+	})
 }
 
 func TestExpr_Call(t *testing.T) {
@@ -279,6 +421,464 @@ func TestExpr_Like(t *testing.T) {
 	fmt.Println(plan)
 	assert.Equal(t, planpb.OpType_PrefixMatch, plan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetOp())
 	assert.Equal(t, `8%-0`, plan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetValue().GetStringVal())
+
+	expr = `A like "abc"`
+	plan, err = CreateSearchPlan(helper, expr, "FloatVectorField", &planpb.QueryInfo{
+		Topk:         0,
+		MetricType:   "",
+		SearchParams: "",
+		RoundDecimal: 0,
+	}, nil, nil)
+	assert.NoError(t, err, expr)
+	assert.NotNil(t, plan)
+	assert.Equal(t, planpb.OpType_Equal, plan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetOp())
+	assert.Equal(t, "abc", plan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetValue().GetStringVal())
+}
+
+func TestExpr_RawString(t *testing.T) {
+	schema := newTestSchema(true)
+	helper, err := typeutil.CreateSchemaHelper(schema)
+	assert.NoError(t, err)
+
+	check := func(expr string, wantOp planpb.OpType, wantVal string) {
+		plan, err := CreateSearchPlan(helper, expr, "FloatVectorField", &planpb.QueryInfo{}, nil, nil)
+		assert.NoError(t, err, expr)
+		assert.NotNil(t, plan, expr)
+		ur := plan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr()
+		assert.Equal(t, wantOp, ur.GetOp(), expr)
+		assert.Equal(t, wantVal, ur.GetValue().GetStringVal(), expr)
+	}
+
+	// In a raw string the backslash is NOT a string-literal escape: the content
+	// is taken verbatim (no \n/\b/\\ processing), so == sees exactly what's typed.
+	check(`A == r"a\b"`, planpb.OpType_Equal, `a\b`)
+	check(`A == r"a\nb"`, planpb.OpType_Equal, `a\nb`)
+	check(`A == r"a\\b"`, planpb.OpType_Equal, `a\\b`)
+
+	// LIKE: the raw content still passes through the LIKE escape layer (\% -> %),
+	// exactly like BigQuery's r'\%', but needs far fewer backslashes because the
+	// string-literal Unquote layer is gone.
+	check(`A like r"abc%"`, planpb.OpType_PrefixMatch, `abc`)
+	check(`A like r"%abc%"`, planpb.OpType_InnerMatch, `abc`)
+	check(`A like r"\%"`, planpb.OpType_Equal, `%`) // literal %
+	check(`A like r"a\_b%"`, planpb.OpType_PrefixMatch, `a_b`)
+	check(`A like r"\\%"`, planpb.OpType_PrefixMatch, `\`) // prefix of one literal backslash
+	check(`A like r"a\\b"`, planpb.OpType_Equal, `a\b`)    // literal a\b
+	check(`A like r'\\%'`, planpb.OpType_PrefixMatch, `\`) // single-quoted raw string
+
+	// uppercase R prefix works too
+	check(`A like R"abc%"`, planpb.OpType_PrefixMatch, `abc`)
+	// empty raw string
+	check(`A == r""`, planpb.OpType_Equal, ``)
+	// the opposite quote needs no escaping inside a raw string
+	check(`A == r"a'b"`, planpb.OpType_Equal, `a'b`)
+	check(`A == r'a"b'`, planpb.OpType_Equal, `a"b`)
+
+	// IN list accepts raw strings, taken verbatim
+	inPlan, err := CreateSearchPlan(helper, `A in [r"a\b", r"c\d"]`, "FloatVectorField", &planpb.QueryInfo{}, nil, nil)
+	assert.NoError(t, err)
+	vals := inPlan.GetVectorAnns().GetPredicates().GetTermExpr().GetValues()
+	assert.Len(t, vals, 2)
+	assert.Equal(t, `a\b`, vals[0].GetStringVal())
+	assert.Equal(t, `c\d`, vals[1].GetStringVal())
+
+	// a raw string cannot end with an odd number of backslashes (unterminated)
+	assertInvalidExpr(t, helper, `A == r"x\"`)
+
+	// raw string works as a JSON path key; JSON keys are already verbatim, so a
+	// raw key yields the same nested path as a normal key.
+	jPlan, err := CreateSearchPlan(helper, `JSONField[r"a\b"] == 1`, "FloatVectorField", &planpb.QueryInfo{}, nil, nil)
+	assert.NoError(t, err)
+	jNorm, err := CreateSearchPlan(helper, `JSONField["a\b"] == 1`, "FloatVectorField", &planpb.QueryInfo{}, nil, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, []string{`a\b`}, jPlan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetColumnInfo().GetNestedPath())
+	assert.Equal(t,
+		jNorm.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetColumnInfo().GetNestedPath(),
+		jPlan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetColumnInfo().GetNestedPath())
+
+	// Raw needs 2 backslashes where a normal literal needs 4 — same final operand.
+	rawPlan, err := CreateSearchPlan(helper, `A like r"\\%"`, "FloatVectorField", &planpb.QueryInfo{}, nil, nil)
+	assert.NoError(t, err)
+	normPlan, err := CreateSearchPlan(helper, `A like "\\\\%"`, "FloatVectorField", &planpb.QueryInfo{}, nil, nil)
+	assert.NoError(t, err)
+	assert.Equal(t,
+		normPlan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetValue().GetStringVal(),
+		rawPlan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetValue().GetStringVal())
+
+	// Raw string in a regex (=~) reaches the engine verbatim (no escape pass).
+	rePlan, err := CreateSearchPlan(helper, `A =~ r"\d+"`, "FloatVectorField", &planpb.QueryInfo{}, nil, nil)
+	assert.NoError(t, err)
+	reUR := rePlan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr()
+	assert.Equal(t, planpb.OpType_RegexMatch, reUR.GetOp())
+	assert.Equal(t, `\d+`, reUR.GetValue().GetStringVal())
+
+	// --- raw strings must stay VERBATIM even for content the parser otherwise
+	// rewrites before/around the raw handling: CJK runes (convertHanToASCII runs
+	// pre-lex) and \uXXXX escapes (decodeUnicode runs on JSON paths). Issue
+	// #43864 follow-up — without the raw-span exemption these silently leak. ---
+
+	// CJK in a raw value reaches the matcher verbatim, not as \uXXXX.
+	check(`A == r"中文"`, planpb.OpType_Equal, `中文`)
+	check(`A like r"中%"`, planpb.OpType_PrefixMatch, `中`)
+
+	// CJK in a raw regex reaches the engine verbatim too.
+	check(`A =~ r"中文"`, planpb.OpType_RegexMatch, `中文`)
+
+	// A raw JSON key with a literal A is NOT unicode-decoded: the key is the
+	// 6 verbatim bytes, not the decoded "A".
+	jUni, err := CreateSearchPlan(helper, `JSONField[r"\u0041"] == 1`, "FloatVectorField", &planpb.QueryInfo{}, nil, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, []string{`\u0041`}, jUni.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetColumnInfo().GetNestedPath())
+
+	// A raw JSON key with CJK reaches the plan verbatim (regression guard: today
+	// this only works because decodeUnicode reverses convertHanToASCII; it must
+	// keep working once both passes skip raw spans).
+	jHan, err := CreateSearchPlan(helper, `JSONField[r"中"] == 1`, "FloatVectorField", &planpb.QueryInfo{}, nil, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, []string{`中`}, jHan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetColumnInfo().GetNestedPath())
+	// A raw VALUE with a literal A stays verbatim too (the value path has no
+	// unicode decoding either) — locks the value/key consistency.
+	check(`A == r"\u0041"`, planpb.OpType_Equal, `\u0041`)
+
+	// Mixed raw + normal keys in one JSON path: each segment is classified
+	// independently — the raw segment is verbatim, the normal segment decodes.
+	jMix1, err := CreateSearchPlan(helper, `JSONField[r"中"]["b"] == 1`, "FloatVectorField", &planpb.QueryInfo{}, nil, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, []string{`中`, `b`}, jMix1.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetColumnInfo().GetNestedPath())
+
+	jMix2, err := CreateSearchPlan(helper, `JSONField["a"][r"\u0041"] == 1`, "FloatVectorField", &planpb.QueryInfo{}, nil, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, []string{`a`, `\u0041`}, jMix2.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetColumnInfo().GetNestedPath())
+
+	// Single-quoted raw JSON key behaves the same as the double-quoted form.
+	jSq, err := CreateSearchPlan(helper, `JSONField[r'\u0041'] == 1`, "FloatVectorField", &planpb.QueryInfo{}, nil, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, []string{`\u0041`}, jSq.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetColumnInfo().GetNestedPath())
+}
+
+// TestExpr_RawString_LikeEscapeModel exercises the LIKE escape model (issue
+// #43864) end-to-end through the raw-string literal r"...". Because a raw string
+// drops the string-literal Unquote layer, a backslash reaches the LIKE pattern
+// layer verbatim, so these read with the same single backslash the C++ canonical
+// matcher (RegexQuery.cpp) uses — no doubled/quadrupled backslashes. Each case
+// asserts the optimized op and the literal operand the executor must match
+// verbatim.
+func TestExpr_RawString_LikeEscapeModel(t *testing.T) {
+	schema := newTestSchema(true)
+	helper, err := typeutil.CreateSchemaHelper(schema)
+	assert.NoError(t, err)
+
+	check := func(expr string, wantOp planpb.OpType, wantVal string) {
+		plan, err := CreateSearchPlan(helper, expr, "FloatVectorField", &planpb.QueryInfo{}, nil, nil)
+		assert.NoError(t, err, expr)
+		assert.NotNil(t, plan, expr)
+		ur := plan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr()
+		assert.Equal(t, wantOp, ur.GetOp(), expr)
+		assert.Equal(t, wantVal, ur.GetValue().GetStringVal(), expr)
+	}
+
+	// An escaped wildcard is a LITERAL byte in the operand: the optimized op
+	// carries a literal '%'/'_', which the C++ side matches verbatim and must NOT
+	// re-interpret as a wildcard.
+	check(`A like r"a\%bc"`, planpb.OpType_Equal, `a%bc`)
+	check(`A like r"a\_bc"`, planpb.OpType_Equal, `a_bc`)
+	check(`A like r"abc\%%"`, planpb.OpType_PrefixMatch, `abc%`)
+	check(`A like r"%abc\%"`, planpb.OpType_PostfixMatch, `abc%`)
+	check(`A like r"%abc\%%"`, planpb.OpType_InnerMatch, `abc%`)
+
+	// A literal '\%' and an UNescaped '%' coexist: the literal lands in the
+	// operand verbatim, while the bare '%' is the prefix/postfix/inner boundary
+	// the C++ matcher expands to an ANY-length span.
+	check(`A like r"abc\%def%"`, planpb.OpType_PrefixMatch, `abc%def`)
+	check(`A like r"%abc\%def"`, planpb.OpType_PostfixMatch, `abc%def`)
+	check(`A like r"%abc\%def%"`, planpb.OpType_InnerMatch, `abc%def`)
+
+	// A backslash escapes ANY next byte, not only wildcards: r"\a" -> literal "a".
+	check(`A like r"\a"`, planpb.OpType_Equal, `a`)
+
+	// A raw "\\" collapses to one literal backslash at the pattern layer.
+	check(`A like r"a\\b"`, planpb.OpType_Equal, `a\b`)
+	check(`A like r"%a\\b%"`, planpb.OpType_InnerMatch, `a\b`)
+
+	// A dangling trailing backslash cannot be written as a raw string at all — a
+	// raw string may not end in an odd number of backslashes (it would not
+	// terminate). So the unterminated raw form is a parse error, and the literal
+	// trailing-backslash pattern can only be expressed via a normal string, where
+	// it is not optimizable and falls back to OpType_Match (the C++ matcher then
+	// raises ExprInvalid at execution).
+	assertInvalidExpr(t, helper, `A like r"abc\"`)
+	check(`A like "abc\\"`, planpb.OpType_Match, `abc\`)
+}
+
+func TestExpr_RegexMatch(t *testing.T) {
+	schema := newTestSchema(true)
+	helper, err := typeutil.CreateSchemaHelper(schema)
+	assert.NoError(t, err)
+
+	// --- Regex-to-LIKE optimization tests ---
+
+	// Pure literal "abc" stays RegexMatch. RE2's literal PartialMatch path is
+	// faster than Milvus InnerMatch in current growing-segment benchmarks.
+	expr := `A =~ "abc"`
+	plan, err := CreateSearchPlan(helper, expr, "FloatVectorField", &planpb.QueryInfo{
+		Topk:         0,
+		MetricType:   "",
+		SearchParams: "",
+		RoundDecimal: 0,
+	}, nil, nil)
+	assert.NoError(t, err, expr)
+	assert.NotNil(t, plan)
+	assert.Equal(t, planpb.OpType_RegexMatch, plan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetOp())
+	assert.Equal(t, "abc", plan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetValue().GetStringVal())
+
+	// "^abc" → PrefixMatch
+	expr = `A =~ "^abc"`
+	plan, err = CreateSearchPlan(helper, expr, "FloatVectorField", &planpb.QueryInfo{
+		Topk:         0,
+		MetricType:   "",
+		SearchParams: "",
+		RoundDecimal: 0,
+	}, nil, nil)
+	assert.NoError(t, err, expr)
+	assert.NotNil(t, plan)
+	assert.Equal(t, planpb.OpType_PrefixMatch, plan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetOp())
+	assert.Equal(t, "abc", plan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetValue().GetStringVal())
+
+	// "abc$" → PostfixMatch
+	expr = `A =~ "abc$"`
+	plan, err = CreateSearchPlan(helper, expr, "FloatVectorField", &planpb.QueryInfo{
+		Topk:         0,
+		MetricType:   "",
+		SearchParams: "",
+		RoundDecimal: 0,
+	}, nil, nil)
+	assert.NoError(t, err, expr)
+	assert.NotNil(t, plan)
+	assert.Equal(t, planpb.OpType_PostfixMatch, plan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetOp())
+	assert.Equal(t, "abc", plan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetValue().GetStringVal())
+
+	// "^abc$" → Equal
+	expr = `A =~ "^abc$"`
+	plan, err = CreateSearchPlan(helper, expr, "FloatVectorField", &planpb.QueryInfo{
+		Topk:         0,
+		MetricType:   "",
+		SearchParams: "",
+		RoundDecimal: 0,
+	}, nil, nil)
+	assert.NoError(t, err, expr)
+	assert.NotNil(t, plan)
+	assert.Equal(t, planpb.OpType_Equal, plan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetOp())
+	assert.Equal(t, "abc", plan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetValue().GetStringVal())
+
+	// Escaped metacharacter without anchors stays RegexMatch
+	expr = `A =~ "file\\.txt"`
+	plan, err = CreateSearchPlan(helper, expr, "FloatVectorField", &planpb.QueryInfo{
+		Topk:         0,
+		MetricType:   "",
+		SearchParams: "",
+		RoundDecimal: 0,
+	}, nil, nil)
+	assert.NoError(t, err, expr)
+	assert.NotNil(t, plan)
+	assert.Equal(t, planpb.OpType_RegexMatch, plan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetOp())
+	assert.Equal(t, `file\.txt`, plan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetValue().GetStringVal())
+
+	// --- Patterns that stay as RegexMatch ---
+
+	// Regex with metacharacters → stays RegexMatch
+	expr = `A =~ "a.*b"`
+	plan, err = CreateSearchPlan(helper, expr, "FloatVectorField", &planpb.QueryInfo{
+		Topk:         0,
+		MetricType:   "",
+		SearchParams: "",
+		RoundDecimal: 0,
+	}, nil, nil)
+	assert.NoError(t, err, expr)
+	assert.NotNil(t, plan)
+	assert.Equal(t, planpb.OpType_RegexMatch, plan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetOp())
+	assert.Equal(t, "a.*b", plan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetValue().GetStringVal())
+
+	// Character class → stays RegexMatch
+	expr = `A =~ "[0-9]+"`
+	plan, err = CreateSearchPlan(helper, expr, "FloatVectorField", &planpb.QueryInfo{
+		Topk:         0,
+		MetricType:   "",
+		SearchParams: "",
+		RoundDecimal: 0,
+	}, nil, nil)
+	assert.NoError(t, err, expr)
+	assert.NotNil(t, plan)
+	assert.Equal(t, planpb.OpType_RegexMatch, plan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetOp())
+
+	// Empty pattern → stays RegexMatch (matches everything)
+	expr = `A =~ ""`
+	plan, err = CreateSearchPlan(helper, expr, "FloatVectorField", &planpb.QueryInfo{
+		Topk:         0,
+		MetricType:   "",
+		SearchParams: "",
+		RoundDecimal: 0,
+	}, nil, nil)
+	assert.NoError(t, err, expr)
+	assert.NotNil(t, plan)
+	assert.Equal(t, planpb.OpType_RegexMatch, plan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetOp())
+
+	// --- Patterns that MUST stay RegexMatch (never downgrade to LIKE) ---
+
+	// Unicode property \p{...}
+	expr = `A =~ "\\p{Han}+"`
+	plan, err = CreateSearchPlan(helper, expr, "FloatVectorField", &planpb.QueryInfo{
+		Topk: 0, MetricType: "", SearchParams: "", RoundDecimal: 0,
+	}, nil, nil)
+	assert.NoError(t, err, expr)
+	assert.NotNil(t, plan)
+	assert.Equal(t, planpb.OpType_RegexMatch, plan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetOp())
+
+	// Named group (?P<name>...)
+	expr = `A =~ "(?P<user>[a-z]+)@host"`
+	plan, err = CreateSearchPlan(helper, expr, "FloatVectorField", &planpb.QueryInfo{
+		Topk: 0, MetricType: "", SearchParams: "", RoundDecimal: 0,
+	}, nil, nil)
+	assert.NoError(t, err, expr)
+	assert.NotNil(t, plan)
+	assert.Equal(t, planpb.OpType_RegexMatch, plan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetOp())
+
+	// Inline flag (?m)
+	expr = `A =~ "(?m)^start"`
+	plan, err = CreateSearchPlan(helper, expr, "FloatVectorField", &planpb.QueryInfo{
+		Topk: 0, MetricType: "", SearchParams: "", RoundDecimal: 0,
+	}, nil, nil)
+	assert.NoError(t, err, expr)
+	assert.NotNil(t, plan)
+	assert.Equal(t, planpb.OpType_RegexMatch, plan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetOp())
+
+	// Shorthand class \d
+	expr = `A =~ "\\d{3}-\\d{4}"`
+	plan, err = CreateSearchPlan(helper, expr, "FloatVectorField", &planpb.QueryInfo{
+		Topk: 0, MetricType: "", SearchParams: "", RoundDecimal: 0,
+	}, nil, nil)
+	assert.NoError(t, err, expr)
+	assert.NotNil(t, plan)
+	assert.Equal(t, planpb.OpType_RegexMatch, plan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetOp())
+
+	// --- Error cases ---
+
+	// Invalid regex pattern — unclosed bracket
+	expr = `A =~ "[unclosed"`
+	assertInvalidExpr(t, helper, expr)
+
+	// Non-string field — should error
+	expr = `Int64Field =~ "abc"`
+	assertInvalidExpr(t, helper, expr)
+
+	// --- Negation ---
+
+	// !~ with pure literal → NOT(RegexMatch)
+	expr = `A !~ "abc"`
+	plan, err = CreateSearchPlan(helper, expr, "FloatVectorField", &planpb.QueryInfo{
+		Topk:         0,
+		MetricType:   "",
+		SearchParams: "",
+		RoundDecimal: 0,
+	}, nil, nil)
+	assert.NoError(t, err, expr)
+	assert.NotNil(t, plan)
+	predicates := plan.GetVectorAnns().GetPredicates()
+	assert.Equal(t, planpb.UnaryExpr_Not, predicates.GetUnaryExpr().GetOp())
+	assert.Equal(t, planpb.OpType_RegexMatch, predicates.GetUnaryExpr().GetChild().GetUnaryRangeExpr().GetOp())
+	assert.Equal(t, "abc", predicates.GetUnaryExpr().GetChild().GetUnaryRangeExpr().GetValue().GetStringVal())
+
+	// !~ with metacharacters → NOT(RegexMatch)
+	expr = `A !~ "a.*b"`
+	plan, err = CreateSearchPlan(helper, expr, "FloatVectorField", &planpb.QueryInfo{
+		Topk:         0,
+		MetricType:   "",
+		SearchParams: "",
+		RoundDecimal: 0,
+	}, nil, nil)
+	assert.NoError(t, err, expr)
+	assert.NotNil(t, plan)
+	predicates = plan.GetVectorAnns().GetPredicates()
+	assert.Equal(t, planpb.UnaryExpr_Not, predicates.GetUnaryExpr().GetOp())
+	assert.Equal(t, planpb.OpType_RegexMatch, predicates.GetUnaryExpr().GetChild().GetUnaryRangeExpr().GetOp())
+
+	// --- JSON and other field types ---
+	validExprs := []string{
+		`JSONField["A"] =~ "abc"`,
+		`VarCharField =~ "^prefix"`,
+	}
+	for _, exprStr := range validExprs {
+		assertValidExpr(t, helper, exprStr)
+	}
+
+	// --- Comprehensive tryOptimizeRegexToLike edge cases ---
+
+	// Helper to check op type for =~ expressions
+	checkOp := func(t *testing.T, exprStr string, expectedOp planpb.OpType) {
+		t.Helper()
+		p, e := CreateSearchPlan(helper, exprStr, "FloatVectorField", &planpb.QueryInfo{
+			Topk: 0, MetricType: "", SearchParams: "", RoundDecimal: 0,
+		}, nil, nil)
+		assert.NoError(t, e, exprStr)
+		assert.NotNil(t, p, exprStr)
+		assert.Equal(t, expectedOp,
+			p.GetVectorAnns().GetPredicates().GetUnaryRangeExpr().GetOp(),
+			"wrong OpType for: %s", exprStr)
+	}
+	checkVal := func(t *testing.T, exprStr string, expectedOp planpb.OpType, expectedVal string) {
+		t.Helper()
+		p, e := CreateSearchPlan(helper, exprStr, "FloatVectorField", &planpb.QueryInfo{
+			Topk: 0, MetricType: "", SearchParams: "", RoundDecimal: 0,
+		}, nil, nil)
+		assert.NoError(t, e, exprStr)
+		assert.NotNil(t, p, exprStr)
+		ure := p.GetVectorAnns().GetPredicates().GetUnaryRangeExpr()
+		assert.Equal(t, expectedOp, ure.GetOp(), "wrong OpType for: %s", exprStr)
+		assert.Equal(t, expectedVal, ure.GetValue().GetStringVal(), "wrong value for: %s", exprStr)
+	}
+
+	// Optimizable patterns
+	checkVal(t, `A =~ "hello"`, planpb.OpType_RegexMatch, "hello")
+	checkVal(t, `A =~ "^hello"`, planpb.OpType_PrefixMatch, "hello")
+	checkVal(t, `A =~ "hello$"`, planpb.OpType_PostfixMatch, "hello")
+	checkVal(t, `A =~ "^hello$"`, planpb.OpType_Equal, "hello")
+	checkVal(t, `A =~ "^$"`, planpb.OpType_Equal, "")
+	checkVal(t, `A =~ "hello world"`, planpb.OpType_RegexMatch, "hello world")
+	checkVal(t, `A =~ "file\\.txt"`, planpb.OpType_RegexMatch, `file\.txt`)
+	checkVal(t, `A =~ "^file\\.txt$"`, planpb.OpType_Equal, "file.txt")
+	checkVal(t, `A =~ "a\\(b\\)"`, planpb.OpType_RegexMatch, `a\(b\)`)
+	checkVal(t, `A =~ "price\\$10"`, planpb.OpType_RegexMatch, `price\$10`)
+	checkVal(t, `A =~ "back\\\\slash"`, planpb.OpType_RegexMatch, `back\\slash`)
+
+	// Non-optimizable: metacharacters → stay RegexMatch
+	checkOp(t, `A =~ "a.*b"`, planpb.OpType_RegexMatch)
+	checkOp(t, `A =~ "a.b"`, planpb.OpType_RegexMatch)
+	checkOp(t, `A =~ "[a-z]"`, planpb.OpType_RegexMatch)
+	checkOp(t, `A =~ "a+"`, planpb.OpType_RegexMatch)
+	checkOp(t, `A =~ "a?"`, planpb.OpType_RegexMatch)
+	checkOp(t, `A =~ "a{2}"`, planpb.OpType_RegexMatch)
+	checkOp(t, `A =~ "(abc)"`, planpb.OpType_RegexMatch)
+	checkOp(t, `A =~ "a|b"`, planpb.OpType_RegexMatch)
+	checkOp(t, `A =~ ""`, planpb.OpType_RegexMatch)
+
+	// Non-optimizable: shorthand classes, control chars, special escapes
+	checkOp(t, `A =~ "\\d+"`, planpb.OpType_RegexMatch)
+	checkOp(t, `A =~ "\\w+"`, planpb.OpType_RegexMatch)
+	checkOp(t, `A =~ "\\s"`, planpb.OpType_RegexMatch)
+	checkOp(t, `A =~ "\\b"`, planpb.OpType_RegexMatch)
+	checkOp(t, `A =~ "\\n"`, planpb.OpType_RegexMatch)
+	checkOp(t, `A =~ "\\t"`, planpb.OpType_RegexMatch)
+	checkOp(t, `A =~ "\\x41"`, planpb.OpType_RegexMatch)
+
+	// Non-optimizable: Unicode property, named groups, inline flags
+	checkOp(t, `A =~ "\\p{Han}"`, planpb.OpType_RegexMatch)
+	checkOp(t, `A =~ "(?P<name>[a-z]+)"`, planpb.OpType_RegexMatch)
+	checkOp(t, `A =~ "(?i)hello"`, planpb.OpType_RegexMatch)
+	checkOp(t, `A =~ "(?m)^start"`, planpb.OpType_RegexMatch)
+	checkOp(t, `A =~ "(?s)a.b"`, planpb.OpType_RegexMatch)
+
+	// Edge: escaped $ at end should NOT be treated as anchor
+	checkVal(t, `A =~ "price\\$"`, planpb.OpType_RegexMatch, `price\$`)
+	checkVal(t, `A =~ "^price\\$"`, planpb.OpType_PrefixMatch, "price$")
 }
 
 func TestExpr_TextMatch(t *testing.T) {
@@ -288,6 +888,7 @@ func TestExpr_TextMatch(t *testing.T) {
 
 	exprStrs := []string{
 		`text_match(VarCharField, "query")`,
+		`text_match(TextField, "query")`,
 	}
 	for _, exprStr := range exprStrs {
 		assertInvalidExpr(t, helper, exprStr)
@@ -304,6 +905,138 @@ func TestExpr_TextMatch(t *testing.T) {
 	}
 	for _, exprStr := range unsupported {
 		assertInvalidExpr(t, helper, exprStr)
+	}
+}
+
+func TestExpr_TextMatchFuzzy(t *testing.T) {
+	schema := newTestSchema(true)
+	helper, err := typeutil.CreateSchemaHelper(schema)
+	assert.NoError(t, err)
+
+	// the field must enable match first, otherwise fuzzy match is rejected.
+	assertInvalidExpr(t, helper, `text_match_fuzzy(VarCharField, "query", max_edit_distance=1)`)
+	enableMatch(schema)
+
+	for _, v := range []int64{0, 1, 2} {
+		expr := fmt.Sprintf(`text_match_fuzzy(VarCharField, "query", max_edit_distance=%d)`, v)
+		plan, err := CreateSearchPlan(helper, expr, "FloatVectorField", &planpb.QueryInfo{
+			Topk:         10,
+			MetricType:   "L2",
+			SearchParams: "",
+			RoundDecimal: 0,
+		}, nil, nil)
+		assert.NoError(t, err, expr)
+		assert.NotNil(t, plan)
+
+		ure := plan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr()
+		assert.NotNil(t, ure)
+		assert.Equal(t, planpb.OpType_TextMatchFuzzy, ure.GetOp())
+		assert.Equal(t, "query", ure.GetValue().GetStringVal())
+		extra := ure.GetExtraValues()
+		assert.Equal(t, 1, len(extra))
+		assert.Equal(t, v, extra[0].GetInt64Val())
+	}
+
+	{
+		// a templated query is filled at plan time and the edit distance survives.
+		expr := `text_match_fuzzy(VarCharField, {q}, max_edit_distance=2)`
+		mv := map[string]*schemapb.TemplateValue{
+			"q": generateTemplateValue(schemapb.DataType_VarChar, "hello"),
+		}
+		plan, err := CreateSearchPlan(helper, expr, "FloatVectorField", &planpb.QueryInfo{
+			Topk:       10,
+			MetricType: "L2",
+		}, mv, nil)
+		assert.NoError(t, err, expr)
+		ure := plan.GetVectorAnns().GetPredicates().GetUnaryRangeExpr()
+		assert.NotNil(t, ure)
+		assert.Equal(t, planpb.OpType_TextMatchFuzzy, ure.GetOp())
+		assert.Equal(t, "hello", ure.GetValue().GetStringVal())
+		extra := ure.GetExtraValues()
+		assert.Equal(t, 1, len(extra))
+		assert.Equal(t, int64(2), extra[0].GetInt64Val())
+	}
+
+	{
+		expr := `text_match_fuzzy(VarCharField, "query", max_edit_distance=3)`
+		_, err := CreateSearchPlan(helper, expr, "FloatVectorField", &planpb.QueryInfo{}, nil, nil)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "max_edit_distance should be in [0, 2]")
+	}
+
+	{
+		// the distance argument is required by the grammar.
+		expr := `text_match_fuzzy(VarCharField, "query")`
+		_, err := CreateSearchPlan(helper, expr, "FloatVectorField", &planpb.QueryInfo{}, nil, nil)
+		assert.Error(t, err)
+	}
+
+	{
+		expr := `text_match_fuzzy(VarCharField, "query", max_edit_distance=1.5)`
+		_, err := CreateSearchPlan(helper, expr, "FloatVectorField", &planpb.QueryInfo{}, nil, nil)
+		assert.Error(t, err)
+	}
+
+	{
+		expr := `text_match_fuzzy(VarCharField, "query", max_edit_distance=9223372036854775808)`
+		_, err := CreateSearchPlan(helper, expr, "FloatVectorField", &planpb.QueryInfo{}, nil, nil)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid max_edit_distance value")
+	}
+
+	unsupported := []string{
+		`text_match_fuzzy(not_exist, "query", max_edit_distance=1)`,
+		`text_match_fuzzy(BoolField, "query", max_edit_distance=1)`,
+	}
+	for _, exprStr := range unsupported {
+		assertInvalidExpr(t, helper, exprStr)
+	}
+}
+
+func TestExpr_TextMatchFuzzy_SoftKeyword(t *testing.T) {
+	// A wrong option name is rejected: the option name is a soft keyword, so
+	// only "max_edit_distance" (any case) is accepted.
+	{
+		schema := newTestSchema(true)
+		enableMatch(schema)
+		helper, err := typeutil.CreateSchemaHelper(schema)
+		assert.NoError(t, err)
+		expr := `text_match_fuzzy(VarCharField, "query", fuzziness=1)`
+		_, err = CreateSearchPlan(helper, expr, "FloatVectorField", &planpb.QueryInfo{}, nil, nil)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "expected max_edit_distance")
+	}
+
+	// The option name is case-insensitive.
+	{
+		schema := newTestSchema(true)
+		enableMatch(schema)
+		helper, err := typeutil.CreateSchemaHelper(schema)
+		assert.NoError(t, err)
+		expr := `text_match_fuzzy(VarCharField, "query", MAX_EDIT_DISTANCE=1)`
+		plan, err := CreateSearchPlan(helper, expr, "FloatVectorField", &planpb.QueryInfo{
+			Topk: 10, MetricType: "L2",
+		}, nil, nil)
+		assert.NoError(t, err, expr)
+		assert.NotNil(t, plan)
+	}
+
+	// max_edit_distance is a soft keyword, not a reserved word: a scalar field
+	// literally named "max_edit_distance" stays usable in an ordinary filter
+	// (issue #51058 — hard-keywording it would break such collections).
+	{
+		schema := newTestSchema(false)
+		schema.Fields = append(schema.Fields, &schemapb.FieldSchema{
+			FieldID: 9999, Name: "max_edit_distance", DataType: schemapb.DataType_Int64,
+		})
+		helper, err := typeutil.CreateSchemaHelper(schema)
+		assert.NoError(t, err)
+		expr := `max_edit_distance > 1`
+		plan, err := CreateSearchPlan(helper, expr, "FloatVectorField", &planpb.QueryInfo{
+			Topk: 10, MetricType: "L2",
+		}, nil, nil)
+		assert.NoError(t, err, expr)
+		assert.NotNil(t, plan)
 	}
 }
 
@@ -581,6 +1314,7 @@ func TestExpr_PhraseMatch(t *testing.T) {
 
 	exprStrs := []string{
 		`phrase_match(VarCharField, "phrase")`,
+		`phrase_match(TextField, "phrase")`,
 		`phrase_match(StringField, "phrase")`,
 		`phrase_match(StringField, "phrase", 1)`,
 		`phrase_match(VarCharField, "phrase", 11223)`,
@@ -624,7 +1358,6 @@ func TestExpr_TextField(t *testing.T) {
 
 	invalidExprs := []string{
 		`TextField == "query"`,
-		`text_match(TextField, "query")`,
 	}
 
 	for _, exprStr := range invalidExprs {
@@ -641,6 +1374,8 @@ func TestExpr_IsNull(t *testing.T) {
 	exprStrs := []string{
 		`VarCharField is null`,
 		`VarCharField IS NULL`,
+		`ArrayField is null`,
+		`StringArrayField IS NULL`,
 	}
 	for _, exprStr := range exprStrs {
 		assertValidExpr(t, helper, exprStr)
@@ -654,9 +1389,82 @@ func TestExpr_IsNull(t *testing.T) {
 		`BFloat16VectorField is null`,
 		`SparseFloatVectorField is null`,
 		`Int8VectorField is null`,
+		// issue #48904: array element access with IS NULL should be
+		// rejected at parse time rather than raising an internal error
+		// at execution time.
+		`ArrayField[0] is null`,
+		`ArrayField[1] IS NULL`,
+		`StringArrayField[0] is null`,
 	}
 	for _, exprStr := range unsupported {
 		assertInvalidExpr(t, helper, exprStr)
+	}
+}
+
+func TestExpr_StructArrayParentIsNull(t *testing.T) {
+	schema := newTestSchema(true)
+	schema.StructArrayFields[0].Nullable = true
+	helper, err := typeutil.CreateSchemaHelper(schema)
+	require.NoError(t, err)
+
+	expr, err := ParseExpr(helper, `struct_array is null`, nil)
+	require.NoError(t, err)
+	nullExpr := expr.GetNullExpr()
+	require.NotNil(t, nullExpr)
+	assert.Equal(t, planpb.NullExpr_IsNull, nullExpr.GetOp())
+	assert.Equal(t, int64(133), nullExpr.GetColumnInfo().GetFieldId())
+	assert.Equal(t, schemapb.DataType_Array, nullExpr.GetColumnInfo().GetDataType())
+	assert.Equal(t, schemapb.DataType_VarChar, nullExpr.GetColumnInfo().GetElementType())
+	assert.True(t, nullExpr.GetColumnInfo().GetNullable())
+
+	expr, err = ParseExpr(helper, `struct_array is not null`, nil)
+	require.NoError(t, err)
+	nullExpr = expr.GetNullExpr()
+	require.NotNil(t, nullExpr)
+	assert.Equal(t, planpb.NullExpr_IsNotNull, nullExpr.GetOp())
+	assert.Equal(t, int64(133), nullExpr.GetColumnInfo().GetFieldId())
+	assert.Equal(t, schemapb.DataType_Array, nullExpr.GetColumnInfo().GetDataType())
+	assert.True(t, nullExpr.GetColumnInfo().GetNullable())
+}
+
+func TestExpr_VectorArrayOnlyStructParentIsNull(t *testing.T) {
+	schema := newTestSchema(false)
+	schema.StructArrayFields = append(schema.StructArrayFields, &schemapb.StructArrayFieldSchema{
+		FieldID:  10000,
+		Name:     "vector_struct",
+		Nullable: true,
+		Fields: []*schemapb.FieldSchema{
+			{
+				FieldID:     10001,
+				Name:        "vector_struct[embeddings]",
+				DataType:    schemapb.DataType_ArrayOfVector,
+				ElementType: schemapb.DataType_FloatVector,
+				Nullable:    true,
+				TypeParams: []*commonpb.KeyValuePair{
+					{Key: common.DimKey, Value: "4"},
+				},
+			},
+		},
+	})
+	helper, err := typeutil.CreateSchemaHelper(schema)
+	require.NoError(t, err)
+
+	for _, testcase := range []struct {
+		expr string
+		op   planpb.NullExpr_NullOp
+	}{
+		{expr: `vector_struct is null`, op: planpb.NullExpr_IsNull},
+		{expr: `vector_struct is not null`, op: planpb.NullExpr_IsNotNull},
+	} {
+		expr, err := ParseExpr(helper, testcase.expr, nil)
+		require.NoError(t, err, testcase.expr)
+		nullExpr := expr.GetNullExpr()
+		require.NotNil(t, nullExpr, testcase.expr)
+		assert.Equal(t, testcase.op, nullExpr.GetOp(), testcase.expr)
+		assert.Equal(t, int64(10001), nullExpr.GetColumnInfo().GetFieldId(), testcase.expr)
+		assert.Equal(t, schemapb.DataType_ArrayOfVector, nullExpr.GetColumnInfo().GetDataType(), testcase.expr)
+		assert.Equal(t, schemapb.DataType_FloatVector, nullExpr.GetColumnInfo().GetElementType(), testcase.expr)
+		assert.True(t, nullExpr.GetColumnInfo().GetNullable(), testcase.expr)
 	}
 }
 
@@ -668,6 +1476,8 @@ func TestExpr_IsNotNull(t *testing.T) {
 	exprStrs := []string{
 		`VarCharField is not null`,
 		`VarCharField IS NOT NULL`,
+		`ArrayField is not null`,
+		`StringArrayField IS NOT NULL`,
 	}
 	for _, exprStr := range exprStrs {
 		assertValidExpr(t, helper, exprStr)
@@ -681,6 +1491,12 @@ func TestExpr_IsNotNull(t *testing.T) {
 		`BFloat16VectorField is not null`,
 		`SparseFloatVectorField is not null`,
 		`Int8VectorField is not null`,
+		// issue #48904: array element access with IS NOT NULL should be
+		// rejected at parse time rather than raising an internal error
+		// at execution time.
+		`ArrayField[0] is not null`,
+		`ArrayField[1] IS NOT NULL`,
+		`StringArrayField[0] is not null`,
 	}
 	for _, exprStr := range unsupported {
 		assertInvalidExpr(t, helper, exprStr)
@@ -772,6 +1588,21 @@ func TestExpr_BinaryArith(t *testing.T) {
 		`15 + JSONField == 16`,
 		`Int64Field + (2**3) > 0`,
 		`1 + FloatField > 100`,
+		// bitwise operators on integer fields
+		`(Int64Field & 4) == 4`,
+		`(Int64Field & 4) != 0`,
+		`(Int32Field | 2) == 3`,
+		`(Int32Field | 2) != 0`,
+		`(Int64Field ^ 7) == 0`,
+		`(Int64Field ^ 7) != 5`,
+		`(Int8Field & 1) == 1`,
+		`(Int16Field | 8) >= 8`,
+		`(Int32Field ^ 15) < 16`,
+		// bitwise on a JSON dynamic field is allowed: the value type is only
+		// known at runtime, so the parser cannot reject it (the executor casts
+		// to int64 and treats non-numeric / missing values as non-matching).
+		`(JSONField["A"] & 4) == 4`,
+		`(JSONField["B"] | 2) != 0`,
 	}
 	for _, exprStr := range exprStrs {
 		assertValidExpr(t, helper, exprStr)
@@ -790,9 +1621,90 @@ func TestExpr_BinaryArith(t *testing.T) {
 		`Int64Field % 0 == 1`,
 		`FloatField / 0 == 1`,
 		`FloatField % 0 == 1`,
+		// bitwise ops on non-integer types are invalid
+		`(FloatField & 1) == 1`,
+		`(DoubleField | 2) == 3`,
+		`(FloatField ^ 4) == 0`,
+		// folding a bitwise op over float literals is invalid (integer-only)
+		`Int64Field == (1.5 & 1)`,
+		`(2.5 | 1) == Int64Field`,
+		// bitwise ops between two fields are unsupported, consistent with how
+		// +, -, *, /, % reject field-to-field arithmetic (right operand must be
+		// a constant in the BinaryArithOpEvalRange model).
+		`(Int64Field & Int32Field) == 4`,
+		`(Int64Field | Int32Field) != 0`,
+		`(Int64Field ^ Int32Field) == 0`,
 	}
 	for _, exprStr := range unsupported {
 		assertInvalidExpr(t, helper, exprStr)
+	}
+}
+
+// TestExpr_BitwiseArith asserts the generated plan structure for bitwise
+// operators, not merely that the expression parses. A bitwise op over a field
+// must fuse into a BinaryArithOpEvalRangeExpr carrying the matching ArithOpType,
+// right_operand (the mask) and comparison value; a bitwise op over two integer
+// literals must constant-fold into a plain comparison.
+func TestExpr_BitwiseArith(t *testing.T) {
+	schema := newTestSchema(true)
+	helper, err := typeutil.CreateSchemaHelper(schema)
+	assert.NoError(t, err)
+
+	type bitwiseCase struct {
+		expr    string
+		arithOp planpb.ArithOpType
+		cmpOp   planpb.OpType
+		mask    int64
+		value   int64
+	}
+	cases := []bitwiseCase{
+		{`(Int64Field & 4) == 4`, planpb.ArithOpType_BitAnd, planpb.OpType_Equal, 4, 4},
+		{`(Int64Field & 6) != 0`, planpb.ArithOpType_BitAnd, planpb.OpType_NotEqual, 6, 0},
+		{`(Int32Field | 2) == 3`, planpb.ArithOpType_BitOr, planpb.OpType_Equal, 2, 3},
+		{`(Int32Field | 8) >= 8`, planpb.ArithOpType_BitOr, planpb.OpType_GreaterEqual, 8, 8},
+		{`(Int64Field ^ 7) == 0`, planpb.ArithOpType_BitXor, planpb.OpType_Equal, 7, 0},
+		{`(Int64Field ^ 7) > 5`, planpb.ArithOpType_BitXor, planpb.OpType_GreaterThan, 7, 5},
+		{`(Int16Field & 1) < 1`, planpb.ArithOpType_BitAnd, planpb.OpType_LessThan, 1, 1},
+		{`(Int8Field | 3) <= 7`, planpb.ArithOpType_BitOr, planpb.OpType_LessEqual, 3, 7},
+		// reverse form (constant on the left) for the symmetric == / != ops
+		{`4 == (Int64Field & 4)`, planpb.ArithOpType_BitAnd, planpb.OpType_Equal, 4, 4},
+		{`0 != (Int32Field | 2)`, planpb.ArithOpType_BitOr, planpb.OpType_NotEqual, 2, 0},
+	}
+	for _, c := range cases {
+		expr, err := ParseExpr(helper, c.expr, nil)
+		assert.NoError(t, err, c.expr)
+		bao := expr.GetBinaryArithOpEvalRangeExpr()
+		assert.NotNil(t, bao, c.expr)
+		if bao == nil {
+			continue
+		}
+		assert.Equal(t, c.arithOp, bao.GetArithOp(), c.expr)
+		assert.Equal(t, c.cmpOp, bao.GetOp(), c.expr)
+		assert.Equal(t, c.mask, bao.GetRightOperand().GetInt64Val(), c.expr)
+		assert.Equal(t, c.value, bao.GetValue().GetInt64Val(), c.expr)
+	}
+
+	// Constant folding: a bitwise op over two integer literals collapses to a
+	// constant, so the comparison degrades to a plain UnaryRange on the field.
+	type foldCase struct {
+		expr     string
+		expected int64
+	}
+	foldCases := []foldCase{
+		{`Int64Field == (7 & 3)`, 3}, // 7 & 3 = 3
+		{`Int64Field == (5 | 2)`, 7}, // 5 | 2 = 7
+		{`Int64Field == (6 ^ 3)`, 5}, // 6 ^ 3 = 5
+	}
+	for _, c := range foldCases {
+		expr, err := ParseExpr(helper, c.expr, nil)
+		assert.NoError(t, err, c.expr)
+		ure := expr.GetUnaryRangeExpr()
+		assert.NotNil(t, ure, c.expr)
+		if ure == nil {
+			continue
+		}
+		assert.Equal(t, planpb.OpType_Equal, ure.GetOp(), c.expr)
+		assert.Equal(t, c.expected, ure.GetValue().GetInt64Val(), c.expr)
 	}
 }
 
@@ -1096,15 +2008,12 @@ func TestExpr_Invalid(t *testing.T) {
 		`-Int32Field`,
 		`!(Int32Field)`,
 		// ----------------------- or/and ------------------------
-		`not_in_schema or true`,
 		`false or not_in_schema`,
 		`"str" or false`,
 		`BoolField OR false`,
 		`Int32Field OR Int64Field`,
 		`not_in_schema and true`,
-		`false AND not_in_schema`,
 		`"str" and false`,
-		`BoolField and false`,
 		`Int32Field AND Int64Field`,
 		// -------------------- unsupported ----------------------
 		`1 ^ 2`,
@@ -1114,10 +2023,7 @@ func TestExpr_Invalid(t *testing.T) {
 		`1 | 2`,
 		// -------------------- cannot be independent ----------------------
 		`BoolField`,
-		`true`,
-		`false`,
 		`Int64Field > 100 and BoolField`,
-		`Int64Field < 100 or false`, // maybe this can be optimized.
 		`!BoolField`,
 		// -------------------- array ----------------------
 		//`A == [1, 2, 3]`,
@@ -1789,6 +2695,7 @@ func Test_ArrayLength(t *testing.T) {
 		`array_length(StringArrayField) > 5`,
 		`array_length(StringArrayField) >= 5`,
 		// struct array sub-field
+		`array_length(struct_array) == 2`,
 		`array_length(struct_array[sub_str]) == 3`,
 		`array_length(struct_array[sub_int]) > 1`,
 		`array_length(struct_array[sub_int]) <= 10`,
@@ -2828,7 +3735,7 @@ func TestExpr_StructIndexField_PlanShape(t *testing.T) {
 func TestExpr_StructFieldArrayLength(t *testing.T) {
 	schema := newTestSchemaHelper(t)
 
-	ret := handleExpr(schema, `array_length(struct_array[sub_int])`)
+	ret := handleExpr(schema, `array_length(struct_array)`)
 	ewt, ok := ret.(*ExprWithType)
 	require.True(t, ok, "handleExpr should return *ExprWithType")
 	assert.Equal(t, schemapb.DataType_Int64, ewt.dataType)
@@ -2840,12 +3747,30 @@ func TestExpr_StructFieldArrayLength(t *testing.T) {
 
 	columnInfo := bae.GetLeft().GetColumnExpr().GetInfo()
 	require.NotNil(t, columnInfo)
+	assert.Equal(t, int64(133), columnInfo.GetFieldId())
+	assert.Equal(t, schemapb.DataType_Array, columnInfo.GetDataType())
+	assert.Equal(t, schemapb.DataType_VarChar, columnInfo.GetElementType())
+	assert.Empty(t, columnInfo.GetNestedPath())
+
+	ret = handleExpr(schema, `array_length(struct_array[sub_int])`)
+	ewt, ok = ret.(*ExprWithType)
+	require.True(t, ok, "handleExpr should return *ExprWithType")
+	assert.Equal(t, schemapb.DataType_Int64, ewt.dataType)
+
+	bae = ewt.expr.GetBinaryArithExpr()
+	require.NotNil(t, bae)
+	assert.Equal(t, planpb.ArithOpType_ArrayLength, bae.GetOp())
+	require.Nil(t, bae.GetRight())
+
+	columnInfo = bae.GetLeft().GetColumnExpr().GetInfo()
+	require.NotNil(t, columnInfo)
 	assert.Equal(t, int64(134), columnInfo.GetFieldId())
 	assert.Equal(t, schemapb.DataType_Array, columnInfo.GetDataType())
 	assert.Equal(t, schemapb.DataType_Int32, columnInfo.GetElementType())
 	assert.Empty(t, columnInfo.GetNestedPath())
 
 	validExprs := []string{
+		`array_length(struct_array) == 10`,
 		`array_length(struct_array[sub_int]) == 10`,
 		`array_length(struct_array[sub_str]) > 0`,
 	}
@@ -2858,6 +3783,58 @@ func TestExpr_StructFieldArrayLength(t *testing.T) {
 		}, nil, nil)
 		assert.NoError(t, err, expr)
 	}
+}
+
+func TestExpr_VectorArrayOnlyStructParentArrayLength(t *testing.T) {
+	schema := newTestSchema(false)
+	schema.StructArrayFields = append(schema.StructArrayFields, &schemapb.StructArrayFieldSchema{
+		FieldID:  10000,
+		Name:     "vector_struct",
+		Nullable: true,
+		Fields: []*schemapb.FieldSchema{
+			{
+				FieldID:     10001,
+				Name:        "vector_struct[embeddings]",
+				DataType:    schemapb.DataType_ArrayOfVector,
+				ElementType: schemapb.DataType_FloatVector,
+				Nullable:    true,
+				TypeParams: []*commonpb.KeyValuePair{
+					{Key: common.DimKey, Value: "4"},
+				},
+			},
+		},
+	})
+	helper, err := typeutil.CreateSchemaHelper(schema)
+	require.NoError(t, err)
+
+	for _, expr := range []string{
+		`array_length(vector_struct)`,
+		`array_length(vector_struct[embeddings])`,
+	} {
+		ret := handleExpr(helper, expr)
+		ewt, ok := ret.(*ExprWithType)
+		require.True(t, ok, "handleExpr should return *ExprWithType")
+		assert.Equal(t, schemapb.DataType_Int64, ewt.dataType)
+
+		bae := ewt.expr.GetBinaryArithExpr()
+		require.NotNil(t, bae)
+		assert.Equal(t, planpb.ArithOpType_ArrayLength, bae.GetOp())
+
+		columnInfo := bae.GetLeft().GetColumnExpr().GetInfo()
+		require.NotNil(t, columnInfo)
+		assert.Equal(t, int64(10001), columnInfo.GetFieldId())
+		assert.Equal(t, schemapb.DataType_ArrayOfVector, columnInfo.GetDataType())
+		assert.Equal(t, schemapb.DataType_FloatVector, columnInfo.GetElementType())
+		assert.True(t, columnInfo.GetNullable())
+	}
+
+	_, err = CreateSearchPlan(helper, `array_length(vector_struct) == 2`, "FloatVectorField", &planpb.QueryInfo{
+		Topk:         0,
+		MetricType:   "",
+		SearchParams: "",
+		RoundDecimal: 0,
+	}, nil, nil)
+	require.NoError(t, err)
 }
 
 func TestExpr_StructIndexField_RangeForms(t *testing.T) {
@@ -3321,36 +4298,34 @@ func TestExpr_ConstantFolding(t *testing.T) {
 // are parsed by the proxy expression parser.
 //
 // Key behavior:
-//   - Standalone "true"/"false" are parsed into ValueExpr(BoolVal) with nodeDependent=true
-//   - Because nodeDependent=true, canBeExecuted() returns false
-//   - Therefore ParseExpr rejects them with "predicate is not a boolean expression"
-//   - But combined expressions like "BoolField == true" or "1==1" work fine
+//   - Standalone "true" is converted to AlwaysTrueExpr
+//   - Standalone "false" is converted to AlwaysFalseExpr (UnaryExpr(Not, AlwaysTrueExpr))
+//   - Combined expressions like "BoolField == true" or "1==1" work fine
 //   - After rewriting, "1==1" becomes AlwaysTrueExpr, "1==2" becomes AlwaysFalseExpr
 func TestExpr_BooleanLiteral(t *testing.T) {
 	schema := newTestSchema(true)
 	helper, err := typeutil.CreateSchemaHelper(schema)
 	require.NoError(t, err)
 
-	// Case 1: standalone "true" / "false" should fail ParseExpr
-	// because VisitBoolean sets nodeDependent=true, and canBeExecuted requires nodeDependent=false
-	standaloneBoolExprs := []string{
-		"true",
-		"false",
-		"True",
-		"False",
-		"TRUE",
-		"FALSE",
-	}
-	for _, exprStr := range standaloneBoolExprs {
+	// Case 1: standalone "true" variants → AlwaysTrueExpr
+	for _, exprStr := range []string{"true", "True", "TRUE"} {
 		expr, err := ParseExpr(helper, exprStr, nil)
-		assert.Error(t, err, "standalone %q should fail", exprStr)
-		assert.Nil(t, expr, "standalone %q should return nil expr", exprStr)
-		assert.Contains(t, err.Error(), "predicate is not a boolean expression",
-			"standalone %q error message mismatch", exprStr)
+		require.NoError(t, err, "standalone %q should succeed", exprStr)
+		assert.NotNil(t, expr.GetAlwaysTrueExpr(),
+			"standalone %q should become AlwaysTrueExpr", exprStr)
 	}
 
-	// Case 2: verify that handleExpr (internal) does parse them into ValueExpr with Bool
-	// This shows the ANTLR + visitor layer works, but the outer canBeExecuted gate blocks it
+	// Case 1b: standalone "false" variants → AlwaysFalseExpr
+	for _, exprStr := range []string{"false", "False", "FALSE"} {
+		expr, err := ParseExpr(helper, exprStr, nil)
+		require.NoError(t, err, "standalone %q should succeed", exprStr)
+		ue := expr.GetUnaryExpr()
+		require.NotNil(t, ue, "standalone %q should be AlwaysFalseExpr", exprStr)
+		assert.Equal(t, planpb.UnaryExpr_Not, ue.GetOp())
+		assert.NotNil(t, ue.GetChild().GetAlwaysTrueExpr())
+	}
+
+	// Case 2: verify that handleExpr (internal) parses them into ValueExpr with Bool
 	for _, exprStr := range []string{"true", "false"} {
 		ret := handleExpr(helper, exprStr)
 		ewt, ok := ret.(*ExprWithType)
@@ -3450,5 +4425,77 @@ func TestExpr_BooleanLiteral(t *testing.T) {
 		require.NotNil(t, ue, "should be AlwaysFalseExpr")
 		assert.Equal(t, planpb.UnaryExpr_Not, ue.GetOp())
 		assert.NotNil(t, ue.GetChild().GetAlwaysTrueExpr())
+	})
+
+	// Case 7: boolean literal mixed with expression (issue #48443)
+	t.Run("true_or_expr", func(t *testing.T) {
+		// true or (Int64Field > 50) → AlwaysTrueExpr (short-circuit)
+		expr, err := ParseExpr(helper, "true or (Int64Field > 50)", nil)
+		require.NoError(t, err)
+		assert.NotNil(t, expr.GetAlwaysTrueExpr(),
+			"\"true or expr\" should become AlwaysTrueExpr")
+	})
+
+	t.Run("expr_or_true", func(t *testing.T) {
+		// (Int64Field > 50) or true → AlwaysTrueExpr (short-circuit)
+		expr, err := ParseExpr(helper, "(Int64Field > 50) or true", nil)
+		require.NoError(t, err)
+		assert.NotNil(t, expr.GetAlwaysTrueExpr(),
+			"\"expr or true\" should become AlwaysTrueExpr")
+	})
+
+	t.Run("false_or_expr", func(t *testing.T) {
+		// false or (Int64Field > 50) → Int64Field > 50
+		expr, err := ParseExpr(helper, "false or (Int64Field > 50)", nil)
+		require.NoError(t, err)
+		assert.NotNil(t, expr.GetUnaryRangeExpr(),
+			"\"false or expr\" should return the expr itself")
+	})
+
+	t.Run("true_and_expr", func(t *testing.T) {
+		// true and (Int64Field > 50) → Int64Field > 50
+		expr, err := ParseExpr(helper, "true and (Int64Field > 50)", nil)
+		require.NoError(t, err)
+		assert.NotNil(t, expr.GetUnaryRangeExpr(),
+			"\"true and expr\" should return the expr itself")
+	})
+
+	t.Run("expr_and_true", func(t *testing.T) {
+		// (Int64Field > 50) and true → Int64Field > 50
+		expr, err := ParseExpr(helper, "(Int64Field > 50) and true", nil)
+		require.NoError(t, err)
+		assert.NotNil(t, expr.GetUnaryRangeExpr(),
+			"\"expr and true\" should return the expr itself")
+	})
+
+	t.Run("false_and_expr", func(t *testing.T) {
+		// false and (Int64Field > 50) → AlwaysFalseExpr (short-circuit)
+		expr, err := ParseExpr(helper, "false and (Int64Field > 50)", nil)
+		require.NoError(t, err)
+		ue := expr.GetUnaryExpr()
+		require.NotNil(t, ue, "\"false and expr\" should become AlwaysFalseExpr")
+		assert.Equal(t, planpb.UnaryExpr_Not, ue.GetOp())
+		assert.NotNil(t, ue.GetChild().GetAlwaysTrueExpr())
+	})
+
+	t.Run("expr_and_false", func(t *testing.T) {
+		// (Int64Field > 50) and false → AlwaysFalseExpr (short-circuit)
+		expr, err := ParseExpr(helper, "(Int64Field > 50) and false", nil)
+		require.NoError(t, err)
+		ue := expr.GetUnaryExpr()
+		require.NotNil(t, ue, "\"expr and false\" should become AlwaysFalseExpr")
+		assert.Equal(t, planpb.UnaryExpr_Not, ue.GetOp())
+		assert.NotNil(t, ue.GetChild().GetAlwaysTrueExpr())
+	})
+
+	// Case 8: non-boolean literal with logical operators should still fail
+	t.Run("int_or_expr", func(t *testing.T) {
+		_, err := ParseExpr(helper, "1 or (Int64Field > 50)", nil)
+		assert.Error(t, err)
+	})
+
+	t.Run("string_and_expr", func(t *testing.T) {
+		_, err := ParseExpr(helper, "\"hello\" and (Int64Field > 50)", nil)
+		assert.Error(t, err)
 	})
 }

@@ -1,15 +1,16 @@
 package indexparamcheck
 
 import (
+	"context"
 	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/util/metric"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/util/metric"
 )
 
 func Test_raftIvfFlatChecker_CheckTrain(t *testing.T) {
@@ -88,7 +89,7 @@ func Test_raftIvfFlatChecker_CheckTrain(t *testing.T) {
 
 	c, _ := GetIndexCheckerMgrInstance().GetChecker("GPU_IVF_FLAT")
 	if c == nil {
-		log.Error("can not get index checker instance, please enable GPU and rerun it")
+		mlog.Error(context.TODO(), "can not get index checker instance, please enable GPU and rerun it")
 		return
 	}
 	for _, test := range cases {
@@ -163,7 +164,7 @@ func Test_raftIvfFlatChecker_CheckValidDataType(t *testing.T) {
 
 	c, _ := GetIndexCheckerMgrInstance().GetChecker("GPU_IVF_FLAT")
 	if c == nil {
-		log.Error("can not get index checker instance, please enable GPU and rerun it")
+		mlog.Error(context.TODO(), "can not get index checker instance, please enable GPU and rerun it")
 		return
 	}
 	for _, test := range cases {

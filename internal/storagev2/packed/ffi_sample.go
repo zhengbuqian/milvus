@@ -25,10 +25,14 @@ package packed
 import "C"
 
 import (
-	"fmt"
+	"runtime"
 	"unsafe"
 
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexpb"
+	"google.golang.org/protobuf/proto"
+
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/indexpb"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
 )
 
 // SampleExternalFieldSizes samples rows from an external segment via Take API
@@ -44,31 +48,53 @@ func SampleExternalFieldSizes(
 	collectionID int64,
 	externalSource string,
 	externalSpec string,
+	schema *schemapb.CollectionSchema,
 	storageConfig *indexpb.StorageConfig,
-	specExtfs map[string]string,
 ) (map[string]int64, error) {
 	if storageConfig == nil {
-		return nil, fmt.Errorf("storageConfig is required for SampleExternalFieldSizes")
+		return nil, merr.WrapErrStorageMsg("storageConfig is required for SampleExternalFieldSizes")
+	}
+	if manifestPath == "" {
+		return nil, merr.WrapErrStorageMsg("manifest_path is empty for SampleExternalFieldSizes")
 	}
 
-	// Build properties the same way as explore/manifest calls:
-	// base from StorageConfig + extfs overrides for cross-bucket resolution
-	extfsPrefix := ExtfsPrefixForCollection(collectionID)
-	extfsOverrides := BuildExtfsOverrides(externalSource, storageConfig, extfsPrefix, specExtfs)
-	cProperties, err := MakePropertiesFromStorageConfig(storageConfig, extfsOverrides)
+	cProperties, err := MakePropertiesFromStorageConfig(storageConfig, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create properties: %w", err)
+		return nil, merr.Wrap(err, "failed to create properties")
 	}
 	defer C.loon_properties_free(cProperties)
+	if err := injectExternalSpecProperties(cProperties, collectionID, externalSource, externalSpec); err != nil {
+		return nil, merr.Wrap(err, "inject extfs")
+	}
 
 	cManifestPath := C.CString(manifestPath)
 	defer C.free(unsafe.Pointer(cManifestPath))
+
+	var cSchema C.CProto
+	var schemaBytes []byte
+	if schema != nil {
+		schemaForSample := schema
+		if schemaForSample.GetExternalSpec() == "" && externalSpec != "" {
+			schemaForSample = proto.Clone(schemaForSample).(*schemapb.CollectionSchema)
+			schemaForSample.ExternalSpec = externalSpec
+		}
+		schemaBytes, err = proto.Marshal(schemaForSample)
+		if err != nil {
+			return nil, merr.WrapErrStorage(err, "failed to marshal collection schema")
+		}
+		if len(schemaBytes) > 0 {
+			cSchema.proto_blob = unsafe.Pointer(&schemaBytes[0])
+			cSchema.proto_size = C.int64_t(len(schemaBytes))
+		}
+	}
 
 	var result C.CFieldMemSizeList
 	status := C.SampleExternalSegmentFieldSizes(
 		cManifestPath, C.int(sampleRows),
 		C.int64_t(collectionID), cProperties,
+		cSchema,
 		&result)
+	runtime.KeepAlive(schemaBytes)
 	defer C.FreeCFieldMemSizeList(&result)
 
 	if err := ConsumeCStatusIntoError(&status); err != nil {

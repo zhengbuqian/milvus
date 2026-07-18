@@ -25,11 +25,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/suite"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
 )
 
 type RestfulAccessInfoSuite struct {
@@ -151,6 +152,46 @@ func (s *RestfulAccessInfoSuite) TestDbName() {
 	s.Equal("test", result[0])
 }
 
+func (s *RestfulAccessInfoSuite) TestClientRequestTime() {
+	// no request / header -> Unknown, consistent with the gRPC access log
+	result := Get(s.info, "$client_request_time")
+	s.Equal(Unknown, result[0])
+
+	req, err := http.NewRequest(http.MethodPost, "/", nil)
+	s.NoError(err)
+	s.ctx.Request = req
+
+	// missing header -> Unknown
+	result = Get(s.info, "$client_request_time")
+	s.Equal(Unknown, result[0])
+
+	// header present -> formatted client time
+	ts := time.Now().UnixMilli()
+	req.Header.Set(common.ClientRequestMsecKey, fmt.Sprint(ts))
+	result = Get(s.info, "$client_request_time")
+	s.Equal(time.UnixMilli(ts).Format(timeFormat), result[0])
+}
+
+func (s *RestfulAccessInfoSuite) TestCollectionName() {
+	result := Get(s.info, "$collection_name")
+	s.Equal(Unknown, result[0])
+
+	// singular collection name
+	s.info.req = &milvuspb.QueryRequest{CollectionName: "test_collection"}
+	result = Get(s.info, "$collection_name")
+	s.Equal("test_collection", result[0])
+
+	// requests carrying a list of collection names (e.g. Flush)
+	s.info.req = &milvuspb.FlushRequest{CollectionNames: []string{"coll_a", "coll_b"}}
+	result = Get(s.info, "$collection_name")
+	s.Equal(fmt.Sprint([]string{"coll_a", "coll_b"}), result[0])
+
+	// REST v2 rename builds a RenameCollectionRequest; log both source and target
+	s.info.req = &milvuspb.RenameCollectionRequest{OldName: "old_coll", NewName: "new_coll"}
+	result = Get(s.info, "$collection_name")
+	s.Equal("old_coll->new_coll", result[0])
+}
+
 func (s *RestfulAccessInfoSuite) TestSdkInfo() {
 	result := Get(s.info, "$sdk_version")
 	s.Equal("Restful", result[0])
@@ -185,6 +226,19 @@ func (s *RestfulAccessInfoSuite) TestOutputFields() {
 	s.info.InitReq()
 	result = Get(s.info, "$output_fields")
 	s.Equal(fmt.Sprint(fields), result[0])
+}
+
+func (s *RestfulAccessInfoSuite) TestPartialUpdate() {
+	// non-Upsert request -> NotAny
+	s.Equal(NotAny, Get(s.info, "$partial_update")[0])
+
+	s.ctx.Set(ContextRequest, &milvuspb.UpsertRequest{PartialUpdate: false})
+	s.info.InitReq()
+	s.Equal("false", Get(s.info, "$partial_update")[0])
+
+	s.ctx.Set(ContextRequest, &milvuspb.UpsertRequest{PartialUpdate: true})
+	s.info.InitReq()
+	s.Equal("true", Get(s.info, "$partial_update")[0])
 }
 
 func (s *RestfulAccessInfoSuite) TestConsistencyLevel() {

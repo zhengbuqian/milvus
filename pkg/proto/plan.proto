@@ -1,7 +1,7 @@
 syntax = "proto3";
 package milvus.proto.plan;
 
-option go_package = "github.com/milvus-io/milvus/pkg/v2/proto/planpb";
+option go_package = "github.com/milvus-io/milvus/pkg/v3/proto/planpb";
 import "schema.proto";
 import "common.proto";
 
@@ -22,6 +22,8 @@ enum OpType {
   TextMatch = 13;   // text match
   PhraseMatch = 14; // phrase match
   InnerMatch = 15; // substring (e.g., "%value%")
+  RegexMatch = 16; // regex substring match (e.g., =~ "pattern")
+  TextMatchFuzzy = 17; // text match within a max edit distance
 };
 
 enum ArithOpType {
@@ -32,6 +34,9 @@ enum ArithOpType {
   Div = 4;
   Mod = 5;
   ArrayLength = 6;
+  BitAnd = 7;
+  BitOr = 8;
+  BitXor = 9;
 };
 
 enum VectorType {
@@ -353,7 +358,14 @@ message QueryPlanNode {
   repeated int64 group_by_field_ids = 4;
   repeated Aggregate aggregates = 5;
   repeated OrderByField order_by_fields = 6;  // ORDER BY specifications
+  optional QueryIteratorCursor query_iterator_cursor = 7;
 };
+
+message QueryIteratorCursor {
+  optional int64 last_int_pk = 1;
+  optional string last_str_pk = 2;
+  int64 last_element_offset = 3;
+}
 
 enum FunctionType{
   FunctionTypeWeight = 0;
@@ -402,4 +414,5 @@ message PlanNode {
   PlanOption plan_options = 7;
   ScoreOption score_option = 8;
   optional string namespace = 9;
+  repeated schema.FunctionChain querynode_function_chains = 10;
 }

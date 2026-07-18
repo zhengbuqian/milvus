@@ -26,8 +26,8 @@ import (
 
 	"github.com/milvus-io/milvus/internal/mocks"
 	"github.com/milvus-io/milvus/internal/storage"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
 )
 
 func TestListInsertLogs_Success(t *testing.T) {
@@ -121,5 +121,5 @@ func TestListInsertLogs_ParseFieldIDError(t *testing.T) {
 	_, err := listInsertLogs(ctx, cm, "prefix/", 3)
 
 	assert.Error(t, err)
-	assert.True(t, errors.Is(err, merr.ErrImportFailed), "parse error must be wrapped as an import failure")
+	assert.True(t, errors.Is(err, merr.ErrImportSysFailed), "parse-field-id IO error must be wrapped as a server-side import failure")
 }

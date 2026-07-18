@@ -28,21 +28,21 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/datanode/compactor"
 	"github.com/milvus-io/milvus/internal/mocks"
 	"github.com/milvus-io/milvus/internal/mocks/flushcommon/mock_util"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/indexcgowrapper"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexcgopb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/workerpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/tsoutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/indexcgopb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/indexpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/workerpb"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/tsoutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 func TestTaskStatsSuite(t *testing.T) {
@@ -80,7 +80,7 @@ func (s *TaskStatsSuite) GenSegmentWriterWithBM25(magic int64) {
 
 	v := storage.Value{
 		PK:        storage.NewInt64PrimaryKey(magic),
-		Timestamp: int64(tsoutil.ComposeTSByTime(getMilvusBirthday(), 0)),
+		Timestamp: int64(tsoutil.ComposeTSByTime(getMilvusBirthday())),
 		Value:     genRowWithBM25(magic),
 	}
 	err = segWriter.Write(&v)
@@ -212,6 +212,29 @@ func (s *TaskStatsSuite) TestBuildIndexParams() {
 		s.Equal(storage.StorageV2, params.StorageVersion)
 		s.NotNil(params.SegmentInsertFiles)
 	})
+
+	s.Run("test external source spec params", func() {
+		req := &workerpb.CreateStatsRequest{
+			TaskID:                    1,
+			CollectionID:              2,
+			PartitionID:               3,
+			TargetSegmentID:           4,
+			TaskVersion:               5,
+			CurrentScalarIndexVersion: int32(1),
+			StorageVersion:            storage.StorageV3,
+			InsertLogs:                []*datapb.FieldBinlog{},
+			StorageConfig:             &indexpb.StorageConfig{RootPath: "/test/path"},
+			Schema: &schemapb.CollectionSchema{
+				ExternalSource: "minio://localhost:9000/a-bucket/external",
+				ExternalSpec:   `{"format":"parquet"}`,
+			},
+		}
+
+		params := buildIndexParams(req, nil, nil, &indexcgopb.StorageConfig{}, nil, "")
+
+		s.Equal(req.GetSchema().GetExternalSource(), params.GetExternalSource())
+		s.Equal(req.GetSchema().GetExternalSpec(), params.GetExternalSpec())
+	})
 }
 
 func genCollectionSchemaWithBM25() *schemapb.CollectionSchema {
@@ -265,7 +288,7 @@ func genCollectionSchemaWithBM25() *schemapb.CollectionSchema {
 }
 
 func genRowWithBM25(magic int64) map[int64]interface{} {
-	ts := tsoutil.ComposeTSByTime(getMilvusBirthday(), 0)
+	ts := tsoutil.ComposeTSByTime(getMilvusBirthday())
 	return map[int64]interface{}{
 		common.RowIDField:     magic,
 		common.TimeStampField: int64(ts),
@@ -299,6 +322,7 @@ func TestCreateJSONKeyStats_NullableJSONMissingFieldBinlog(t *testing.T) {
 		StorageConfig:          &indexpb.StorageConfig{RootPath: "/root"},
 		SubJobType:             indexpb.StatsSubJob_JsonKeyIndexJob,
 		StorageVersion:         1,
+		NumRows:                10,
 		Schema: &schemapb.CollectionSchema{
 			Fields: []*schemapb.FieldSchema{
 				{FieldID: 100, Name: "pk", DataType: schemapb.DataType_Int64},
@@ -315,8 +339,10 @@ func TestCreateJSONKeyStats_NullableJSONMissingFieldBinlog(t *testing.T) {
 	}
 
 	var gotInsertFiles []string
+	var gotNumRows int64
 	m := mockey.Mock(indexcgowrapper.CreateJSONKeyStats).To(func(_ context.Context, info *indexcgopb.BuildIndexInfo) (*indexcgowrapper.JSONKeyStatsResult, error) {
 		gotInsertFiles = info.InsertFiles
+		gotNumRows = info.GetNumRows()
 		return &indexcgowrapper.JSONKeyStatsResult{Files: map[string]int64{}}, nil
 	}).Build()
 	defer m.UnPatch()
@@ -328,6 +354,7 @@ func TestCreateJSONKeyStats_NullableJSONMissingFieldBinlog(t *testing.T) {
 		insertBinlogs, 256, 0.3, 81920)
 	require.NoError(t, err)
 	require.Empty(t, gotInsertFiles)
+	require.Equal(t, int64(10), gotNumRows)
 }
 
 func TestCreateJSONKeyStats_NonNullableJSONMissingFieldBinlog(t *testing.T) {

@@ -20,9 +20,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/indexpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/querypb"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
 )
 
 // compoundStatsLogIdx is the log index that identifies compound stats format.
@@ -289,6 +290,9 @@ func (r *StatsResolver) TextAndJSONIndexStatsWithBasePaths() *StatsResultWithErr
 			}
 
 		case "json_stats":
+			if _, ok := r.jsonKeyStats[fieldID]; !ok {
+				continue
+			}
 			// For V3: extract basePath and convert to relative paths
 			statBasePath := basePath + "/_stats/" + key
 			resolvedPaths := r.resolveStatPaths(stat.Paths)
@@ -364,7 +368,7 @@ func (r *StatsResolver) loadManifest() error {
 
 	stats, err := GetManifestStats(r.manifestPath, r.storageConfig)
 	if err != nil {
-		r.manifestErr = fmt.Errorf("failed to get manifest stats: %w", err)
+		r.manifestErr = merr.Wrap(err, "failed to get manifest stats")
 		return r.manifestErr
 	}
 	r.manifestStats = stats

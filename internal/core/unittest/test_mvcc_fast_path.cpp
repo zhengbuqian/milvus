@@ -17,6 +17,8 @@
 #include "common/Schema.h"
 #include "exec/QueryContext.h"
 #include "exec/Task.h"
+#include "expr/ITypeExpr.h"
+#include "pb/plan.pb.h"
 #include "plan/PlanNode.h"
 #include "segcore/SegcoreConfig.h"
 #include "segcore/SegmentSealed.h"
@@ -147,7 +149,7 @@ TEST_F(MvccFastPathTest, Level1_SealedNoDeletes_SkipFilter) {
 
     // Verify output bitmap is all zeros (no rows filtered out)
     ASSERT_NE(result.output, nullptr);
-    auto col = std::dynamic_pointer_cast<ColumnVector>(result.output->child(0));
+    auto col = std::static_pointer_cast<ColumnVector>(result.output->child(0));
     ASSERT_NE(col, nullptr);
     TargetBitmapView view(col->GetRawData(), col->size());
     EXPECT_EQ(view.count(), 0)
@@ -169,7 +171,7 @@ TEST_F(MvccFastPathTest, Level2_SealedWithDeletes_DeleteMaskOnly) {
 
     // Verify output bitmap has some bits set (deleted rows marked)
     ASSERT_NE(result.output, nullptr);
-    auto col = std::dynamic_pointer_cast<ColumnVector>(result.output->child(0));
+    auto col = std::static_pointer_cast<ColumnVector>(result.output->child(0));
     ASSERT_NE(col, nullptr);
     TargetBitmapView view(col->GetRawData(), col->size());
     EXPECT_GT(view.count(), 0)
@@ -306,7 +308,7 @@ TEST_F(MvccFastPathTest, Level1_NoCachePollution_SequentialQueries) {
     auto result1 = RunMvccPlan(segment.get());
     ASSERT_TRUE(result1.all_rows_visible);
     auto col1 =
-        std::dynamic_pointer_cast<ColumnVector>(result1.output->child(0));
+        std::static_pointer_cast<ColumnVector>(result1.output->child(0));
     ASSERT_NE(col1, nullptr);
     TargetBitmapView view1(col1->GetRawData(), col1->size());
     EXPECT_EQ(view1.count(), 0);
@@ -319,7 +321,7 @@ TEST_F(MvccFastPathTest, Level1_NoCachePollution_SequentialQueries) {
     auto result2 = RunMvccPlan(segment.get());
     ASSERT_TRUE(result2.all_rows_visible);
     auto col2 =
-        std::dynamic_pointer_cast<ColumnVector>(result2.output->child(0));
+        std::static_pointer_cast<ColumnVector>(result2.output->child(0));
     ASSERT_NE(col2, nullptr);
     TargetBitmapView view2(col2->GetRawData(), col2->size());
     EXPECT_EQ(view2.count(), 0)
@@ -340,7 +342,7 @@ TEST_F(MvccFastPathTest, VisibilityFilterDisabled_AllRowsVisible) {
 
     // Verify output bitmap is all zeros (no rows filtered out)
     ASSERT_NE(result.output, nullptr);
-    auto col = std::dynamic_pointer_cast<ColumnVector>(result.output->child(0));
+    auto col = std::static_pointer_cast<ColumnVector>(result.output->child(0));
     ASSERT_NE(col, nullptr);
     TargetBitmapView view(col->GetRawData(), col->size());
     EXPECT_EQ(view.count(), 0)
@@ -361,11 +363,64 @@ TEST_F(MvccFastPathTest, VisibilityFilterDisabled_DeletesIgnored) {
         << "visibilityFilterEnabled=false should ignore deletes";
 
     ASSERT_NE(result.output, nullptr);
-    auto col = std::dynamic_pointer_cast<ColumnVector>(result.output->child(0));
+    auto col = std::static_pointer_cast<ColumnVector>(result.output->child(0));
     ASSERT_NE(col, nullptr);
     TargetBitmapView view(col->GetRawData(), col->size());
     EXPECT_EQ(view.count(), 0)
         << "visibilityFilterEnabled=false should not mask deleted rows";
+}
+
+// ---------------------------------------------------------------------------
+// visibilityFilterEnabled=false must not make VectorSearchNode skip an upstream
+// scalar filter bitset.
+// ---------------------------------------------------------------------------
+TEST_F(MvccFastPathTest, VisibilityFilterDisabled_PreservesUpstreamFilter) {
+    VisibilityFilterGuard guard(false);
+    auto segment = CreateSealedSegment();
+
+    proto::plan::GenericValue value;
+    value.set_int64_val(N_ / 2);
+    auto expr = std::make_shared<expr::UnaryRangeFilterExpr>(
+        expr::ColumnInfo(int64_fid_, DataType::INT64),
+        proto::plan::OpType::LessThan,
+        value,
+        std::vector<proto::plan::GenericValue>{});
+
+    auto filter_node = std::make_shared<plan::FilterBitsNode>("filter_1", expr);
+    auto mvcc_node = std::make_shared<plan::MvccNode>(
+        "mvcc_1", std::vector<plan::PlanNodePtr>{filter_node});
+    auto plan = plan::PlanFragment(mvcc_node);
+
+    auto query_context = std::make_shared<QueryContext>(
+        "test_vis_disabled_with_filter",
+        segment.get(),
+        N_,
+        MAX_TIMESTAMP,
+        0,
+        0,
+        query::PlanOptions{false},
+        std::make_shared<QueryConfig>(
+            std::unordered_map<std::string, std::string>{}));
+
+    auto task =
+        Task::Create("task_vis_disabled_with_filter", plan, 0, query_context);
+    RowVectorPtr output;
+    for (;;) {
+        auto current = task->Next();
+        if (!current) {
+            break;
+        }
+        output = current;
+    }
+
+    EXPECT_FALSE(query_context->get_all_rows_visible())
+        << "upstream scalar filter bitset must still be passed downstream";
+    ASSERT_NE(output, nullptr);
+    auto col = std::static_pointer_cast<ColumnVector>(output->child(0));
+    ASSERT_NE(col, nullptr);
+    TargetBitmapView view(col->GetRawData(), col->size());
+    EXPECT_GT(view.count(), 0)
+        << "upstream scalar filter should still filter out some rows";
 }
 
 // ---------------------------------------------------------------------------

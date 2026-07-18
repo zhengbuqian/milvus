@@ -24,18 +24,18 @@ package proxy
 import "C"
 
 import (
+	"context"
 	"runtime"
 	"sync"
 	"unsafe"
 
 	"go.uber.org/atomic"
-	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	_ "github.com/milvus-io/milvus/internal/util/cgo"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/util/conc"
-	"github.com/milvus-io/milvus/pkg/v2/util/hardware"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/util/conc"
+	"github.com/milvus-io/milvus/pkg/v3/util/hardware"
 )
 
 var (
@@ -53,7 +53,7 @@ func initDynamicPool() {
 		)
 
 		dp.Store(pool)
-		log.Info("init dynamicPool done", zap.Int("size", hardware.GetCPUNum()))
+		mlog.Info(context.TODO(), "init dynamicPool done", mlog.Int("size", hardware.GetCPUNum()))
 	})
 }
 

@@ -19,18 +19,17 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
-	"go.uber.org/zap"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/option"
 
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/objectstorage/aliyun"
-	"github.com/milvus-io/milvus/pkg/v2/objectstorage/gcp"
-	"github.com/milvus-io/milvus/pkg/v2/objectstorage/huawei"
-	"github.com/milvus-io/milvus/pkg/v2/objectstorage/tencent"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/retry"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/objectstorage/aliyun"
+	"github.com/milvus-io/milvus/pkg/v3/objectstorage/gcp"
+	"github.com/milvus-io/milvus/pkg/v3/objectstorage/huawei"
+	"github.com/milvus-io/milvus/pkg/v3/objectstorage/tencent"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/retry"
 )
 
 const (
@@ -157,19 +156,19 @@ func NewMinioClient(ctx context.Context, c *Config) (*minio.Client, error) {
 	checkBucketFn := func() error {
 		bucketExists, err = minIOClient.BucketExists(ctx, c.BucketName)
 		if err != nil {
-			log.Warn("failed to check blob bucket exist", zap.String("bucket", c.BucketName), zap.Error(err))
+			mlog.Warn(ctx, "failed to check blob bucket exist", mlog.String("bucket", c.BucketName), mlog.Err(err))
 			return err
 		}
 		if !bucketExists {
 			if c.CreateBucket {
-				log.Info("blob bucket not exist, create bucket.", zap.String("bucket name", c.BucketName))
+				mlog.Info(ctx, "blob bucket not exist, create bucket.", mlog.String("bucket name", c.BucketName))
 				err := minIOClient.MakeBucket(ctx, c.BucketName, minio.MakeBucketOptions{})
 				if err != nil {
-					log.Warn("failed to create blob bucket", zap.String("bucket", c.BucketName), zap.Error(err))
+					mlog.Warn(ctx, "failed to create blob bucket", mlog.String("bucket", c.BucketName), mlog.Err(err))
 					return err
 				}
 			} else {
-				return fmt.Errorf("bucket %s not Existed", c.BucketName)
+				return merr.WrapErrParameterInvalidMsg("bucket %s not Existed", c.BucketName)
 			}
 		}
 		return nil
@@ -344,7 +343,7 @@ func NewGcpObjectStorageClient(ctx context.Context, c *Config) (*storage.Client,
 		bucket := client.Bucket(c.BucketName)
 		_, err = bucket.Attrs(ctx)
 		if errors.Is(err, storage.ErrBucketNotExist) && c.CreateBucket {
-			log.Info("gcs bucket does not exist, create bucket.", zap.String("bucket name", c.BucketName))
+			mlog.Info(ctx, "gcs bucket does not exist, create bucket.", mlog.String("bucket name", c.BucketName))
 			err = client.Bucket(c.BucketName).Create(ctx, projectId, nil)
 			if err != nil {
 				return err
@@ -390,16 +389,16 @@ func newTLSHTTPClient(minVersion string) (*http.Client, error) {
 
 func getProjectId(gcpCredentialJSON string) (string, error) {
 	if gcpCredentialJSON == "" {
-		return "", errors.New("the JSON string is empty")
+		return "", merr.WrapErrParameterInvalidMsg("the JSON string is empty")
 	}
 	var data map[string]interface{}
 	if err := json.Unmarshal([]byte(gcpCredentialJSON), &data); err != nil {
-		return "", errors.New("failed to parse Google Cloud credentials as JSON")
+		return "", merr.WrapErrParameterInvalidMsg("failed to parse Google Cloud credentials as JSON")
 	}
 	propertyValue, ok := data["project_id"]
 	projectId := fmt.Sprintf("%v", propertyValue)
 	if !ok {
-		return "", errors.New("projectId doesn't exist")
+		return "", merr.WrapErrParameterInvalidMsg("projectId doesn't exist")
 	}
 	return projectId, nil
 }

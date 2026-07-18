@@ -14,13 +14,16 @@
 # Update KNOWHERE_VERSION for the first occurrence
 milvus_add_pkg_config("knowhere")
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY INCLUDE_DIRECTORIES "")
-set( KNOWHERE_VERSION 2b560877 )
+# zilliztech/knowhere#1699 (iterator error-code interface) that this segcore
+# adaptation depends on has landed on knowhere main and is included in the
+# v3.0.6 release tag, so pin to the tagged release instead of a raw commit.
+set( KNOWHERE_VERSION v3.0.6 )
 set( GIT_REPOSITORY  "https://github.com/zilliztech/knowhere.git")
 
 message(STATUS "Knowhere repo: ${GIT_REPOSITORY}")
 message(STATUS "Knowhere version: ${KNOWHERE_VERSION}")
 
-message(STATUS "Building knowhere-${KNOWHERE_SOURCE_VER} from source")
+message(STATUS "Building knowhere-${KNOWHERE_VERSION} from source")
 message(STATUS ${CMAKE_BUILD_TYPE})
 
 if ( BUILD_DISK_ANN STREQUAL "ON" )
@@ -37,6 +40,8 @@ endif()
 
 if ( MILVUS_GPU_VERSION STREQUAL "ON" )
     set(WITH_CUVS ON CACHE BOOL "" FORCE )
+    set(raft_DIR "${FETCHCONTENT_BASE_DIR}/raft-build" CACHE PATH "Path to raft build directory" FORCE)
+    set(rmm_DIR "${FETCHCONTENT_BASE_DIR}/rmm-build" CACHE PATH "Path to rmm build directory" FORCE)
 endif ()
 
 if ( WITH_SVS STREQUAL "ON" )
@@ -77,6 +82,26 @@ if ( WITH_SVS STREQUAL "ON" )
                 FILES_MATCHING PATTERN "libsvs_runtime.so*")
     else()
         message(WARNING "SVS enabled but ${_SVS_LIB_DIR} not found \u2014 libsvs_runtime.so will not be installed")
+    endif()
+endif()
+
+if ( WITH_CUVS STREQUAL "ON" )
+    set( _RMM_LIB_DIR "${FETCHCONTENT_BASE_DIR}/rmm-build" )
+    if ( EXISTS "${_RMM_LIB_DIR}" )
+        install(DIRECTORY ${_RMM_LIB_DIR}/
+                DESTINATION ${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}
+                FILES_MATCHING PATTERN "librmm.so*")
+    else()
+        message(WARNING "cuVS enabled but ${_RMM_LIB_DIR} not found \u2014 librmm.so will not be installed")
+    endif()
+
+    set( _RAPIDS_LOGGER_LIB_DIR "${FETCHCONTENT_BASE_DIR}/rapids_logger-build" )
+    if ( EXISTS "${_RAPIDS_LOGGER_LIB_DIR}" )
+        install(DIRECTORY ${_RAPIDS_LOGGER_LIB_DIR}/
+                DESTINATION ${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}
+                FILES_MATCHING PATTERN "librapids_logger.so*")
+    else()
+        message(WARNING "cuVS enabled but ${_RAPIDS_LOGGER_LIB_DIR} not found \u2014 librapids_logger.so will not be installed")
     endif()
 endif()
 

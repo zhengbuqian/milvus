@@ -18,28 +18,31 @@ package httpserver
 
 import (
 	"github.com/milvus-io/milvus/internal/proxy"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/util/metric"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/util/metric"
 )
 
 // v2
 const (
 	// --- category ---
-	DataBaseCategory        = "/databases/"
-	CollectionCategory      = "/collections/"
-	EntityCategory          = "/entities/"
-	PartitionCategory       = "/partitions/"
-	UserCategory            = "/users/"
-	RoleCategory            = "/roles/"
-	IndexCategory           = "/indexes/"
-	AliasCategory           = "/aliases/"
-	ImportJobCategory       = "/jobs/import/"
-	PrivilegeGroupCategory  = "/privilege_groups/"
-	CollectionFieldCategory = "/collections/fields/"
-	ResourceGroupCategory   = "/resource_groups/"
-	SegmentCategory         = "/segments/"
-	QuotaCenterCategory     = "/quotacenter/"
-	CommonCategory          = "/common/"
+	DataBaseCategory              = "/databases/"
+	CollectionCategory            = "/collections/"
+	EntityCategory                = "/entities/"
+	PartitionCategory             = "/partitions/"
+	UserCategory                  = "/users/"
+	RoleCategory                  = "/roles/"
+	IndexCategory                 = "/indexes/"
+	AliasCategory                 = "/aliases/"
+	ImportJobCategory             = "/jobs/import/"
+	SnapshotJobCategory           = "/jobs/snapshot/"
+	ExternalCollectionJobCategory = "/jobs/external_collection/"
+	PrivilegeGroupCategory        = "/privilege_groups/"
+	CollectionFieldCategory       = "/collections/fields/"
+	CollectionStructFieldCategory = "/collections/struct_fields/"
+	ResourceGroupCategory         = "/resource_groups/"
+	SegmentCategory               = "/segments/"
+	QuotaCenterCategory           = "/quotacenter/"
+	CommonCategory                = "/common/"
 
 	ListAction           = "list"
 	HasAction            = "has"
@@ -73,6 +76,8 @@ const (
 	AddFunctionAction               = "add_function"
 	AlterFunctionAction             = "alter_function"
 	DropFunctionAction              = "drop_function"
+	AddFunctionFieldAction          = "add_function_field"
+	DropFunctionFieldAction         = "drop_function_field"
 	AddAction                       = `add`
 	DropPropertiesAction            = "drop_properties"
 	CompactAction                   = "compact"
@@ -80,15 +85,22 @@ const (
 	FlushAction                     = "flush"
 	TruncateAction                  = "truncate"
 	GetProgressAction               = "get_progress" // deprecated, keep it for compatibility, use `/v2/vectordb/jobs/import/describe` instead
+	RestoreExternalAction           = "restore_external"
+	ExportAction                    = "export"
+	RefreshAction                   = "refresh"
 	AddPrivilegesToGroupAction      = "add_privileges_to_group"
 	RemovePrivilegesFromGroupAction = "remove_privileges_from_group"
 	TransferReplicaAction           = "transfer_replica"
 
 	RunAnalyzerAction = "run_analyzer"
+
+	CommitAction = "commit"
+	AbortAction  = "abort"
 )
 
 const (
 	ContextRequest                = "request"
+	ContextResponse               = "response"
 	ContextUsername               = "username"
 	ContextToken                  = "token"
 	VectorCollectionsPath         = "/vector/collections"
@@ -129,6 +141,7 @@ const (
 	HTTPHeaderAllowInt64     = "Accept-Type-Allow-Int64"
 	HTTPHeaderDBName         = "DB-Name"
 	HTTPHeaderRequestTimeout = "Request-Timeout"
+	HTTPHeaderMilvusTraceID  = "X-Milvus-Trace-Id"
 	HTTPReturnCode           = "code"
 	HTTPReturnMessage        = "message"
 	HTTPReturnData           = "data"
@@ -137,6 +150,7 @@ const (
 	HTTPReturnLoadState      = "loadState"
 	HTTPReturnLoadProgress   = "loadProgress"
 	HTTPReturnTopks          = "topks"
+	HTTPReturnAggTopks       = "aggTopks"
 
 	HTTPReturnHas = "has"
 

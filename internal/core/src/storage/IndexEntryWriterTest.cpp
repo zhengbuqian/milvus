@@ -13,28 +13,57 @@
 #include <gtest/gtest.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <future>
+#include <limits>
 #include <memory>
+#include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
+#include "folly/CancellationToken.h"
+#include "folly/ScopeGuard.h"
+#include "common/Common.h"
 #include "common/EasyAssert.h"
+#include "filemanager/InputStream.h"
 #include "test_utils/Constants.h"
 #include "milvus-storage/filesystem/fs.h"
 #include "storage/IndexEntryDirectStreamWriter.h"
 #include "storage/IndexEntryEncryptedLocalWriter.h"
 #include "storage/IndexEntryReader.h"
+#include "storage/EntryStreamUtils.h"
 #include "storage/PluginLoader.h"
 #include "storage/RemoteInputStream.h"
 #include "storage/RemoteOutputStream.h"
+#include "storage/ThreadPools.h"
 
 using namespace milvus::storage;
 
 namespace {
+
+class IndexEntryStreamConfigGuard {
+ public:
+    IndexEntryStreamConfigGuard()
+        : budget_(TransientMemoryBudget::GetLoadTransientBudget()),
+          capacity_bytes_(budget_.CapacityBytes()) {
+    }
+
+    ~IndexEntryStreamConfigGuard() {
+        budget_.SetCapacityBytes(capacity_bytes_);
+    }
+
+ private:
+    TransientMemoryBudget& budget_;
+    size_t capacity_bytes_;
+};
 
 // Simple XOR-based mock cipher for testing (NOT for production use!)
 class MockEncryptor : public plugin::IEncryptor {
@@ -127,6 +156,154 @@ class MockCipherPlugin : public plugin::ICipherPlugin {
     GetDecryptor(int64_t, int64_t, const std::string&) const override {
         return std::make_shared<MockDecryptor>();
     }
+};
+
+class DelayedFailingInputStream : public milvus::InputStream {
+ public:
+    struct Rule {
+        size_t offset;
+        std::chrono::milliseconds delay;
+        bool fail;
+    };
+
+    DelayedFailingInputStream(std::shared_ptr<milvus::InputStream> base,
+                              std::vector<Rule> rules)
+        : base_(std::move(base)), rules_(std::move(rules)) {
+    }
+
+    size_t
+    Size() const override {
+        return base_->Size();
+    }
+
+    bool
+    Seek(int64_t offset) override {
+        return base_->Seek(offset);
+    }
+
+    size_t
+    Tell() const override {
+        return base_->Tell();
+    }
+
+    bool
+    Eof() const override {
+        return base_->Eof();
+    }
+
+    size_t
+    Read(void* ptr, size_t size) override {
+        return base_->Read(ptr, size);
+    }
+
+    size_t
+    ReadAt(void* ptr, size_t offset, size_t size) override {
+        for (const auto& rule : rules_) {
+            if (rule.offset == offset) {
+                std::this_thread::sleep_for(rule.delay);
+                if (rule.fail) {
+                    return 0;
+                }
+                break;
+            }
+        }
+        return base_->ReadAt(ptr, offset, size);
+    }
+
+    size_t
+    Read(int fd, size_t size) override {
+        return base_->Read(fd, size);
+    }
+
+ private:
+    std::shared_ptr<milvus::InputStream> base_;
+    std::vector<Rule> rules_;
+};
+
+class TrackingDelayedInputStream : public milvus::InputStream {
+ public:
+    TrackingDelayedInputStream(std::shared_ptr<milvus::InputStream> base,
+                               size_t tracked_read_size,
+                               std::chrono::milliseconds delay)
+        : base_(std::move(base)),
+          tracked_read_size_(tracked_read_size),
+          delay_(delay) {
+    }
+
+    void
+    EnableTracking() {
+        tracking_enabled_.store(true);
+    }
+
+    size_t
+    MaxActiveReads() const {
+        return max_active_reads_.load();
+    }
+
+    size_t
+    Size() const override {
+        return base_->Size();
+    }
+
+    bool
+    Seek(int64_t offset) override {
+        return base_->Seek(offset);
+    }
+
+    size_t
+    Tell() const override {
+        return base_->Tell();
+    }
+
+    bool
+    Eof() const override {
+        return base_->Eof();
+    }
+
+    size_t
+    Read(void* ptr, size_t size) override {
+        return base_->Read(ptr, size);
+    }
+
+    size_t
+    ReadAt(void* ptr, size_t offset, size_t size) override {
+        if (!tracking_enabled_.load() || size != tracked_read_size_) {
+            return base_->ReadAt(ptr, offset, size);
+        }
+
+        auto active = active_reads_.fetch_add(1) + 1;
+        UpdateMaxActiveReads(active);
+        std::this_thread::sleep_for(delay_);
+        try {
+            auto bytes_read = base_->ReadAt(ptr, offset, size);
+            active_reads_.fetch_sub(1);
+            return bytes_read;
+        } catch (...) {
+            active_reads_.fetch_sub(1);
+            throw;
+        }
+    }
+
+    size_t
+    Read(int fd, size_t size) override {
+        return base_->Read(fd, size);
+    }
+
+ private:
+    void
+    UpdateMaxActiveReads(size_t active) {
+        auto current = max_active_reads_.load();
+        while (active > current &&
+               !max_active_reads_.compare_exchange_weak(current, active)) {
+        }
+    }
+
+    std::shared_ptr<milvus::InputStream> base_;
+    size_t tracked_read_size_;
+    std::chrono::milliseconds delay_;
+    std::atomic<bool> tracking_enabled_{false};
+    std::atomic<size_t> active_reads_{0};
+    std::atomic<size_t> max_active_reads_{0};
 };
 
 }  // namespace
@@ -772,8 +949,7 @@ TEST_F(IndexEntryEncryptedV3Test, EncryptedSmallEntryRoundtrip) {
     const size_t entry_size = 1024;
     auto data = GeneratePattern(entry_size);
 
-    // Use small slice_size for testing multi-slice behavior
-    const size_t slice_size = 512;
+    const size_t slice_size = kStreamSliceAlignment;
 
     {
         // Note: remote_path should be relative to fs root
@@ -794,11 +970,23 @@ TEST_F(IndexEntryEncryptedV3Test, EncryptedSmallEntryRoundtrip) {
     EXPECT_GT(info.ValueOrDie().size(), entry_size);  // ciphertext > plaintext
 }
 
+TEST_F(IndexEntryEncryptedV3Test, EncryptedWriterRejectsUnalignedSliceSize) {
+    const std::string file_path = kV3FilePath + "_enc_unaligned_slice";
+    EXPECT_THROW(IndexEntryEncryptedLocalWriter writer(file_path,
+                                                       fs_,
+                                                       mock_cipher_,
+                                                       /*ez_id=*/1,
+                                                       /*collection_id=*/100,
+                                                       GetRootPath(),
+                                                       1024),
+                 milvus::SegcoreError);
+}
+
 TEST_F(IndexEntryEncryptedV3Test, EncryptedMultiSliceEntry) {
     // Entry larger than slice_size, requiring multiple slices
     const std::string file_path = kV3FilePath + "_enc_multislice";
-    const size_t slice_size = 1024;            // 1KB slices
-    const size_t entry_size = 5 * 1024 + 100;  // 5KB + 100B = 6 slices
+    const size_t slice_size = kStreamSliceAlignment;
+    const size_t entry_size = 5 * slice_size + 100;
     auto data = GeneratePattern(entry_size);
 
     {
@@ -821,11 +1009,11 @@ TEST_F(IndexEntryEncryptedV3Test, EncryptedMultiSliceEntry) {
 TEST_F(IndexEntryEncryptedV3Test, EncryptedMultipleEntriesMultiSlice) {
     // Multiple entries, each requiring multiple slices
     const std::string file_path = kV3FilePath + "_enc_multi_multi";
-    const size_t slice_size = 1024;  // 1KB slices
+    const size_t slice_size = kStreamSliceAlignment;
 
-    const size_t size_a = 3 * 1024 + 500;  // 4 slices
-    const size_t size_b = 2 * 1024 + 100;  // 3 slices
-    const size_t size_c = 5 * 1024;        // 5 slices
+    const size_t size_a = 3 * slice_size + 500;
+    const size_t size_b = 2 * slice_size + 100;
+    const size_t size_c = 5 * slice_size;
 
     auto data_a = GeneratePattern(size_a);
     auto data_b = GeneratePattern(size_b);
@@ -853,7 +1041,7 @@ TEST_F(IndexEntryEncryptedV3Test, EncryptedMultipleEntriesMultiSlice) {
 TEST_F(IndexEntryEncryptedV3Test, EncryptedLargeMetaMultiSlice) {
     // Large meta entry requiring multiple slices
     const std::string file_path = kV3FilePath + "_enc_largemeta";
-    const size_t slice_size = 1024;  // 1KB slices
+    const size_t slice_size = kStreamSliceAlignment;
 
     auto data = GeneratePattern(256);
 
@@ -867,7 +1055,7 @@ TEST_F(IndexEntryEncryptedV3Test, EncryptedLargeMetaMultiSlice) {
                                               slice_size);
         writer.WriteEntry("data", data.data(), data.size());
 
-        // Meta will be ~5KB = 5 slices
+        // Meta is larger than one slice.
         std::string meta_value(5000, 'M');
         writer.PutMeta("large_meta", meta_value);
         writer.Finish();
@@ -880,8 +1068,8 @@ TEST_F(IndexEntryEncryptedV3Test, EncryptedLargeMetaMultiSlice) {
 TEST_F(IndexEntryEncryptedV3Test, EncryptedFdEntryMultiSlice) {
     // Test fd-based entry with multiple slices
     const std::string file_path = kV3FilePath + "_enc_fd";
-    const size_t slice_size = 1024;            // 1KB slices
-    const size_t entry_size = 4 * 1024 + 200;  // 5 slices
+    const size_t slice_size = kStreamSliceAlignment;
+    const size_t entry_size = 4 * slice_size + 200;
     auto data = GeneratePattern(entry_size);
 
     // Write source file
@@ -914,4 +1102,467 @@ TEST_F(IndexEntryEncryptedV3Test, EncryptedFdEntryMultiSlice) {
     EXPECT_GT(info.ValueOrDie().size(), entry_size);
 
     ::unlink(tmp_absolute.c_str());
+}
+
+// ---- ReadEntryStream tests ----
+
+TEST_F(IndexEntryWriterV3Test, ReadEntryStreamLarge) {
+    const std::string file_path = kV3FilePath + "_stream_large";
+    const size_t entry_size = 4 * 1024 * 1024;  // 4MB
+    auto data = GeneratePattern(entry_size);
+
+    {
+        auto output = CreateOutputStream(file_path);
+        IndexEntryDirectStreamWriter writer(output);
+        writer.WriteEntry("test_data", data.data(), data.size());
+        writer.Finish();
+    }
+
+    auto input = CreateInputStream(file_path);
+    int64_t file_size = GetFileSize(file_path);
+    auto reader = IndexEntryReader::Open(input, file_size);
+
+    std::vector<uint8_t> reassembled;
+    size_t slice_count = 0;
+    reader->ReadEntryStream(
+        "test_data",
+        [&](const uint8_t* d, size_t len) {
+            reassembled.insert(reassembled.end(), d, d + len);
+            slice_count++;
+        },
+        1 * 1024 * 1024);  // 1MB slices
+
+    ASSERT_EQ(reassembled.size(), entry_size);
+    VerifyPattern(reassembled, entry_size);
+    ASSERT_EQ(slice_count, 4);  // 4MB / 1MB = 4 slices
+}
+
+TEST_F(IndexEntryWriterV3Test, ReadEntryStreamSmall) {
+    const std::string file_path = kV3FilePath + "_stream_small";
+    const size_t entry_size = 1024;
+    auto data = GeneratePattern(entry_size);
+
+    {
+        auto output = CreateOutputStream(file_path);
+        IndexEntryDirectStreamWriter writer(output);
+        writer.WriteEntry("small_data", data.data(), data.size());
+        writer.Finish();
+    }
+
+    auto input = CreateInputStream(file_path);
+    int64_t file_size = GetFileSize(file_path);
+    auto reader = IndexEntryReader::Open(input, file_size);
+
+    std::vector<uint8_t> reassembled;
+    size_t slice_count = 0;
+    reader->ReadEntryStream("small_data", [&](const uint8_t* d, size_t len) {
+        reassembled.insert(reassembled.end(), d, d + len);
+        slice_count++;
+    });
+
+    ASSERT_EQ(reassembled.size(), entry_size);
+    VerifyPattern(reassembled, entry_size);
+    ASSERT_EQ(slice_count, 1);  // single slice (1KB < default slice size)
+}
+
+TEST_F(IndexEntryWriterV3Test, ReadEntryStreamRejectsInvalidSliceSize) {
+    const std::string file_path = kV3FilePath + "_stream_invalid_slice";
+    const size_t entry_size = kMinStreamSliceSize;
+    auto data = GeneratePattern(entry_size);
+
+    {
+        auto output = CreateOutputStream(file_path);
+        IndexEntryDirectStreamWriter writer(output);
+        writer.WriteEntry("data", data.data(), data.size());
+        writer.Finish();
+    }
+
+    auto input = CreateInputStream(file_path);
+    int64_t file_size = GetFileSize(file_path);
+    auto reader = IndexEntryReader::Open(input, file_size);
+
+    EXPECT_THROW(reader->ReadEntryStream(
+                     "data", [](const uint8_t*, size_t) {}, 0),
+                 milvus::SegcoreError);
+    EXPECT_THROW(
+        reader->ReadEntryStream(
+            "data", [](const uint8_t*, size_t) {}, kMinStreamSliceSize - 1),
+        milvus::SegcoreError);
+    EXPECT_THROW(
+        reader->ReadEntryStream(
+            "data", [](const uint8_t*, size_t) {}, kMinStreamSliceSize + 1),
+        milvus::SegcoreError);
+}
+
+TEST_F(IndexEntryWriterV3Test, ReadEntryStreamUsesDefaultSliceSize) {
+    IndexEntryStreamConfigGuard guard;
+    const size_t slice_size = DEFAULT_INDEX_FILE_SLICE_SIZE;
+    auto& budget = TransientMemoryBudget::GetLoadTransientBudget();
+
+    ASSERT_EQ(DefaultStreamSliceSize(), slice_size);
+    milvus::SetLoadTransientBudgetBytes(0);
+    ASSERT_EQ(budget.CapacityBytes(), 0);
+    ASSERT_EQ(EntryStreamMaxTransientBytes(),
+              std::numeric_limits<size_t>::max());
+
+    const size_t configured_budget = 3 * slice_size;
+    milvus::SetLoadTransientBudgetBytes(
+        static_cast<int64_t>(configured_budget));
+    ASSERT_EQ(budget.CapacityBytes(), configured_budget);
+    ASSERT_EQ(EntryStreamMaxTransientBytes(),
+              configured_budget + kTailMergeGrace);
+
+    const std::string file_path = kV3FilePath + "_stream_configured_default";
+    const size_t tail_size = kTailMergeGrace + 17;
+    const size_t entry_size = 2 * slice_size + tail_size;
+    auto data = GeneratePattern(entry_size);
+
+    {
+        auto output = CreateOutputStream(file_path);
+        IndexEntryDirectStreamWriter writer(output);
+        writer.WriteEntry("data", data.data(), data.size());
+        writer.Finish();
+    }
+
+    auto input = CreateInputStream(file_path);
+    int64_t file_size = GetFileSize(file_path);
+    auto reader = IndexEntryReader::Open(input, file_size);
+
+    std::vector<size_t> slice_sizes;
+    std::vector<uint8_t> reassembled;
+    reader->ReadEntryStream("data", [&](const uint8_t* d, size_t len) {
+        slice_sizes.push_back(len);
+        reassembled.insert(reassembled.end(), d, d + len);
+    });
+
+    ASSERT_EQ(reassembled, data);
+    ASSERT_EQ(slice_sizes,
+              (std::vector<size_t>{slice_size, slice_size, tail_size}));
+}
+
+TEST_F(IndexEntryWriterV3Test, ReadEntryStreamMergesSmallTail) {
+    const size_t slice_size = DEFAULT_INDEX_FILE_SLICE_SIZE;
+    const size_t tail_size = kTailMergeGrace / 2;
+    ASSERT_GT(tail_size, 0);
+    const std::string file_path = kV3FilePath + "_stream_merge_small_tail";
+    const size_t entry_size = slice_size + tail_size;
+    auto data = GeneratePattern(entry_size);
+
+    {
+        auto output = CreateOutputStream(file_path);
+        IndexEntryDirectStreamWriter writer(output);
+        writer.WriteEntry("data", data.data(), data.size());
+        writer.Finish();
+    }
+
+    auto input = CreateInputStream(file_path);
+    int64_t file_size = GetFileSize(file_path);
+    auto reader = IndexEntryReader::Open(input, file_size);
+
+    std::vector<size_t> slice_sizes;
+    std::vector<uint8_t> reassembled;
+    reader->ReadEntryStream("data", [&](const uint8_t* d, size_t len) {
+        slice_sizes.push_back(len);
+        reassembled.insert(reassembled.end(), d, d + len);
+    });
+
+    ASSERT_EQ(reassembled, data);
+    ASSERT_EQ(slice_sizes, (std::vector<size_t>{entry_size}));
+}
+
+TEST_F(IndexEntryWriterV3Test, ReadEntryStreamEmptyEntryVerifiesCrc) {
+    const std::string file_path = kV3FilePath + "_stream_empty";
+    std::vector<uint8_t> data;
+
+    {
+        auto output = CreateOutputStream(file_path);
+        IndexEntryDirectStreamWriter writer(output);
+        writer.WriteEntry("empty", data.data(), data.size());
+        writer.Finish();
+    }
+
+    auto input = CreateInputStream(file_path);
+    int64_t file_size = GetFileSize(file_path);
+    auto reader = IndexEntryReader::Open(input, file_size);
+
+    size_t slice_count = 0;
+    reader->ReadEntryStream("empty",
+                            [&](const uint8_t*, size_t) { slice_count++; });
+    ASSERT_EQ(slice_count, 0);
+}
+
+TEST_F(IndexEntryWriterV3Test, ReadEntryStreamMatchesReadEntry) {
+    const std::string file_path = kV3FilePath + "_stream_match";
+    const size_t entry_size = 5 * 1024 * 1024;  // 5MB, non-aligned
+    auto data = GeneratePattern(entry_size);
+
+    {
+        auto output = CreateOutputStream(file_path);
+        IndexEntryDirectStreamWriter writer(output);
+        writer.WriteEntry("data", data.data(), data.size());
+        writer.Finish();
+    }
+
+    auto input = CreateInputStream(file_path);
+    int64_t file_size = GetFileSize(file_path);
+    auto reader = IndexEntryReader::Open(input, file_size);
+
+    // Read via ReadEntry
+    auto entry = reader->ReadEntry("data");
+
+    // Read via ReadEntryStream
+    std::vector<uint8_t> streamed;
+    reader->ReadEntryStream(
+        "data",
+        [&](const uint8_t* d, size_t len) {
+            streamed.insert(streamed.end(), d, d + len);
+        },
+        512 * 1024);  // 512KB slices
+
+    ASSERT_EQ(entry.data.size(), streamed.size());
+    EXPECT_EQ(entry.data, streamed);
+}
+
+TEST_F(IndexEntryWriterV3Test, ReadEntryStreamToFileWritesEntry) {
+    const std::string file_path = kV3FilePath + "_stream_to_file";
+    const size_t entry_size = 3 * 1024 * 1024 + 19;
+    auto data = GeneratePattern(entry_size);
+
+    {
+        auto output = CreateOutputStream(file_path);
+        IndexEntryDirectStreamWriter writer(output);
+        writer.WriteEntry("data", data.data(), data.size());
+        writer.Finish();
+    }
+
+    auto input = CreateInputStream(file_path);
+    int64_t file_size = GetFileSize(file_path);
+    auto reader = IndexEntryReader::Open(input, file_size);
+
+    std::string local_file = GetRootPath() + "/stream_entry_output.bin";
+    reader->ReadEntryStreamToFile(
+        "data", local_file, milvus::storage::io::Priority::HIGH);
+
+    std::ifstream ifs(local_file, std::ios::binary | std::ios::ate);
+    ASSERT_TRUE(ifs.is_open());
+    size_t read_size = ifs.tellg();
+    ASSERT_EQ(read_size, entry_size);
+
+    ifs.seekg(0);
+    std::vector<uint8_t> read_data(read_size);
+    ifs.read(reinterpret_cast<char*>(read_data.data()), read_size);
+    VerifyPattern(read_data, entry_size);
+
+    ::unlink(local_file.c_str());
+}
+
+TEST_F(IndexEntryWriterV3Test, ReadEntriesStreamToFilesRunsFilesConcurrently) {
+    const std::string file_path = kV3FilePath + "_stream_files_parallel";
+    const size_t entry_size = 1024 * 1024;
+    auto data = GeneratePattern(entry_size);
+
+    {
+        auto output = CreateOutputStream(file_path);
+        IndexEntryDirectStreamWriter writer(output);
+        writer.WriteEntry("entry_a", data.data(), data.size());
+        writer.WriteEntry("entry_b", data.data(), data.size());
+        writer.WriteEntry("entry_c", data.data(), data.size());
+        writer.Finish();
+    }
+
+    auto input = std::make_shared<TrackingDelayedInputStream>(
+        CreateInputStream(file_path),
+        entry_size,
+        std::chrono::milliseconds(50));
+    int64_t file_size = GetFileSize(file_path);
+    auto reader = IndexEntryReader::Open(input, file_size);
+    if (milvus::ThreadPools::GetThreadPool(milvus::ThreadPoolPriority::HIGH)
+            .GetMaxThreadNum() <= 1) {
+        GTEST_SKIP() << "HIGH load thread pool has only one worker";
+    }
+
+    std::string file_a = GetRootPath() + "/stream_parallel_a.bin";
+    std::string file_b = GetRootPath() + "/stream_parallel_b.bin";
+    std::string file_c = GetRootPath() + "/stream_parallel_c.bin";
+    std::vector<std::pair<std::string, std::string>> pairs = {
+        {"entry_a", file_a}, {"entry_b", file_b}, {"entry_c", file_c}};
+
+    input->EnableTracking();
+    reader->ReadEntriesStreamToFiles(pairs,
+                                     milvus::storage::io::Priority::HIGH);
+
+    EXPECT_GT(input->MaxActiveReads(), 1);
+
+    auto verify_file = [](const std::string& path, size_t expected_size) {
+        std::ifstream ifs(path, std::ios::binary | std::ios::ate);
+        ASSERT_TRUE(ifs.is_open()) << "Failed to open: " << path;
+        size_t read_size = ifs.tellg();
+        ASSERT_EQ(read_size, expected_size);
+        ifs.seekg(0);
+        std::vector<uint8_t> read_data(read_size);
+        ifs.read(reinterpret_cast<char*>(read_data.data()), read_size);
+        VerifyPattern(read_data, expected_size);
+    };
+    verify_file(file_a, entry_size);
+    verify_file(file_b, entry_size);
+    verify_file(file_c, entry_size);
+
+    ::unlink(file_a.c_str());
+    ::unlink(file_b.c_str());
+    ::unlink(file_c.c_str());
+}
+
+TEST_F(IndexEntryWriterV3Test, ReadEntryStreamConsumerExceptionDoesNotLeak) {
+    const std::string file_path = kV3FilePath + "_stream_consumer_throw";
+    const size_t slice_size = 64 * 1024;
+    const size_t entry_size = 4 * slice_size;
+    auto data = GeneratePattern(entry_size);
+
+    {
+        auto output = CreateOutputStream(file_path);
+        IndexEntryDirectStreamWriter writer(output);
+        writer.WriteEntry("data", data.data(), data.size());
+        writer.Finish();
+    }
+
+    auto input = CreateInputStream(file_path);
+    int64_t file_size = GetFileSize(file_path);
+    auto reader = IndexEntryReader::Open(input, file_size);
+
+    size_t slice_count = 0;
+    EXPECT_THROW(reader->ReadEntryStream(
+                     "data",
+                     [&](const uint8_t*, size_t) {
+                         slice_count++;
+                         throw std::runtime_error("stop stream");
+                     },
+                     slice_size),
+                 std::runtime_error);
+    EXPECT_EQ(slice_count, 1);
+
+    std::vector<uint8_t> streamed;
+    reader->ReadEntryStream(
+        "data",
+        [&](const uint8_t* d, size_t len) {
+            streamed.insert(streamed.end(), d, d + len);
+        },
+        slice_size);
+    EXPECT_EQ(streamed, data);
+}
+
+TEST_F(IndexEntryWriterV3Test, ReadEntryStreamDrainsActiveTasksAfterError) {
+    const std::string file_path = kV3FilePath + "_stream_active_task_error";
+    const size_t slice_size = 64 * 1024;
+    const size_t entry_size = 3 * slice_size;
+    auto data = GeneratePattern(entry_size);
+
+    {
+        auto output = CreateOutputStream(file_path);
+        IndexEntryDirectStreamWriter writer(output);
+        writer.WriteEntry("data", data.data(), data.size());
+        writer.Finish();
+    }
+
+    auto base_input = CreateInputStream(file_path);
+    auto input = std::make_shared<DelayedFailingInputStream>(
+        base_input,
+        std::vector<DelayedFailingInputStream::Rule>{
+            {MILVUS_V3_MAGIC_SIZE, std::chrono::milliseconds(80), false},
+            {MILVUS_V3_MAGIC_SIZE + slice_size,
+             std::chrono::milliseconds(40),
+             true},
+        });
+    int64_t file_size = GetFileSize(file_path);
+    auto reader = IndexEntryReader::Open(input, file_size);
+
+    size_t slice_count = 0;
+    EXPECT_THROW(
+        reader->ReadEntryStream(
+            "data", [&](const uint8_t*, size_t) { slice_count++; }, slice_size),
+        milvus::SegcoreError);
+    EXPECT_EQ(slice_count, 1);
+
+    auto clean_input = CreateInputStream(file_path);
+    auto clean_reader = IndexEntryReader::Open(clean_input, file_size);
+    std::vector<uint8_t> streamed;
+    clean_reader->ReadEntryStream(
+        "data",
+        [&](const uint8_t* d, size_t len) {
+            streamed.insert(streamed.end(), d, d + len);
+        },
+        slice_size);
+    EXPECT_EQ(streamed, data);
+}
+
+TEST_F(IndexEntryWriterV3Test, ReadEntryStreamCancellationWhileWaitingBudget) {
+    const std::string file_path = kV3FilePath + "_stream_cancel_budget_wait";
+    const size_t slice_size = kMinStreamSliceSize;
+    auto data = GeneratePattern(slice_size);
+
+    {
+        auto output = CreateOutputStream(file_path);
+        IndexEntryDirectStreamWriter writer(output);
+        writer.WriteEntry("data", data.data(), data.size());
+        writer.Finish();
+    }
+
+    auto& budget = TransientMemoryBudget::GetLoadTransientBudget();
+    auto old_capacity = budget.CapacityBytes();
+    budget.SetCapacityBytes(slice_size);
+    budget.Acquire(slice_size);
+    auto cleanup = folly::makeGuard([&budget, old_capacity, slice_size]() {
+        budget.Release(slice_size);
+        budget.SetCapacityBytes(old_capacity);
+    });
+
+    folly::CancellationSource source;
+    auto input = CreateInputStream(file_path);
+    int64_t file_size = GetFileSize(file_path);
+    auto reader = IndexEntryReader::Open(
+        input, file_size, 0, milvus::HIGH, source.getToken());
+
+    std::atomic<size_t> slice_count{0};
+    auto future = std::async(std::launch::async, [&]() {
+        reader->ReadEntryStream(
+            "data",
+            [&slice_count](const uint8_t*, size_t) {
+                slice_count.fetch_add(1);
+            },
+            slice_size);
+    });
+
+    EXPECT_EQ(future.wait_for(std::chrono::milliseconds(50)),
+              std::future_status::timeout);
+    EXPECT_EQ(slice_count.load(), 0);
+
+    source.requestCancellation();
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(2)),
+              std::future_status::ready);
+    try {
+        future.get();
+        FAIL() << "expected cancellation";
+    } catch (const milvus::SegcoreError& e) {
+        EXPECT_EQ(e.get_error_code(), milvus::ErrorCode::FollyCancel);
+    }
+    EXPECT_EQ(slice_count.load(), 0);
+}
+
+TEST_F(IndexEntryWriterV3Test, GetEntrySize) {
+    const std::string file_path = kV3FilePath + "_entry_size";
+    const size_t entry_size = 3 * 1024 * 1024;
+    auto data = GeneratePattern(entry_size);
+
+    {
+        auto output = CreateOutputStream(file_path);
+        IndexEntryDirectStreamWriter writer(output);
+        writer.WriteEntry("sized_entry", data.data(), data.size());
+        writer.Finish();
+    }
+
+    auto input = CreateInputStream(file_path);
+    int64_t file_size = GetFileSize(file_path);
+    auto reader = IndexEntryReader::Open(input, file_size);
+
+    ASSERT_EQ(reader->GetEntrySize("sized_entry"), entry_size);
 }

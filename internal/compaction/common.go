@@ -21,14 +21,13 @@ import (
 	"io"
 
 	"github.com/apache/arrow/go/v17/arrow/array"
-	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/storagev2/packed"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 // readFromReader reads all records from a deltalog reader and extracts pk/ts pairs.
@@ -74,7 +73,7 @@ func readFromSegment(
 			return nil, nil, err
 		}
 		if len(paths) == 0 {
-			log.Ctx(ctx).Info("no delta log paths found in manifest")
+			mlog.Info(ctx, "no delta log paths found in manifest")
 			return []storage.PrimaryKey{}, []typeutil.Timestamp{}, nil
 		}
 		return readDeltalogsV2(ctx, pkType, paths, option...)
@@ -108,7 +107,7 @@ func readDeltalogsV1(
 		}
 	}
 
-	log.Ctx(ctx).Info("read V1 deltalogs", zap.Int("entries", len(allPks)))
+	mlog.Info(ctx, "read V1 deltalogs", mlog.Int("entries", len(allPks)))
 	return allPks, allTss, nil
 }
 
@@ -131,7 +130,7 @@ func readDeltalogsV2(
 		return nil, nil, err
 	}
 
-	log.Ctx(ctx).Info("read V2 deltalogs", zap.Int("entries", len(pks)))
+	mlog.Info(ctx, "read V2 deltalogs", mlog.Int("entries", len(pks)))
 	return pks, tss, nil
 }
 

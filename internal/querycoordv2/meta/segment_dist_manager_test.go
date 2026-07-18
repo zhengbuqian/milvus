@@ -22,10 +22,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/util/metricsinfo"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/querypb"
+	"github.com/milvus-io/milvus/pkg/v3/util/metricsinfo"
 )
 
 type SegmentDistManagerSuite struct {
@@ -35,6 +35,19 @@ type SegmentDistManagerSuite struct {
 	partitions []int64
 	nodes      []int64
 	segments   map[int64]*Segment
+}
+
+type countingSegmentDistFilter struct {
+	count *int
+}
+
+func (f countingSegmentDistFilter) Match(*Segment) bool {
+	*f.count++
+	return true
+}
+
+func (f countingSegmentDistFilter) AddFilter(criterion *segDistCriterion) {
+	criterion.hasOtherFilter = true
 }
 
 func (suite *SegmentDistManagerSuite) SetupSuite() {
@@ -172,6 +185,27 @@ func (suite *SegmentDistManagerSuite) TestGetBy() {
 	})
 	segments = dist.GetByFilter(WithReplica(replica))
 	suite.Len(segments, 2)
+
+	// Test GetBySegment
+	segments = dist.GetByFilter(WithSegmentID(1))
+	suite.Len(segments, 2)
+	suite.AssertIDs(segments, 1)
+
+	segments = dist.GetByFilter(WithCollectionID(-1), WithSegmentID(1))
+	suite.Len(segments, 0)
+
+	segments = dist.GetByFilter(WithNodeID(suite.nodes[2]), WithSegmentID(1))
+	suite.Len(segments, 0)
+}
+
+func (suite *SegmentDistManagerSuite) TestGetBySegmentIDUsesIndex() {
+	visited := 0
+
+	segments := suite.dist.GetByFilter(countingSegmentDistFilter{count: &visited}, WithSegmentID(4))
+
+	suite.Len(segments, 2)
+	suite.AssertIDs(segments, 4)
+	suite.Equal(2, visited)
 }
 
 func (suite *SegmentDistManagerSuite) AssertIDs(segments []*Segment, ids ...int64) bool {

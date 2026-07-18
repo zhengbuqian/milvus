@@ -21,9 +21,9 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 func TestParseInsertLogPath(t *testing.T) {
@@ -224,6 +224,27 @@ func TestBuildTextLogPaths(t *testing.T) {
 	BuildTextLogPaths(rootPath, collectionID, partitionID, segmentID, textStatsLogs)
 	if textStatsLogs[100].Files[0] != fullPath {
 		t.Errorf("BuildTextLogPaths() should keep full path unchanged, got %v", textStatsLogs[100].Files[0])
+	}
+}
+
+func TestBuildStatsFilePaths(t *testing.T) {
+	basePath := "/root/_stats/text_index.100"
+	fullPath := path.Join(basePath, ".managed.json_0")
+
+	got := BuildStatsFilePaths(basePath, []string{".managed.json_0", "nested/file", fullPath})
+	want := []string{
+		fullPath,
+		path.Join(basePath, "nested/file"),
+		fullPath,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("BuildStatsFilePaths() = %v, want %v", got, want)
+	}
+
+	got = BuildStatsFilePaths("", []string{".managed.json_0"})
+	want = []string{".managed.json_0"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("BuildStatsFilePaths() with empty basePath = %v, want %v", got, want)
 	}
 }
 

@@ -8,24 +8,264 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"go.uber.org/atomic"
+	"google.golang.org/protobuf/proto"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/msgpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/mocks/streamingnode/server/wal/interceptors/shard/mock_shards"
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/interceptors"
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/interceptors/shard/shards"
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/utility"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/messagespb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls/impls/rmq"
+	"github.com/milvus-io/milvus/internal/util/function"
+	"github.com/milvus-io/milvus/internal/util/streamingutil/status"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/messagespb"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/message"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/walimpls/impls/rmq"
 )
+
+func TestShardInterceptorPassesOmittedSchemaVersionToChecker(t *testing.T) {
+	b := NewInterceptorBuilder()
+	shardManager := mock_shards.NewMockShardManager(t)
+	shardManager.EXPECT().Logger().Return(mlog.With()).Maybe()
+	i := b.Build(&interceptors.InterceptorBuildParam{
+		ShardManager: shardManager,
+	})
+	defer i.Close()
+
+	msg := message.NewInsertMessageBuilderV1().
+		WithVChannel("v1").
+		WithHeader(&messagespb.InsertMessageHeader{
+			CollectionId: 1,
+			Partitions: []*messagespb.PartitionSegmentAssignment{
+				{
+					PartitionId: 1,
+					Rows:        1,
+					BinarySize:  100,
+				},
+			},
+		}).
+		WithBody(&msgpb.InsertRequest{}).
+		MustBuildMutable().WithTimeTick(1)
+
+	insertHdrMatcher := mock.MatchedBy(func(h *message.InsertMessageHeader) bool {
+		return h != nil && h.GetCollectionId() == int64(1) && h.SchemaVersion == nil
+	})
+	shardManager.EXPECT().CheckIfCollectionSchemaVersionMatch(insertHdrMatcher).Return(int32(5), shards.ErrCollectionSchemaVersionNotMatch)
+
+	msgID, err := i.DoAppend(context.Background(), msg, func(ctx context.Context, msg message.MutableMessage) (message.MessageID, error) {
+		return rmq.NewRmqID(1), nil
+	})
+	assert.Error(t, err)
+	assert.Nil(t, msgID)
+}
+
+func TestShardInterceptorReportsExplicitZeroSchemaVersionInMismatchError(t *testing.T) {
+	b := NewInterceptorBuilder()
+	shardManager := mock_shards.NewMockShardManager(t)
+	shardManager.EXPECT().Logger().Return(mlog.With()).Maybe()
+	i := b.Build(&interceptors.InterceptorBuildParam{
+		ShardManager: shardManager,
+	})
+	defer i.Close()
+
+	zero := proto.Int32(0)
+	msg := message.NewInsertMessageBuilderV1().
+		WithVChannel("v1").
+		WithHeader(&messagespb.InsertMessageHeader{
+			CollectionId: 1,
+			Partitions: []*messagespb.PartitionSegmentAssignment{
+				{
+					PartitionId: 1,
+					Rows:        1,
+					BinarySize:  100,
+				},
+			},
+			SchemaVersion: zero,
+		}).
+		WithBody(&msgpb.InsertRequest{}).
+		MustBuildMutable().WithTimeTick(1)
+
+	insertHdrMatcher := mock.MatchedBy(func(h *message.InsertMessageHeader) bool {
+		return h != nil && h.GetCollectionId() == int64(1) && h.SchemaVersion != nil && h.GetSchemaVersion() == 0
+	})
+	shardManager.EXPECT().CheckIfCollectionSchemaVersionMatch(insertHdrMatcher).Return(int32(5), shards.ErrCollectionSchemaVersionNotMatch)
+
+	msgID, err := i.DoAppend(context.Background(), msg, func(ctx context.Context, msg message.MutableMessage) (message.MessageID, error) {
+		return rmq.NewRmqID(1), nil
+	})
+	assert.Error(t, err)
+	assert.ErrorContains(t, err, "input schema version: 0")
+	assert.Nil(t, msgID)
+}
+
+func TestShardInterceptorUpdateFunctionRunnersReleasesWhenFunctionsDropped(t *testing.T) {
+	collectionID := int64(99001)
+	vchannel := "by-dev-rootcoord-dml_0_99001v0"
+	schema := &schemapb.CollectionSchema{
+		Name:    "test",
+		Version: 1,
+		Fields: []*schemapb.FieldSchema{
+			{FieldID: 100, Name: "pk", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+			{
+				FieldID:  101,
+				Name:     "text",
+				DataType: schemapb.DataType_VarChar,
+				TypeParams: []*commonpb.KeyValuePair{
+					{Key: common.MaxLengthKey, Value: "256"},
+				},
+			},
+			{FieldID: 102, Name: "sparse", DataType: schemapb.DataType_SparseFloatVector, IsFunctionOutput: true},
+		},
+		Functions: []*schemapb.FunctionSchema{
+			{
+				Name:           "bm25",
+				Type:           schemapb.FunctionType_BM25,
+				InputFieldIds:  []int64{101},
+				OutputFieldIds: []int64{102},
+			},
+		},
+	}
+	assert.NoError(t, function.AllocFunctionRunners(collectionID, walFunctionRunnerKey(vchannel), schema))
+	defer function.ReleaseFunctionRunners(collectionID, walFunctionRunnerKey(vchannel))
+
+	ok, err := function.RunWithAnalyzer(context.Background(), collectionID, schema.GetVersion(), 101, func(function.Analyzer) error {
+		return nil
+	})
+	assert.NoError(t, err)
+	assert.True(t, ok)
+
+	shardManager := mock_shards.NewMockShardManager(t)
+	shardManager.EXPECT().Logger().Return(mlog.With()).Maybe()
+	impl := &shardInterceptor{shardManager: shardManager}
+
+	noFunctionSchema := proto.Clone(schema).(*schemapb.CollectionSchema)
+	noFunctionSchema.Version = 2
+	noFunctionSchema.Functions = nil
+	impl.updateFunctionRunners(collectionID, vchannel, noFunctionSchema)
+
+	ok, err = function.RunWithAnalyzer(context.Background(), collectionID, schema.GetVersion(), 101, func(function.Analyzer) error {
+		return nil
+	})
+	assert.NoError(t, err)
+	assert.False(t, ok)
+}
+
+func TestShardInterceptorDeleteAppliesBeforeAppend(t *testing.T) {
+	b := NewInterceptorBuilder()
+	shardManager := mock_shards.NewMockShardManager(t)
+	shardManager.EXPECT().Logger().Return(mlog.With()).Maybe()
+	i := b.Build(&interceptors.InterceptorBuildParam{
+		ShardManager: shardManager,
+	})
+	defer i.Close()
+
+	msg := message.NewDeleteMessageBuilderV1().
+		WithVChannel("vchannel").
+		WithHeader(&messagespb.DeleteMessageHeader{
+			CollectionId: 1,
+			Rows:         10,
+		}).
+		WithBody(&msgpb.DeleteRequest{}).
+		MustBuildMutable().WithTimeTick(1)
+
+	shardManager.EXPECT().CheckIfCollectionExists(int64(1)).Return(nil)
+	shardManager.EXPECT().ApplyDelete(mock.MatchedBy(func(deleteMsg message.MutableDeleteMessageV1) bool {
+		return deleteMsg.Header().GetCollectionId() == int64(1) && deleteMsg.Header().GetRows() == uint64(10)
+	})).Return(nil)
+
+	msgID, err := i.DoAppend(context.Background(), msg, func(ctx context.Context, msg message.MutableMessage) (message.MessageID, error) {
+		return nil, errors.New("append failed")
+	})
+	assert.Error(t, err)
+	assert.Nil(t, msgID)
+}
+
+func TestShardInterceptorPassesExplicitNonZeroSchemaVersion(t *testing.T) {
+	b := NewInterceptorBuilder()
+	shardManager := mock_shards.NewMockShardManager(t)
+	shardManager.EXPECT().Logger().Return(mlog.With()).Maybe()
+	i := b.Build(&interceptors.InterceptorBuildParam{
+		ShardManager: shardManager,
+	})
+	defer i.Close()
+
+	msg := message.NewInsertMessageBuilderV1().
+		WithVChannel("v1").
+		WithHeader(&messagespb.InsertMessageHeader{
+			CollectionId: 1,
+			Partitions: []*messagespb.PartitionSegmentAssignment{
+				{
+					PartitionId: 1,
+					Rows:        1,
+					BinarySize:  100,
+				},
+			},
+			SchemaVersion: proto.Int32(3),
+		}).
+		WithBody(&msgpb.InsertRequest{}).
+		MustBuildMutable().WithTimeTick(1)
+
+	insertHdrMatcher := mock.MatchedBy(func(h *message.InsertMessageHeader) bool {
+		return h != nil && h.GetCollectionId() == int64(1) && h.SchemaVersion != nil && h.GetSchemaVersion() == 3
+	})
+	shardManager.EXPECT().CheckIfCollectionSchemaVersionMatch(insertHdrMatcher).Return(int32(3), nil)
+	shardManager.EXPECT().AssignSegment(mock.Anything).Return(&shards.AssignSegmentResult{SegmentID: 1, Acknowledge: atomic.NewInt32(1)}, nil)
+
+	msgID, err := i.DoAppend(context.Background(), msg, func(ctx context.Context, msg message.MutableMessage) (message.MessageID, error) {
+		return rmq.NewRmqID(1), nil
+	})
+	assert.NoError(t, err)
+	assert.NotNil(t, msgID)
+}
+
+func TestShardInterceptorPassesExplicitZeroSchemaVersion(t *testing.T) {
+	b := NewInterceptorBuilder()
+	shardManager := mock_shards.NewMockShardManager(t)
+	shardManager.EXPECT().Logger().Return(mlog.With()).Maybe()
+	i := b.Build(&interceptors.InterceptorBuildParam{
+		ShardManager: shardManager,
+	})
+	defer i.Close()
+
+	zero := proto.Int32(0)
+	msg := message.NewInsertMessageBuilderV1().
+		WithVChannel("v1").
+		WithHeader(&messagespb.InsertMessageHeader{
+			CollectionId: 1,
+			Partitions: []*messagespb.PartitionSegmentAssignment{
+				{
+					PartitionId: 1,
+					Rows:        1,
+					BinarySize:  100,
+				},
+			},
+			SchemaVersion: zero,
+		}).
+		WithBody(&msgpb.InsertRequest{}).
+		MustBuildMutable().WithTimeTick(1)
+
+	insertHdrMatcher := mock.MatchedBy(func(h *message.InsertMessageHeader) bool {
+		return h != nil && h.GetCollectionId() == int64(1) && h.SchemaVersion != nil && h.GetSchemaVersion() == 0
+	})
+	shardManager.EXPECT().CheckIfCollectionSchemaVersionMatch(insertHdrMatcher).Return(int32(0), nil)
+	shardManager.EXPECT().AssignSegment(mock.Anything).Return(&shards.AssignSegmentResult{SegmentID: 1, Acknowledge: atomic.NewInt32(1)}, nil)
+
+	msgID, err := i.DoAppend(context.Background(), msg, func(ctx context.Context, msg message.MutableMessage) (message.MessageID, error) {
+		return rmq.NewRmqID(1), nil
+	})
+	assert.NoError(t, err)
+	assert.NotNil(t, msgID)
+}
 
 func TestShardInterceptor(t *testing.T) {
 	mockErr := errors.New("mock error")
 
 	b := NewInterceptorBuilder()
 	shardManager := mock_shards.NewMockShardManager(t)
-	shardManager.EXPECT().Logger().Return(log.With()).Maybe()
+	shardManager.EXPECT().Logger().Return(mlog.With()).Maybe()
 	i := b.Build(&interceptors.InterceptorBuildParam{
 		ShardManager: shardManager,
 	})
@@ -202,46 +442,46 @@ func TestShardInterceptor(t *testing.T) {
 		WithBody(&msgpb.InsertRequest{}).
 		MustBuildMutable().WithTimeTick(1)
 
-	shardManager.EXPECT().CheckIfCollectionSchemaVersionMatch(int64(1), int32(0)).Return(int32(0), nil)
-	shardManager.EXPECT().AssignSegment(mock.Anything).Return(&shards.AssignSegmentResult{SegmentID: 1, Acknowledge: atomic.NewInt32(1)}, nil)
+	insertHdrMatcher := mock.MatchedBy(func(h *message.InsertMessageHeader) bool {
+		return h != nil && h.GetCollectionId() == int64(1) && h.SchemaVersion == nil
+	})
+
+	shardManager.EXPECT().CheckIfCollectionSchemaVersionMatch(insertHdrMatcher).Return(int32(0), nil).Once()
+	shardManager.EXPECT().AssignSegment(mock.Anything).Return(&shards.AssignSegmentResult{SegmentID: 1, Acknowledge: atomic.NewInt32(1)}, nil).Once()
 	msgID, err = i.DoAppend(ctx, msg, appender)
 	assert.NoError(t, err)
 	assert.NotNil(t, msgID)
 
-	shardManager.EXPECT().AssignSegment(mock.Anything).Unset()
-	shardManager.EXPECT().CheckIfCollectionSchemaVersionMatch(int64(1), int32(0)).Return(int32(0), nil)
-	shardManager.EXPECT().AssignSegment(mock.Anything).Return(nil, mockErr)
+	shardManager.EXPECT().CheckIfCollectionSchemaVersionMatch(insertHdrMatcher).Return(int32(0), nil).Once()
+	shardManager.EXPECT().AssignSegment(mock.Anything).Return(nil, mockErr).Once()
 	msgID, err = i.DoAppend(ctx, msg, appender)
 	assert.Error(t, err)
 	assert.Nil(t, msgID)
 
 	// ErrCollectionNotFound from schema version check must surface as an unrecoverable insert error.
-	shardManager.EXPECT().CheckIfCollectionSchemaVersionMatch(int64(1), int32(0)).Unset()
-	shardManager.EXPECT().CheckIfCollectionSchemaVersionMatch(int64(1), int32(0)).Return(int32(-1), shards.ErrCollectionNotFound)
+	shardManager.EXPECT().CheckIfCollectionSchemaVersionMatch(insertHdrMatcher).Return(int32(-1), shards.ErrCollectionNotFound).Once()
 	msgID, err = i.DoAppend(ctx, msg, appender)
 	assert.Error(t, err)
 	assert.Nil(t, msgID)
 
 	// ErrCollectionSchemaNotFound must also become an unrecoverable insert error.
-	shardManager.EXPECT().CheckIfCollectionSchemaVersionMatch(int64(1), int32(0)).Unset()
-	shardManager.EXPECT().CheckIfCollectionSchemaVersionMatch(int64(1), int32(0)).Return(int32(-1), shards.ErrCollectionSchemaNotFound)
+	shardManager.EXPECT().CheckIfCollectionSchemaVersionMatch(insertHdrMatcher).Return(int32(-1), shards.ErrCollectionSchemaNotFound).Once()
 	msgID, err = i.DoAppend(ctx, msg, appender)
 	assert.Error(t, err)
 	assert.Nil(t, msgID)
 
 	// ErrCollectionSchemaVersionNotMatch must surface as a schema-version-mismatch error
 	// so the proxy can refresh its cache and retry.
-	shardManager.EXPECT().CheckIfCollectionSchemaVersionMatch(int64(1), int32(0)).Unset()
-	shardManager.EXPECT().CheckIfCollectionSchemaVersionMatch(int64(1), int32(0)).Return(int32(5), shards.ErrCollectionSchemaVersionNotMatch)
+	shardManager.EXPECT().CheckIfCollectionSchemaVersionMatch(insertHdrMatcher).Return(int32(5), shards.ErrCollectionSchemaVersionNotMatch).Once()
 	msgID, err = i.DoAppend(ctx, msg, appender)
 	assert.Error(t, err)
 	assert.Nil(t, msgID)
 
-	// Unexpected error from the schema version check must be propagated as-is.
-	shardManager.EXPECT().CheckIfCollectionSchemaVersionMatch(int64(1), int32(0)).Unset()
-	shardManager.EXPECT().CheckIfCollectionSchemaVersionMatch(int64(1), int32(0)).Return(int32(-1), mockErr)
+	// Unexpected error from the schema version check must stop producer retry.
+	shardManager.EXPECT().CheckIfCollectionSchemaVersionMatch(insertHdrMatcher).Return(int32(-1), mockErr).Once()
 	msgID, err = i.DoAppend(ctx, msg, appender)
 	assert.Error(t, err)
+	assert.True(t, status.AsStreamingError(err).IsUnrecoverable())
 	assert.Nil(t, msgID)
 
 	msg = message.NewDeleteMessageBuilderV1().

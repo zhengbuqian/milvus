@@ -6,8 +6,8 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 
-	"github.com/milvus-io/milvus/pkg/v2/proto/streamingpb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
+	"github.com/milvus-io/milvus/pkg/v3/proto/streamingpb"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/message"
 )
 
 var _ error = (*StreamingError)(nil)
@@ -56,6 +56,7 @@ func (e *StreamingError) IsSkippedOperation() bool {
 // Stop resuming retry and report to user.
 func (e *StreamingError) IsUnrecoverable() bool {
 	return e.Code == streamingpb.StreamingCode_STREAMING_CODE_UNRECOVERABLE ||
+		e.IsInvalidArgument() ||
 		e.IsReplicateViolation() ||
 		e.IsTxnUnavilable() || e.IsSchemaVersionMismatch()
 }
@@ -89,6 +90,11 @@ func (e *StreamingError) IsResourceAcquired() bool {
 // IsSchemaVersionMismatch returns true if the error is caused by schema version mismatch.
 func (e *StreamingError) IsSchemaVersionMismatch() bool {
 	return e.Code == streamingpb.StreamingCode_STREAMING_CODE_SCHEMA_VERSION_MISMATCH
+}
+
+// IsInvalidArgument returns true if the error is caused by invalid argument.
+func (e *StreamingError) IsInvalidArgument() bool {
+	return e.Code == streamingpb.StreamingCode_STREAMING_CODE_INVAILD_ARGUMENT
 }
 
 // IsOnShutdown returns true if the error is caused by on shutdown.
@@ -141,8 +147,9 @@ func NewInner(format string, args ...interface{}) *StreamingError {
 	return New(streamingpb.StreamingCode_STREAMING_CODE_INNER, format, args...)
 }
 
-// NewInvaildArgument creates a new StreamingError with code STREAMING_CODE_INVAILD_ARGUMENT.
-func NewInvaildArgument(format string, args ...interface{}) *StreamingError {
+// NewInvalidArgument creates a new StreamingError with code STREAMING_CODE_INVAILD_ARGUMENT.
+// (The proto enum still carries the historical typo INVAILD; only the Go factory uses the correct spelling.)
+func NewInvalidArgument(format string, args ...interface{}) *StreamingError {
 	return New(streamingpb.StreamingCode_STREAMING_CODE_INVAILD_ARGUMENT, format, args...)
 }
 

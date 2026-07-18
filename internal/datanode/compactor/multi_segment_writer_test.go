@@ -21,19 +21,21 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
 	"go.uber.org/atomic"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/allocator"
 	"github.com/milvus-io/milvus/internal/compaction"
 	"github.com/milvus-io/milvus/internal/mocks/flushcommon/mock_util"
 	"github.com/milvus-io/milvus/internal/storage"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/tsoutil"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/tsoutil"
 )
 
 func TestMultiSegmentWriterSuite(t *testing.T) {
@@ -52,6 +54,89 @@ type MultiSegmentWriterSuite struct {
 	channel      string
 	batchSize    int
 	params       compaction.Params
+}
+
+type testCompactionAllocator struct {
+	next            int64
+	allocOneCalls   int
+	failAllocOneAt  int
+	failAllocOneErr error
+}
+
+type closeErrSerializeWriter struct {
+	err error
+}
+
+type closeErrBinlogRecordWriter struct {
+	writtenUncompressed uint64
+}
+
+func (w closeErrSerializeWriter) WriteValue(*storage.Value) error {
+	return nil
+}
+
+func (w closeErrSerializeWriter) Flush() error {
+	return nil
+}
+
+func (w closeErrSerializeWriter) Close() error {
+	return w.err
+}
+
+func (w closeErrBinlogRecordWriter) Write(storage.Record) error {
+	return nil
+}
+
+func (w closeErrBinlogRecordWriter) GetWrittenUncompressed() uint64 {
+	return w.writtenUncompressed
+}
+
+func (w closeErrBinlogRecordWriter) Close() error {
+	return nil
+}
+
+func (w closeErrBinlogRecordWriter) GetLogs() (
+	map[storage.FieldID]*datapb.FieldBinlog,
+	*datapb.FieldBinlog,
+	map[storage.FieldID]*datapb.FieldBinlog,
+	string,
+	[]int64,
+) {
+	return nil, nil, nil, "", nil
+}
+
+func (w closeErrBinlogRecordWriter) GetRowNum() int64 {
+	return 0
+}
+
+func (w closeErrBinlogRecordWriter) FlushChunk() error {
+	return nil
+}
+
+func (w closeErrBinlogRecordWriter) GetBufferUncompressed() uint64 {
+	return w.writtenUncompressed
+}
+
+func (w closeErrBinlogRecordWriter) Schema() *schemapb.CollectionSchema {
+	return nil
+}
+
+func (a *testCompactionAllocator) Alloc(count uint32) (int64, int64, error) {
+	start := a.next
+	a.next += int64(count)
+	return start, a.next, nil
+}
+
+func (a *testCompactionAllocator) AllocOne() (int64, error) {
+	a.allocOneCalls++
+	if a.failAllocOneAt > 0 && a.allocOneCalls == a.failAllocOneAt {
+		if a.failAllocOneErr != nil {
+			return 0, a.failAllocOneErr
+		}
+		return 0, allocator.NewIDExhaustedError(0, 0, 1)
+	}
+	a.next++
+	return a.next, nil
 }
 
 func (s *MultiSegmentWriterSuite) SetupSuite() {
@@ -138,7 +223,7 @@ func (s *MultiSegmentWriterSuite) genSimpleSchema() *schemapb.CollectionSchema {
 
 // genTestValue generates a test storage.Value for the given ID
 func (s *MultiSegmentWriterSuite) genTestValue(id int64) *storage.Value {
-	ts := tsoutil.ComposeTSByTime(time.Now(), 0)
+	ts := tsoutil.ComposeTSByTime(time.Now())
 	return &storage.Value{
 		PK:        storage.NewInt64PrimaryKey(id),
 		Timestamp: int64(ts),
@@ -345,6 +430,116 @@ func (s *MultiSegmentWriterSuite) TestSegmentRotation() {
 	// Should have multiple segments
 	finalSegments := writer.GetCompactionSegments()
 	s.GreaterOrEqual(len(finalSegments), 2)
+}
+
+func (s *MultiSegmentWriterSuite) TestSegmentIDExhaustionGrowsCurrentSegment() {
+	schema := s.genSimpleSchema()
+	segmentAlloc := allocator.NewLocalAllocator(1000, 1001)
+	logAlloc := allocator.NewLocalAllocator(2000, 3000)
+	allocator := NewCompactionAllocator(segmentAlloc, logAlloc)
+
+	writer, err := NewMultiSegmentWriter(
+		context.Background(),
+		s.mockBinlogIO,
+		allocator,
+		1,
+		schema,
+		s.params,
+		1000,
+		s.partitionID,
+		s.collectionID,
+		s.channel,
+		1,
+		storage.WithStorageConfig(s.params.StorageConfig),
+	)
+	s.Require().NoError(err)
+
+	s.Require().NoError(writer.WriteValue(s.genTestValue(1)))
+	s.Require().NoError(writer.WriteValue(s.genTestValue(2)))
+	s.Require().NoError(writer.WriteValue(s.genTestValue(3)))
+	s.Require().NoError(writer.Close())
+
+	segments := writer.GetCompactionSegments()
+	s.Require().Len(segments, 1)
+	s.EqualValues(1000, segments[0].SegmentID)
+	s.EqualValues(3, segments[0].NumOfRows)
+}
+
+func (s *MultiSegmentWriterSuite) TestRotateAllocFailureKeepsCurrentWriterOpen() {
+	schema := s.genSimpleSchema()
+	allocErr := errors.New("rootcoord unavailable")
+	segmentAlloc := &testCompactionAllocator{next: 1000, failAllocOneAt: 2, failAllocOneErr: allocErr}
+	logAlloc := &testCompactionAllocator{next: 2000}
+	allocator := NewCompactionAllocator(segmentAlloc, logAlloc)
+
+	writer, err := NewMultiSegmentWriter(
+		context.Background(),
+		s.mockBinlogIO,
+		allocator,
+		1,
+		schema,
+		s.params,
+		1000,
+		s.partitionID,
+		s.collectionID,
+		s.channel,
+		1,
+		storage.WithStorageConfig(s.params.StorageConfig),
+	)
+	s.Require().NoError(err)
+
+	err = writer.WriteValue(s.genTestValue(1))
+	s.Require().NoError(err)
+	err = writer.WriteValue(s.genTestValue(2))
+	s.ErrorIs(err, allocErr)
+	s.NotNil(writer.writer)
+	s.Empty(writer.GetCompactionSegments())
+
+	err = writer.Close()
+	s.NoError(err)
+	s.Len(writer.GetCompactionSegments(), 1)
+}
+
+func (s *MultiSegmentWriterSuite) TestLogIDExhaustionDuringRotationReturnsError() {
+	segmentAlloc := &testCompactionAllocator{next: 1000}
+	logAlloc := &testCompactionAllocator{next: 2000}
+	writer := &MultiSegmentWriter{
+		allocator: NewCompactionAllocator(segmentAlloc, logAlloc),
+		writer: &storage.BinlogValueWriter{
+			BinlogRecordWriter: closeErrBinlogRecordWriter{writtenUncompressed: 2},
+			SerializeWriter:    closeErrSerializeWriter{err: allocator.NewIDExhaustedError(0, 0, 1)},
+		},
+		segmentSize:      1,
+		currentSegmentID: 1000,
+		collectionID:     s.collectionID,
+		partitionID:      s.partitionID,
+		channel:          s.channel,
+	}
+
+	var err error
+	s.NotPanics(func() {
+		err = writer.rotateWriterOrGrowCurrent()
+	})
+	s.True(allocator.IsIDExhausted(err))
+	s.Nil(writer.writer)
+	s.Empty(writer.GetCompactionSegments())
+}
+
+func (s *MultiSegmentWriterSuite) TestCloseFailureClearsWriter() {
+	closeErr := errors.New("close failed")
+	writer := &MultiSegmentWriter{
+		writer: &storage.BinlogValueWriter{
+			SerializeWriter: closeErrSerializeWriter{err: closeErr},
+		},
+	}
+
+	err := writer.closeWriter()
+	s.ErrorIs(err, closeErr)
+	s.Nil(writer.writer)
+	s.Empty(writer.GetCompactionSegments())
+
+	err = writer.Close()
+	s.NoError(err)
 }
 
 func (s *MultiSegmentWriterSuite) TestWriterMethods() {

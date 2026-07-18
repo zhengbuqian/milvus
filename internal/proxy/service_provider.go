@@ -8,19 +8,18 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/samber/lo"
 	"go.opentelemetry.io/otel"
-	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/timerecord"
-	"github.com/milvus-io/milvus/pkg/v2/util/timestamptz"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/metrics"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/timerecord"
+	"github.com/milvus-io/milvus/pkg/v3/util/timestamptz"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 type Request interface {
@@ -58,7 +57,7 @@ func NewInterceptor[Req Request, Resp Response](proxy *Proxy, method string) (*I
 		}
 		return interface{}(interceptor).(*InterceptorImpl[Req, Resp]), nil
 	default:
-		return nil, fmt.Errorf("method %s not supported", method)
+		return nil, merr.WrapErrParameterInvalidMsg("method %s not supported", method)
 	}
 }
 
@@ -79,7 +78,7 @@ func (i *InterceptorImpl[Req, Resp]) Call(ctx context.Context, request Req,
 	defer sp.End()
 	tr := timerecord.NewTimeRecorder(i.method)
 	metrics.ProxyFunctionCall.WithLabelValues(strconv.FormatInt(paramtable.GetNodeID(), 10), i.method,
-		metrics.TotalLabel, request.GetDbName(), request.GetCollectionName()).Inc()
+		metrics.TotalLabel, metrics.CauseNA, request.GetDbName(), request.GetCollectionName()).Inc()
 
 	resp, err := i.onCall(ctx, request)
 	if err != nil {
@@ -87,7 +86,7 @@ func (i *InterceptorImpl[Req, Resp]) Call(ctx context.Context, request Req,
 	}
 
 	metrics.ProxyFunctionCall.WithLabelValues(strconv.FormatInt(paramtable.GetNodeID(), 10), i.method,
-		metrics.SuccessLabel, request.GetDbName(), request.GetCollectionName()).Inc()
+		metrics.SuccessLabel, metrics.CauseNA, request.GetDbName(), request.GetCollectionName()).Inc()
 	metrics.ProxyReqLatency.WithLabelValues(strconv.FormatInt(paramtable.GetNodeID(), 10), i.method).Observe(float64(tr.ElapseSpan().Milliseconds()))
 
 	return resp, err
@@ -110,6 +109,7 @@ func cloneStructArrayFields(fields []*schemapb.StructArrayFieldSchema) []*schema
 			Name:        field.Name,
 			Description: field.Description,
 			Fields:      make([]*schemapb.FieldSchema, len(field.Fields)),
+			Nullable:    field.Nullable,
 		}
 
 		// Deep copy sub-fields
@@ -141,15 +141,15 @@ func cloneStructArrayFields(fields []*schemapb.StructArrayFieldSchema) []*schema
 func (node *CachedProxyServiceProvider) DescribeCollection(ctx context.Context,
 	request *milvuspb.DescribeCollectionRequest,
 ) (resp *milvuspb.DescribeCollectionResponse, err error) {
-	log := log.Ctx(ctx).With(
-		zap.String("role", typeutil.ProxyRole),
-		zap.String("db", request.GetDbName()),
-		zap.String("collection", request.GetCollectionName()),
-		zap.Int64("collectionID", request.GetCollectionID()),
-		zap.Uint64("timestamp", request.GetTimeStamp()),
+	log := mlog.With(
+		mlog.String("role", typeutil.ProxyRole),
+		mlog.String("db", request.GetDbName()),
+		mlog.String("collection", request.GetCollectionName()),
+		mlog.FieldCollectionID(request.GetCollectionID()),
+		mlog.Uint64("timestamp", request.GetTimeStamp()),
 	)
 
-	log.Debug("DescribeCollection received")
+	log.Debug(ctx, "DescribeCollection received")
 
 	resp = &milvuspb.DescribeCollectionResponse{
 		Status:         merr.Success(),
@@ -208,27 +208,33 @@ func (node *CachedProxyServiceProvider) DescribeCollection(ctx context.Context,
 		}),
 		StructArrayFields:  cloneStructArrayFields(c.schema.StructArrayFields),
 		EnableDynamicField: c.schema.EnableDynamicField,
+		EnableNamespace:    c.schema.EnableNamespace,
 		Properties:         c.schema.Properties,
 		Functions:          c.schema.Functions,
 		DbName:             c.schema.DbName,
 		ExternalSource:     c.schema.ExternalSource,
 		ExternalSpec:       c.schema.ExternalSpec,
 		Version:            c.schema.Version,
-		DoPhysicalBackfill: c.schema.DoPhysicalBackfill,
 	}
 
 	// Restore struct field names from internal format (structName[fieldName]) to original format
 	if err := restoreStructFieldNames(resp.Schema); err != nil {
-		log.Error("failed to restore struct field names", zap.Error(err))
+		log.Error(ctx, "failed to restore struct field names", mlog.Err(err))
 		return nil, err
 	}
 
 	err = timestamptz.RewriteTimestampTzDefaultValueToString(resp.Schema)
 	if err != nil {
-		log.Info("failed to rewrite timestamp value", zap.Error(err))
+		log.Info(ctx, "failed to rewrite timestamp value", mlog.Err(err))
 		return nil, err
 	}
 
+	// prefer the actual database resolved by the coordinator and carried in the
+	// cache, the request db name may be empty/default when querying by collection id
+	if c.dbName != "" {
+		resp.DbName = c.dbName
+	}
+	resp.DbId = c.dbID
 	resp.CollectionID = c.collID
 	resp.UpdateTimestamp = c.updateTimestamp
 	resp.UpdateTimestampStr = fmt.Sprintf("%d", c.updateTimestamp)
@@ -241,9 +247,9 @@ func (node *CachedProxyServiceProvider) DescribeCollection(ctx context.Context,
 	resp.ShardsNum = c.shardsNum
 	resp.Aliases = c.aliases
 	resp.Properties = c.properties
-	log.Debug("DescribeCollection done",
-		zap.Int64("collectionID", resp.GetCollectionID()),
-		zap.Any("schema", resp.GetSchema()),
+	log.Debug(ctx, "DescribeCollection done",
+		mlog.FieldCollectionID(resp.GetCollectionID()),
+		mlog.Any("schema", resp.GetSchema()),
 	)
 	return resp, nil
 }
@@ -262,42 +268,43 @@ func (node *RemoteProxyServiceProvider) DescribeCollection(ctx context.Context,
 		mixCoord:                  node.mixCoord,
 	}
 
-	log := log.Ctx(ctx).With(
-		zap.String("role", typeutil.ProxyRole),
-		zap.String("db", request.DbName),
-		zap.String("collection", request.CollectionName))
+	log := mlog.With(
+		mlog.String("role", typeutil.ProxyRole),
+		mlog.String("db", request.DbName),
+		mlog.String("collection", request.CollectionName))
 
 	method := "DescribeCollection"
-	log.Debug("DescribeCollection received")
+	log.Debug(ctx, "DescribeCollection received")
 
 	if err := node.sched.ddQueue.Enqueue(dct); err != nil {
-		log.Warn("DescribeCollection failed to enqueue",
-			zap.Error(err))
+		log.Warn(ctx, "DescribeCollection failed to enqueue",
+			mlog.Err(err))
 
 		metrics.ProxyFunctionCall.WithLabelValues(strconv.FormatInt(paramtable.GetNodeID(), 10), method,
-			metrics.AbandonLabel, request.GetDbName(), request.GetCollectionName()).Inc()
+			metrics.AbandonLabel, metrics.CauseNA, request.GetDbName(), request.GetCollectionName()).Inc()
 		return nil, err
 	}
 
-	log.Debug("DescribeCollection enqueued",
-		zap.Uint64("BeginTS", dct.BeginTs()),
-		zap.Uint64("EndTS", dct.EndTs()))
+	log.Debug(ctx, "DescribeCollection enqueued",
+		mlog.Uint64("BeginTS", dct.BeginTs()),
+		mlog.Uint64("EndTS", dct.EndTs()))
 
 	if err := dct.WaitToFinish(); err != nil {
-		log.Warn("DescribeCollection failed to WaitToFinish",
-			zap.Error(err),
-			zap.Uint64("BeginTS", dct.BeginTs()),
-			zap.Uint64("EndTS", dct.EndTs()))
+		log.Warn(ctx, "DescribeCollection failed to WaitToFinish",
+			mlog.Err(err),
+			mlog.Uint64("BeginTS", dct.BeginTs()),
+			mlog.Uint64("EndTS", dct.EndTs()))
 
+		failStatus, failCause := failMetricLabel(err)
 		metrics.ProxyFunctionCall.WithLabelValues(strconv.FormatInt(paramtable.GetNodeID(), 10), method,
-			metrics.FailLabel, request.GetDbName(), request.GetCollectionName()).Inc()
+			failStatus, failCause, request.GetDbName(), request.GetCollectionName()).Inc()
 
 		return nil, err
 	}
 
-	log.Debug("DescribeCollection done",
-		zap.Uint64("BeginTS", dct.BeginTs()),
-		zap.Uint64("EndTS", dct.EndTs()),
+	log.Debug(ctx, "DescribeCollection done",
+		mlog.Uint64("BeginTS", dct.BeginTs()),
+		mlog.Uint64("EndTS", dct.EndTs()),
 	)
 
 	return dct.result, nil

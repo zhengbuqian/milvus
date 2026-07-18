@@ -26,14 +26,14 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
 	"github.com/milvus-io/milvus/internal/datacoord/allocator"
 	"github.com/milvus-io/milvus/internal/datacoord/broker"
 	"github.com/milvus-io/milvus/internal/metastore/mocks"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/taskcommon"
-	"github.com/milvus-io/milvus/pkg/v2/util/timerecord"
-	"github.com/milvus-io/milvus/pkg/v2/util/tsoutil"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/taskcommon"
+	"github.com/milvus-io/milvus/pkg/v3/util/timerecord"
+	"github.com/milvus-io/milvus/pkg/v3/util/tsoutil"
 )
 
 type CopySegmentCheckerSuite struct {
@@ -401,7 +401,7 @@ func (s *CopySegmentCheckerSuite) TestTryTimeoutJob() {
 	s.catalog.EXPECT().SaveCopySegmentJob(mock.Anything, mock.Anything).Return(nil).Times(2)
 
 	// Create a job with timeout in the past
-	timeoutTs := tsoutil.ComposeTSByTime(time.Now().Add(-1*time.Hour), 0)
+	timeoutTs := tsoutil.ComposeTSByTime(time.Now().Add(-1 * time.Hour))
 	job := &copySegmentJob{
 		CopySegmentJob: &datapb.CopySegmentJob{
 			JobId:        s.jobID,
@@ -431,7 +431,7 @@ func (s *CopySegmentCheckerSuite) TestCheckGC_RemoveCompletedJob() {
 	s.catalog.EXPECT().DropCopySegmentJob(mock.Anything, mock.Anything).Return(nil)
 
 	// Create a completed job with cleanup time in the past
-	cleanupTs := tsoutil.ComposeTSByTime(time.Now().Add(-1*time.Hour), 0)
+	cleanupTs := tsoutil.ComposeTSByTime(time.Now().Add(-1 * time.Hour))
 	job := &copySegmentJob{
 		CopySegmentJob: &datapb.CopySegmentJob{
 			JobId:        s.jobID,

@@ -24,16 +24,14 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/time/rate"
 
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/proto/streamingpb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/ratelimit"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/syncutil"
+	"github.com/milvus-io/milvus/pkg/v3/metrics"
+	"github.com/milvus-io/milvus/pkg/v3/proto/streamingpb"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/message"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/ratelimit"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/syncutil"
 )
-
-var ErrSlowDown = merr.WrapErrServiceRateLimit(0, "reach the limit of request, please slowdown and retry later")
 
 // getDefaultBurst returns the default burst size from configuration.
 func getDefaultBurst() int {
@@ -68,7 +66,7 @@ func (arl *produceRateLimiter) RequestReservation(ctx context.Context, msgs ...m
 	}
 	r := arl.limiter.ReserveN(time.Now(), msgSize)
 	if !r.OK() {
-		return nil, ErrSlowDown
+		return nil, merr.WrapErrServiceRateLimit(0, "reach the limit of request, please slowdown and retry later")
 	}
 	return r, nil
 }

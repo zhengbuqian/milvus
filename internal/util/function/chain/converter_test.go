@@ -29,7 +29,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/util/function/chain/types"
 )
 
@@ -67,6 +67,7 @@ func (s *ConverterSuite) TestToArrowType() {
 		{schemapb.DataType_Int16, arrow.PrimitiveTypes.Int16, false},
 		{schemapb.DataType_Int32, arrow.PrimitiveTypes.Int32, false},
 		{schemapb.DataType_Int64, arrow.PrimitiveTypes.Int64, false},
+		{schemapb.DataType_Timestamptz, arrow.PrimitiveTypes.Int64, false},
 		{schemapb.DataType_Float, arrow.PrimitiveTypes.Float32, false},
 		{schemapb.DataType_Double, arrow.PrimitiveTypes.Float64, false},
 		{schemapb.DataType_String, arrow.BinaryTypes.String, false},
@@ -430,6 +431,43 @@ func (s *ConverterSuite) TestFromSearchResultData_GroupByFieldValue_VarChar() {
 	s.Equal("electronics", chunk.Value(2))
 }
 
+func (s *ConverterSuite) TestFromSearchResultData_PluralGroupByFieldValuesEmptyNamesUseFieldIDs() {
+	resultData := &schemapb.SearchResultData{
+		NumQueries: 1,
+		TopK:       2,
+		Topks:      []int64{2},
+		Scores:     []float32{0.9, 0.8},
+		Ids: &schemapb.IDs{
+			IdField: &schemapb.IDs_IntId{
+				IntId: &schemapb.LongArray{Data: []int64{1, 2}},
+			},
+		},
+		GroupByFieldValues: []*schemapb.FieldData{
+			{
+				Type:    schemapb.DataType_VarChar,
+				FieldId: 200,
+				Field: &schemapb.FieldData_Scalars{Scalars: &schemapb.ScalarField{
+					Data: &schemapb.ScalarField_StringData{StringData: &schemapb.StringArray{Data: []string{"A", "B"}}},
+				}},
+			},
+			{
+				Type:    schemapb.DataType_VarChar,
+				FieldId: 201,
+				Field: &schemapb.FieldData_Scalars{Scalars: &schemapb.ScalarField{
+					Data: &schemapb.ScalarField_StringData{StringData: &schemapb.StringArray{Data: []string{"X", "Y"}}},
+				}},
+			},
+		},
+	}
+
+	df, err := FromSearchResultData(resultData, s.pool, nil)
+	s.Require().NoError(err)
+	defer df.Release()
+
+	s.True(df.HasColumn("$group_by_200"))
+	s.True(df.HasColumn("$group_by_201"))
+}
+
 func (s *ConverterSuite) TestGroupByFieldValue_RoundTrip() {
 	resultData := &schemapb.SearchResultData{
 		NumQueries: 2,
@@ -479,11 +517,13 @@ func (s *ConverterSuite) TestGroupByFieldValue_RoundTrip() {
 	})
 	s.Require().NoError(err)
 
-	// Verify GroupByFieldValue is set correctly
-	s.Require().NotNil(exported.GroupByFieldValue)
-	s.Equal("category_id", exported.GroupByFieldValue.FieldName)
-	s.Equal(schemapb.DataType_Int64, exported.GroupByFieldValue.Type)
-	s.Equal([]int64{10, 10, 20, 10, 20}, exported.GroupByFieldValue.GetScalars().GetLongData().GetData())
+	// Unified channel: chain writes the group-by column to the plural slot.
+	// The task output stage downgrades to singular for legacy-wire requests.
+	s.Require().Len(exported.GroupByFieldValues, 1)
+	gbv := exported.GroupByFieldValues[0]
+	s.Equal("category_id", gbv.FieldName)
+	s.Equal(schemapb.DataType_Int64, gbv.Type)
+	s.Equal([]int64{10, 10, 20, 10, 20}, gbv.GetScalars().GetLongData().GetData())
 
 	// Verify GroupByField is NOT in FieldsData
 	for _, fd := range exported.FieldsData {
@@ -493,6 +533,61 @@ func (s *ConverterSuite) TestGroupByFieldValue_RoundTrip() {
 	// Verify regular fields are still in FieldsData
 	s.Len(exported.FieldsData, 1)
 	s.Equal("name", exported.FieldsData[0].FieldName)
+}
+
+func (s *ConverterSuite) TestGroupByFields_RoundTripMultipleFields() {
+	resultData := &schemapb.SearchResultData{
+		NumQueries: 1,
+		TopK:       3,
+		Topks:      []int64{3},
+		Scores:     []float32{0.9, 0.8, 0.7},
+		Ids: &schemapb.IDs{
+			IdField: &schemapb.IDs_IntId{
+				IntId: &schemapb.LongArray{Data: []int64{1, 2, 3}},
+			},
+		},
+		GroupByFieldValues: []*schemapb.FieldData{
+			{
+				Type:      schemapb.DataType_Int64,
+				FieldName: "$group_by_200",
+				FieldId:   200,
+				Field: &schemapb.FieldData_Scalars{
+					Scalars: &schemapb.ScalarField{
+						Data: &schemapb.ScalarField_LongData{
+							LongData: &schemapb.LongArray{Data: []int64{10, 10, 20}},
+						},
+					},
+				},
+			},
+			{
+				Type:      schemapb.DataType_VarChar,
+				FieldName: "$group_by_201",
+				FieldId:   201,
+				Field: &schemapb.FieldData_Scalars{
+					Scalars: &schemapb.ScalarField{
+						Data: &schemapb.ScalarField_StringData{
+							StringData: &schemapb.StringArray{Data: []string{"a", "b", "a"}},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	df, err := FromSearchResultData(resultData, s.pool, nil)
+	s.Require().NoError(err)
+	defer df.Release()
+
+	exported, err := ToSearchResultDataWithOptions(df, &ExportOptions{
+		GroupByFields: []string{"$group_by_200", "$group_by_201"},
+	})
+	s.Require().NoError(err)
+	s.Require().Len(exported.GroupByFieldValues, 2)
+	s.Equal(int64(200), exported.GroupByFieldValues[0].GetFieldId())
+	s.Equal([]int64{10, 10, 20}, exported.GroupByFieldValues[0].GetScalars().GetLongData().GetData())
+	s.Equal(int64(201), exported.GroupByFieldValues[1].GetFieldId())
+	s.Equal([]string{"a", "b", "a"}, exported.GroupByFieldValues[1].GetScalars().GetStringData().GetData())
+	s.Empty(exported.FieldsData)
 }
 
 func (s *ConverterSuite) TestGroupByFieldValue_RoundTrip_VarChar() {
@@ -529,9 +624,9 @@ func (s *ConverterSuite) TestGroupByFieldValue_RoundTrip_VarChar() {
 	})
 	s.Require().NoError(err)
 
-	s.Require().NotNil(exported.GroupByFieldValue)
+	s.Require().Len(exported.GroupByFieldValues, 1)
 	s.Equal([]string{"electronics", "clothing", "food"},
-		exported.GroupByFieldValue.GetScalars().GetStringData().GetData())
+		exported.GroupByFieldValues[0].GetScalars().GetStringData().GetData())
 	s.Len(exported.FieldsData, 0)
 }
 
@@ -2226,6 +2321,48 @@ func (s *ConverterSuite) TestNullableRoundTrip_WithNulls() {
 	longData := exported.FieldsData[0].GetScalars().GetLongData().GetData()
 	s.Equal(int64(10), longData[0])
 	s.Equal(int64(30), longData[2])
+}
+
+func (s *ConverterSuite) TestNullableRoundTrip_TimestamptzWithNulls() {
+	resultData := &schemapb.SearchResultData{
+		NumQueries: 1,
+		TopK:       3,
+		Topks:      []int64{3},
+		Scores:     []float32{0.9, 0.8, 0.7},
+		Ids: &schemapb.IDs{
+			IdField: &schemapb.IDs_IntId{
+				IntId: &schemapb.LongArray{Data: []int64{1, 2, 3}},
+			},
+		},
+		FieldsData: []*schemapb.FieldData{
+			{
+				Type:      schemapb.DataType_Timestamptz,
+				FieldName: "ts",
+				FieldId:   101,
+				ValidData: []bool{true, false, true},
+				Field: &schemapb.FieldData_Scalars{
+					Scalars: &schemapb.ScalarField{
+						Data: &schemapb.ScalarField_TimestamptzData{
+							TimestamptzData: &schemapb.TimestamptzArray{Data: []int64{1000, 0, 3000}},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	df, err := FromSearchResultData(resultData, s.pool, []string{"ts"})
+	s.Require().NoError(err)
+	defer df.Release()
+
+	exported, err := ToSearchResultDataWithOptions(df, nil)
+	s.Require().NoError(err)
+
+	s.Require().Len(exported.FieldsData, 1)
+	fieldData := exported.FieldsData[0]
+	s.Equal(schemapb.DataType_Timestamptz, fieldData.GetType())
+	s.Equal([]int64{1000, 0, 3000}, fieldData.GetScalars().GetTimestamptzData().GetData())
+	s.Equal([]bool{true, false, true}, fieldData.GetValidData())
 }
 
 func (s *ConverterSuite) TestNullableRoundTrip_BoolWithNulls() {

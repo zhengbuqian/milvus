@@ -1,8 +1,10 @@
 #include <assert.h>
+#include <cmath>
 #include <sstream>
 #include <fmt/format.h>
 #include <set>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <vector>
 #include <type_traits>
@@ -89,7 +91,8 @@ struct TantivyIndexWrapper {
                         bool enable_user_specified_doc_id = true,
                         uintptr_t num_threads = DEFAULT_NUM_THREADS,
                         uintptr_t overall_memory_budget_in_bytes =
-                            DEFAULT_OVERALL_MEMORY_BUDGET_IN_BYTES) {
+                            DEFAULT_OVERALL_MEMORY_BUDGET_IN_BYTES,
+                        bool enable_background_merge = false) {
         RustResultWrapper res;
         if (inverted_single_semgnent) {
             AssertInfo(tantivy_index_version == 5,
@@ -105,7 +108,8 @@ struct TantivyIndexWrapper {
                                      tantivy_index_version,
                                      num_threads,
                                      overall_memory_budget_in_bytes,
-                                     enable_user_specified_doc_id));
+                                     enable_user_specified_doc_id,
+                                     enable_background_merge));
         }
         AssertInfo(res.result_->success,
                    "failed to create index: {}",
@@ -130,6 +134,10 @@ struct TantivyIndexWrapper {
     }
 
     // create index writer for text type with tokenizer.
+    // enable_background_merge: growing segments must keep tantivy's default
+    // merge policy (periodic commits would otherwise grow the segment count
+    // unbounded); sealed index builds pass false since finish() ends with an
+    // explicit merge-all.
     TantivyIndexWrapper(const char* field_name,
                         bool in_ram,
                         const char* path,
@@ -139,7 +147,8 @@ struct TantivyIndexWrapper {
                         const char* analyzer_extra_info = "",
                         uintptr_t num_threads = DEFAULT_NUM_THREADS,
                         uintptr_t overall_memory_budget_in_bytes =
-                            DEFAULT_OVERALL_MEMORY_BUDGET_IN_BYTES) {
+                            DEFAULT_OVERALL_MEMORY_BUDGET_IN_BYTES,
+                        bool enable_background_merge = false) {
         auto res = RustResultWrapper(
             tantivy_create_text_writer(field_name,
                                        path,
@@ -149,7 +158,8 @@ struct TantivyIndexWrapper {
                                        analyzer_extra_info,
                                        num_threads,
                                        overall_memory_budget_in_bytes,
-                                       in_ram));
+                                       in_ram,
+                                       enable_background_merge));
         AssertInfo(res.result_->success,
                    "failed to create text writer: {}",
                    res.result_->error);
@@ -352,11 +362,19 @@ struct TantivyIndexWrapper {
     void
     add_json_data(const Json* array, uintptr_t len, int64_t offset_begin) {
         assert(!finished_);
-        for (uintptr_t i = 0; i < len; i++) {
-            auto res = RustResultWrapper(tantivy_index_add_json(
-                writer_, array[i].data().data(), offset_begin + i));
+        // Batch add: collect c_str pointers and send in one FFI call
+        constexpr uintptr_t BATCH_SIZE = 1024;
+        for (uintptr_t start = 0; start < len; start += BATCH_SIZE) {
+            uintptr_t end = std::min(start + BATCH_SIZE, len);
+            uintptr_t batch_len = end - start;
+            std::vector<const char*> ptrs(batch_len);
+            for (uintptr_t i = 0; i < batch_len; ++i) {
+                ptrs[i] = array[start + i].data().data();
+            }
+            auto res = RustResultWrapper(tantivy_index_add_json_batch(
+                writer_, ptrs.data(), batch_len, offset_begin + start));
             AssertInfo(res.result_->success,
-                       "failed to add json: {}",
+                       "failed to add json batch: {}",
                        res.result_->error);
         }
     }
@@ -669,11 +687,18 @@ struct TantivyIndexWrapper {
             return;
         }
 
-        auto res = RustResultWrapper(tantivy_finish_index(writer_));
+        // Null writer_ before the FFI call because tantivy_finish_index
+        // always consumes (frees) the Rust-side IndexWriterWrapper via
+        // Box::from_raw, regardless of success or failure.  If we leave
+        // writer_ pointing at the now-freed memory and the AssertInfo
+        // below throws, the destructor path will call free() on a
+        // dangling pointer (use-after-free / SEGFAULT).
+        auto w = writer_;
+        writer_ = nullptr;
+        auto res = RustResultWrapper(tantivy_finish_index(w));
         AssertInfo(res.result_->success,
                    "failed to finish index: {}",
                    res.result_->error);
-        writer_ = nullptr;
         finished_ = true;
     }
 
@@ -985,6 +1010,21 @@ struct TantivyIndexWrapper {
     }
 
     void
+    regex_match_query(void* matcher_ctx,
+                      bool (*matcher)(void*, const uint8_t*, uintptr_t),
+                      void* bitset) {
+        auto array =
+            tantivy_regex_match_query(reader_, matcher_ctx, matcher, bitset);
+        auto res = RustResultWrapper(array);
+        AssertInfo(res.result_->success,
+                   "TantivyIndexWrapper.regex_match_query: {}",
+                   res.result_->error);
+        AssertInfo(
+            res.result_->value.tag == Value::Tag::None,
+            "TantivyIndexWrapper.regex_match_query: invalid result type");
+    }
+
+    void
     match_query(const std::string& query,
                 uintptr_t min_should_match,
                 void* bitset) {
@@ -1009,6 +1049,21 @@ struct TantivyIndexWrapper {
         AssertInfo(
             res.result_->value.tag == Value::Tag::None,
             "TantivyIndexWrapper.phrase_match_query: invalid result type");
+    }
+
+    void
+    fuzzy_match_query(const std::string& query,
+                      uint32_t max_edit_distance,
+                      void* bitset) {
+        auto array = tantivy_fuzzy_match_query(
+            reader_, query.c_str(), max_edit_distance, bitset);
+        auto res = RustResultWrapper(array);
+        AssertInfo(res.result_->success,
+                   "TantivyIndexWrapper.fuzzy_match_query: {}",
+                   res.result_->error);
+        AssertInfo(
+            res.result_->value.tag == Value::Tag::None,
+            "TantivyIndexWrapper.fuzzy_match_query: invalid result type");
     }
 
     void
@@ -1073,6 +1128,26 @@ struct TantivyIndexWrapper {
             "TantivyIndexWrapper.ngram_term_posting_list: invalid result type");
     }
 
+    static bool
+    can_cast_double_to_u64(double value) {
+        return std::isfinite(value) && std::floor(value) == value &&
+               value >= 0 &&
+               static_cast<long double>(value) <=
+                   static_cast<long double>(
+                       std::numeric_limits<uint64_t>::max());
+    }
+
+    static bool
+    can_cast_double_to_i64(double value) {
+        return std::isfinite(value) && std::floor(value) == value &&
+               static_cast<long double>(value) >=
+                   static_cast<long double>(
+                       std::numeric_limits<int64_t>::lowest()) &&
+               static_cast<long double>(value) <=
+                   static_cast<long double>(
+                       std::numeric_limits<int64_t>::max());
+    }
+
     // json query
     template <typename T>
     void
@@ -1084,23 +1159,78 @@ struct TantivyIndexWrapper {
             }
 
             if constexpr (std::is_integral_v<T>) {
-                auto res = tantivy_json_term_query_i64(
-                    reader_, json_path.c_str(), term, bitset);
-                AssertInfo(res.success,
-                           "TantivyIndexWrapper.json_term_query: {}",
-                           res.error);
+                if constexpr (std::is_signed_v<T>) {
+                    auto res = tantivy_json_term_query_i64(
+                        reader_, json_path.c_str(), term, bitset);
+                    AssertInfo(res.success,
+                               "TantivyIndexWrapper.json_term_query: {}",
+                               res.error);
+                    free_rust_result(res);
+                } else {
+                    if (term <=
+                        static_cast<T>(std::numeric_limits<int64_t>::max())) {
+                        auto res = tantivy_json_term_query_i64(
+                            reader_,
+                            json_path.c_str(),
+                            static_cast<int64_t>(term),
+                            bitset);
+                        AssertInfo(res.success,
+                                   "TantivyIndexWrapper.json_term_query: {}",
+                                   res.error);
+                        free_rust_result(res);
+                    }
+                }
+                if constexpr (std::is_signed_v<T>) {
+                    if (term >= 0) {
+                        auto res_u64 = tantivy_json_term_query_u64(
+                            reader_,
+                            json_path.c_str(),
+                            static_cast<uint64_t>(term),
+                            bitset);
+                        AssertInfo(
+                            res_u64.success,
+                            "TantivyIndexWrapper.json_term_query u64: {}",
+                            res_u64.error);
+                        free_rust_result(res_u64);
+                    }
+                } else {
+                    auto res_u64 =
+                        tantivy_json_term_query_u64(reader_,
+                                                    json_path.c_str(),
+                                                    static_cast<uint64_t>(term),
+                                                    bitset);
+                    AssertInfo(res_u64.success,
+                               "TantivyIndexWrapper.json_term_query u64: {}",
+                               res_u64.error);
+                    free_rust_result(res_u64);
+                }
                 return tantivy_json_term_query_f64(
                     reader_, json_path.c_str(), term, bitset);
             }
 
             if constexpr (std::is_floating_point_v<T>) {
                 // if term can be cast to int64 without precision loss, use int64 query first
-                if (std::floor(term) == term) {
-                    auto res = tantivy_json_term_query_i64(
-                        reader_, json_path.c_str(), term, bitset);
+                if (can_cast_double_to_i64(term)) {
+                    auto res =
+                        tantivy_json_term_query_i64(reader_,
+                                                    json_path.c_str(),
+                                                    static_cast<int64_t>(term),
+                                                    bitset);
                     AssertInfo(res.success,
                                "TantivyIndexWrapper.json_term_query: {}",
                                res.error);
+                    free_rust_result(res);
+                }
+                if (can_cast_double_to_u64(term)) {
+                    auto res =
+                        tantivy_json_term_query_u64(reader_,
+                                                    json_path.c_str(),
+                                                    static_cast<uint64_t>(term),
+                                                    bitset);
+                    AssertInfo(res.success,
+                               "TantivyIndexWrapper.json_term_query u64: {}",
+                               res.error);
+                    free_rust_result(res);
                 }
                 return tantivy_json_term_query_f64(
                     reader_, json_path.c_str(), term, bitset);
@@ -1124,10 +1254,172 @@ struct TantivyIndexWrapper {
                    "TantivyIndexWrapper.json_term_query: invalid result type");
     }
 
+    // Batch json terms query - all values in a single call
+    template <typename T>
     void
-    json_exist_query(const std::string& json_path, void* bitset) {
-        auto array =
-            tantivy_json_exist_query(reader_, json_path.c_str(), bitset);
+    json_terms_query(const std::string& json_path,
+                     const T* values,
+                     size_t n,
+                     void* bitset) {
+        auto array = [&]() {
+            if constexpr (std::is_same_v<T, bool>) {
+                return tantivy_json_terms_query_bool(
+                    reader_, json_path.c_str(), values, n, bitset);
+            }
+
+            if constexpr (std::is_integral_v<T>) {
+                // For JSON integer fields, we need to query both i64 and f64
+                // because JSON numbers can be stored as either type.
+                // First batch-query i64, then batch-query f64.
+                std::vector<int64_t> i64_values;
+                i64_values.reserve(n);
+                for (size_t i = 0; i < n; ++i) {
+                    if constexpr (std::is_signed_v<T>) {
+                        i64_values.push_back(static_cast<int64_t>(values[i]));
+                    } else if (values[i] <=
+                               static_cast<T>(
+                                   std::numeric_limits<int64_t>::max())) {
+                        i64_values.push_back(static_cast<int64_t>(values[i]));
+                    }
+                }
+                if (!i64_values.empty()) {
+                    auto res_i64 =
+                        tantivy_json_terms_query_i64(reader_,
+                                                     json_path.c_str(),
+                                                     i64_values.data(),
+                                                     i64_values.size(),
+                                                     bitset);
+                    AssertInfo(res_i64.success,
+                               "TantivyIndexWrapper.json_terms_query i64: {}",
+                               res_i64.error);
+                    free_rust_result(res_i64);
+                }
+
+                std::vector<uint64_t> u64_values;
+                u64_values.reserve(n);
+                for (size_t i = 0; i < n; ++i) {
+                    if constexpr (std::is_signed_v<T>) {
+                        if (values[i] < 0) {
+                            continue;
+                        }
+                    }
+                    u64_values.push_back(static_cast<uint64_t>(values[i]));
+                }
+                if (!u64_values.empty()) {
+                    auto res_u64 =
+                        tantivy_json_terms_query_u64(reader_,
+                                                     json_path.c_str(),
+                                                     u64_values.data(),
+                                                     u64_values.size(),
+                                                     bitset);
+                    AssertInfo(res_u64.success,
+                               "TantivyIndexWrapper.json_terms_query u64: {}",
+                               res_u64.error);
+                    free_rust_result(res_u64);
+                }
+
+                // Query f64 only when the integer round-trips exactly. JSON
+                // numeric equality is cross-type, but a lossy conversion here
+                // would alias adjacent integers above 2^53.
+                std::vector<double> f64_values;
+                f64_values.reserve(n);
+                for (size_t i = 0; i < n; ++i) {
+                    const auto value_as_double = static_cast<double>(values[i]);
+                    if constexpr (std::is_signed_v<T>) {
+                        if (can_cast_double_to_i64(value_as_double) &&
+                            static_cast<int64_t>(value_as_double) ==
+                                static_cast<int64_t>(values[i])) {
+                            f64_values.push_back(value_as_double);
+                        }
+                    } else if (can_cast_double_to_u64(value_as_double) &&
+                               static_cast<uint64_t>(value_as_double) ==
+                                   static_cast<uint64_t>(values[i])) {
+                        f64_values.push_back(value_as_double);
+                    }
+                }
+                double empty_f64_value = 0;
+                const auto* f64_data =
+                    f64_values.empty() ? &empty_f64_value : f64_values.data();
+                return tantivy_json_terms_query_f64(reader_,
+                                                    json_path.c_str(),
+                                                    f64_data,
+                                                    f64_values.size(),
+                                                    bitset);
+            }
+
+            if constexpr (std::is_floating_point_v<T>) {
+                // Query matching integers first (for values without fractional part)
+                std::vector<int64_t> int_values;
+                int_values.reserve(n);
+                std::vector<uint64_t> u64_values;
+                u64_values.reserve(n);
+                for (size_t i = 0; i < n; ++i) {
+                    if (can_cast_double_to_i64(values[i])) {
+                        int_values.push_back(static_cast<int64_t>(values[i]));
+                    }
+                    if (can_cast_double_to_u64(values[i])) {
+                        u64_values.push_back(static_cast<uint64_t>(values[i]));
+                    }
+                }
+                if (!int_values.empty()) {
+                    auto res_i64 =
+                        tantivy_json_terms_query_i64(reader_,
+                                                     json_path.c_str(),
+                                                     int_values.data(),
+                                                     int_values.size(),
+                                                     bitset);
+                    AssertInfo(res_i64.success,
+                               "TantivyIndexWrapper.json_terms_query i64: {}",
+                               res_i64.error);
+                    free_rust_result(res_i64);
+                }
+                if (!u64_values.empty()) {
+                    auto res_u64 =
+                        tantivy_json_terms_query_u64(reader_,
+                                                     json_path.c_str(),
+                                                     u64_values.data(),
+                                                     u64_values.size(),
+                                                     bitset);
+                    AssertInfo(res_u64.success,
+                               "TantivyIndexWrapper.json_terms_query u64: {}",
+                               res_u64.error);
+                    free_rust_result(res_u64);
+                }
+                return tantivy_json_terms_query_f64(
+                    reader_,
+                    json_path.c_str(),
+                    reinterpret_cast<const double*>(values),
+                    n,
+                    bitset);
+            }
+
+            if constexpr (std::is_same_v<T, std::string>) {
+                std::vector<const char*> c_strs(n);
+                for (size_t i = 0; i < n; ++i) c_strs[i] = values[i].c_str();
+                return tantivy_json_terms_query_keyword(
+                    reader_, json_path.c_str(), c_strs.data(), n, bitset);
+            }
+
+            throw fmt::format(
+                "InvertedIndex.json_terms_query: unsupported data type: {}",
+                typeid(T).name());
+            return RustResult();
+        }();
+        auto res = RustResultWrapper(array);
+        AssertInfo(res.result_->success,
+                   "TantivyIndexWrapper.json_terms_query: {}",
+                   res.result_->error);
+        AssertInfo(res.result_->value.tag == Value::Tag::None,
+                   "TantivyIndexWrapper.json_terms_query: invalid result type");
+    }
+
+    void
+    json_exist_query(const std::string& json_path,
+                     bool json_subpaths,
+                     JsonExistValueType value_type,
+                     void* bitset) {
+        auto array = tantivy_json_exist_query(
+            reader_, json_path.c_str(), json_subpaths, value_type, bitset);
         auto res = RustResultWrapper(array);
         AssertInfo(res.result_->success,
                    "TantivyIndexWrapper.json_exist_query: {}",
@@ -1157,6 +1449,18 @@ struct TantivyIndexWrapper {
                                                      lb_inclusive,
                                                      ub_inclusive,
                                                      bitset);
+            }
+
+            if constexpr (std::is_same_v<T, uint64_t>) {
+                return tantivy_json_range_query_u64(reader_,
+                                                    json_path.c_str(),
+                                                    lower_bound,
+                                                    upper_bound,
+                                                    lb_unbounded,
+                                                    ub_unbounded,
+                                                    lb_inclusive,
+                                                    ub_inclusive,
+                                                    bitset);
             }
 
             if constexpr (std::is_integral_v<T>) {

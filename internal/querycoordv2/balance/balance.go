@@ -24,14 +24,14 @@ import (
 	"math"
 
 	"github.com/samber/lo"
-	"go.uber.org/zap"
+	"golang.org/x/time/rate"
 
 	"github.com/milvus-io/milvus/internal/querycoordv2/assign"
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
 	"github.com/milvus-io/milvus/internal/querycoordv2/session"
 	"github.com/milvus-io/milvus/internal/querycoordv2/task"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
 )
 
 // Balance is the interface that all balancers must implement.
@@ -69,14 +69,14 @@ func (b *RoundRobinBalancer) GetAssignPolicy() assign.AssignPolicy {
 // It first attempts to balance channels if AutoBalanceChannel is enabled, then balances segments
 // if no channel plans were generated.
 func (b *RoundRobinBalancer) BalanceReplica(ctx context.Context, replica *meta.Replica) (segmentPlans []assign.SegmentAssignPlan, channelPlans []assign.ChannelAssignPlan) {
-	log := log.Ctx(ctx).WithRateGroup("qcv2.RoundRobinBalancer", 1, 60).With(
-		zap.Int64("collectionID", replica.GetCollectionID()),
-		zap.Int64("replicaID", replica.GetID()),
-		zap.String("resourceGroup", replica.GetResourceGroup()),
+	log := mlog.With(
+		mlog.FieldCollectionID(replica.GetCollectionID()),
+		mlog.Int64("replicaID", replica.GetID()),
+		mlog.String("resourceGroup", replica.GetResourceGroup()),
 	)
 
 	if replica.NodesCount() < 2 {
-		log.RatedDebug(60, "replica has less than 2 querynodes, skip balance")
+		log.RatedDebug(ctx, rate.Limit(60), "replica has less than 2 querynodes, skip balance")
 		return nil, nil
 	}
 
@@ -88,11 +88,11 @@ func (b *RoundRobinBalancer) BalanceReplica(ctx context.Context, replica *meta.R
 	}
 
 	if len(segmentPlans) > 0 || len(channelPlans) > 0 {
-		log.Info("balance plan generated",
-			zap.Int("segmentPlans", len(segmentPlans)),
-			zap.Int("channelPlans", len(channelPlans)))
+		log.Info(ctx, "balance plan generated",
+			mlog.Int("segmentPlans", len(segmentPlans)),
+			mlog.Int("channelPlans", len(channelPlans)))
 	}
-	return
+	return segmentPlans, channelPlans
 }
 
 // balanceChannels generates channel balance plans for a replica.
@@ -186,7 +186,7 @@ func (b *RoundRobinBalancer) genChannelPlan(ctx context.Context, replica *meta.R
 	channelsToMove := make([]*meta.DmChannel, 0)
 
 	for _, node := range rwNodes {
-		channels := b.dist.ChannelDistManager.GetByCollectionAndFilter(replica.GetCollectionID(), meta.WithNodeID2Channel(node))
+		channels := b.dist.ChannelDistManager.GetByFilter(meta.WithCollectionID2Channel(replica.GetCollectionID()), meta.WithNodeID2Channel(node))
 		channels = sortIfChannelAtWALLocated(channels)
 
 		if len(channels) <= average {

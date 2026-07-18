@@ -22,7 +22,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 var (
@@ -104,6 +104,17 @@ var (
 		}, []string{
 			nodeIDLabelName,
 			msgTypeLabelName,
+			collectionIDLabelName,
+		})
+
+	QueryNodeSkippedInsertFieldCount = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: milvusNamespace,
+			Subsystem: typeutil.QueryNodeRole,
+			Name:      "skipped_insert_field_count",
+			Help:      "count of insert payload field columns skipped because the field is absent from the current schema, e.g. dropped fields carried by messages replayed from WAL",
+		}, []string{
+			nodeIDLabelName,
 			collectionIDLabelName,
 		})
 
@@ -256,6 +267,19 @@ var (
 			reduceType,
 		})
 
+	QueryNodeFunctionChainLatency = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: milvusNamespace,
+			Subsystem: typeutil.QueryNodeRole,
+			Name:      "function_chain_latency",
+			Help:      "query-level function chain execution latency in milliseconds",
+			Buckets:   subMsBuckets,
+		}, []string{
+			nodeIDLabelName,
+			chainLevelLabelName,
+			statusLabelName,
+		})
+
 	QueryNodeLoadSegmentLatency = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Namespace: milvusNamespace,
@@ -263,16 +287,6 @@ var (
 			Name:      "load_segment_latency",
 			Help:      "latency of load per segment",
 			Buckets:   longTaskBuckets, // unit milliseconds
-		}, []string{
-			nodeIDLabelName,
-		})
-
-	QueryNodeReadTaskUnsolveLen = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Namespace: milvusNamespace,
-			Subsystem: typeutil.QueryNodeRole,
-			Name:      "read_task_unsolved_len",
-			Help:      "number of unsolved read tasks in unsolvedQueue",
 		}, []string{
 			nodeIDLabelName,
 		})
@@ -285,6 +299,40 @@ var (
 			Help:      "number of ready read tasks in readyQueue",
 		}, []string{
 			nodeIDLabelName,
+		})
+
+	QueryNodeReadTaskReadyNQ = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: milvusNamespace,
+			Subsystem: typeutil.QueryNodeRole,
+			Name:      "read_task_ready_nq",
+			Help:      "total NQ of ready read tasks in scheduler queue",
+		}, []string{
+			nodeIDLabelName,
+		})
+
+	QueryNodeReadTaskQueueDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: milvusNamespace,
+			Subsystem: typeutil.QueryNodeRole,
+			Name:      "read_task_queue_duration",
+			Help:      "duration in milliseconds that read tasks stay in scheduler policy queue",
+			Buckets:   subMsBuckets,
+		}, []string{
+			nodeIDLabelName,
+			outcomeLabelName,
+		})
+
+	QueryNodeReadTaskExecuteDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: milvusNamespace,
+			Subsystem: typeutil.QueryNodeRole,
+			Name:      "read_task_execute_duration",
+			Help:      "duration in milliseconds that read tasks spend in scheduler execution pool",
+			Buckets:   subMsBuckets,
+		}, []string{
+			nodeIDLabelName,
+			outcomeLabelName,
 		})
 
 	QueryNodeReadTaskConcurrency = prometheus.NewGaugeVec(
@@ -946,9 +994,12 @@ func RegisterQueryNode(registry *prometheus.Registry) {
 	registry.MustRegister(QueryNodeSQSegmentLatency)
 	registry.MustRegister(QueryNodeSQSegmentLatencyInCore)
 	registry.MustRegister(QueryNodeReduceLatency)
+	registry.MustRegister(QueryNodeFunctionChainLatency)
 	registry.MustRegister(QueryNodeLoadSegmentLatency)
-	registry.MustRegister(QueryNodeReadTaskUnsolveLen)
 	registry.MustRegister(QueryNodeReadTaskReadyLen)
+	registry.MustRegister(QueryNodeReadTaskReadyNQ)
+	registry.MustRegister(QueryNodeReadTaskQueueDuration)
+	registry.MustRegister(QueryNodeReadTaskExecuteDuration)
 	registry.MustRegister(QueryNodeReadTaskConcurrency)
 	registry.MustRegister(QueryNodeEstimateCPUUsage)
 	registry.MustRegister(QueryNodeSearchGroupNQ)
@@ -965,6 +1016,7 @@ func RegisterQueryNode(registry *prometheus.Registry) {
 	registry.MustRegister(QueryNodeConsumeCounter)
 	registry.MustRegister(QueryNodeExecuteCounter)
 	registry.MustRegister(QueryNodeConsumerMsgCount)
+	registry.MustRegister(QueryNodeSkippedInsertFieldCount)
 	registry.MustRegister(QueryNodeConsumeTimeTickLag)
 	registry.MustRegister(QueryNodeMsgDispatcherTtLag)
 	registry.MustRegister(QueryNodeSegmentSearchLatencyPerVector)
@@ -1024,6 +1076,7 @@ func CleanupQueryNodeCollectionMetrics(nodeID int64, collectionID int64) {
 		collectionIDLabelName: fmt.Sprint(collectionID),
 	}
 	QueryNodeConsumerMsgCount.DeletePartialMatch(labels)
+	QueryNodeSkippedInsertFieldCount.DeletePartialMatch(labels)
 	QueryNodeConsumeTimeTickLag.DeletePartialMatch(labels)
 	QueryNodeNumEntities.DeletePartialMatch(labels)
 	QueryNodeEntitiesSize.DeletePartialMatch(labels)

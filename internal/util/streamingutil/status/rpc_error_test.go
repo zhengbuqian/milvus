@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc/codes"
 
-	"github.com/milvus-io/milvus/pkg/v2/proto/streamingpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/streamingpb"
 )
 
 func TestStreamingStatus(t *testing.T) {
@@ -40,6 +40,21 @@ func TestNewGRPCStatusFromStreamingError(t *testing.T) {
 		NewOnShutdownError("test"),
 	)
 	assert.Equal(t, codes.FailedPrecondition, st.Code())
+
+	st = NewGRPCStatusFromStreamingError(
+		NewUnrecoverableError("test"),
+	)
+	assert.Equal(t, codes.FailedPrecondition, st.Code())
+
+	st = NewGRPCStatusFromStreamingError(
+		NewSchemaVersionMismatch("test"),
+	)
+	assert.Equal(t, codes.FailedPrecondition, st.Code())
+
+	st = NewGRPCStatusFromStreamingError(
+		NewRateLimitRejected("test"),
+	)
+	assert.Equal(t, codes.ResourceExhausted, st.Code())
 
 	st = NewGRPCStatusFromStreamingError(
 		New(10086, "test"),

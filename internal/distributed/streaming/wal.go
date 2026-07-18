@@ -11,13 +11,13 @@ import (
 	"github.com/milvus-io/milvus/internal/streamingcoord/client"
 	"github.com/milvus-io/milvus/internal/streamingnode/client/handler"
 	"github.com/milvus-io/milvus/internal/util/streamingutil/status"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/util/conc"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/message"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/types"
+	"github.com/milvus-io/milvus/pkg/v3/util/conc"
+	"github.com/milvus-io/milvus/pkg/v3/util/funcutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 var ErrWALAccesserClosed = status.NewOnShutdownError("wal accesser closed")
@@ -42,13 +42,13 @@ func newWALAccesser(c *clientv3.Client) *walAccesserImpl {
 
 		forwardService: newForwardService(streamingCoordClient),
 	}
-	w.SetLogger(log.With(log.FieldComponent("wal-accesser")))
+	w.SetLogger(mlog.With(mlog.FieldComponent("wal-accesser")))
 	return w
 }
 
 // walAccesserImpl is the implementation of WALAccesser.
 type walAccesserImpl struct {
-	log.Binder
+	mlog.Binder
 	lifetime  *typeutil.Lifetime
 	clusterID string
 

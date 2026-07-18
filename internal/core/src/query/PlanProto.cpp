@@ -11,6 +11,8 @@
 
 #include "PlanProto.h"
 
+#include <google/protobuf/descriptor.h>
+#include <google/protobuf/message.h>
 #include <google/protobuf/text_format.h>
 #include <algorithm>
 #include <cstddef>
@@ -242,6 +244,101 @@ getAggregateOpName(planpb::AggregateOp op) {
 
 namespace {
 
+// Adds a non-zero field id once while preserving first-seen order.
+void
+AddAccessFieldID(std::vector<FieldId>& field_ids, int64_t field_id) {
+    if (field_id == 0) {
+        return;
+    }
+    auto it = std::find_if(
+        field_ids.begin(), field_ids.end(), [field_id](FieldId id) {
+            return id.get() == field_id;
+        });
+    if (it == field_ids.end()) {
+        field_ids.emplace_back(FieldId(field_id));
+    }
+}
+
+// Walks a plan proto tree and records every ColumnInfo field reference.
+void
+CollectColumnInfoFieldIDs(const google::protobuf::Message& message,
+                          std::vector<FieldId>& field_ids) {
+    if (message.GetDescriptor() == proto::plan::ColumnInfo::descriptor()) {
+        const auto& column_info =
+            static_cast<const proto::plan::ColumnInfo&>(message);
+        AddAccessFieldID(field_ids, column_info.field_id());
+        return;
+    }
+
+    const auto* descriptor = message.GetDescriptor();
+    const auto* reflection = message.GetReflection();
+    for (int i = 0; i < descriptor->field_count(); ++i) {
+        const auto* field = descriptor->field(i);
+        if (field->cpp_type() !=
+            google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE) {
+            continue;
+        }
+        if (field->is_repeated()) {
+            auto size = reflection->FieldSize(message, field);
+            for (int j = 0; j < size; ++j) {
+                CollectColumnInfoFieldIDs(
+                    reflection->GetRepeatedMessage(message, field, j),
+                    field_ids);
+            }
+            continue;
+        }
+        if (reflection->HasField(message, field)) {
+            CollectColumnInfoFieldIDs(reflection->GetMessage(message, field),
+                                      field_ids);
+        }
+    }
+}
+
+// Builds the unified field-reference list used by external manifest checks.
+std::vector<FieldId>
+CollectAccessFieldIDs(const proto::plan::PlanNode& plan_node_proto) {
+    std::vector<FieldId> field_ids;
+    auto add_field_id = [&](int64_t field_id) {
+        AddAccessFieldID(field_ids, field_id);
+    };
+    // This list is consumed by the external-collection manifest guard. It is
+    // deliberately a field-reference list, not a data/index-readiness list:
+    // external output can be served by take(), while predicates/group-by/etc.
+    // may use loaded columns or indexes. Both only need the current loaded
+    // manifest to contain the referenced external column.
+    if (plan_node_proto.has_vector_anns()) {
+        const auto& vector_anns = plan_node_proto.vector_anns();
+        add_field_id(vector_anns.field_id());
+        if (vector_anns.has_query_info()) {
+            const auto& query_info = vector_anns.query_info();
+            add_field_id(query_info.query_field_id());
+            add_field_id(query_info.group_by_field_id());
+            for (auto field_id : query_info.group_by_field_ids()) {
+                add_field_id(field_id);
+            }
+        }
+    }
+
+    if (plan_node_proto.has_query()) {
+        const auto& query = plan_node_proto.query();
+        for (auto field_id : query.group_by_field_ids()) {
+            add_field_id(field_id);
+        }
+        for (const auto& aggregate : query.aggregates()) {
+            add_field_id(aggregate.field_id());
+        }
+        for (const auto& order_by : query.order_by_fields()) {
+            add_field_id(order_by.field_id());
+        }
+    }
+
+    CollectColumnInfoFieldIDs(plan_node_proto, field_ids);
+    for (auto field_id : plan_node_proto.output_field_ids()) {
+        add_field_id(field_id);
+    }
+    return field_ids;
+}
+
 // Helper function to process group_by fields
 void
 ProcessGroupByFields(const proto::plan::QueryPlanNode& query,
@@ -390,7 +487,8 @@ std::tuple<plan::PlanNodePtr, std::vector<FieldId>, std::vector<FieldId>>
 BuildOrderByProjectNode(const proto::plan::QueryPlanNode& query,
                         const planpb::PlanNode& plan_node_proto,
                         const SchemaPtr& schema,
-                        const std::vector<plan::PlanNodePtr>& sources) {
+                        const std::vector<plan::PlanNodePtr>& sources,
+                        bool is_element_level) {
     std::vector<FieldId> project_ids;
     std::vector<std::string> project_names;
     std::vector<milvus::DataType> project_types;
@@ -450,6 +548,15 @@ BuildOrderByProjectNode(const proto::plan::QueryPlanNode& query,
             project_names.push_back(schema->GetFieldName(fid));
             project_types.push_back(schema->GetFieldType(fid));
         }
+    }
+
+    // Element-level ORDER BY sorts logical element rows. Keep the matched
+    // element index in a hidden column so result assembly can restore SDK
+    // offsets after TopK reorders rows.
+    if (is_element_level) {
+        project_ids.push_back(ElementIndexFieldID);
+        project_names.push_back("ElementIndex");
+        project_types.push_back(DataType::INT64);
     }
 
     // Always append SegmentOffsetFieldID as the last pipeline column.
@@ -662,21 +769,6 @@ ProtoParser::PlanNodeFromProto(const planpb::PlanNode& plan_node_proto) {
         sources = std::vector<milvus::plan::PlanNodePtr>{plannode};
     }
 
-    // if has score function, run filter and scorer at last
-    if (plan_node_proto.scorers_size() > 0) {
-        std::vector<std::shared_ptr<rescores::Scorer>> scorers;
-        for (const auto& function : plan_node_proto.scorers()) {
-            scorers.push_back(ParseScorer(function));
-        }
-
-        plannode = std::make_shared<milvus::plan::RescoresNode>(
-            milvus::plan::GetNextPlanNodeId(),
-            std::move(scorers),
-            plan_node_proto.score_option(),
-            sources);
-        sources = std::vector<milvus::plan::PlanNodePtr>{plannode};
-    }
-
     plan_node->plannodes_ = plannode;
 
     PlanOptionsFromProto(plan_node_proto.plan_options(),
@@ -755,6 +847,23 @@ ProtoParser::RetrievePlanNodeFromProto(
                 parse_expr_to_filter_node(query.predicates());
             }
         }
+        if (query.has_query_iterator_cursor()) {
+            AssertInfo(is_element_level,
+                       "query iterator cursor is only supported for "
+                       "element-level query");
+            const auto& cursor_proto = query.query_iterator_cursor();
+            QueryIteratorCursor cursor;
+            if (cursor_proto.has_last_int_pk()) {
+                cursor.last_pk = cursor_proto.last_int_pk();
+            } else if (cursor_proto.has_last_str_pk()) {
+                cursor.last_pk = cursor_proto.last_str_pk();
+            } else {
+                ThrowInfo(ErrorCode::UnexpectedError,
+                          "query iterator cursor requires last primary key");
+            }
+            cursor.last_element_offset = cursor_proto.last_element_offset();
+            plan_node->query_iterator_cursor_ = std::move(cursor);
+        }
 
         // 2. Build MvccNode
         plannode = std::make_shared<milvus::plan::MvccNode>(
@@ -822,8 +931,11 @@ ProtoParser::RetrievePlanNodeFromProto(
                 (group_by_field_count > 0 || agg_functions_count > 0);
             if (!has_aggregation) {
                 auto [project, deferred, pipeline_ids] =
-                    BuildOrderByProjectNode(
-                        query, plan_node_proto, schema, sources);
+                    BuildOrderByProjectNode(query,
+                                            plan_node_proto,
+                                            schema,
+                                            sources,
+                                            is_element_level);
                 plannode = project;
                 sources = std::vector<milvus::plan::PlanNodePtr>{plannode};
                 plan_node->deferred_field_ids_ = std::move(deferred);
@@ -850,7 +962,8 @@ ProtoParser::CreatePlan(const proto::plan::PlanNode& plan_node_proto) {
     auto plan_node = PlanNodeFromProto(plan_node_proto);
     plan->plan_node_ = std::move(plan_node);
     plan->tag2field_["$0"] = plan->plan_node_->search_info_.field_id_;
-    ExtractedPlanInfo extra_info(schema->size());
+    plan->access_entries_ = CollectAccessFieldIDs(plan_node_proto);
+    ExtractedPlanInfo extra_info(schema->get_field_id_bitset_size());
     extra_info.add_involved_field(plan->plan_node_->search_info_.field_id_);
     plan->extra_info_opt_ = std::move(extra_info);
 
@@ -874,6 +987,7 @@ ProtoParser::CreateRetrievePlan(const proto::plan::PlanNode& plan_node_proto) {
     auto plan_node = RetrievePlanNodeFromProto(plan_node_proto);
 
     retrieve_plan->plan_node_ = std::move(plan_node);
+    retrieve_plan->access_entries_ = CollectAccessFieldIDs(plan_node_proto);
     for (auto field_id_raw : plan_node_proto.output_field_ids()) {
         auto field_id = FieldId(field_id_raw);
         retrieve_plan->field_ids_.push_back(field_id);

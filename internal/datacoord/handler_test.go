@@ -11,21 +11,22 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/msgpb"
 	"github.com/milvus-io/milvus/internal/datacoord/broker"
 	"github.com/milvus-io/milvus/internal/metastore/model"
 	mocks2 "github.com/milvus-io/milvus/internal/mocks"
 	"github.com/milvus-io/milvus/internal/storage"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/objectstorage"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/rootcoordpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/workerpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/tsoutil"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/objectstorage"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/indexpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/rootcoordpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/workerpb"
+	"github.com/milvus-io/milvus/pkg/v3/util/funcutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/tsoutil"
 )
 
 func TestGetQueryVChanPositionsRetrieveM2N(t *testing.T) {
@@ -1356,13 +1357,13 @@ func TestShouldDropChannel(t *testing.T) {
 	myRoot := &myRootCoord{}
 	myRoot.EXPECT().AllocTimestamp(mock.Anything, mock.Anything).Return(&rootcoordpb.AllocTimestampResponse{
 		Status:    merr.Success(),
-		Timestamp: tsoutil.ComposeTSByTime(time.Now(), 0),
+		Timestamp: tsoutil.ComposeTSByTime(time.Now()),
 		Count:     1,
 	}, nil)
 
 	myRoot.EXPECT().AllocID(mock.Anything, mock.Anything).Return(&rootcoordpb.AllocIDResponse{
 		Status: merr.Success(),
-		ID:     int64(tsoutil.ComposeTSByTime(time.Now(), 0)),
+		ID:     int64(tsoutil.ComposeTSByTime(time.Now())),
 		Count:  1,
 	}, nil)
 
@@ -1541,35 +1542,60 @@ func TestGetDataVChanPositions(t *testing.T) {
 	})
 }
 
-func TestGetSnapshotTs(t *testing.T) {
-	// Create a minimal server handler without full server initialization
-	handler := &ServerHandler{
-		s: &Server{},
-	}
+func TestGetSnapshotSeekPositions_ReturnsSortedPositionsAndMinTs(t *testing.T) {
+	handler := &ServerHandler{s: &Server{}}
 
-	mock1 := mockey.Mock((*Server).getChannelsByCollectionID).To(func(s *Server, ctx context.Context, collectionID int64) ([]RWChannel, error) {
+	mockChannels := mockey.Mock((*Server).getChannelsByCollectionID).To(func(s *Server, ctx context.Context, collectionID int64) ([]RWChannel, error) {
+		assert.Equal(t, UniqueID(100), collectionID)
 		return []RWChannel{
-			&channelMeta{Name: "ch1", CollectionID: 100},
-			&channelMeta{Name: "ch2", CollectionID: 100},
+			&channelMeta{Name: "ch-b", CollectionID: 100},
+			&channelMeta{Name: "ch-a", CollectionID: 100},
 		}, nil
 	}).Build()
-	defer mock1.UnPatch()
+	defer mockChannels.UnPatch()
 
-	var callCount int
-	mock2 := mockey.Mock((*ServerHandler).GetChannelSeekPosition).To(func(h *ServerHandler, channel RWChannel, partitionIDs ...UniqueID) *msgpb.MsgPosition {
-		callCount++
-		if callCount == 1 {
-			return &msgpb.MsgPosition{Timestamp: 1000}
-		} else {
-			return &msgpb.MsgPosition{Timestamp: 500} // smaller timestamp
+	chAPosition := &msgpb.MsgPosition{
+		Timestamp: 100,
+		MsgID:     []byte{1},
+	}
+	chBPosition := &msgpb.MsgPosition{
+		ChannelName: "ch-b",
+		Timestamp:   1000,
+		MsgID:       []byte{2},
+	}
+	mockSeekPosition := mockey.Mock((*ServerHandler).GetChannelSeekPosition).To(func(h *ServerHandler, channel RWChannel, partitionIDs ...UniqueID) *msgpb.MsgPosition {
+		assert.Equal(t, []UniqueID{10, 20}, partitionIDs)
+		switch channel.GetName() {
+		case "ch-a":
+			return chAPosition
+		case "ch-b":
+			return chBPosition
+		default:
+			t.Fatalf("unexpected channel: %s", channel.GetName())
+			return nil
 		}
 	}).Build()
-	defer mock2.UnPatch()
+	defer mockSeekPosition.UnPatch()
 
-	// Test GetSnapshotTs
-	ts, err := handler.GetSnapshotTs(context.Background(), 100)
-	assert.NoError(t, err)
-	assert.Equal(t, uint64(500), ts) // Should return the smallest timestamp
+	positions, minTs, err := handler.GetSnapshotSeekPositions(context.Background(), 100, 10, 20)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(100), minTs)
+	require.Len(t, positions, 2)
+	assert.Equal(t, "ch-a", positions[0].GetChannelName())
+	assert.Equal(t, uint64(100), positions[0].GetTimestamp())
+	assert.Equal(t, []byte{1}, positions[0].GetMsgID())
+	assert.Equal(t, "ch-b", positions[1].GetChannelName())
+	assert.Equal(t, uint64(1000), positions[1].GetTimestamp())
+	assert.Equal(t, []byte{2}, positions[1].GetMsgID())
+
+	positions[0].Timestamp = 9999
+
+	positions, minTs, err = handler.GetSnapshotSeekPositions(context.Background(), 100, 10, 20)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(100), minTs)
+	require.Len(t, positions, 2)
+	assert.Equal(t, "ch-a", positions[0].GetChannelName())
+	assert.Equal(t, uint64(100), positions[0].GetTimestamp())
 }
 
 func TestGetDeltaLogFromCompactTo(t *testing.T) {
@@ -1794,8 +1820,10 @@ func TestGenSnapshot(t *testing.T) {
 	}
 
 	// Setup mocks for other methods
-	mock1 := mockey.Mock((*ServerHandler).GetSnapshotTs).To(func(h *ServerHandler, ctx context.Context, collectionID UniqueID, partitionIDs ...UniqueID) (uint64, error) {
-		return uint64(12345), nil
+	mock1 := mockey.Mock((*ServerHandler).GetSnapshotSeekPositions).To(func(h *ServerHandler, ctx context.Context, collectionID UniqueID, partitionIDs ...UniqueID) ([]*msgpb.MsgPosition, uint64, error) {
+		return []*msgpb.MsgPosition{
+			{ChannelName: "dml_0_200v0", Timestamp: 12345, MsgID: []byte{1}},
+		}, uint64(12345), nil
 	}).Build()
 	defer mock1.UnPatch()
 
@@ -1817,6 +1845,7 @@ func TestGenSnapshot(t *testing.T) {
 			ID:            1001,
 			CollectionID:  200,
 			PartitionID:   0,
+			InsertChannel: "dml_0_200v0",
 			State:         commonpb.SegmentState_Flushed,
 			StartPosition: &msgpb.MsgPosition{Timestamp: 10000},
 			Binlogs: []*datapb.FieldBinlog{
@@ -1879,6 +1908,262 @@ func TestGenSnapshot(t *testing.T) {
 	assert.Equal(t, []string{"dml_0_200v0", "dml_1_200v1"}, snapshotData.Collection.VirtualChannelNames)
 }
 
+func TestGenSnapshot_UsesPerChannelSeekPositions(t *testing.T) {
+	schema := newTestSchema()
+	segCh1 := NewSegmentInfo(&datapb.SegmentInfo{
+		ID:            1001,
+		CollectionID:  200,
+		PartitionID:   0,
+		InsertChannel: "ch-1",
+		State:         commonpb.SegmentState_Flushed,
+		StartPosition: &msgpb.MsgPosition{ChannelName: "ch-1", Timestamp: 500},
+		DmlPosition:   &msgpb.MsgPosition{ChannelName: "ch-1", Timestamp: 600},
+		Binlogs: []*datapb.FieldBinlog{
+			{FieldID: 1, Binlogs: []*datapb.Binlog{{LogID: 1, LogSize: 100}}},
+		},
+	})
+	segCh2 := NewSegmentInfo(&datapb.SegmentInfo{
+		ID:            1002,
+		CollectionID:  200,
+		PartitionID:   0,
+		InsertChannel: "ch-2",
+		State:         commonpb.SegmentState_Flushed,
+		StartPosition: &msgpb.MsgPosition{ChannelName: "ch-2", Timestamp: 500},
+		DmlPosition:   &msgpb.MsgPosition{ChannelName: "ch-2", Timestamp: 600},
+		Binlogs: []*datapb.FieldBinlog{
+			{FieldID: 1, Binlogs: []*datapb.Binlog{{LogID: 2, LogSize: 100}}},
+		},
+	})
+
+	mockMeta := &meta{indexMeta: &indexMeta{}}
+	handler := &ServerHandler{
+		s: &Server{
+			broker: broker.NewCoordinatorBroker(newMockMixCoord()),
+			meta:   mockMeta,
+		},
+	}
+
+	mockDescribe := mockey.Mock((*mockMixCoord).DescribeCollectionInternal).To(
+		func(m *mockMixCoord, ctx context.Context, req *milvuspb.DescribeCollectionRequest) (*milvuspb.DescribeCollectionResponse, error) {
+			return &milvuspb.DescribeCollectionResponse{
+				Status:              merr.Success(),
+				Schema:              schema,
+				ShardsNum:           2,
+				NumPartitions:       1,
+				ConsistencyLevel:    commonpb.ConsistencyLevel_Strong,
+				CollectionID:        200,
+				VirtualChannelNames: []string{"ch-1", "ch-2"},
+			}, nil
+		}).Build()
+	defer mockDescribe.UnPatch()
+
+	mockShowPartitions := mockey.Mock((*mockMixCoord).ShowPartitionsInternal).To(
+		func(m *mockMixCoord, ctx context.Context, req *milvuspb.ShowPartitionsRequest) (*milvuspb.ShowPartitionsResponse, error) {
+			return &milvuspb.ShowPartitionsResponse{
+				Status:         merr.Success(),
+				PartitionIDs:   []int64{0},
+				PartitionNames: []string{"_default"},
+			}, nil
+		}).Build()
+	defer mockShowPartitions.UnPatch()
+
+	mockSeekPositions := mockey.Mock((*ServerHandler).GetSnapshotSeekPositions).To(
+		func(h *ServerHandler, ctx context.Context, collectionID UniqueID, partitionIDs ...UniqueID) ([]*msgpb.MsgPosition, uint64, error) {
+			return []*msgpb.MsgPosition{
+				{ChannelName: "ch-1", Timestamp: 100, MsgID: []byte{1}},
+				{ChannelName: "ch-2", Timestamp: 1000, MsgID: []byte{2}},
+			}, uint64(100), nil
+		}).Build()
+	defer mockSeekPositions.UnPatch()
+
+	mockIndexes := mockey.Mock((*indexMeta).GetIndexesForCollection).To(
+		func(im *indexMeta, collectionID UniqueID, fieldName string) []*model.Index {
+			return []*model.Index{}
+		}).Build()
+	defer mockIndexes.UnPatch()
+
+	mockSelectSegments := mockey.Mock((*meta).SelectSegments).To(
+		func(m *meta, ctx context.Context, filters ...SegmentFilter) []*SegmentInfo {
+			candidates := []*SegmentInfo{segCh1, segCh2}
+			var result []*SegmentInfo
+			for _, seg := range candidates {
+				pass := true
+				for _, filter := range filters {
+					if !filter.Match(seg) {
+						pass = false
+						break
+					}
+				}
+				if pass {
+					result = append(result, seg)
+				}
+			}
+			return result
+		}).Build()
+	defer mockSelectSegments.UnPatch()
+
+	mockCompactionTo := mockey.Mock((*meta).GetCompactionTo).To(func(m *meta, segmentID int64) ([]*SegmentInfo, bool) {
+		return nil, false
+	}).Build()
+	defer mockCompactionTo.UnPatch()
+
+	mockSegmentIndexes := mockey.Mock((*indexMeta).getSegmentIndexes).To(
+		func(im *indexMeta, collectionID, segmentID int64) map[int64]*model.SegmentIndex {
+			return map[int64]*model.SegmentIndex{}
+		}).Build()
+	defer mockSegmentIndexes.UnPatch()
+
+	snapshotData, err := handler.GenSnapshot(context.Background(), 200)
+	require.NoError(t, err)
+	require.NotNil(t, snapshotData)
+	require.NotNil(t, snapshotData.SnapshotInfo)
+	assert.Equal(t, int64(100), snapshotData.SnapshotInfo.CreateTs)
+	require.Len(t, snapshotData.SnapshotInfo.GetChannelSeekPositions(), 2)
+	assert.Equal(t, "ch-1", snapshotData.SnapshotInfo.GetChannelSeekPositions()[0].GetChannelName())
+	assert.Equal(t, uint64(100), snapshotData.SnapshotInfo.GetChannelSeekPositions()[0].GetTimestamp())
+	assert.Equal(t, "ch-2", snapshotData.SnapshotInfo.GetChannelSeekPositions()[1].GetChannelName())
+	assert.Equal(t, uint64(1000), snapshotData.SnapshotInfo.GetChannelSeekPositions()[1].GetTimestamp())
+	require.Len(t, snapshotData.Segments, 1)
+	assert.Equal(t, int64(1002), snapshotData.Segments[0].GetSegmentId())
+	assert.Equal(t, "ch-2", snapshotData.Segments[0].GetChannelName())
+}
+
+func TestGenSnapshot_RejectsSegmentWithoutChannelSeekPosition(t *testing.T) {
+	schema := newTestSchema()
+	var seg *SegmentInfo
+
+	mockMeta := &meta{indexMeta: &indexMeta{}}
+	handler := &ServerHandler{
+		s: &Server{
+			broker: broker.NewCoordinatorBroker(newMockMixCoord()),
+			meta:   mockMeta,
+		},
+	}
+
+	mockDescribe := mockey.Mock((*mockMixCoord).DescribeCollectionInternal).To(
+		func(m *mockMixCoord, ctx context.Context, req *milvuspb.DescribeCollectionRequest) (*milvuspb.DescribeCollectionResponse, error) {
+			return &milvuspb.DescribeCollectionResponse{
+				Status:              merr.Success(),
+				Schema:              schema,
+				ShardsNum:           1,
+				NumPartitions:       1,
+				ConsistencyLevel:    commonpb.ConsistencyLevel_Strong,
+				CollectionID:        200,
+				VirtualChannelNames: []string{"ch-1"},
+			}, nil
+		}).Build()
+	defer mockDescribe.UnPatch()
+
+	mockShowPartitions := mockey.Mock((*mockMixCoord).ShowPartitionsInternal).To(
+		func(m *mockMixCoord, ctx context.Context, req *milvuspb.ShowPartitionsRequest) (*milvuspb.ShowPartitionsResponse, error) {
+			return &milvuspb.ShowPartitionsResponse{
+				Status:         merr.Success(),
+				PartitionIDs:   []int64{0},
+				PartitionNames: []string{"_default"},
+			}, nil
+		}).Build()
+	defer mockShowPartitions.UnPatch()
+
+	mockSeekPositions := mockey.Mock((*ServerHandler).GetSnapshotSeekPositions).To(
+		func(h *ServerHandler, ctx context.Context, collectionID UniqueID, partitionIDs ...UniqueID) ([]*msgpb.MsgPosition, uint64, error) {
+			return []*msgpb.MsgPosition{
+				{ChannelName: "ch-1", Timestamp: 1000, MsgID: []byte{1}},
+			}, uint64(1000), nil
+		}).Build()
+	defer mockSeekPositions.UnPatch()
+
+	mockIndexes := mockey.Mock((*indexMeta).GetIndexesForCollection).To(
+		func(im *indexMeta, collectionID UniqueID, fieldName string) []*model.Index {
+			return []*model.Index{}
+		}).Build()
+	defer mockIndexes.UnPatch()
+
+	mockSelectSegments := mockey.Mock((*meta).SelectSegments).To(
+		func(m *meta, ctx context.Context, filters ...SegmentFilter) []*SegmentInfo {
+			for _, filter := range filters {
+				if !filter.Match(seg) {
+					return nil
+				}
+			}
+			return []*SegmentInfo{seg}
+		}).Build()
+	defer mockSelectSegments.UnPatch()
+
+	for _, test := range []struct {
+		name          string
+		insertChannel string
+	}{
+		{name: "unknown channel", insertChannel: "ch-missing"},
+		{name: "empty channel", insertChannel: ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			seg = NewSegmentInfo(&datapb.SegmentInfo{
+				ID:            1001,
+				CollectionID:  200,
+				PartitionID:   0,
+				InsertChannel: test.insertChannel,
+				State:         commonpb.SegmentState_Flushed,
+				StartPosition: &msgpb.MsgPosition{ChannelName: test.insertChannel, Timestamp: 500},
+				DmlPosition:   &msgpb.MsgPosition{ChannelName: test.insertChannel, Timestamp: 600},
+				Binlogs: []*datapb.FieldBinlog{
+					{FieldID: 1, Binlogs: []*datapb.Binlog{{LogID: 1, LogSize: 100}}},
+				},
+			})
+
+			snapshotData, err := handler.GenSnapshot(context.Background(), 200)
+			require.Error(t, err)
+			assert.Nil(t, snapshotData)
+			assert.Contains(t, err.Error(), "missing snapshot channel seek position")
+		})
+	}
+}
+
+func TestUncompressIndexFilesPreservesIndexStorePathVersion(t *testing.T) {
+	handler := &ServerHandler{
+		s: &Server{
+			meta: &meta{
+				chunkManager: storage.NewLocalChunkManager(objectstorage.RootPath("files")),
+				indexMeta:    &indexMeta{},
+			},
+		},
+	}
+
+	mockGetSegmentIndexes := mockey.Mock((*indexMeta).getSegmentIndexes).To(func(im *indexMeta, collectionID, segmentID int64) map[int64]*model.SegmentIndex {
+		return map[int64]*model.SegmentIndex{
+			10: {
+				CollectionID:          collectionID,
+				PartitionID:           20,
+				SegmentID:             segmentID,
+				IndexID:               10,
+				BuildID:               30,
+				IndexVersion:          40,
+				IndexState:            commonpb.IndexState_Finished,
+				IndexFileKeys:         []string{"index_data"},
+				IndexStorePathVersion: indexpb.IndexStorePathVersion_INDEX_STORE_PATH_VERSION_COLLECTION_ROOTED,
+			},
+		}
+	}).Build()
+	defer mockGetSegmentIndexes.UnPatch()
+
+	mockFieldID := mockey.Mock((*indexMeta).GetFieldIDByIndexID).Return(int64(100)).Build()
+	defer mockFieldID.UnPatch()
+
+	mockIndexName := mockey.Mock((*indexMeta).GetIndexNameByID).Return("vec_idx").Build()
+	defer mockIndexName.UnPatch()
+
+	mockIndexParams := mockey.Mock((*indexMeta).GetIndexParams).Return(nil).Build()
+	defer mockIndexParams.UnPatch()
+
+	mockTypeParams := mockey.Mock((*indexMeta).GetTypeParams).Return(nil).Build()
+	defer mockTypeParams.UnPatch()
+
+	indexFiles := uncompressIndexFiles(handler, 1, 2)
+
+	require.Len(t, indexFiles, 1)
+	assert.Equal(t, indexpb.IndexStorePathVersion_INDEX_STORE_PATH_VERSION_COLLECTION_ROOTED, indexFiles[0].GetIndexStorePathVersion())
+	assert.Equal(t, []string{"files/index_v1/1/20/2/30/40/index_data"}, indexFiles[0].GetIndexFilePaths())
+}
+
 func TestUncompressJsonStatsForSnapshotPaths(t *testing.T) {
 	handler := &ServerHandler{
 		s: &Server{
@@ -1930,5 +2215,131 @@ func TestUncompressJsonStatsForSnapshotPaths(t *testing.T) {
 			"files/insert_log/1/2/3/_stats/json_stats.100/shredding_data/data.parquet",
 		}, got.GetFiles())
 		assert.Equal(t, []string{"meta.json", "shredding_data/data.parquet"}, stats.GetFiles())
+	})
+}
+
+// TestGenSnapshot_CommitTimestamp verifies that import segments with a
+// commit_timestamp are correctly included/excluded based on snapshotTs.
+func TestGenSnapshot_CommitTimestamp(t *testing.T) {
+	schema := newTestSchema()
+
+	// importSeg has start_position.ts=1000 and commit_timestamp=5000.
+	// Its effective timestamp is 5000.
+	importSeg := NewSegmentInfo(&datapb.SegmentInfo{
+		ID:              999,
+		CollectionID:    200,
+		PartitionID:     0,
+		InsertChannel:   "dml_0_200v0",
+		State:           commonpb.SegmentState_Flushed,
+		CommitTimestamp: 5000,
+		StartPosition:   &msgpb.MsgPosition{Timestamp: 1000},
+		Binlogs: []*datapb.FieldBinlog{
+			{FieldID: 1, Binlogs: []*datapb.Binlog{{LogID: 1, LogSize: 100}}},
+		},
+	})
+
+	setupHandlerMocks := func(t *testing.T, snapshotTs uint64) (*ServerHandler, []*mockey.Mocker) {
+		mockIndexMeta := &indexMeta{}
+		mockMeta := &meta{indexMeta: mockIndexMeta}
+
+		mockMixCoord := mocks2.NewMixCoord(t)
+		mockMixCoord.EXPECT().DescribeCollectionInternal(mock.Anything, mock.Anything).Return(&milvuspb.DescribeCollectionResponse{
+			Status:              merr.Success(),
+			Schema:              schema,
+			ShardsNum:           2,
+			NumPartitions:       1,
+			ConsistencyLevel:    commonpb.ConsistencyLevel_Strong,
+			Properties:          []*commonpb.KeyValuePair{},
+			CollectionID:        200,
+			VirtualChannelNames: []string{"dml_0_200v0"},
+		}, nil).Maybe()
+		mockMixCoord.EXPECT().ShowPartitionsInternal(mock.Anything, mock.Anything).Return(&milvuspb.ShowPartitionsResponse{
+			Status:         merr.Success(),
+			PartitionIDs:   []int64{0},
+			PartitionNames: []string{"_default"},
+		}, nil).Maybe()
+
+		mockBroker := broker.NewCoordinatorBroker(mockMixCoord)
+		handler := &ServerHandler{
+			s: &Server{broker: mockBroker, meta: mockMeta},
+		}
+
+		var mockers []*mockey.Mocker
+
+		m1 := mockey.Mock((*ServerHandler).GetSnapshotSeekPositions).To(func(h *ServerHandler, ctx context.Context, collectionID UniqueID, partitionIDs ...UniqueID) ([]*msgpb.MsgPosition, uint64, error) {
+			return []*msgpb.MsgPosition{
+				{ChannelName: "dml_0_200v0", Timestamp: snapshotTs, MsgID: []byte{1}},
+			}, snapshotTs, nil
+		}).Build()
+		mockers = append(mockers, m1)
+
+		m2 := mockey.Mock((*indexMeta).GetIndexesForCollection).To(func(im *indexMeta, collectionID UniqueID, fieldName string) []*model.Index {
+			return []*model.Index{}
+		}).Build()
+		mockers = append(mockers, m2)
+
+		m3 := mockey.Mock((*meta).SelectSegments).To(func(m *meta, ctx context.Context, filters ...SegmentFilter) []*SegmentInfo {
+			// Apply each filter to the candidate segment list.
+			candidates := []*SegmentInfo{importSeg}
+			var result []*SegmentInfo
+			for _, seg := range candidates {
+				pass := true
+				for _, f := range filters {
+					if !f.Match(seg) {
+						pass = false
+						break
+					}
+				}
+				if pass {
+					result = append(result, seg)
+				}
+			}
+			return result
+		}).Build()
+		mockers = append(mockers, m3)
+
+		m4 := mockey.Mock((*meta).GetCompactionTo).To(func(m *meta, segmentID int64) ([]*SegmentInfo, bool) {
+			return nil, false
+		}).Build()
+		mockers = append(mockers, m4)
+
+		m5 := mockey.Mock((*indexMeta).getSegmentIndexes).To(func(im *indexMeta, collectionID, segmentID int64) map[int64]*model.SegmentIndex {
+			return map[int64]*model.SegmentIndex{}
+		}).Build()
+		mockers = append(mockers, m5)
+
+		m6 := mockey.Mock((*meta).GetSegment).To(func(m *meta, ctx context.Context, segmentID int64) *SegmentInfo {
+			return nil
+		}).Build()
+		mockers = append(mockers, m6)
+
+		return handler, mockers
+	}
+
+	t.Run("import segment excluded when snapshotTs < commit_timestamp", func(t *testing.T) {
+		// snapshotTs=3000 < commit_ts=5000 → segment must NOT appear
+		handler, mockers := setupHandlerMocks(t, 3000)
+		for _, m := range mockers {
+			defer m.UnPatch()
+		}
+
+		snapshotData, err := handler.GenSnapshot(context.Background(), 200)
+		assert.NoError(t, err)
+		assert.NotNil(t, snapshotData)
+		assert.Equal(t, 0, len(snapshotData.Segments), "segment with commit_ts=5000 must not appear at snapshotTs=3000")
+	})
+
+	t.Run("import segment included when snapshotTs >= commit_timestamp", func(t *testing.T) {
+		// snapshotTs=6000 >= commit_ts=5000 → segment must appear
+		handler, mockers := setupHandlerMocks(t, 6000)
+		for _, m := range mockers {
+			defer m.UnPatch()
+		}
+
+		snapshotData, err := handler.GenSnapshot(context.Background(), 200)
+		assert.NoError(t, err)
+		assert.NotNil(t, snapshotData)
+		assert.Equal(t, 1, len(snapshotData.Segments), "segment with commit_ts=5000 must appear at snapshotTs=6000")
+		assert.Equal(t, int64(999), snapshotData.Segments[0].SegmentId)
 	})
 }

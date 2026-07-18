@@ -22,7 +22,6 @@ import (
 
 	"github.com/samber/lo"
 	"go.opentelemetry.io/otel/trace"
-	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/querycoordv2/assign"
 	"github.com/milvus-io/milvus/internal/querycoordv2/balance"
@@ -32,9 +31,9 @@ import (
 	"github.com/milvus-io/milvus/internal/querycoordv2/task"
 	"github.com/milvus-io/milvus/internal/querycoordv2/utils"
 	"github.com/milvus-io/milvus/internal/util/streamingutil"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 // TODO(sunby): have too much similar codes with SegmentChecker
@@ -212,11 +211,11 @@ func (c *ChannelChecker) getDmChannelDiff(ctx context.Context, collectionID int6
 ) (toLoad, toRelease []*meta.DmChannel) {
 	replica := c.meta.Get(ctx, replicaID)
 	if replica == nil {
-		log.Info("replica does not exist, skip it")
-		return
+		mlog.Info(ctx, "replica does not exist, skip it")
+		return toLoad, toRelease
 	}
 
-	dist := c.dist.ChannelDistManager.GetByCollectionAndFilter(replica.GetCollectionID(), meta.WithReplica2Channel(replica))
+	dist := c.dist.ChannelDistManager.GetByFilter(meta.WithReplica2Channel(replica))
 	distMap := typeutil.NewSet[string]()
 	for _, ch := range dist {
 		distMap.Insert(ch.GetChannelName())
@@ -242,24 +241,23 @@ func (c *ChannelChecker) getDmChannelDiff(ctx context.Context, collectionID int6
 		}
 	}
 
-	return
+	return toLoad, toRelease
 }
 
 func (c *ChannelChecker) findRepeatedChannels(ctx context.Context, replicaID int64) []*meta.DmChannel {
-	log := log.Ctx(ctx).WithRateGroup("ChannelChecker.findRepeatedChannels", 1, 60)
 	replica := c.meta.Get(ctx, replicaID)
 	dupChannels := make([]*meta.DmChannel, 0)
 
 	if replica == nil {
-		log.Info("replica does not exist, skip it")
+		mlog.Info(ctx, "replica does not exist, skip it")
 		return dupChannels
 	}
 
-	delegatorList := c.dist.ChannelDistManager.GetByCollectionAndFilter(replica.GetCollectionID(), meta.WithReplica2Channel(replica))
+	delegatorList := c.dist.ChannelDistManager.GetByFilter(meta.WithReplica2Channel(replica))
 	for _, delegator := range delegatorList {
 		leader := c.dist.ChannelDistManager.GetShardLeader(delegator.GetChannelName(), replica)
 		if leader == nil {
-			log.Warn("channel leader does not exist, skip it", zap.String("channel", delegator.GetChannelName()))
+			mlog.Warn(ctx, "channel leader does not exist, skip it", mlog.String("channel", delegator.GetChannelName()))
 			continue
 		}
 		// if channel's version is smaller than shard leader's version, it means that the channel is not up to date
@@ -299,12 +297,12 @@ func (c *ChannelChecker) createChannelReduceTasks(ctx context.Context, channels 
 		action := task.NewChannelAction(ch.Node, task.ActionTypeReduce, ch.GetChannelName())
 		task, err := task.NewChannelTask(ctx, Params.QueryCoordCfg.ChannelTaskTimeout.GetAsDuration(time.Millisecond), c.ID(), ch.GetCollectionID(), replica, action)
 		if err != nil {
-			log.Warn("create channel reduce task failed",
-				zap.Int64("collection", ch.GetCollectionID()),
-				zap.Int64("replica", replica.GetID()),
-				zap.String("channel", ch.GetChannelName()),
-				zap.Int64("from", ch.Node),
-				zap.Error(err),
+			mlog.Warn(ctx, "create channel reduce task failed",
+				mlog.Int64("collection", ch.GetCollectionID()),
+				mlog.Int64("replica", replica.GetID()),
+				mlog.String("channel", ch.GetChannelName()),
+				mlog.Int64("from", ch.Node),
+				mlog.Err(err),
 			)
 			continue
 		}

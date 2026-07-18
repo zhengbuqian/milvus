@@ -17,6 +17,7 @@
 #pragma once
 
 #include <algorithm>
+#include "common/FastMem.h"
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -102,7 +103,10 @@ std::shared_ptr<arrow::Schema>
 CreateArrowSchema(DataType data_type, int dim, bool nullable);
 
 std::shared_ptr<arrow::Schema>
-CreateArrowSchema(DataType data_type, int dim, DataType element_type);
+CreateArrowSchema(DataType data_type,
+                  int dim,
+                  DataType element_type,
+                  bool nullable = false);
 
 int
 GetDimensionFromFileMetaData(const parquet::ColumnDescriptor* schema,
@@ -279,6 +283,37 @@ ProcessFuturesInOrder(std::vector<std::future<T>>& futures,
     }
 }
 
+// Best-effort drain for cleanup paths (catch blocks / scope guards): wait for
+// every still-valid future and swallow its exception, so that background
+// tasks referencing the caller's stack state finish before the caller
+// unwinds (see #46958). Unlike WaitAllFutures, this never throws — use it
+// when another exception is already propagating.
+template <typename FutureContainer>
+void
+DrainFutures(FutureContainer& futures) noexcept {
+    for (auto& future : futures) {
+        if (!future.valid()) {
+            continue;
+        }
+        try {
+            future.get();
+        } catch (...) {
+        }
+    }
+}
+
+template <typename T>
+void
+DrainFuture(std::future<T>& future) noexcept {
+    if (!future.valid()) {
+        return;
+    }
+    try {
+        future.get();
+    } catch (...) {
+    }
+}
+
 std::vector<FieldDataPtr>
 GetFieldDatasFromStorageV2(std::vector<std::vector<std::string>>& remote_files,
                            int64_t field_id,
@@ -294,7 +329,14 @@ GetFieldDatasFromManifest(
     const FieldDataMeta& field_meta,
     std::optional<DataType> data_type,
     int64_t dim,
-    std::optional<DataType> element_type);
+    std::optional<DataType> element_type,
+    std::optional<StorageColumnMapping> storage_column_mapping = std::nullopt);
+
+std::vector<FieldDataPtr>
+GetTextFieldDatasFromManifest(
+    const std::string& manifest_path,
+    const std::shared_ptr<milvus_storage::api::Properties>& loon_ffi_properties,
+    const FieldDataMeta& field_meta);
 
 std::map<std::string, int64_t>
 PutIndexData(ChunkManager* remote_chunk_manager,
@@ -401,7 +443,7 @@ ConvertFieldDataToArrowDataWrapper(const FieldDataPtr& field_data) {
     auto event_data_bytes = event_data.Serialize();
 
     std::shared_ptr<uint8_t[]> file_data(new uint8_t[event_data_bytes.size()]);
-    std::memcpy(
+    milvus::fastmem::FastMemcpy(
         file_data.get(), event_data_bytes.data(), event_data_bytes.size());
 
     storage::BinlogReaderPtr reader = std::make_shared<storage::BinlogReader>(
@@ -422,15 +464,6 @@ GetFieldIDList(FieldId column_group_id,
                const std::string& filepath,
                const std::shared_ptr<arrow::Schema>& arrow_schema,
                milvus_storage::ArrowFileSystemPtr fs);
-
-// Convert LIST or FIXED_SIZE_LIST arrays to FixedSizeBinary.
-// External files store vectors in list format (e.g. List<Float32>);
-// Milvus expects FixedSizeBinary (raw bytes). Returns the input
-// unchanged if already FixedSizeBinary.
-arrow::ArrayVector
-NormalizeVectorArraysToFixedSizeBinary(const arrow::ArrayVector& arrays,
-                                       DataType data_type,
-                                       int dim);
 
 // Convert a single row of an Arrow ListArray to a protobuf ScalarField.
 // The element type is inferred from the ListArray's value type.
@@ -464,7 +497,7 @@ ConvertToMicroseconds(int64_t value, arrow::TimeUnit::type unit) {
 
 // --- Tier 1: Atomic conversion helpers ---
 
-// Convert FixedSizeBinaryArray → BinaryArray (for nullable vectors).
+// Convert FixedSizeBinaryArray -> BinaryArray (for nullable vectors).
 // Null rows are skipped in the data buffer; offsets encode the gaps.
 arrow::ArrayVector
 ConvertFixedSizeBinaryToBinary(const arrow::ArrayVector& arrays);
@@ -473,31 +506,13 @@ ConvertFixedSizeBinaryToBinary(const arrow::ArrayVector& arrays);
 arrow::ArrayVector
 ConvertStringArrayToBinary(const arrow::ArrayVector& arrays);
 
-// Convert StringArray (WKT) → BinaryArray (WKB) via GEOS.
+// Convert StringArray (WKT) -> BinaryArray (WKB) via GEOS.
 arrow::ArrayVector
 ConvertWKTStringArrayToWKBBinary(const arrow::ArrayVector& arrays);
 
-// Convert TimestampArray → Int64Array (microseconds).
+// Convert TimestampArray -> Int64Array (microseconds).
 arrow::ArrayVector
 ConvertTimestampToInt64(const arrow::ArrayVector& arrays);
-
-// Convert ListArray<Scalar> → BinaryArray (protobuf-serialized ScalarFieldProto).
-arrow::ArrayVector
-ConvertListToProtobufBinary(const arrow::ArrayVector& arrays);
-
-// Unified vector normalization: List/FSList → final format.
-// Non-nullable → FixedSizeBinaryArray; nullable → BinaryArray.
-arrow::ArrayVector
-NormalizeVectorArrays(const arrow::ArrayVector& arrays,
-                      DataType data_type,
-                      int64_t dim,
-                      bool nullable);
-
-// Normalize VectorArray inner arrays: List<List<Float>> → List<FixedSizeBinary>.
-arrow::ArrayVector
-NormalizeVectorArrayInner(const arrow::ArrayVector& arrays,
-                          DataType element_type,
-                          int64_t dim);
 
 // --- Tier 2: Per-consumer entry points ---
 
@@ -505,28 +520,42 @@ NormalizeVectorArrayInner(const arrow::ArrayVector& arrays,
 // Milvus internal arrow types. All consumer-specific entry points delegate here.
 //
 // Conversions:
-//   VARCHAR/STRING/TEXT/JSON: String → Binary (zero-copy)
-//   Geometry: String(WKT) → Binary(WKB) via GEOS; Binary stays as-is
-//   Timestamptz: Timestamp → Int64 (microseconds)
-//   Array: List(element) → Binary (protobuf)
-//   Vectors: various → FixedSizeBinary
-//   VectorArray: List<List<scalar>> → List<FixedSizeBinary>
+//   VARCHAR/STRING/TEXT/JSON: String -> Binary (zero-copy)
+//   Geometry: String(WKT) -> Binary(WKB) via GEOS; Binary stays as-is
+//   Timestamptz: Timestamp -> Int64 (microseconds)
+//   Array: List(element) -> Binary (protobuf)
+//   Vectors: various -> FixedSizeBinary
+//   VectorArray: List<List<scalar>> -> List<FixedSizeBinary>
 //
 std::shared_ptr<arrow::Array>
 NormalizeExternalArrow(const std::shared_ptr<arrow::Array>& array,
                        const FieldMeta& field_meta);
 
-// Overload for callers without FieldMeta (e.g. index build path).
-std::shared_ptr<arrow::Array>
-NormalizeExternalArrow(const std::shared_ptr<arrow::Array>& array,
-                       DataType data_type,
-                       int64_t dim,
-                       bool nullable,
-                       DataType element_type = DataType::NONE);
-
 // Load path: batch wrapper around NormalizeExternalArrow.
 arrow::ArrayVector
 NormalizeArrowForChunkWriter(const arrow::ArrayVector& arrays,
                              const FieldMeta& field_meta);
+
+// Coerce any binary-like array (LARGE_BINARY / BINARY_VIEW /
+// LARGE_STRING / STRING_VIEW / STRING) to canonical BinaryArray.
+// Required because vortex schemaless mode emits view variants for the
+// whole variable-length family; downstream paths assume canonical layout.
+arrow::ArrayVector
+CoerceToBinary(const arrow::ArrayVector& arrays);
+
+// Coerce LARGE_LIST / LIST_VIEW to canonical (32-bit offset) ListArray.
+// Vortex schemaless mode may emit list variants for the same logical
+// List<T>; downstream code expects arrow::ListArray.
+arrow::ArrayVector
+CoerceToList(const arrow::ArrayVector& arrays);
+
+// Single source of truth for view/large-variant elimination.
+// STRING_VIEW/LARGE_STRING -> STRING, BINARY_VIEW/LARGE_BINARY -> BINARY,
+// LARGE_LIST/LIST_VIEW -> LIST (recursive into List/FixedSizeList inner).
+// Pure type/layout normalization, no semantic conversion. Callers ingesting
+// schemaless readers (vortex) should route arrays through this helper before
+// any type-id dispatch (refresh / load / sample / etc).
+std::shared_ptr<arrow::Array>
+CanonicalizeArrowVariants(const std::shared_ptr<arrow::Array>& array);
 
 }  // namespace milvus::storage

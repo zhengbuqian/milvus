@@ -1,16 +1,16 @@
 package msgdispatcher
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgstream"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"github.com/milvus-io/milvus-proto/go-api/v3/msgpb"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/mq/msgstream"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
 )
 
 func TestSendTimeout(t *testing.T) {
@@ -25,7 +25,7 @@ func TestSendTimeout(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		err := target.send(&msgstream.MsgPack{})
 		if err != nil {
-			log.Error("send failed", zap.Int("idx", i), zap.Error(err))
+			mlog.Error(context.TODO(), "send failed", mlog.Int("idx", i), mlog.Err(err))
 			counter++
 		}
 	}

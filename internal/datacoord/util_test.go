@@ -24,11 +24,12 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/suite"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/rootcoordpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/tsoutil"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/rootcoordpb"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/tsoutil"
 )
 
 type UtilSuite struct {
@@ -167,6 +168,34 @@ func (suite *UtilSuite) TestGetCollectionAutoCompactionEnabled() {
 	suite.Equal(Params.DataCoordCfg.EnableAutoCompaction.GetAsBool(), enabled)
 }
 
+func (suite *UtilSuite) TestCreateStorageConfig() {
+	suite.Run("local", func() {
+		paramtable.Get().Save(Params.CommonCfg.StorageType.Key, "local")
+		paramtable.Get().Save(Params.LocalStorageCfg.Path.Key, "/tmp/milvus-local")
+		defer paramtable.Get().Reset(Params.CommonCfg.StorageType.Key)
+		defer paramtable.Get().Reset(Params.LocalStorageCfg.Path.Key)
+
+		config := createStorageConfig()
+		suite.Equal("local", config.StorageType)
+		suite.Equal("/tmp/milvus-local", config.RootPath)
+	})
+
+	suite.Run("remote", func() {
+		paramtable.Get().Save(Params.CommonCfg.StorageType.Key, "minio")
+		paramtable.Get().Save(Params.MinioCfg.SslTLSMinVersion.Key, "1.2")
+		paramtable.Get().Save(Params.MinioCfg.UseCRC32C.Key, "true")
+		defer paramtable.Get().Reset(Params.CommonCfg.StorageType.Key)
+		defer paramtable.Get().Reset(Params.MinioCfg.SslTLSMinVersion.Key)
+		defer paramtable.Get().Reset(Params.MinioCfg.UseCRC32C.Key)
+
+		config := createStorageConfig()
+		suite.Equal("minio", config.StorageType)
+		suite.Equal(Params.MinioCfg.Address.GetValue(), config.Address)
+		suite.Equal("1.2", config.SslTlsMinVersion)
+		suite.True(config.UseCrc32CChecksum)
+	})
+}
+
 func (suite *UtilSuite) TestCalculateL0SegmentSize() {
 	logsize := int64(100)
 	fields := []*datapb.FieldBinlog{{
@@ -202,12 +231,16 @@ func (suite *UtilSuite) TestFilterDuplicateFieldBinlogs() {
 			Binlogs: []*datapb.Binlog{{LogID: 1}, {LogID: 2}},
 		}}
 		newLogs := []*datapb.FieldBinlog{{
-			FieldID: 102,
-			Binlogs: []*datapb.Binlog{{LogID: 2}, {LogID: 3}}, // 2 dup, 3 new
+			FieldID:     102,
+			ChildFields: []int64{102, 103},
+			Format:      "parquet",
+			Binlogs:     []*datapb.Binlog{{LogID: 2}, {LogID: 3}}, // 2 dup, 3 new
 		}}
 		result := filterDuplicateFieldBinlogs(existing, newLogs)
 		suite.Equal(1, len(result))
 		suite.Equal(int64(102), result[0].FieldID)
+		suite.ElementsMatch([]int64{102, 103}, result[0].GetChildFields())
+		suite.Equal("parquet", result[0].GetFormat())
 		suite.Equal(1, len(result[0].Binlogs))
 		suite.Equal(int64(3), result[0].Binlogs[0].LogID)
 	})
@@ -267,4 +300,24 @@ func (suite *UtilSuite) TestFilterDuplicateFieldBinlogs() {
 		suite.NotNil(fb104)
 		suite.Equal(1, len(fb104.Binlogs))
 	})
+}
+
+func (suite *UtilSuite) TestMergeFieldBinlogsPreservesColumnGroupMetadata() {
+	current := []*datapb.FieldBinlog{{
+		FieldID: 102,
+		Binlogs: []*datapb.Binlog{{LogID: 1}},
+	}}
+	newLogs := []*datapb.FieldBinlog{{
+		FieldID:     102,
+		ChildFields: []int64{102, 103},
+		Format:      "parquet",
+		Binlogs:     []*datapb.Binlog{{LogID: 2}},
+	}}
+
+	result := mergeFieldBinlogs(current, newLogs)
+
+	suite.Len(result, 1)
+	suite.Equal([]int64{102, 103}, result[0].GetChildFields())
+	suite.Equal("parquet", result[0].GetFormat())
+	suite.Len(result[0].GetBinlogs(), 2)
 }

@@ -23,6 +23,7 @@
 #include "common/EasyAssert.h"
 #include "common/File.h"
 #include "common/JsonCastType.h"
+#include "common/OpContext.h"
 #include "knowhere/comp/index_param.h"
 #include "knowhere/dataset.h"
 #include "knowhere/index/index_factory.h"
@@ -65,7 +66,8 @@ class IndexBase {
     Upload(const Config& config = {}) = 0;
 
     virtual void
-    LoadUnified(const Config& config) {
+    LoadUnified(const Config& config, milvus::OpContext* op_ctx = nullptr) {
+        (void)op_ctx;
         ThrowInfo(Unsupported,
                   "LoadUnified is not supported for this index type");
     }
@@ -96,6 +98,19 @@ class IndexBase {
     virtual JsonCastType
     GetCastType() const {
         return JsonCastType::UNKNOWN;
+    }
+
+    // Returns a bitmap indicating which rows have the indexed JSON path present.
+    // Used by JSON Path Index for EXISTS queries.
+    //
+    // This is distinct from valid_bitset_ (used by IsNotNull): valid_bitset_
+    // tracks whether a row's value can be successfully cast to the index's
+    // target type, while Exists() tracks whether the JSON path exists at all.
+    // Example: {"price": "hello"} with a DOUBLE path index has Exists()=true
+    // (path present) but valid=false (cannot cast "hello" to double).
+    virtual TargetBitmap
+    Exists() {
+        ThrowInfo(NotImplemented, "Exists() not supported for this index type");
     }
 
     // TODO: how to get the cell byte size?

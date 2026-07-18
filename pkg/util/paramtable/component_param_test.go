@@ -22,14 +22,38 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/pkg/v2/config"
-	"github.com/milvus-io/milvus/pkg/v2/util/hardware"
+	"github.com/milvus-io/milvus/pkg/v3/config"
+	"github.com/milvus-io/milvus/pkg/v3/util/hardware"
 )
 
 func shouldPanic(t *testing.T, name string, f func()) {
 	defer func() { recover() }()
 	f()
 	t.Errorf("%s should have panicked", name)
+}
+
+func TestComponentParam_DataCoordBumpSchemaVersionCompactionParams(t *testing.T) {
+	Init()
+	params := Get()
+	params.Reset(params.DataCoordCfg.BumpSchemaVersionCompactionEnabled.Key)
+	params.Reset(params.DataCoordCfg.BumpSchemaVersionCompactionTriggerInterval.Key)
+	params.Reset(params.DataCoordCfg.BumpSchemaVersionCompactionSlotUsage.Key)
+	t.Cleanup(func() {
+		params.Reset(params.DataCoordCfg.BumpSchemaVersionCompactionEnabled.Key)
+		params.Reset(params.DataCoordCfg.BumpSchemaVersionCompactionTriggerInterval.Key)
+		params.Reset(params.DataCoordCfg.BumpSchemaVersionCompactionSlotUsage.Key)
+	})
+
+	assert.False(t, params.DataCoordCfg.BumpSchemaVersionCompactionEnabled.GetAsBool())
+	assert.Equal(t, time.Second*20, params.DataCoordCfg.BumpSchemaVersionCompactionTriggerInterval.GetAsDuration(time.Second))
+	assert.EqualValues(t, 1, params.DataCoordCfg.BumpSchemaVersionCompactionSlotUsage.GetAsInt64())
+
+	params.Save(params.DataCoordCfg.BumpSchemaVersionCompactionSlotUsage.Key, "5")
+	assert.EqualValues(t, 5, params.DataCoordCfg.BumpSchemaVersionCompactionSlotUsage.GetAsInt64())
+	params.Save(params.DataCoordCfg.BumpSchemaVersionCompactionSlotUsage.Key, "0")
+	assert.EqualValues(t, 1, params.DataCoordCfg.BumpSchemaVersionCompactionSlotUsage.GetAsInt64())
+	params.Save(params.DataCoordCfg.BumpSchemaVersionCompactionSlotUsage.Key, "-1")
+	assert.EqualValues(t, 1, params.DataCoordCfg.BumpSchemaVersionCompactionSlotUsage.GetAsInt64())
 }
 
 func TestComponentParam(t *testing.T) {
@@ -54,6 +78,20 @@ func TestComponentParam(t *testing.T) {
 
 		assert.Equal(t, Params.IndexSliceSize.GetAsInt64(), int64(DefaultIndexSliceSize))
 		t.Logf("knowhere index slice size = %d", Params.IndexSliceSize.GetAsInt64())
+
+		defer params.Reset(Params.LoadTransientBudgetBytes.Key)
+		assert.Equal(t, int64(DefaultLoadTransientBudgetBytes), Params.LoadTransientBudgetBytes.GetAsInt64())
+		params.Save(Params.LoadTransientBudgetBytes.Key, "-1")
+		assert.Equal(t, int64(DefaultLoadTransientBudgetBytes), Params.LoadTransientBudgetBytes.GetAsInt64())
+		params.Save(Params.LoadTransientBudgetBytes.Key, "67108864")
+		assert.Equal(t, int64(67108864), Params.LoadTransientBudgetBytes.GetAsInt64())
+
+		assert.Equal(t, int64(0), Params.ArrowReaderHoleSizeLimitBytes.GetAsInt64())
+		assert.Equal(t, int64(0), Params.ArrowReaderRangeSizeLimitBytes.GetAsInt64())
+		params.Save(Params.ArrowReaderHoleSizeLimitBytes.Key, "1048576")
+		params.Save(Params.ArrowReaderRangeSizeLimitBytes.Key, "67108864")
+		assert.Equal(t, int64(1048576), Params.ArrowReaderHoleSizeLimitBytes.GetAsInt64())
+		assert.Equal(t, int64(67108864), Params.ArrowReaderRangeSizeLimitBytes.GetAsInt64())
 
 		assert.Equal(t, Params.GracefulTime.GetAsInt64(), int64(DefaultGracefulTime))
 		t.Logf("default grafeful time = %d", Params.GracefulTime.GetAsInt64())
@@ -201,6 +239,7 @@ func TestComponentParam(t *testing.T) {
 		t.Logf("MsgStreamTimeTickBufSize: %d", Params.MsgStreamTimeTickBufSize.GetAsInt64())
 
 		t.Logf("MaxNameLength: %d", Params.MaxNameLength.GetAsInt64())
+		assert.Equal(t, 1024, Params.MaxUserDescriptionLength.GetAsInt())
 
 		t.Logf("MaxFieldNum: %d", Params.MaxFieldNum.GetAsInt64())
 
@@ -211,6 +250,7 @@ func TestComponentParam(t *testing.T) {
 		t.Logf("MaxDimension: %d", Params.MaxDimension.GetAsInt64())
 
 		t.Logf("MaxTaskNum: %d", Params.MaxTaskNum.GetAsInt64())
+		assert.Equal(t, int64(1024), Params.MaxTaskNum.GetAsInt64())
 
 		t.Logf("AccessLog.Enable: %t", Params.AccessLog.Enable.GetAsBool())
 
@@ -259,6 +299,11 @@ func TestComponentParam(t *testing.T) {
 
 		assert.Equal(t, int64(10), Params.CheckWorkloadRequestNum.GetAsInt64())
 		assert.Equal(t, float64(0.1), Params.WorkloadToleranceFactor.GetAsFloat())
+		assert.Equal(t, int64(10000), Params.MaxSearchAggregationResultEntries.GetAsInt64())
+		params.Save(Params.MaxSearchAggregationResultEntries.Key, "1024")
+		assert.Equal(t, int64(1024), Params.MaxSearchAggregationResultEntries.GetAsInt64())
+		params.Reset(Params.MaxSearchAggregationResultEntries.Key)
+		assert.Equal(t, int64(10000), Params.MaxSearchAggregationResultEntries.GetAsInt64())
 
 		assert.Equal(t, int64(16), Params.DDLConcurrency.GetAsInt64())
 		assert.Equal(t, int64(16), Params.DCLConcurrency.GetAsInt64())
@@ -268,6 +313,14 @@ func TestComponentParam(t *testing.T) {
 		assert.Equal(t, 72, Params.MaxPasswordLength.GetAsInt())
 		params.Save("proxy.maxPasswordLength", "-10")
 		assert.Equal(t, 72, Params.MaxPasswordLength.GetAsInt())
+
+		assert.Equal(t, int64(4096), Params.MaxArrayCapacity.GetAsInt64())
+		params.Save("proxy.maxArrayCapacity", "5000")
+		assert.Equal(t, int64(5000), Params.MaxArrayCapacity.GetAsInt64())
+		params.Save("proxy.maxArrayCapacity", "0")
+		assert.Equal(t, int64(4096), Params.MaxArrayCapacity.GetAsInt64())
+		params.Save("proxy.maxArrayCapacity", "-1")
+		assert.Equal(t, int64(4096), Params.MaxArrayCapacity.GetAsInt64())
 	})
 
 	// t.Run("test proxyConfig panic", func(t *testing.T) {
@@ -396,17 +449,13 @@ func TestComponentParam(t *testing.T) {
 		assert.Equal(t, 100*time.Second, Params.GracefulStopTimeout.GetAsDuration(time.Second))
 		assert.Equal(t, true, Params.EnableStoppingBalance.GetAsBool())
 
-		assert.Equal(t, 4, Params.ChannelExclusiveNodeFactor.GetAsInt())
+		assert.Equal(t, "ChannelLevelScoreBalancer", Params.Balancer.GetValue())
+		assert.Equal(t, 3, Params.ChannelExclusiveNodeFactor.GetAsInt())
 
 		assert.Equal(t, 200, Params.CollectionObserverInterval.GetAsInt())
 		params.Save("queryCoord.collectionObserverInterval", "100")
 		assert.Equal(t, 100, Params.CollectionObserverInterval.GetAsInt())
 		params.Reset("queryCoord.collectionObserverInterval")
-
-		assert.Equal(t, 100, Params.CheckExecutedFlagInterval.GetAsInt())
-		params.Save("queryCoord.checkExecutedFlagInterval", "200")
-		assert.Equal(t, 200, Params.CheckExecutedFlagInterval.GetAsInt())
-		params.Reset("queryCoord.checkExecutedFlagInterval")
 
 		assert.Equal(t, 0.1, Params.DelegatorMemoryOverloadFactor.GetAsFloat())
 		assert.Equal(t, 5, Params.CollectionBalanceSegmentBatchSize.GetAsInt())
@@ -414,6 +463,7 @@ func TestComponentParam(t *testing.T) {
 
 		assert.Equal(t, 0, Params.ClusterLevelLoadReplicaNumber.GetAsInt())
 		assert.Len(t, Params.ClusterLevelLoadResourceGroups.GetAsStrings(), 0)
+		assert.False(t, Params.ClusterLevelLoadForceOverrideUserReplicaMode.GetAsBool())
 
 		assert.Equal(t, 10, Params.CollectionChannelCountFactor.GetAsInt())
 		assert.Equal(t, 3000, Params.AutoBalanceInterval.GetAsInt())
@@ -440,21 +490,41 @@ func TestComponentParam(t *testing.T) {
 		length := Params.FlowGraphMaxQueueLength.GetAsInt32()
 		assert.Equal(t, int32(16), length)
 
+		assert.Equal(t, 8, Params.DMLMicroBatchMaxMsgNum.GetAsInt())
+		params.Save(Params.DMLMicroBatchMaxMsgNum.Key, "4")
+		assert.Equal(t, 4, Params.DMLMicroBatchMaxMsgNum.GetAsInt())
+		params.Reset(Params.DMLMicroBatchMaxMsgNum.Key)
+
 		maxParallelism := Params.FlowGraphMaxParallelism.GetAsInt32()
 		assert.Equal(t, int32(1024), maxParallelism)
 
 		// test query side config
 		chunkRows := Params.ChunkRows.GetAsInt64()
 		assert.Equal(t, int64(128), chunkRows)
-
 		nlist := Params.InterimIndexNlist.GetAsInt64()
 		assert.Equal(t, int64(128), nlist)
 
 		nprobe := Params.InterimIndexNProbe.GetAsInt64()
 		assert.Equal(t, int64(16), nprobe)
 
-		assert.Equal(t, int32(10240), Params.MaxReceiveChanSize.GetAsInt32())
-		assert.Equal(t, int32(10240), Params.MaxUnsolvedQueueSize.GetAsInt32())
+		assert.Equal(t, int32(1024), Params.MaxUnsolvedQueueSize.GetAsInt32())
+		assert.Equal(t, "1024", Params.MaxUnsolvedQueueSize.DefaultValue)
+		assert.Equal(t, int64(64), Params.MaxGroupNQ.GetAsInt64())
+		assert.Equal(t, 16.0, Params.NQMergeRatio.GetAsFloat())
+		assert.Equal(t, 20.0, Params.TopKMergeRatio.GetAsFloat())
+		assert.Equal(t, 50*time.Millisecond, Params.MaxDeadlineMergeGap.GetAsDurationByParse())
+		defer params.Reset(Params.MaxDeadlineMergeGap.Key)
+		assert.NoError(t, params.Save(Params.MaxDeadlineMergeGap.Key, "100ms"))
+		assert.Equal(t, 100*time.Millisecond, Params.MaxDeadlineMergeGap.GetAsDurationByParse())
+		assert.NoError(t, params.Save(Params.MaxDeadlineMergeGap.Key, "100"))
+		assert.Equal(t, 100*time.Millisecond, Params.MaxDeadlineMergeGap.GetAsDurationByParse())
+		assert.Equal(t, "fifo", Params.SchedulePolicyName.GetValue())
+		assert.Equal(t, 50*time.Millisecond, Params.SchedulePolicyTaskDeadlineAdvance.GetAsDurationByParse())
+		defer params.Reset(Params.SchedulePolicyTaskDeadlineAdvance.Key)
+		assert.NoError(t, params.Save(Params.SchedulePolicyTaskDeadlineAdvance.Key, "100ms"))
+		assert.Equal(t, 100*time.Millisecond, Params.SchedulePolicyTaskDeadlineAdvance.GetAsDurationByParse())
+		assert.NoError(t, params.Save(Params.SchedulePolicyTaskDeadlineAdvance.Key, "100"))
+		assert.Equal(t, 100*time.Millisecond, Params.SchedulePolicyTaskDeadlineAdvance.GetAsDurationByParse())
 		assert.Equal(t, 10.0, Params.CPURatio.GetAsFloat())
 		assert.Equal(t, uint32(hardware.GetCPUNum()), Params.KnowhereThreadPoolSize.GetAsUint32())
 
@@ -512,6 +582,13 @@ func TestComponentParam(t *testing.T) {
 		assert.Equal(t, int64(70*1024*1024), Params.DiskCacheCapacityLimit.GetAsSize())
 
 		assert.Equal(t, 2, Params.BloomFilterApplyParallelFactor.GetAsInt())
+		assert.Equal(t, hardware.GetCPUNum(), Params.DelegatorPostLoadConcurrencyFactor.GetAsInt())
+		params.Save(Params.DelegatorPostLoadConcurrencyFactor.Key, "2")
+		assert.Equal(t, hardware.GetCPUNum()*2, Params.DelegatorPostLoadConcurrencyFactor.GetAsInt())
+		params.Save(Params.DelegatorPostLoadConcurrencyFactor.Key, "0")
+		assert.Equal(t, hardware.GetCPUNum(), Params.DelegatorPostLoadConcurrencyFactor.GetAsInt())
+		params.Reset(Params.DelegatorPostLoadConcurrencyFactor.Key)
+
 		assert.Equal(t, true, Params.SkipGrowingSegmentBF.GetAsBool())
 		assert.Equal(t, true, Params.EnableSegmentFilter.GetAsBool())
 
@@ -522,6 +599,13 @@ func TestComponentParam(t *testing.T) {
 		assert.Equal(t, 1.0, Params.PartialResultRequiredDataRatio.GetAsFloat())
 		params.Save(Params.PartialResultRequiredDataRatio.Key, "0.8")
 		assert.Equal(t, 0.8, Params.PartialResultRequiredDataRatio.GetAsFloat())
+
+		assert.False(t, Params.InternalCollectionUseTakeForOutput.GetAsBool())
+		params.Save(Params.InternalCollectionUseTakeForOutput.Key, "true")
+		assert.True(t, Params.InternalCollectionUseTakeForOutput.GetAsBool())
+		assert.True(t, Params.ExternalCollectionUseTakeForOutput.GetAsBool())
+		params.Save(Params.ExternalCollectionUseTakeForOutput.Key, "false")
+		assert.False(t, Params.ExternalCollectionUseTakeForOutput.GetAsBool())
 
 		// test CatchUpStreamingDataTsLag parameter
 		assert.Equal(t, 1*time.Second, Params.CatchUpStreamingDataTsLag.GetAsDurationByParse())
@@ -551,7 +635,8 @@ func TestComponentParam(t *testing.T) {
 		assert.Equal(t, 1024, Params.MaxFilesPerImportReq.GetAsInt())
 		assert.Equal(t, 1024, Params.MaxImportJobNum.GetAsInt())
 		assert.Equal(t, true, Params.WaitForIndex.GetAsBool())
-		assert.Equal(t, 1, Params.ImportFileNumPerSlot.GetAsInt())
+		assert.Equal(t, false, Params.ImportInReplicatingCluster.GetAsBool())
+		assert.Equal(t, 4, Params.ImportFileNumPerSlot.GetAsInt())
 		assert.Equal(t, 160*1024*1024, Params.ImportMemoryLimitPerSlot.GetAsInt())
 
 		params.Save("datacoord.gracefulStopTimeout", "100")
@@ -568,6 +653,7 @@ func TestComponentParam(t *testing.T) {
 		params.Save("dataCoord.compaction.dropTolerance", "100")
 		assert.Equal(t, float64(100), Params.CompactionDropToleranceInSeconds.GetAsDuration(time.Second).Seconds())
 		assert.Equal(t, int64(10000), Params.CompactionPreAllocateIDExpansionFactor.GetAsInt64())
+		assert.False(t, Params.StorageFormatCompactionEnabled.GetAsBool())
 
 		params.Save("dataCoord.compaction.clustering.enable", "true")
 		assert.Equal(t, true, Params.ClusteringCompactionEnable.GetAsBool())
@@ -589,6 +675,11 @@ func TestComponentParam(t *testing.T) {
 		assert.Equal(t, 5, Params.MixCompactionSlotUsage.GetAsInt())
 		params.Save("dataCoord.slot.l0DeleteCompactionUsage", "4")
 		assert.Equal(t, 4, Params.L0DeleteCompactionSlotUsage.GetAsInt())
+		assert.Equal(t, 16, Params.L0ManifestUpdatePoolSize.GetAsInt())
+		params.Save("dataCoord.compaction.levelzero.manifestUpdatePoolSize", "4")
+		assert.Equal(t, 4, Params.L0ManifestUpdatePoolSize.GetAsInt())
+		params.Save("dataCoord.compaction.levelzero.manifestUpdatePoolSize", "0")
+		assert.Equal(t, 1, Params.L0ManifestUpdatePoolSize.GetAsInt())
 		params.Save("datacoord.scheduler.taskSlowThreshold", "1000")
 		assert.Equal(t, 1000*time.Second, Params.TaskSlowThreshold.GetAsDuration(time.Second))
 
@@ -673,6 +764,11 @@ func TestComponentParam(t *testing.T) {
 		assert.Equal(t, int64(2), Params.ClusteringCompactionWorkerPoolSize.GetAsInt64())
 
 		assert.Equal(t, 2, Params.BloomFilterApplyParallelFactor.GetAsInt())
+		assert.Equal(t, "dataNode.storage.format", Params.StorageFormat.Key)
+		assert.Equal(t, "parquet", Params.StorageFormat.GetValue())
+		params.Save(Params.StorageFormat.Key, "vortex")
+		assert.Equal(t, "vortex", Params.StorageFormat.GetValue())
+		params.Reset(Params.StorageFormat.Key)
 		assert.Equal(t, 16, Params.WorkerSlotUnit.GetAsInt())
 		assert.Equal(t, 0.25, Params.StandaloneSlotRatio.GetAsFloat())
 	})
@@ -864,6 +960,15 @@ func TestForbiddenItem(t *testing.T) {
 		Value: "new-cluster",
 	})
 	assert.Equal(t, "by-dev", params.CommonCfg.ClusterPrefix.GetValue())
+}
+
+func TestFormatDurationWithMillisecondFallback(t *testing.T) {
+	assert.Equal(t, "", formatDurationWithMillisecondFallback(""))
+	assert.Equal(t, "", formatDurationWithMillisecondFallback("  "))
+	assert.Equal(t, "100ms", formatDurationWithMillisecondFallback("100"))
+	assert.Equal(t, "1.5ms", formatDurationWithMillisecondFallback("1.5"))
+	assert.Equal(t, "2s", formatDurationWithMillisecondFallback("2s"))
+	assert.Equal(t, "invalid", formatDurationWithMillisecondFallback("invalid"))
 }
 
 func TestCachedParam(t *testing.T) {

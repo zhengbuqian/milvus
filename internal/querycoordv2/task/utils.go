@@ -23,22 +23,21 @@ import (
 	"time"
 
 	"github.com/samber/lo"
-	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/msgpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
 	"github.com/milvus-io/milvus/internal/querycoordv2/utils"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/util/commonpbutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/indexpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/querypb"
+	"github.com/milvus-io/milvus/pkg/v3/util/commonpbutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 // idSource helper type for using id as task source
@@ -136,10 +135,6 @@ func packLoadSegmentRequest(
 	indexInfo []*indexpb.IndexInfo,
 ) *querypb.LoadSegmentsRequest {
 	loadScope := querypb.LoadScope_Full
-	if action.Type() == ActionTypeUpdate {
-		loadScope = querypb.LoadScope_Index
-	}
-
 	if action.Type() == ActionTypeStatsUpdate {
 		loadScope = querypb.LoadScope_Stats
 	}
@@ -198,7 +193,9 @@ func packLoadMeta(loadType querypb.LoadType, collectionInfo *milvuspb.DescribeCo
 		DbName:        collectionInfo.GetDbName(),
 		ResourceGroup: resourceGroup,
 		LoadFields:    loadFields,
-		SchemaVersion: collectionInfo.GetUpdateTimestamp(),
+		// The update timestamp is a load barrier, not the logical schema version.
+		// QueryNode uses it only to reject stale load results after schema changes.
+		SchemaBarrierTs: collectionInfo.GetUpdateTimestamp(),
 	}
 }
 
@@ -286,6 +283,19 @@ func applyCollectionSettings(schema *schemapb.CollectionSchema,
 
 	schemaCloned = applyCollectionMmapSetting(schemaCloned, collectionProperties)
 	schemaCloned = applyCollectionWarmupSetting(schemaCloned, collectionProperties)
+
+	// Index warmup is normally materialized into each IndexInfo by
+	// applyIndexWarmupSetting. No-index vector fields have no IndexInfo carrier,
+	// but segcore treats their raw data as the vector-index/search path until an
+	// index exists. Carry QueryCoord's auto-warmup vector-index fallback through
+	// the effective load schema without changing warmup.vectorField semantics.
+	if _, exist := common.GetWarmupPolicyByKey(common.WarmupVectorIndexKey, schemaCloned.GetProperties()...); !exist &&
+		autoWarmupForNonPKIsolationCollection(collectionProperties) {
+		schemaCloned.Properties = append(schemaCloned.Properties, &commonpb.KeyValuePair{
+			Key:   common.WarmupVectorIndexKey,
+			Value: common.WarmupSync,
+		})
+	}
 	return schemaCloned
 }
 
@@ -353,11 +363,11 @@ func autoWarmupForNonPKIsolationCollection(collectionProperties []*commonpb.KeyV
 	}
 	isPKI, isError := common.IsPartitionKeyIsolationKvEnabled(collectionProperties...)
 	if isError != nil {
-		log.Warn("failed to parse partition key isolation, autowarmup is disabled", zap.Error(isError))
+		mlog.Warn(context.TODO(), "failed to parse partition key isolation, autowarmup is disabled", mlog.Err(isError))
 		return false
 	}
 	if !isPKI {
-		log.Info("collection is not partition key isolated and autowarmup is enabled, force scalar field/index and vector index warmup to sync")
+		mlog.Info(context.TODO(), "collection is not partition key isolated and autowarmup is enabled, force scalar field/index and vector index warmup to sync")
 	}
 	return !isPKI
 }

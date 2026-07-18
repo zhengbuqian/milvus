@@ -22,9 +22,9 @@ import (
 	"github.com/cockroachdb/errors"
 	"google.golang.org/grpc"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"github.com/milvus-io/milvus/client/v2/entity"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
+	"github.com/milvus-io/milvus/client/v3/entity"
+	"github.com/milvus-io/milvus/client/v3/internal/merr"
 )
 
 // CreateCollection is the API for create a collection in Milvus.
@@ -207,6 +207,21 @@ func (c *Client) AddCollectionField(ctx context.Context, opt AddCollectionFieldO
 
 	err := c.callService(func(milvusService milvuspb.MilvusServiceClient) error {
 		resp, err := milvusService.AddCollectionField(ctx, req, callOpts...)
+		return merr.CheckRPCCall(resp, err)
+	})
+	return err
+}
+
+// AddCollectionStructField adds a struct array field to a collection.
+func (c *Client) AddCollectionStructField(ctx context.Context, opt AddCollectionStructFieldOption, callOpts ...grpc.CallOption) error {
+	if err := opt.Validate(); err != nil {
+		return err
+	}
+
+	req := opt.Request()
+
+	err := c.callService(func(milvusService milvuspb.MilvusServiceClient) error {
+		resp, err := milvusService.AddCollectionStructField(ctx, req, callOpts...)
 		return merr.CheckRPCCall(resp, err)
 	})
 	return err

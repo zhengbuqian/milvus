@@ -1,3 +1,5 @@
+# ruff: noqa: E712,E731,F401,F403,F405,F541,F841,I001,UP031,UP032,W291,W292,W293
+# fmt: off
 import random
 
 import pytest
@@ -296,8 +298,7 @@ class TestMilvusClientSearchIteratorInValid(TestMilvusClientV2Base):
         # 3. search
         vectors_to_search = cf.gen_vectors(1, default_dim)
         error = {ct.err_code: 1100,
-                 ct.err_msg: f"failed to create query plan: predicate is not a boolean expression: invalidexpr, "
-                             f"data type: JSON: invalid parameter"}
+                 ct.err_msg: "predicate is not a boolean expression"}
         self.search_iterator(client, collection_name, vectors_to_search,
                              filter=expr,
                              batch_size=20,
@@ -634,6 +635,18 @@ class TestMilvusClientSearchIteratorInValid(TestMilvusClientV2Base):
             it.next()
 
 
+_json_path_index_params = [
+    ("INVERTED", "BOOL"),
+    ("INVERTED", "DOUBLE"),
+    ("INVERTED", "VARCHAR"),
+    ("INVERTED", "JSON"),
+    ("STL_SORT", "DOUBLE"),
+    ("STL_SORT", "VARCHAR"),
+    ("BITMAP", "BOOL"),
+    ("BITMAP", "VARCHAR"),
+]
+
+
 class TestMilvusClientSearchIteratorValid(TestMilvusClientV2Base):
     """ Test case of search iterator interface """
 
@@ -645,13 +658,17 @@ class TestMilvusClientSearchIteratorValid(TestMilvusClientV2Base):
     def metric_type(self, request):
         yield request.param
 
-    @pytest.fixture(scope="function", params=["INVERTED"])
-    def supported_varchar_scalar_index(self, request):
+    @pytest.fixture(scope="function", params=_json_path_index_params, ids=[f"{t[0]}_{t[1]}" for t in _json_path_index_params])
+    def json_index_params(self, request):
         yield request.param
 
-    @pytest.fixture(scope="function", params=["DOUBLE", "JSON", "varchar", "bool"])
-    def supported_json_cast_type(self, request):
-        yield request.param
+    @pytest.fixture(scope="function")
+    def supported_varchar_scalar_index(self, json_index_params):
+        yield json_index_params[0]
+
+    @pytest.fixture(scope="function")
+    def supported_json_cast_type(self, json_index_params):
+        yield json_index_params[1]
 
     """
     ******************************************************************

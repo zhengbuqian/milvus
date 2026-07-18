@@ -27,26 +27,25 @@ import (
 
 	"github.com/cockroachdb/errors"
 	"github.com/samber/lo"
-	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	internalhttp "github.com/milvus-io/milvus/internal/http"
 	"github.com/milvus-io/milvus/internal/proxy/privilege"
 	"github.com/milvus-io/milvus/internal/types"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/rootcoordpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/commonpbutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/conc"
-	"github.com/milvus-io/milvus/pkg/v2/util/expr"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/timerecord"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/metrics"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/internalpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/rootcoordpb"
+	"github.com/milvus-io/milvus/pkg/v3/util/commonpbutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/conc"
+	"github.com/milvus-io/milvus/pkg/v3/util/expr"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/timerecord"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 // Cache is the interface for system meta data cache
@@ -99,13 +98,16 @@ type Cache interface {
 	GetDatabaseInfo(ctx context.Context, database string) (*databaseInfo, error)
 	// AllocID is only using on requests that need to skip timestamp allocation, don't overuse it.
 	AllocID(ctx context.Context) (int64, error)
+
+	RemovePartition(ctx context.Context, database string, collectionID UniqueID, collectionName string, partitionName string, version uint64)
+	Close()
 }
 
 type collectionInfo struct {
 	collID                typeutil.UniqueID
+	dbID                  typeutil.UniqueID
 	dbName                string
 	schema                *schemaInfo
-	partInfo              *partitionInfos
 	createdTimestamp      uint64
 	createdUtcTimestamp   uint64
 	consistencyLevel      commonpb.ConsistencyLevel
@@ -187,7 +189,7 @@ func (s *schemaInfo) IsPartitionKeyCollection() bool {
 
 func (s *schemaInfo) GetPkField() (*schemapb.FieldSchema, error) {
 	if s.pkField == nil {
-		return nil, merr.WrapErrServiceInternal("pk field not found")
+		return nil, merr.WrapErrFieldNotFound("pk field")
 	}
 	return s.pkField, nil
 }
@@ -374,6 +376,15 @@ type MetaCache struct {
 	IDLock  sync.RWMutex
 
 	collectionCacheVersion map[UniqueID]uint64 // collectionID -> cacheVersion
+
+	partitionCache          *VersionCache[string, *partitionInfo]  // partitionName -> partitionInfo
+	collLevelPartitionCache *VersionCache[string, *partitionInfos] // collectionName -> partitionInfos
+
+	sfPartitionCache          conc.Singleflight[*partitionInfo]
+	sfCollLevelPartitionCache conc.Singleflight[*partitionInfos]
+
+	stopCh    chan struct{}
+	closeOnce sync.Once
 }
 
 // globalMetaCache is singleton instance of Cache
@@ -390,28 +401,37 @@ func InitMetaCache(ctx context.Context, mixCoord types.MixCoordClient) error {
 
 	err = privilege.InitPrivilegeCache(ctx, mixCoord)
 	if err != nil {
-		log.Error("failed to init privilege cache", zap.Error(err))
+		mlog.Error(context.TODO(), "failed to init privilege cache", mlog.Err(err))
 		return err
 	}
 
 	// Register password verify function for /expr endpoint authentication
 	internalhttp.RegisterPasswordVerifyFunc(PasswordVerify)
 
+	// Register get user role function for /expr endpoint RBAC check
+	internalhttp.RegisterGetUserRoleFunc(GetRole)
+
 	return nil
 }
 
 // NewMetaCache creates a MetaCache with provided RootCoord and QueryNode
 func NewMetaCache(mixCoord types.MixCoordClient) (*MetaCache, error) {
-	return &MetaCache{
-		mixCoord:               mixCoord,
-		dbInfo:                 map[string]*databaseInfo{},
-		collInfo:               map[string]map[string]*collectionInfo{},
-		aliasInfo:              map[string]map[string]*aliasEntry{},
-		credMap:                map[string]*internalpb.CredentialInfo{},
-		privilegeInfos:         map[string]struct{}{},
-		userToRoles:            map[string]map[string]struct{}{},
-		collectionCacheVersion: make(map[UniqueID]uint64),
-	}, nil
+	metaCache := &MetaCache{
+		mixCoord:                mixCoord,
+		dbInfo:                  map[string]*databaseInfo{},
+		aliasInfo:               map[string]map[string]*aliasEntry{},
+		collInfo:                map[string]map[string]*collectionInfo{},
+		credMap:                 map[string]*internalpb.CredentialInfo{},
+		privilegeInfos:          map[string]struct{}{},
+		userToRoles:             map[string]map[string]struct{}{},
+		collectionCacheVersion:  make(map[UniqueID]uint64),
+		partitionCache:          NewVersionCache[string, *partitionInfo](),
+		collLevelPartitionCache: NewVersionCache[string, *partitionInfos](),
+		stopCh:                  make(chan struct{}),
+		closeOnce:               sync.Once{},
+	}
+	metaCache.backgroundGCLoop(metaCache.stopCh)
+	return metaCache, nil
 }
 
 func (m *MetaCache) getCollection(database, collectionName string, collectionID UniqueID) (*collectionInfo, bool) {
@@ -432,6 +452,14 @@ func (m *MetaCache) getCollection(database, collectionName string, collectionID 
 		if collection, ok := db[collectionName]; ok {
 			return collection, collection.isCollectionCached()
 		}
+		// update() stores alias requests under the real collection name.
+		if aliasDB, ok := m.aliasInfo[database]; ok {
+			if entry, ok := aliasDB[collectionName]; ok && entry.collectionName != "" {
+				if collection, ok := db[entry.collectionName]; ok {
+					return collection, collection.isCollectionCached()
+				}
+			}
+		}
 	}
 
 	return nil, false
@@ -447,27 +475,6 @@ func (m *MetaCache) update(ctx context.Context, database, collectionName string,
 		return nil, err
 	}
 
-	partitions, err := m.showPartitions(ctx, database, collectionName, collectionID)
-	if err != nil {
-		return nil, err
-	}
-
-	// check partitionID, createdTimestamp and utcstamp has sam element numbers
-	if len(partitions.PartitionNames) != len(partitions.CreatedTimestamps) || len(partitions.PartitionNames) != len(partitions.CreatedUtcTimestamps) {
-		return nil, merr.WrapErrParameterInvalidMsg("partition names and timestamps number is not aligned, response: %s", partitions.String())
-	}
-
-	defaultPartitionName := Params.CommonCfg.DefaultPartitionName.GetValue()
-	infos := lo.Map(partitions.GetPartitionIDs(), func(partitionID int64, idx int) *partitionInfo {
-		return &partitionInfo{
-			name:                partitions.PartitionNames[idx],
-			partitionID:         partitions.PartitionIDs[idx],
-			createdTimestamp:    partitions.CreatedTimestamps[idx],
-			createdUtcTimestamp: partitions.CreatedUtcTimestamps[idx],
-			isDefault:           partitions.PartitionNames[idx] == defaultPartitionName,
-		}
-	})
-
 	realName := collection.Schema.GetName()
 	originalName := collectionName
 	isAlias := collectionName != "" && realName != "" && realName != collectionName
@@ -475,7 +482,7 @@ func (m *MetaCache) update(ctx context.Context, database, collectionName string,
 		collectionName = realName
 	}
 	if database == "" {
-		log.Ctx(ctx).Warn("database is empty, use default database name", zap.String("collectionName", collectionName), zap.Stack("stack"))
+		mlog.Warn(ctx, "database is empty, use default database name", mlog.String("collectionName", collectionName), mlog.Stack("stack"))
 	}
 	isolation, err := common.IsPartitionKeyIsolationKvEnabled(collection.Properties...)
 	if err != nil {
@@ -490,14 +497,14 @@ func (m *MetaCache) update(ctx context.Context, database, collectionName string,
 	curVersion := m.collectionCacheVersion[collection.GetCollectionID()]
 	// Compatibility logic: if the rootcoord version is lower(requestTime = 0), update the cache directly.
 	if collection.GetRequestTime() < curVersion && collection.GetRequestTime() != 0 {
-		log.Ctx(ctx).Debug("describe collection timestamp less than version, don't update cache",
-			zap.String("collectionName", collectionName),
-			zap.Uint64("version", collection.GetRequestTime()), zap.Uint64("cache version", curVersion))
+		mlog.Debug(ctx, "describe collection timestamp less than version, don't update cache",
+			mlog.String("collectionName", collectionName),
+			mlog.Uint64("version", collection.GetRequestTime()), mlog.Uint64("cache version", curVersion))
 		return &collectionInfo{
 			collID:                collection.CollectionID,
+			dbID:                  collection.GetDbId(),
 			dbName:                collection.GetDbName(),
 			schema:                schemaInfo,
-			partInfo:              parsePartitionsInfo(infos, schemaInfo.hasPartitionKeyField),
 			createdTimestamp:      collection.CreatedTimestamp,
 			createdUtcTimestamp:   collection.CreatedUtcTimestamp,
 			consistencyLevel:      collection.ConsistencyLevel,
@@ -528,9 +535,9 @@ func (m *MetaCache) update(ctx context.Context, database, collectionName string,
 
 	m.collInfo[database][collectionName] = &collectionInfo{
 		collID:                collection.CollectionID,
+		dbID:                  collection.GetDbId(),
 		dbName:                collection.GetDbName(),
 		schema:                schemaInfo,
-		partInfo:              parsePartitionsInfo(infos, schemaInfo.hasPartitionKeyField),
 		createdTimestamp:      collection.CreatedTimestamp,
 		createdUtcTimestamp:   collection.CreatedUtcTimestamp,
 		consistencyLevel:      collection.ConsistencyLevel,
@@ -546,10 +553,10 @@ func (m *MetaCache) update(ctx context.Context, database, collectionName string,
 		properties:            collection.Properties,
 	}
 
-	log.Ctx(ctx).Info("meta update success", zap.String("database", database), zap.String("collectionName", collectionName),
-		zap.String("actual collection Name", collection.Schema.GetName()), zap.Int64("collectionID", collection.CollectionID),
-		zap.Strings("partition", partitions.PartitionNames), zap.Uint64("currentVersion", curVersion),
-		zap.Uint64("version", collection.GetRequestTime()), zap.Any("aliases", collection.Aliases),
+	mlog.Info(ctx, "meta update success", mlog.String("database", database), mlog.String("collectionName", collectionName),
+		mlog.String("actual collection Name", collection.Schema.GetName()), mlog.Int64("collectionID", collection.CollectionID),
+		mlog.Uint64("version", collection.GetRequestTime()), mlog.Any("aliases", collection.Aliases),
+		mlog.Bool("partition key isolation", isolation), mlog.String("queryMode", queryMode),
 	)
 
 	m.collectionCacheVersion[collection.GetCollectionID()] = collection.GetRequestTime()
@@ -566,11 +573,24 @@ func buildSfKeyById(database string, collectionID UniqueID) string {
 	return database + "--" + fmt.Sprint(collectionID)
 }
 
+func buildPartitionSfKey(database, collectionName, partitionName string) string {
+	return database + "-" + collectionName + "-" + partitionName
+}
+
 func (m *MetaCache) UpdateByName(ctx context.Context, database, collectionName string) (*collectionInfo, error) {
 	collection, err, _ := m.sfGlobal.Do(buildSfKeyByName(database, collectionName), func() (*collectionInfo, error) {
 		return m.update(ctx, database, collectionName, 0)
 	})
-	return collection, err
+	// Name resolution failed -> the caller named a collection/db that does not
+	// exist, which is the user's input error, not a system fault. Mark it here,
+	// the single name-resolution chokepoint shared by every name-based
+	// GetCollection* path (data-plane and control-plane proxy tasks), so the
+	// error_type is Input. The id-based UpdateByID path is deliberately left as
+	// SystemError: a by-id lookup miss is an internal/component query (e.g.
+	// rootcoord answering another component by collectionID), not user input.
+	// The sentinel itself stays SystemError so datacoord's internal retry.Do
+	// recovery loops still retry a transient not-found.
+	return collection, merr.WrapErrAsInputErrorWhen(err, merr.ErrCollectionNotFound, merr.ErrDatabaseNotFound)
 }
 
 func (m *MetaCache) UpdateByID(ctx context.Context, database string, collectionID UniqueID) (*collectionInfo, error) {
@@ -667,9 +687,9 @@ func (m *MetaCache) GetCollectionSchema(ctx context.Context, database, collectio
 			return nil, err
 		}
 		metrics.ProxyUpdateCacheLatency.WithLabelValues(paramtable.GetStringNodeID(), method).Observe(float64(tr.ElapseSpan().Milliseconds()))
-		log.Ctx(ctx).Debug("Reload collection from root coordinator ",
-			zap.String("collectionName", collectionName),
-			zap.Int64("time (milliseconds) take ", tr.ElapseSpan().Milliseconds()))
+		mlog.Debug(ctx, "Reload collection from root coordinator ",
+			mlog.String("collectionName", collectionName),
+			mlog.Int64("time (milliseconds) take ", tr.ElapseSpan().Milliseconds()))
 		return collInfo.schema, nil
 	}
 	metrics.ProxyCacheStatsCounter.WithLabelValues(paramtable.GetStringNodeID(), method, metrics.CacheHitLabel).Inc()
@@ -723,7 +743,7 @@ func (m *MetaCache) RemoveAlias(ctx context.Context, database, alias string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.removeAliasLocked(database, alias)
-	log.Ctx(ctx).Debug("remove alias from cache", zap.String("db", database), zap.String("alias", alias))
+	mlog.Debug(ctx, "remove alias from cache", mlog.String("db", database), mlog.String("alias", alias))
 }
 
 func (m *MetaCache) ResolveCollectionAlias(ctx context.Context, database, nameOrAlias string) (string, error) {
@@ -815,24 +835,60 @@ func (m *MetaCache) GetPartitions(ctx context.Context, database, collectionName 
 }
 
 func (m *MetaCache) GetPartitionInfo(ctx context.Context, database, collectionName string, partitionName string) (*partitionInfo, error) {
-	partitions, err := m.GetPartitionInfos(ctx, database, collectionName)
+	// Handle empty partitionName - use default partition
+	if partitionName == "" {
+		partitionName = Params.CommonCfg.DefaultPartitionName.GetValue()
+	}
+
+	key := buildPartitionSfKey(database, collectionName, partitionName)
+	entry, ok, release := m.partitionCache.Lookup(key)
+	defer release(entry)
+	if ok && entry.state == EntryStateActive && entry.value != nil {
+		return entry.value, nil
+	}
+
+	collectionKey := buildSfKeyByName(database, collectionName)
+	_, err, _ := m.sfPartitionCache.Do(collectionKey, func() (*partitionInfo, error) {
+		// as rootcoord does not support show partitions by partition name, we need to get all partitions first.
+		resp, err := m.showPartitions(ctx, database, collectionName, 0)
+		if err != nil {
+			return nil, err
+		}
+		keys := make([]string, 0)
+		values := make([]*partitionInfo, 0)
+		versions := make([]uint64, 0)
+		var ret *partitionInfo
+		for i := range resp.PartitionNames {
+			keys = append(keys, buildPartitionSfKey(database, collectionName, resp.PartitionNames[i]))
+			values = append(values, &partitionInfo{
+				name:                resp.PartitionNames[i],
+				partitionID:         resp.PartitionIDs[i],
+				createdTimestamp:    resp.CreatedTimestamps[i],
+				createdUtcTimestamp: resp.CreatedUtcTimestamps[i],
+			})
+			versions = append(versions, resp.CreatedTimestamps[i])
+			if resp.PartitionNames[i] == partitionName {
+				ret = values[i]
+			}
+		}
+		m.partitionCache.InsertBatchWithoutRef(keys, values, versions)
+		return ret, nil
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	if partitionName == "" {
-		for _, info := range partitions.partitionInfos {
-			if info.isDefault {
-				return info, nil
-			}
-		}
+	entry, ok, release = m.partitionCache.Lookup(key)
+	defer release(entry)
+	if ok && entry.state == EntryStateActive && entry.value != nil {
+		return entry.value, nil
 	}
-
-	info, ok := partitions.name2Info[partitionName]
-	if !ok {
-		return nil, merr.WrapErrPartitionNotFound(partitionName)
-	}
-	return info, nil
+	// partitionName is caller-supplied; a failed name resolution is the user's
+	// input error, not a system fault. Mark it here, the single partition-name
+	// chokepoint (GetPartitionID also routes through here), so the proxy reports
+	// InputError without per-task wrappers. ErrPartitionNotFound stays
+	// SystemError by default so id-based lookups (GetPartitionName) are unaffected.
+	return nil, merr.WrapErrAsInputError(merr.WrapErrPartitionNotFound(partitionName))
 }
 
 func (m *MetaCache) GetPartitionsIndex(ctx context.Context, database, collectionName string) ([]string, error) {
@@ -850,21 +906,47 @@ func (m *MetaCache) GetPartitionsIndex(ctx context.Context, database, collection
 
 func (m *MetaCache) GetPartitionInfos(ctx context.Context, database, collectionName string) (*partitionInfos, error) {
 	method := "GetPartitionInfo"
-	collInfo, ok := m.getCollection(database, collectionName, 0)
-
-	if !ok {
-		tr := timerecord.NewTimeRecorder("UpdateCache")
-		metrics.ProxyCacheStatsCounter.WithLabelValues(paramtable.GetStringNodeID(), method, metrics.CacheMissLabel).Inc()
-
-		collInfo, err := m.UpdateByName(ctx, database, collectionName)
+	key := buildSfKeyByName(database, collectionName)
+	entry, ok, release := m.collLevelPartitionCache.Lookup(key)
+	defer release(entry)
+	if ok && entry.state == EntryStateActive && entry.value != nil {
+		return entry.value, nil
+	}
+	tr := timerecord.NewTimeRecorder("UpdateCache")
+	metrics.ProxyCacheStatsCounter.WithLabelValues(paramtable.GetStringNodeID(), method, metrics.CacheMissLabel).Inc()
+	partitionsInfo, err, _ := m.sfCollLevelPartitionCache.Do(key, func() (*partitionInfos, error) {
+		collection, err := m.describeCollection(ctx, database, collectionName, 0)
 		if err != nil {
 			return nil, err
 		}
+		schemaInfo := newSchemaInfo(collection.Schema)
 
+		resp, err := m.showPartitions(ctx, database, collectionName, 0)
+		if err != nil {
+			return nil, err
+		}
+		partitions := make([]*partitionInfo, 0)
+		for i, name := range resp.PartitionNames {
+			partitions = append(partitions, &partitionInfo{
+				name:                name,
+				partitionID:         resp.PartitionIDs[i],
+				createdTimestamp:    resp.CreatedTimestamps[i],
+				createdUtcTimestamp: resp.CreatedUtcTimestamps[i],
+			})
+		}
+		partitionsInfo := parsePartitionsInfo(partitions, schemaInfo.IsPartitionKeyCollection())
+		entry, release := m.collLevelPartitionCache.Insert(key, partitionsInfo, collection.RequestTime)
+		defer release(entry)
 		metrics.ProxyUpdateCacheLatency.WithLabelValues(paramtable.GetStringNodeID(), method).Observe(float64(tr.ElapseSpan().Milliseconds()))
-		return collInfo.partInfo, nil
+		return entry.value, nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return collInfo.partInfo, nil
+	if partitionsInfo == nil {
+		return nil, merr.WrapErrServiceInternal("partition info not found")
+	}
+	return partitionsInfo, nil
 }
 
 // Get the collection information from rootcoord.
@@ -914,9 +996,18 @@ func (m *MetaCache) showPartitions(ctx context.Context, dbName string, collectio
 		return nil, err
 	}
 
+	// The response shape is produced by the coordinator, not the caller: a
+	// misaligned array is backend metadata inconsistency, not user input.
 	if len(partitions.PartitionIDs) != len(partitions.PartitionNames) {
-		return nil, fmt.Errorf("partition ids len: %d doesn't equal Partition name len %d",
+		return nil, merr.WrapErrServiceInternalMsg("partition ids len: %d doesn't equal Partition name len %d",
 			len(partitions.PartitionIDs), len(partitions.PartitionNames))
+	}
+	if len(partitions.PartitionNames) != len(partitions.CreatedTimestamps) ||
+		len(partitions.PartitionNames) != len(partitions.CreatedUtcTimestamps) {
+		return nil, merr.WrapErrServiceInternalMsg(
+			"partition names and timestamps number is not aligned, response: %s",
+			partitions.String(),
+		)
 	}
 
 	return partitions, nil
@@ -962,12 +1053,12 @@ func parsePartitionsInfo(infos []*partitionInfo, hasPartitionKey bool) *partitio
 		partitionName := info.name
 		splits := strings.Split(partitionName, "_")
 		if len(splits) < 2 {
-			log.Info("partition group not in partitionKey pattern", zap.String("partitionName", partitionName))
+			mlog.Info(context.TODO(), "partition group not in partitionKey pattern", mlog.String("partitionName", partitionName))
 			return result
 		}
 		index, err := strconv.ParseInt(splits[len(splits)-1], 10, 64)
 		if err != nil {
-			log.Info("partition group not in partitionKey pattern", zap.String("partitionName", partitionName), zap.Error(err))
+			mlog.Info(context.TODO(), "partition group not in partitionKey pattern", mlog.String("partitionName", partitionName), mlog.Err(err))
 			return result
 		}
 		partitionNames[index] = partitionName
@@ -1004,7 +1095,7 @@ func (m *MetaCache) RemoveCollection(ctx context.Context, database, collectionNa
 			m.removeAliasesForCollectionLocked(defaultDB, collectionName)
 		}
 	}
-	log.Ctx(ctx).Debug("remove collection", zap.String("db", database), zap.String("collection", collectionName))
+	mlog.Debug(ctx, "remove collection", mlog.String("db", database), mlog.String("collection", collectionName))
 }
 
 func (m *MetaCache) RemoveCollectionsByID(ctx context.Context, collectionID UniqueID, version uint64, removeVersion bool) []string {
@@ -1023,13 +1114,22 @@ func (m *MetaCache) removeCollectionByID(ctx context.Context, collectionID Uniqu
 				if version == 0 || curVersion <= version {
 					delete(m.collInfo[database], k)
 					collNames = append(collNames, k)
-					m.sfGlobal.Forget(buildSfKeyByName(database, k))
+					collectionKey := buildSfKeyByName(database, k)
+					m.sfGlobal.Forget(collectionKey)
 					m.sfGlobal.Forget(buildSfKeyById(database, v.collID))
 					realName := k
 					if v.schema != nil && v.schema.GetName() != "" {
 						realName = v.schema.GetName()
 					}
 					m.removeAliasesForCollectionLocked(database, realName)
+					m.sfCollLevelPartitionCache.Forget(collectionKey)
+					m.collLevelPartitionCache.Stale(collectionKey, version)
+
+					partitionPrefix := database + "-" + realName + "-"
+					m.sfPartitionCache.Forget(collectionKey)
+					m.partitionCache.StaleIf(func(key string) bool {
+						return strings.HasPrefix(key, partitionPrefix)
+					}, version)
 				}
 			}
 		}
@@ -1039,19 +1139,38 @@ func (m *MetaCache) removeCollectionByID(ctx context.Context, collectionID Uniqu
 	} else if version != 0 {
 		m.collectionCacheVersion[collectionID] = version
 	}
-	log.Ctx(ctx).Debug("remove collection by id", zap.Int64("id", collectionID),
-		zap.Strings("collection", collNames), zap.Uint64("currentVersion", curVersion),
-		zap.Uint64("version", version), zap.Bool("removeVersion", removeVersion))
+	mlog.Debug(ctx, "remove collection by id", mlog.Int64("id", collectionID),
+		mlog.Strings("collection", collNames), mlog.Uint64("currentVersion", curVersion),
+		mlog.Uint64("version", version), mlog.Bool("removeVersion", removeVersion))
 	return collNames
 }
 
 func (m *MetaCache) RemoveDatabase(ctx context.Context, database string) {
-	log.Ctx(ctx).Debug("remove database", zap.String("name", database))
+	mlog.Debug(ctx, "remove database", mlog.String("name", database))
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// Forget singleflight keys for all collections in this database
+	if db, ok := m.collInfo[database]; ok {
+		for collectionName := range db {
+			collectionKey := buildSfKeyByName(database, collectionName)
+			m.sfCollLevelPartitionCache.Forget(collectionKey)
+			m.sfPartitionCache.Forget(collectionKey)
+		}
+	}
+
 	delete(m.collInfo, database)
 	delete(m.dbInfo, database)
 	delete(m.aliasInfo, database)
+
+	// Clean up partition cache
+	prefix := database + "-"
+	m.collLevelPartitionCache.StaleIf(func(key string) bool {
+		return strings.HasPrefix(key, prefix)
+	}, 0)
+	m.partitionCache.StaleIf(func(key string) bool {
+		return strings.HasPrefix(key, prefix)
+	}, 0)
 }
 
 func (m *MetaCache) HasDatabase(ctx context.Context, database string) bool {
@@ -1084,7 +1203,13 @@ func (m *MetaCache) GetDatabaseInfo(ctx context.Context, database string) (*data
 		return dbInfo, nil
 	})
 
-	return dbInfo, err
+	// Symmetric with UpdateByName: a failed database-name resolution means the
+	// caller named a database that does not exist — the user's input error, not a
+	// system fault. Mark it here, the single database-name chokepoint, so every
+	// caller (data-plane and control-plane proxy tasks) gets InputError without a
+	// per-callsite wrapper. The sentinel stays SystemError so internal id-based
+	// lookups and retry loops elsewhere are unaffected.
+	return dbInfo, merr.WrapErrAsInputErrorWhen(err, merr.ErrDatabaseNotFound)
 }
 
 func (m *MetaCache) safeGetDBInfo(database string) *databaseInfo {
@@ -1106,12 +1231,12 @@ func (m *MetaCache) AllocID(ctx context.Context) (int64, error) {
 			Count: 1000000,
 		})
 		if err != nil {
-			log.Warn("Refreshing ID cache from rootcoord failed", zap.Error(err))
+			mlog.Warn(context.TODO(), "Refreshing ID cache from rootcoord failed", mlog.Err(err))
 			return 0, err
 		}
 		if resp.GetStatus().GetCode() != 0 {
-			log.Warn("Refreshing ID cache from rootcoord failed", zap.String("failed detail", resp.GetStatus().GetDetail()))
-			return 0, merr.WrapErrServiceInternal(resp.GetStatus().GetDetail())
+			mlog.Warn(context.TODO(), "Refreshing ID cache from rootcoord failed", mlog.String("failed detail", resp.GetStatus().GetDetail()))
+			return 0, merr.Error(resp.GetStatus())
 		}
 		m.IDStart, m.IDCount = resp.GetID(), int64(resp.GetCount())
 		m.IDIndex = 0
@@ -1119,4 +1244,208 @@ func (m *MetaCache) AllocID(ctx context.Context) (int64, error) {
 	id := m.IDStart + m.IDIndex
 	m.IDIndex++
 	return id, nil
+}
+
+func (m *MetaCache) RemovePartition(ctx context.Context, database string, collectionID UniqueID, collectionName string, partitionName string, version uint64) {
+	m.ensureCollectionForPartitionInvalidation(ctx, database, collectionID, collectionName)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	staleCollectionInfo := m.shouldStaleCollectionInfoLocked(collectionID, version)
+	names := make(map[string]struct{})
+	realNames := make(map[string]struct{})
+	for _, dbName := range partitionInvalidationDatabases(database) {
+		m.collectPartitionCacheNamesLocked(dbName, collectionID, collectionName, names, realNames)
+		for name := range names {
+			if coll, ok := m.getCollectionLocked(dbName, name); ok && coll.schema != nil {
+				realName := coll.schema.GetName()
+				if realName != "" {
+					realNames[realName] = struct{}{}
+				}
+			}
+		}
+		if aliases, ok := m.aliasInfo[dbName]; ok {
+			for alias, entry := range aliases {
+				if entry == nil || entry.collectionName == "" {
+					continue
+				}
+				if _, ok := realNames[entry.collectionName]; ok {
+					names[alias] = struct{}{}
+					names[entry.collectionName] = struct{}{}
+				}
+			}
+		}
+
+		if staleCollectionInfo {
+			// Partition DDL changes collection-level fields such as NumPartitions,
+			// without requiring removeCollectionByID's partition-cache sweep.
+			for name := range names {
+				m.staleCollectionInfoByNameLocked(dbName, name)
+			}
+			if collectionID != 0 {
+				m.sfGlobal.Forget(buildSfKeyById(dbName, collectionID))
+			}
+		}
+		for name := range names {
+			m.stalePartitionCacheLocked(dbName, name, partitionName, version)
+		}
+		clear(names)
+		clear(realNames)
+	}
+	if staleCollectionInfo && collectionID != 0 && version != 0 {
+		m.collectionCacheVersion[collectionID] = version
+	}
+
+	mlog.Debug(ctx, "remove partition", mlog.String("db", database), mlog.Int64("collectionID", collectionID), mlog.String("collection", collectionName), mlog.String("partition", partitionName), mlog.Uint64("version", version))
+}
+
+func (m *MetaCache) ensureCollectionForPartitionInvalidation(ctx context.Context, database string, collectionID UniqueID, collectionName string) {
+	if collectionID != 0 {
+		for _, dbName := range partitionInvalidationDatabases(database) {
+			if _, ok := m.getCollection(dbName, "", collectionID); ok {
+				return
+			}
+		}
+
+		fetchDB := database
+		if fetchDB == "" {
+			fetchDB = defaultDB
+		}
+		if _, err := m.UpdateByID(ctx, fetchDB, collectionID); err != nil {
+			mlog.Debug(ctx, "failed to refresh collection cache before partition invalidation",
+				mlog.String("db", fetchDB),
+				mlog.Int64("collectionID", collectionID),
+				mlog.Err(err))
+		}
+		return
+	}
+
+	if collectionName == "" {
+		return
+	}
+
+	for _, dbName := range partitionInvalidationDatabases(database) {
+		if _, ok := m.getCollection(dbName, collectionName, 0); ok {
+			return
+		}
+	}
+
+	fetchDB := database
+	if fetchDB == "" {
+		fetchDB = defaultDB
+	}
+	if _, err := m.UpdateByName(ctx, fetchDB, collectionName); err != nil {
+		mlog.Debug(ctx, "failed to refresh collection cache by name before partition invalidation",
+			mlog.String("db", fetchDB),
+			mlog.String("collection", collectionName),
+			mlog.Err(err))
+	}
+}
+
+func partitionInvalidationDatabases(database string) []string {
+	if database == "" {
+		return []string{database, defaultDB}
+	}
+	return []string{database}
+}
+
+func (m *MetaCache) getCollectionLocked(database, collectionName string) (*collectionInfo, bool) {
+	db, ok := m.collInfo[database]
+	if !ok {
+		return nil, false
+	}
+	collection, ok := db[collectionName]
+	return collection, ok
+}
+
+func (m *MetaCache) collectPartitionCacheNamesLocked(database string, collectionID UniqueID, collectionName string, names, realNames map[string]struct{}) {
+	if collectionName != "" {
+		names[collectionName] = struct{}{}
+		if coll, ok := m.getCollectionLocked(database, collectionName); ok && coll.schema != nil {
+			realName := coll.schema.GetName()
+			if realName != "" {
+				names[realName] = struct{}{}
+				realNames[realName] = struct{}{}
+			}
+			for _, alias := range coll.aliases {
+				names[alias] = struct{}{}
+			}
+		}
+	}
+
+	if collectionID == 0 {
+		return
+	}
+
+	if db, ok := m.collInfo[database]; ok {
+		for name, coll := range db {
+			if coll.collID != collectionID {
+				continue
+			}
+			names[name] = struct{}{}
+			if coll.schema != nil {
+				realName := coll.schema.GetName()
+				if realName != "" {
+					names[realName] = struct{}{}
+					realNames[realName] = struct{}{}
+				}
+			}
+			for _, alias := range coll.aliases {
+				names[alias] = struct{}{}
+			}
+		}
+	}
+}
+
+func (m *MetaCache) stalePartitionCacheLocked(database, collectionName, partitionName string, version uint64) {
+	collectionKey := buildSfKeyByName(database, collectionName)
+	m.sfPartitionCache.Forget(collectionKey)
+	m.partitionCache.Stale(buildPartitionSfKey(database, collectionName, partitionName), version)
+	m.sfCollLevelPartitionCache.Forget(collectionKey)
+	m.collLevelPartitionCache.Stale(collectionKey, version)
+}
+
+func (m *MetaCache) shouldStaleCollectionInfoLocked(collectionID UniqueID, version uint64) bool {
+	if collectionID == 0 || version == 0 {
+		return true
+	}
+	return m.collectionCacheVersion[collectionID] <= version
+}
+
+func (m *MetaCache) staleCollectionInfoByNameLocked(database, collectionName string) {
+	if db, ok := m.collInfo[database]; ok {
+		delete(db, collectionName)
+	}
+
+	m.sfGlobal.Forget(buildSfKeyByName(database, collectionName))
+}
+
+func (m *MetaCache) backgroundGCLoop(stopCh <-chan struct{}) {
+	go func() {
+		interval := Params.ProxyCfg.MetaCacheGCTimeInterval.GetAsDuration(time.Second)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				m.partitionCache.Prune()
+				m.collLevelPartitionCache.Prune()
+
+				newInterval := Params.ProxyCfg.MetaCacheGCTimeInterval.GetAsDuration(time.Second)
+				if newInterval != interval {
+					interval = newInterval
+					ticker.Reset(interval)
+				}
+			case <-stopCh:
+				return
+			}
+		}
+	}()
+}
+
+func (m *MetaCache) Close() {
+	m.closeOnce.Do(func() {
+		close(m.stopCh)
+	})
 }

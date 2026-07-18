@@ -4,17 +4,16 @@ import (
 	"context"
 	"fmt"
 
-	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/planpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/metrics"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/internalpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/planpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/querypb"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
 )
 
 // QueryHook is the interface for search/query parameter optimizer.
@@ -39,12 +38,12 @@ func OptimizeSearchParams(ctx context.Context, req *querypb.SearchRequest, query
 	}
 
 	collectionId := req.GetReq().GetCollectionID()
-	log := log.Ctx(ctx).With(zap.Int64("collection", collectionId))
+	log := mlog.With(mlog.Int64("collection", collectionId))
 
 	serializedPlan := req.GetReq().GetSerializedExprPlan()
 	// plan not found
 	if serializedPlan == nil {
-		log.Warn("serialized plan not found")
+		log.Warn(ctx, "serialized plan not found")
 		return req, merr.WrapErrParameterInvalid("serialized search plan", "nil")
 	}
 
@@ -57,7 +56,7 @@ func OptimizeSearchParams(ctx context.Context, req *querypb.SearchRequest, query
 	plan := planpb.PlanNode{}
 	err := proto.Unmarshal(serializedPlan, &plan)
 	if err != nil {
-		log.Warn("failed to unmarshal plan", zap.Error(err))
+		log.Warn(ctx, "failed to unmarshal plan", mlog.Err(err))
 		return nil, merr.WrapErrParameterInvalid("valid serialized search plan", "no unmarshalable one", err.Error())
 	}
 
@@ -95,7 +94,7 @@ func OptimizeSearchParams(ctx context.Context, req *querypb.SearchRequest, query
 		}
 		err := queryHook.Run(params)
 		if err != nil {
-			log.Warn("failed to execute queryHook", zap.Error(err))
+			log.Warn(ctx, "failed to execute queryHook", mlog.Err(err))
 			return nil, merr.WrapErrServiceUnavailable(err.Error(), "queryHook execution failed")
 		}
 		finalTopk := params[common.TopKKey].(int64)
@@ -113,7 +112,7 @@ func OptimizeSearchParams(ctx context.Context, req *querypb.SearchRequest, query
 		}
 		serializedExprPlan, err := proto.Marshal(&plan)
 		if err != nil {
-			log.Warn("failed to marshal optimized plan", zap.Error(err))
+			log.Warn(ctx, "failed to marshal optimized plan", mlog.Err(err))
 			return nil, merr.WrapErrParameterInvalid("marshalable search plan", "plan with marshal error", err.Error())
 		}
 		req.Req.SerializedExprPlan = serializedExprPlan
@@ -124,9 +123,9 @@ func OptimizeSearchParams(ctx context.Context, req *querypb.SearchRequest, query
 			req.Req.IsRecallEvaluation = false
 		}
 
-		log.Debug("optimized search params done", zap.Any("queryInfo", queryInfo))
+		log.Debug(ctx, "optimized search params done", mlog.Any("queryInfo", queryInfo))
 	default:
-		log.Warn("not supported node type", zap.String("nodeType", fmt.Sprintf("%T", plan.GetNode())))
+		log.Warn(ctx, "not supported node type", mlog.String("nodeType", fmt.Sprintf("%T", plan.GetNode())))
 	}
 	return req, nil
 }
@@ -146,7 +145,7 @@ func ShouldUseTwoStageSearch(req *querypb.SearchRequest, effectiveSegmentNum int
 	if !paramtable.Get().AutoIndexConfig.TwoStageSearchEnabled.GetAsBool() {
 		return false
 	}
-	if effectiveSegmentNum < paramtable.Get().AutoIndexConfig.TwoStageSearchMinNumSegments.GetAsInt() && req.GetReq().GetTopk() < paramtable.Get().AutoIndexConfig.TwoStageSearchMinTopk.GetAsInt64() {
+	if effectiveSegmentNum < paramtable.Get().AutoIndexConfig.TwoStageSearchMinNumSegments.GetAsInt() || req.GetReq().GetTopk() < paramtable.Get().AutoIndexConfig.TwoStageSearchMinTopk.GetAsInt64() {
 		return false
 	}
 	return req.GetReq().GetSearchType() == internalpb.SearchType_PURE_ANN_SEARCH_WITH_FILTER

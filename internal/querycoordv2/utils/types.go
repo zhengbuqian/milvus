@@ -17,18 +17,17 @@
 package utils
 
 import (
+	"context"
 	"time"
 
-	"go.uber.org/zap"
-
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/msgpb"
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/tsoutil"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/querypb"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/tsoutil"
 )
 
 func MergeMetaSegmentIntoSegmentInfo(info *querypb.SegmentInfo, segments ...*meta.Segment) {
@@ -64,13 +63,13 @@ func PackSegmentLoadInfo(segment *datapb.SegmentInfo, channelCheckpoint *msgpb.M
 	posTime := tsoutil.PhysicalTime(channelCheckpoint.GetTimestamp())
 	tsLag := time.Since(posTime)
 	if tsLag >= 10*time.Minute {
-		log.Warn("delta position is quite stale",
-			zap.Int64("collectionID", segment.GetCollectionID()),
-			zap.Int64("segmentID", segment.GetID()),
-			zap.String("channel", segment.InsertChannel),
-			zap.Uint64("posTs", channelCheckpoint.GetTimestamp()),
-			zap.Time("posTime", posTime),
-			zap.Duration("tsLag", tsLag))
+		mlog.Warn(context.TODO(), "delta position is quite stale",
+			mlog.FieldCollectionID(segment.GetCollectionID()),
+			mlog.FieldSegmentID(segment.GetID()),
+			mlog.String("channel", segment.InsertChannel),
+			mlog.Uint64("posTs", channelCheckpoint.GetTimestamp()),
+			mlog.Time("posTime", posTime),
+			mlog.Duration("tsLag", tsLag))
 	}
 	loadInfo := &querypb.SegmentLoadInfo{
 		SegmentID:      segment.ID,
@@ -86,18 +85,27 @@ func PackSegmentLoadInfo(segment *datapb.SegmentInfo, channelCheckpoint *msgpb.M
 		StorageVersion: segment.GetStorageVersion(),
 		IsSorted:       segment.GetIsSorted(),
 		ManifestPath:   segment.GetManifestPath(),
-		DataVersion:    segment.GetDataVersion(),
+		// Fallback parent loads use ChildManifestPaths to carry compact-to V3
+		// delete sources that are not representable as legacy Deltalogs.
+		ChildManifestPaths: segment.GetChildManifestPaths(),
+		CommitTimestamp:    segment.GetCommitTimestamp(),
+		DataVersion:        segment.GetDataVersion(),
 	}
 
 	// Deltalogs are always populated (delta log loading has its own manifest path)
 	loadInfo.Deltalogs = segment.Deltalogs
 
 	// When manifest_path is set, stats are stored in the manifest.
-	// Skip populating legacy stats fields - the reader will load from manifest.
+	// Skip populating legacy stats fields, but keep JSON stats placeholders.
+	// QueryNode uses these placeholders to decide which manifest JSON stats are
+	// still valid for the segment before resolving the actual files from the
+	// manifest.
 	if segment.GetManifestPath() == "" {
 		loadInfo.Statslogs = segment.Statslogs
 		loadInfo.Bm25Logs = segment.Bm25Statslogs
 		loadInfo.TextStatsLogs = segment.GetTextStatsLogs()
+		loadInfo.JsonKeyStatsLogs = segment.GetJsonKeyStats()
+	} else {
 		loadInfo.JsonKeyStatsLogs = segment.GetJsonKeyStats()
 	}
 

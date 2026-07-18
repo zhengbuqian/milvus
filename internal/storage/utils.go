@@ -29,22 +29,21 @@ import (
 	"strconv"
 
 	"github.com/apache/arrow/go/v17/arrow"
-	"github.com/cockroachdb/errors"
 	"github.com/samber/lo"
-	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgstream"
-	"github.com/milvus-io/milvus/pkg/v2/objectstorage"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/segcorepb"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/mq/msgstream"
+	"github.com/milvus-io/milvus/pkg/v3/objectstorage"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/segcorepb"
+	"github.com/milvus-io/milvus/pkg/v3/util/funcutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
@@ -86,6 +85,30 @@ func WriteFile(filepath string, data []byte, perm fs.FileMode) error {
 		return merr.WrapErrIoFailed(filepath, err)
 	}
 	return nil
+}
+
+// ValidateStorageV1InsertWritableSchema validates schema constraints required by V1 insert binlogs.
+func ValidateStorageV1InsertWritableSchema(schema *schemapb.CollectionSchema) error {
+	for _, field := range schema.GetFields() {
+		if isNullableArrayOfVectorField(field) {
+			return merr.WrapErrParameterInvalidMsg("nullable ArrayOfVector is not supported in V1 storage format, fieldName=%s", field.GetName())
+		}
+	}
+
+	for _, structField := range schema.GetStructArrayFields() {
+		for _, field := range structField.GetFields() {
+			if isNullableArrayOfVectorField(field) {
+				return merr.WrapErrParameterInvalidMsg("nullable ArrayOfVector is not supported in V1 storage format, structName=%s, fieldName=%s",
+					structField.GetName(), field.GetName())
+			}
+		}
+	}
+
+	return nil
+}
+
+func isNullableArrayOfVectorField(field *schemapb.FieldSchema) bool {
+	return field.GetDataType() == schemapb.DataType_ArrayOfVector && field.GetNullable()
 }
 
 func checkTsField(data *InsertData) bool {
@@ -159,12 +182,12 @@ func TransferColumnBasedInsertDataToRowBased(data *InsertData) (
 ) {
 	if !checkTsField(data) {
 		return nil, nil, nil,
-			errors.New("cannot get timestamps from insert data")
+			merr.WrapErrServiceInternalMsg("cannot get timestamps from insert data")
 	}
 
 	if !checkRowIDField(data) {
 		return nil, nil, nil,
-			errors.New("cannot get row ids from insert data")
+			merr.WrapErrServiceInternalMsg("cannot get row ids from insert data")
 	}
 
 	tss := data.Data[common.TimeStampField].(*Int64FieldData)
@@ -185,7 +208,7 @@ func TransferColumnBasedInsertDataToRowBased(data *InsertData) (
 	all = append(all, ls.datas...)
 	if !checkNumRows(all...) {
 		return nil, nil, nil,
-			errors.New("columns of insert data have different length")
+			merr.WrapErrServiceInternalMsg("columns of insert data have different length")
 	}
 
 	sortFieldDataList(ls)
@@ -201,7 +224,7 @@ func TransferColumnBasedInsertDataToRowBased(data *InsertData) (
 			err := binary.Write(&buffer, common.Endian, d)
 			if err != nil {
 				return nil, nil, nil,
-					fmt.Errorf("failed to get binary row, err: %v", err)
+					merr.WrapErrServiceInternalMsg("failed to get binary row, err: %v", err)
 			}
 		}
 
@@ -234,7 +257,7 @@ func GetDimFromParams(params []*commonpb.KeyValuePair) (int, error) {
 			return dim, nil
 		}
 	}
-	return -1, errors.New("dim not found in params")
+	return -1, merr.WrapErrServiceInternalMsg("dim not found in params")
 }
 
 // ReadBinary read data in bytes and write it into receiver.
@@ -244,7 +267,7 @@ func GetDimFromParams(params []*commonpb.KeyValuePair) (int, error) {
 func ReadBinary(reader io.Reader, receiver interface{}, dataType schemapb.DataType) {
 	err := binary.Read(reader, common.Endian, receiver)
 	if err != nil {
-		log.Error("binary.Read failed", zap.Any("data type", dataType), zap.Error(err))
+		mlog.Error(context.TODO(), "binary.Read failed", mlog.Any("data type", dataType), mlog.Err(err))
 	}
 }
 
@@ -395,11 +418,11 @@ func RowBasedInsertMsgToInsertData(msg *msgstream.InsertMsg, collSchema *schemap
 	}
 
 	if len(collSchema.StructArrayFields) > 0 {
-		return nil, errors.New("struct fields are not implemented in row based insert data")
+		return nil, merr.WrapErrServiceInternalMsg("struct fields are not implemented in row based insert data")
 	}
 
 	for _, field := range collSchema.Fields {
-		if skipFunction && (typeutil.IsBM25FunctionOutputField(field, collSchema) || typeutil.IsMinHashFunctionOutputField(field, collSchema)) {
+		if skipFunction && isEmbeddingFunctionOutputField(field, collSchema) {
 			continue
 		}
 
@@ -407,7 +430,7 @@ func RowBasedInsertMsgToInsertData(msg *msgstream.InsertMsg, collSchema *schemap
 		case schemapb.DataType_FloatVector:
 			dim, err := GetDimFromParams(field.TypeParams)
 			if err != nil {
-				log.Error("failed to get dim", zap.Error(err))
+				mlog.Error(context.TODO(), "failed to get dim", mlog.Err(err))
 				return nil, err
 			}
 
@@ -420,7 +443,7 @@ func RowBasedInsertMsgToInsertData(msg *msgstream.InsertMsg, collSchema *schemap
 		case schemapb.DataType_Float16Vector:
 			dim, err := GetDimFromParams(field.TypeParams)
 			if err != nil {
-				log.Error("failed to get dim", zap.Error(err))
+				mlog.Error(context.TODO(), "failed to get dim", mlog.Err(err))
 				return nil, err
 			}
 
@@ -433,7 +456,7 @@ func RowBasedInsertMsgToInsertData(msg *msgstream.InsertMsg, collSchema *schemap
 		case schemapb.DataType_BFloat16Vector:
 			dim, err := GetDimFromParams(field.TypeParams)
 			if err != nil {
-				log.Error("failed to get dim", zap.Error(err))
+				mlog.Error(context.TODO(), "failed to get dim", mlog.Err(err))
 				return nil, err
 			}
 
@@ -447,7 +470,7 @@ func RowBasedInsertMsgToInsertData(msg *msgstream.InsertMsg, collSchema *schemap
 			var dim int
 			dim, err := GetDimFromParams(field.TypeParams)
 			if err != nil {
-				log.Error("failed to get dim", zap.Error(err))
+				mlog.Error(context.TODO(), "failed to get dim", mlog.Err(err))
 				return nil, err
 			}
 
@@ -457,12 +480,12 @@ func RowBasedInsertMsgToInsertData(msg *msgstream.InsertMsg, collSchema *schemap
 				Dim:  dim,
 			}
 		case schemapb.DataType_SparseFloatVector:
-			return nil, errors.New("Sparse Float Vector is not supported in row based data")
+			return nil, merr.WrapErrServiceInternalMsg("Sparse Float Vector is not supported in row based data")
 
 		case schemapb.DataType_Int8Vector:
 			dim, err := GetDimFromParams(field.TypeParams)
 			if err != nil {
-				log.Error("failed to get dim", zap.Error(err))
+				mlog.Error(context.TODO(), "failed to get dim", mlog.Err(err))
 				return nil, err
 			}
 
@@ -528,6 +551,10 @@ func RowBasedInsertMsgToInsertData(msg *msgstream.InsertMsg, collSchema *schemap
 	return idata, nil
 }
 
+func isEmbeddingFunctionOutputField(field *schemapb.FieldSchema, collSchema *schemapb.CollectionSchema) bool {
+	return typeutil.IsBM25FunctionOutputField(field, collSchema) || typeutil.IsMinHashFunctionOutputField(field, collSchema)
+}
+
 // ColumnBasedInsertMsgToInsertData converts an InsertMsg msg into InsertData based
 // on provided CollectionSchema collSchema.
 //
@@ -537,6 +564,43 @@ func RowBasedInsertMsgToInsertData(msg *msgstream.InsertMsg, collSchema *schemap
 // This funcion also checks the length of each column. All columns shall have the same length.
 // Also, the InsertData.Infos shall have BlobInfo with this length returned.
 // When the length is not aligned, an error will be returned.
+func validateColumnBasedNullableVectorFieldData(field *schemapb.FieldSchema, srcField *schemapb.FieldData, logicalRows int) error {
+	if !field.GetNullable() || !typeutil.IsSupportedNullableVectorType(field.GetDataType()) {
+		return nil
+	}
+	dim := int64(0)
+	if field.GetDataType() != schemapb.DataType_SparseFloatVector && srcField.GetVectors() != nil && srcField.GetVectors().GetDim() == 0 {
+		fieldDim, err := GetDimFromParams(field.GetTypeParams())
+		if err != nil {
+			return err
+		}
+		dim = int64(fieldDim)
+	}
+	requireValidData := logicalRows > 0 || len(srcField.GetValidData()) > 0
+	if err := funcutil.ValidateNullableVectorFieldDataCompactWithDim(srcField, uint64(logicalRows), requireValidData, dim); err != nil {
+		return merr.WrapErrParameterInvalidMsg(err.Error())
+	}
+	return nil
+}
+
+func validateColumnBasedInsertMsgNullableVectors(schema *schemapb.CollectionSchema, msg *msgstream.InsertMsg) error {
+	srcFields := make(map[int64]*schemapb.FieldData, len(msg.GetFieldsData()))
+	for _, fieldData := range msg.GetFieldsData() {
+		srcFields[fieldData.GetFieldId()] = fieldData
+	}
+
+	for _, field := range typeutil.GetAllFieldSchemas(schema) {
+		srcField, ok := srcFields[field.GetFieldID()]
+		if !ok {
+			continue
+		}
+		if err := validateColumnBasedNullableVectorFieldData(field, srcField, int(msg.GetNumRows())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func ColumnBasedInsertMsgToInsertData(msg *msgstream.InsertMsg, collSchema *schemapb.CollectionSchema) (idata *InsertData, err error) {
 	srcFields := make(map[FieldID]*schemapb.FieldData)
 	for _, field := range msg.FieldsData {
@@ -564,12 +628,15 @@ func ColumnBasedInsertMsgToInsertData(msg *msgstream.InsertMsg, collSchema *sche
 		case schemapb.DataType_FloatVector:
 			dim, err := GetDimFromParams(field.TypeParams)
 			if err != nil {
-				log.Error("failed to get dim", zap.Error(err))
+				mlog.Error(context.TODO(), "failed to get dim", mlog.Err(err))
 				return nil, err
 			}
 
 			srcData := srcField.GetVectors().GetFloatVector().GetData()
 			validData := srcField.GetValidData()
+			if err := validateColumnBasedNullableVectorFieldData(field, srcField, int(msg.GetNumRows())); err != nil {
+				return nil, err
+			}
 			fd := &FloatVectorFieldData{
 				Data:      srcData,
 				Dim:       dim,
@@ -584,12 +651,15 @@ func ColumnBasedInsertMsgToInsertData(msg *msgstream.InsertMsg, collSchema *sche
 		case schemapb.DataType_BinaryVector:
 			dim, err := GetDimFromParams(field.TypeParams)
 			if err != nil {
-				log.Error("failed to get dim", zap.Error(err))
+				mlog.Error(context.TODO(), "failed to get dim", mlog.Err(err))
 				return nil, err
 			}
 
 			srcData := srcField.GetVectors().GetBinaryVector()
 			validData := srcField.GetValidData()
+			if err := validateColumnBasedNullableVectorFieldData(field, srcField, int(msg.GetNumRows())); err != nil {
+				return nil, err
+			}
 			fd := &BinaryVectorFieldData{
 				Data:      srcData,
 				Dim:       dim,
@@ -604,12 +674,15 @@ func ColumnBasedInsertMsgToInsertData(msg *msgstream.InsertMsg, collSchema *sche
 		case schemapb.DataType_Float16Vector:
 			dim, err := GetDimFromParams(field.TypeParams)
 			if err != nil {
-				log.Error("failed to get dim", zap.Error(err))
+				mlog.Error(context.TODO(), "failed to get dim", mlog.Err(err))
 				return nil, err
 			}
 
 			srcData := srcField.GetVectors().GetFloat16Vector()
 			validData := srcField.GetValidData()
+			if err := validateColumnBasedNullableVectorFieldData(field, srcField, int(msg.GetNumRows())); err != nil {
+				return nil, err
+			}
 			fd := &Float16VectorFieldData{
 				Data:      srcData,
 				Dim:       dim,
@@ -624,12 +697,15 @@ func ColumnBasedInsertMsgToInsertData(msg *msgstream.InsertMsg, collSchema *sche
 		case schemapb.DataType_BFloat16Vector:
 			dim, err := GetDimFromParams(field.TypeParams)
 			if err != nil {
-				log.Error("failed to get dim", zap.Error(err))
+				mlog.Error(context.TODO(), "failed to get dim", mlog.Err(err))
 				return nil, err
 			}
 
 			srcData := srcField.GetVectors().GetBfloat16Vector()
 			validData := srcField.GetValidData()
+			if err := validateColumnBasedNullableVectorFieldData(field, srcField, int(msg.GetNumRows())); err != nil {
+				return nil, err
+			}
 			fd := &BFloat16VectorFieldData{
 				Data:      srcData,
 				Dim:       dim,
@@ -650,6 +726,9 @@ func ColumnBasedInsertMsgToInsertData(msg *msgstream.InsertMsg, collSchema *sche
 				contents = sparseArray.GetContents()
 				dim = sparseArray.GetDim()
 			}
+			if err := validateColumnBasedNullableVectorFieldData(field, srcField, int(msg.GetNumRows())); err != nil {
+				return nil, err
+			}
 			fd := &SparseFloatVectorFieldData{
 				SparseFloatArray: schemapb.SparseFloatArray{
 					Contents: contents,
@@ -666,12 +745,15 @@ func ColumnBasedInsertMsgToInsertData(msg *msgstream.InsertMsg, collSchema *sche
 		case schemapb.DataType_Int8Vector:
 			dim, err := GetDimFromParams(field.TypeParams)
 			if err != nil {
-				log.Error("failed to get dim", zap.Error(err))
+				mlog.Error(context.TODO(), "failed to get dim", mlog.Err(err))
 				return nil, err
 			}
 
 			srcData := srcField.GetVectors().GetInt8Vector()
 			validData := srcField.GetValidData()
+			if err := validateColumnBasedNullableVectorFieldData(field, srcField, int(msg.GetNumRows())); err != nil {
+				return nil, err
+			}
 			fd := &Int8VectorFieldData{
 				Data:      lo.Map(srcData, func(v byte, _ int) int8 { return int8(v) }),
 				Dim:       dim,
@@ -806,11 +888,14 @@ func ColumnBasedInsertMsgToInsertData(msg *msgstream.InsertMsg, collSchema *sche
 
 		case schemapb.DataType_ArrayOfVector:
 			vectorArray := srcField.GetVectors().GetVectorArray()
+			validData := srcField.GetValidData()
 
 			fieldData = &VectorArrayFieldData{
 				ElementType: field.GetElementType(),
 				Data:        vectorArray.GetData(),
 				Dim:         vectorArray.GetDim(),
+				ValidData:   validData,
+				Nullable:    field.GetNullable(),
 			}
 		case schemapb.DataType_Geometry:
 			srcData := srcField.GetScalars().GetGeometryData().GetData()
@@ -829,8 +914,10 @@ func ColumnBasedInsertMsgToInsertData(msg *msgstream.InsertMsg, collSchema *sche
 	}
 
 	handleFieldData := func(field *schemapb.FieldSchema) (FieldData, error) {
-		if typeutil.IsBM25FunctionOutputField(field, collSchema) || typeutil.IsMinHashFunctionOutputField(field, collSchema) {
-			return nil, nil
+		if isEmbeddingFunctionOutputField(field, collSchema) {
+			if _, ok := srcFields[field.GetFieldID()]; !ok {
+				return nil, nil
+			}
 		}
 
 		fieldData, err := getFieldData(field)
@@ -1116,6 +1203,22 @@ func mergeSparseFloatVectorField(data *InsertData, fid FieldID, field *SparseFlo
 	fieldData.AppendAllRows(field)
 }
 
+func mergeVectorArrayField(data *InsertData, fid FieldID, field *VectorArrayFieldData) {
+	if _, ok := data.Data[fid]; !ok {
+		fieldData := &VectorArrayFieldData{
+			Data:        nil,
+			Dim:         field.Dim,
+			ElementType: field.ElementType,
+			ValidData:   nil,
+			Nullable:    field.Nullable,
+		}
+		data.Data[fid] = fieldData
+	}
+	fieldData := data.Data[fid].(*VectorArrayFieldData)
+	fieldData.Data = append(fieldData.Data, field.Data...)
+	fieldData.ValidData = append(fieldData.ValidData, field.ValidData...)
+}
+
 func mergeInt8VectorField(data *InsertData, fid FieldID, field *Int8VectorFieldData) {
 	if _, ok := data.Data[fid]; !ok {
 		fieldData := &Int8VectorFieldData{
@@ -1174,13 +1277,15 @@ func MergeFieldData(data *InsertData, fid FieldID, field FieldData) {
 		mergeSparseFloatVectorField(data, fid, field)
 	case *Int8VectorFieldData:
 		mergeInt8VectorField(data, fid, field)
+	case *VectorArrayFieldData:
+		mergeVectorArrayField(data, fid, field)
 	}
 }
 
 // MergeInsertData append the insert datas to the original buffer.
 func MergeInsertData(buffer *InsertData, datas ...*InsertData) {
 	if buffer == nil {
-		log.Warn("Attempt to merge data into a nil buffer, skip the data merge.")
+		mlog.Warn(context.TODO(), "Attempt to merge data into a nil buffer, skip the data merge.")
 		return
 	}
 
@@ -1200,20 +1305,20 @@ func MergeInsertData(buffer *InsertData, datas ...*InsertData) {
 func GetPkFromInsertData(collSchema *schemapb.CollectionSchema, data *InsertData) (FieldData, error) {
 	helper, err := typeutil.CreateSchemaHelper(collSchema)
 	if err != nil {
-		log.Error("failed to create schema helper", zap.Error(err))
+		mlog.Error(context.TODO(), "failed to create schema helper", mlog.Err(err))
 		return nil, err
 	}
 
 	pf, err := helper.GetPrimaryKeyField()
 	if err != nil {
-		log.Warn("no primary field found", zap.Error(err))
+		mlog.Warn(context.TODO(), "no primary field found", mlog.Err(err))
 		return nil, err
 	}
 
 	pfData, ok := data.Data[pf.FieldID]
 	if !ok {
-		log.Warn("no primary field found in insert msg", zap.Int64("fieldID", pf.FieldID))
-		return nil, errors.New("no primary field found in insert msg")
+		mlog.Warn(context.TODO(), "no primary field found in insert msg", mlog.Int64("fieldID", pf.FieldID))
+		return nil, merr.WrapErrServiceInternalMsg("no primary field found in insert msg")
 	}
 
 	var realPfData FieldData
@@ -1226,8 +1331,8 @@ func GetPkFromInsertData(collSchema *schemapb.CollectionSchema, data *InsertData
 		// TODO
 	}
 	if !ok {
-		log.Warn("primary field not in Int64 or VarChar format", zap.Int64("fieldID", pf.FieldID))
-		return nil, errors.New("primary field not in Int64 or VarChar format")
+		mlog.Warn(context.TODO(), "primary field not in Int64 or VarChar format", mlog.Int64("fieldID", pf.FieldID))
+		return nil, merr.WrapErrServiceInternalMsg("primary field not in Int64 or VarChar format")
 	}
 
 	return realPfData, nil
@@ -1236,16 +1341,16 @@ func GetPkFromInsertData(collSchema *schemapb.CollectionSchema, data *InsertData
 // GetTimestampFromInsertData returns the Int64FieldData for timestamp field.
 func GetTimestampFromInsertData(data *InsertData) (*Int64FieldData, error) {
 	if data == nil {
-		return nil, errors.New("try to get timestamp from nil insert data")
+		return nil, merr.WrapErrServiceInternalMsg("try to get timestamp from nil insert data")
 	}
 	fieldData, ok := data.Data[common.TimeStampField]
 	if !ok {
-		return nil, errors.New("no timestamp field in insert data")
+		return nil, merr.WrapErrServiceInternalMsg("no timestamp field in insert data")
 	}
 
 	ifd, ok := fieldData.(*Int64FieldData)
 	if !ok {
-		return nil, errors.New("timestamp field is not Int64")
+		return nil, merr.WrapErrServiceInternalMsg("timestamp field is not Int64")
 	}
 
 	return ifd, nil
@@ -1575,9 +1680,10 @@ func TransferInsertDataToInsertRecord(insertData *InsertData) (*segcorepb.Insert
 						Dim: rawData.Dim,
 					},
 				},
+				ValidData: rawData.ValidData,
 			}
 		default:
-			return insertRecord, errors.New("unsupported data type when transter storage.InsertData to internalpb.InsertRecord")
+			return insertRecord, merr.WrapErrServiceInternalMsg("unsupported data type when transter storage.InsertData to internalpb.InsertRecord")
 		}
 
 		insertRecord.FieldsData = append(insertRecord.FieldsData, fieldData)
@@ -1587,24 +1693,52 @@ func TransferInsertDataToInsertRecord(insertData *InsertData) (*segcorepb.Insert
 	return insertRecord, nil
 }
 
-func TransferInsertMsgToInsertRecord(schema *schemapb.CollectionSchema, msg *msgstream.InsertMsg) (*segcorepb.InsertRecord, error) {
+// TransferInsertMsgToInsertRecord converts an insert message into a segcore
+// insert record under the given schema. Payload columns of fields absent from
+// the schema are skipped and their field IDs returned, so the caller decides
+// how to surface the drop (log/metric) with its own context. Only the
+// column-based branch applies this filtering: the legacy row-based format
+// predates schema change and cannot carry since-dropped fields.
+func TransferInsertMsgToInsertRecord(schema *schemapb.CollectionSchema, msg *msgstream.InsertMsg) (*segcorepb.InsertRecord, []int64, error) {
 	if msg.IsRowBased() {
 		insertData, err := RowBasedInsertMsgToInsertData(msg, schema, false)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return TransferInsertDataToInsertRecord(insertData)
+		insertRecord, err := TransferInsertDataToInsertRecord(insertData)
+		return insertRecord, nil, err
 	}
 
 	// column base insert msg
-	insertRecord := &segcorepb.InsertRecord{
-		NumRows:    int64(msg.NumRows),
-		FieldsData: make([]*schemapb.FieldData, 0),
+	if err := validateColumnBasedInsertMsgNullableVectors(schema, msg); err != nil {
+		return nil, nil, err
 	}
 
-	insertRecord.FieldsData = append(insertRecord.FieldsData, msg.FieldsData...)
+	insertRecord := &segcorepb.InsertRecord{
+		NumRows:    int64(msg.NumRows),
+		FieldsData: make([]*schemapb.FieldData, 0, len(msg.FieldsData)),
+	}
 
-	return insertRecord, nil
+	// The payload was written under the schema version at WAL-append time. On WAL
+	// replay after schema changes, it may still carry columns of since-dropped
+	// fields, while the growing segment is rebuilt with the current schema and can
+	// never own such columns (segcore hard-asserts on unknown fields). Dropped-field
+	// data is unqueryable by definition, so skip those columns instead of passing
+	// them through.
+	knownFields := typeutil.NewSet[int64]()
+	for _, field := range typeutil.GetAllFieldSchemas(schema) {
+		knownFields.Insert(field.GetFieldID())
+	}
+	var skippedFields []int64
+	for _, fieldData := range msg.FieldsData {
+		if !knownFields.Contain(fieldData.GetFieldId()) {
+			skippedFields = append(skippedFields, fieldData.GetFieldId())
+			continue
+		}
+		insertRecord.FieldsData = append(insertRecord.FieldsData, fieldData)
+	}
+
+	return insertRecord, skippedFields, nil
 }
 
 func Min(a, b int64) int64 {
@@ -1697,8 +1831,8 @@ func fillMissingFields(schema *schemapb.CollectionSchema, insertData *InsertData
 
 	allFields := typeutil.GetAllFieldSchemas(schema)
 	for _, field := range allFields {
-		// Skip function output fields and system fields
-		if field.GetIsFunctionOutput() || field.GetFieldID() < 100 {
+		// Skip embedding function output fields and system fields.
+		if isEmbeddingFunctionOutputField(field, schema) || field.GetFieldID() < 100 {
 			continue
 		}
 
@@ -1708,7 +1842,7 @@ func fillMissingFields(schema *schemapb.CollectionSchema, insertData *InsertData
 			// Create default field data if not found
 			fieldData, err := NewFieldData(field.DataType, field, int(batchRows))
 			if err != nil {
-				return merr.WrapErrServiceInternal(fmt.Sprintf("failed to create default field data for field %s: %v", field.Name, err))
+				return merr.WrapErrServiceInternalMsg("failed to create default field data for field %s: %v", field.Name, err)
 			}
 
 			if field.GetDefaultValue() != nil { // Fill with default value
@@ -1716,17 +1850,17 @@ func fillMissingFields(schema *schemapb.CollectionSchema, insertData *InsertData
 
 				for j := 0; j < int(batchRows); j++ {
 					if err := fieldData.AppendRow(defaultValue); err != nil {
-						return merr.WrapErrServiceInternal(fmt.Sprintf("failed to append default value for field %s: %v", field.Name, err))
+						return merr.WrapErrServiceInternalMsg("failed to append default value for field %s: %v", field.Name, err)
 					}
 				}
 			} else if field.GetNullable() { // Fill with null values
 				for j := 0; j < int(batchRows); j++ {
 					if err := fieldData.AppendRow(nil); err != nil {
-						return merr.WrapErrServiceInternal(fmt.Sprintf("failed to append null value for field %s: %v", field.Name, err))
+						return merr.WrapErrServiceInternalMsg("failed to append null value for field %s: %v", field.Name, err)
 					}
 				}
 			} else {
-				return merr.WrapErrServiceInternal(fmt.Sprintf("field %s is not nullable and has no default value", field.Name))
+				return merr.WrapErrServiceInternalMsg("field %s is not nullable and has no default value", field.Name)
 			}
 			insertData.Data[field.GetFieldID()] = fieldData
 		}
@@ -1764,7 +1898,7 @@ func VectorArrayToArrowType(elementType schemapb.DataType, dim int) (arrow.DataT
 	case schemapb.DataType_Int8Vector:
 		return &arrow.FixedSizeBinaryType{ByteWidth: dim}, nil
 	default:
-		return nil, merr.WrapErrParameterInvalidMsg(fmt.Sprintf("unsupported element type in VectorArray: %s", elementType.String()))
+		return nil, merr.WrapErrParameterInvalidMsg("unsupported element type in VectorArray: %s", elementType.String())
 	}
 }
 

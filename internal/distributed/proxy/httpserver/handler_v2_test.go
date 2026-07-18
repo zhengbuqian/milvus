@@ -29,22 +29,26 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
+	"google.golang.org/protobuf/proto"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/distributed/streaming"
 	mhttp "github.com/milvus-io/milvus/internal/http"
 	"github.com/milvus-io/milvus/internal/json"
 	"github.com/milvus-io/milvus/internal/mocks"
 	"github.com/milvus-io/milvus/internal/proxy"
 	"github.com/milvus-io/milvus/internal/types"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
-	"github.com/milvus-io/milvus/pkg/v2/util"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"github.com/milvus-io/milvus/internal/util/indexparamcheck"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/proto/internalpb"
+	"github.com/milvus-io/milvus/pkg/v3/util"
+	"github.com/milvus-io/milvus/pkg/v3/util/crypto"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
 )
 
 const (
@@ -93,6 +97,44 @@ func sendReqAndVerify(t *testing.T, testEngine *gin.Engine, testName, method str
 			assert.Contains(t, returnBody.Message, testcase.errMsg)
 		}
 	})
+}
+
+func TestTraceLogRequestFieldRedactsRESTSnapshotExternalSpec(t *testing.T) {
+	externalSpec := `{"extfs":{"cloud_provider":"aws","access_key_id":"AKIAEXAMPLE","access_key_value":"SUPERSECRET","region":"us-west-2"}}`
+	testCases := []struct {
+		name string
+		req  any
+	}{
+		{
+			name: "restore external snapshot",
+			req: &RestoreExternalSnapshotReq{
+				DbName:               "db",
+				TargetCollectionName: "restored",
+				SnapshotMetadataURI:  "s3://bucket/export-root/snapshots/100/metadata/1.json",
+				ExternalSpec:         externalSpec,
+			},
+		},
+		{
+			name: "export snapshot",
+			req: &ExportSnapshotReq{
+				DbName:         "db",
+				CollectionName: "source",
+				Name:           "snapshot",
+				TargetS3Path:   "s3://bucket/export-root",
+				ExternalSpec:   externalSpec,
+			},
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			field := getTraceLogRequestFieldWithoutSensitiveInfo(testCase.req)
+			request := fmt.Sprint(field.Interface)
+			assert.NotContains(t, request, "AKIAEXAMPLE")
+			assert.NotContains(t, request, "SUPERSECRET")
+			assert.Contains(t, request, "***")
+		})
+	}
 }
 
 func TestHTTPWrapper(t *testing.T) {
@@ -414,6 +456,280 @@ func TestTimeout(t *testing.T) {
 	}
 }
 
+func TestTimeoutResponseRecorderIsolation(t *testing.T) {
+	realResponse := httptest.NewRecorder()
+	realCtx, _ := gin.CreateTestContext(realResponse)
+	buffer := &bytes.Buffer{}
+	recorder := newTimeoutResponseRecorder(buffer)
+
+	recorder.Header().Set("X-Test", "value")
+	recorder.WriteHeader(http.StatusAccepted)
+	recorder.WriteHeaderNow()
+	recorder.Flush()
+	n, err := recorder.WriteString("body")
+	assert.NoError(t, err)
+	assert.Equal(t, 4, n)
+	assert.Empty(t, realResponse.Body.String())
+	assert.Empty(t, realResponse.Header().Get("X-Test"))
+	assert.Equal(t, http.StatusAccepted, recorder.Status())
+	assert.Equal(t, 4, recorder.Size())
+	assert.True(t, recorder.Written())
+
+	assert.NoError(t, recorder.CommitTo(realCtx.Writer))
+	assert.Equal(t, http.StatusAccepted, realResponse.Code)
+	assert.Equal(t, "value", realResponse.Header().Get("X-Test"))
+	assert.Equal(t, "body", realResponse.Body.String())
+
+	recorder.CloseForTimeout()
+	n, err = recorder.Write([]byte("late"))
+	assert.Error(t, err)
+	assert.Equal(t, 0, n)
+}
+
+func TestTimeoutMiddlewareCommitsBufferedResponsesAndMetadata(t *testing.T) {
+	testCases := []struct {
+		name   string
+		status int
+		code   int32
+		write  func(c *gin.Context, code int32, message string)
+	}{
+		{
+			name:   "return",
+			status: http.StatusCreated,
+			code:   11,
+			write: func(c *gin.Context, code int32, message string) {
+				HTTPReturn(c, http.StatusCreated, gin.H{HTTPReturnCode: code, HTTPReturnMessage: message})
+			},
+		},
+		{
+			name:   "stream",
+			status: http.StatusAccepted,
+			code:   12,
+			write: func(c *gin.Context, code int32, message string) {
+				HTTPReturnStream(c, http.StatusAccepted, gin.H{HTTPReturnCode: code, HTTPReturnMessage: message})
+			},
+		},
+		{
+			name:   "abort",
+			status: http.StatusNonAuthoritativeInfo,
+			code:   13,
+			write: func(c *gin.Context, code int32, message string) {
+				HTTPAbortReturn(c, http.StatusNonAuthoritativeInfo, gin.H{HTTPReturnCode: code, HTTPReturnMessage: message})
+			},
+		},
+	}
+
+	for _, testcase := range testCases {
+		t.Run(testcase.name, func(t *testing.T) {
+			ginHandler := gin.New()
+			originalCtx := make(chan *gin.Context, 1)
+			path := "/middleware/timeout/commit/" + testcase.name
+
+			ginHandler.Use(func(c *gin.Context) {
+				c.Set(ContextUsername, "root")
+				originalCtx <- c
+				c.Next()
+			})
+			ginHandler.POST(path, timeoutMiddleware(func(c *gin.Context) {
+				username, ok := c.Get(ContextUsername)
+				assert.True(t, ok)
+				assert.Equal(t, "root", username)
+				c.Header("X-Test", testcase.name)
+				c.Set(ContextRequest, "request-"+testcase.name)
+				c.Set(ContextResponse, "response-"+testcase.name)
+				c.Set("traceID", "trace-"+testcase.name)
+				testcase.write(c, testcase.code, testcase.name)
+			}))
+
+			req := httptest.NewRequest(http.MethodPost, path, nil)
+			w := httptest.NewRecorder()
+			ginHandler.ServeHTTP(w, req)
+
+			assert.Equal(t, testcase.status, w.Code)
+			assert.Equal(t, testcase.name, w.Header().Get("X-Test"))
+			returnBody := &ReturnErrMsg{}
+			err := json.Unmarshal(w.Body.Bytes(), returnBody)
+			assert.NoError(t, err)
+			assert.Equal(t, testcase.code, returnBody.Code)
+			assert.Equal(t, testcase.name, returnBody.Message)
+
+			ctx := <-originalCtx
+			value, ok := ctx.Get(HTTPReturnCode)
+			assert.True(t, ok)
+			assert.Equal(t, testcase.code, value)
+			value, ok = ctx.Get(HTTPReturnMessage)
+			assert.True(t, ok)
+			assert.Equal(t, testcase.name, value)
+			value, ok = ctx.Get(ContextRequest)
+			assert.True(t, ok)
+			assert.Equal(t, "request-"+testcase.name, value)
+			value, ok = ctx.Get(ContextResponse)
+			assert.True(t, ok)
+			assert.Equal(t, "response-"+testcase.name, value)
+			value, ok = ctx.Get("traceID")
+			assert.True(t, ok)
+			assert.Equal(t, "trace-"+testcase.name, value)
+		})
+	}
+}
+
+func TestTimeoutMiddlewarePropagatesAbortToOriginalContext(t *testing.T) {
+	ginHandler := gin.New()
+	path := "/middleware/timeout/abort-propagation"
+	nextCalled := false
+
+	ginHandler.POST(path, timeoutMiddleware(func(c *gin.Context) {
+		HTTPAbortReturn(c, http.StatusOK, gin.H{HTTPReturnCode: int32(100), HTTPReturnMessage: "aborted"})
+	}), func(c *gin.Context) {
+		nextCalled = true
+		HTTPReturn(c, http.StatusOK, gin.H{HTTPReturnCode: int32(200), HTTPReturnMessage: "next"})
+	})
+
+	req := httptest.NewRequest(http.MethodPost, path, nil)
+	w := httptest.NewRecorder()
+	ginHandler.ServeHTTP(w, req)
+
+	assert.False(t, nextCalled)
+	returnBody := &ReturnErrMsg{}
+	err := json.Unmarshal(w.Body.Bytes(), returnBody)
+	assert.NoError(t, err)
+	assert.Equal(t, int32(100), returnBody.Code)
+	assert.Equal(t, "aborted", returnBody.Message)
+}
+
+func TestTimeoutMiddlewareLateHandlerWritesUseCopiedContext(t *testing.T) {
+	paramtable.Get().Save(paramtable.Get().HTTPCfg.RequestTimeoutMs.Key, "10")
+	t.Cleanup(func() {
+		paramtable.Get().Reset(paramtable.Get().HTTPCfg.RequestTimeoutMs.Key)
+	})
+
+	ginHandler := gin.New()
+	path := "/middleware/timeout/late-write"
+	originalCtx := make(chan *gin.Context, 1)
+	handlerCtx := make(chan *gin.Context, 1)
+	lateWriteDone := make(chan struct{}, 1)
+
+	ginHandler.Use(func(c *gin.Context) {
+		originalCtx <- c
+		c.Next()
+	})
+	ginHandler.POST(path, timeoutMiddleware(func(c *gin.Context) {
+		handlerCtx <- c
+		<-c.Request.Context().Done()
+		HTTPAbortReturn(c, http.StatusOK, gin.H{HTTPReturnCode: int32(12345), HTTPReturnMessage: "late write"})
+		lateWriteDone <- struct{}{}
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, path, nil)
+	w := httptest.NewRecorder()
+	ginHandler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusRequestTimeout, w.Code)
+	returnBody := &ReturnErrMsg{}
+	err := json.Unmarshal(w.Body.Bytes(), returnBody)
+	assert.NoError(t, err)
+	assert.Equal(t, merr.TimeoutCode, returnBody.Code)
+	assert.Equal(t, "request timeout", returnBody.Message)
+	assert.NotContains(t, w.Body.String(), "late write")
+
+	ctx := <-originalCtx
+	copiedCtx := <-handlerCtx
+	assert.False(t, ctx == copiedCtx)
+	select {
+	case <-lateWriteDone:
+	case <-time.After(time.Second):
+		t.Fatal("late handler write did not finish")
+	}
+
+	value, ok := ctx.Get(HTTPReturnCode)
+	assert.True(t, ok)
+	assert.Equal(t, merr.TimeoutCode, value)
+	value, ok = ctx.Get(HTTPReturnMessage)
+	assert.True(t, ok)
+	assert.Equal(t, "request timeout", value)
+}
+
+func TestRestfulSizeMiddlewarePreservesRequestContextCancel(t *testing.T) {
+	ginHandler := gin.New()
+	app := ginHandler.Group("")
+	path := "/middleware/restful-size/context-cancel"
+
+	requestCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	observed := make(chan error, 1)
+
+	app.POST(path, restfulSizeMiddleware(timeoutMiddleware(func(c *gin.Context) {
+		ctx := c.Request.Context()
+		cancel()
+		select {
+		case <-ctx.Done():
+			observed <- ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+			observed <- errors.New("request context was not canceled")
+		}
+	}), false))
+
+	req := httptest.NewRequest(http.MethodPost, path, nil).WithContext(requestCtx)
+	w := httptest.NewRecorder()
+	ginHandler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, errors.Is(<-observed, context.Canceled))
+}
+
+func TestTimeoutMiddlewarePassesDeadline(t *testing.T) {
+	ginHandler := gin.Default()
+	app := ginHandler.Group("")
+	path := "/middleware/timeout/deadline"
+	app.POST(path, timeoutMiddleware(func(c *gin.Context) {
+		deadline, ok := c.Request.Context().Deadline()
+		assert.True(t, ok)
+		assert.LessOrEqual(t, time.Until(deadline), 3*time.Second)
+		assert.Greater(t, time.Until(deadline), time.Second)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, path, nil)
+	req.Header.Set(mhttp.HTTPHeaderRequestTimeout, "3")
+	w := httptest.NewRecorder()
+
+	ginHandler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestTimeoutMiddlewareRejectsInvalidRequestTimeout(t *testing.T) {
+	for _, requestTimeout := range []string{"3.5", "abc"} {
+		t.Run(requestTimeout, func(t *testing.T) {
+			ginHandler := gin.New()
+			path := "/middleware/timeout/invalid"
+			called := make(chan struct{}, 1)
+			ginHandler.POST(path, timeoutMiddleware(func(c *gin.Context) {
+				called <- struct{}{}
+				HTTPReturn(c, http.StatusOK, gin.H{HTTPReturnCode: merr.Code(nil)})
+			}))
+
+			req := httptest.NewRequest(http.MethodPost, path, nil)
+			req.Header.Set(mhttp.HTTPHeaderRequestTimeout, requestTimeout)
+			w := httptest.NewRecorder()
+			ginHandler.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusOK, w.Code)
+			returnBody := &ReturnErrMsg{}
+			err := json.Unmarshal(w.Body.Bytes(), returnBody)
+			assert.NoError(t, err)
+			assert.Equal(t, merr.Code(merr.ErrParameterInvalid), returnBody.Code)
+			assert.Contains(t, returnBody.Message, mhttp.HTTPHeaderRequestTimeout)
+			assert.Contains(t, returnBody.Message, requestTimeout)
+
+			select {
+			case <-called:
+				t.Fatal("handler was invoked for invalid Request-Timeout")
+			default:
+			}
+		})
+	}
+}
+
 func TestDocInDocOutCreateCollection(t *testing.T) {
 	paramtable.Init()
 	// disable rate limit
@@ -668,7 +984,9 @@ func TestHybridSearchWithRerank(t *testing.T) {
 		Status:         &StatusSuccess,
 	}, nil).Once()
 
-	mp.EXPECT().HybridSearch(mock.Anything, mock.Anything).Return(&milvuspb.SearchResults{Status: commonSuccessStatus, Results: &schemapb.SearchResultData{
+	mp.EXPECT().HybridSearch(mock.Anything, mock.MatchedBy(func(req *milvuspb.HybridSearchRequest) bool {
+		return assert.ObjectsAreEqual([]string{"part_a"}, req.GetPartitionNames())
+	})).Return(&milvuspb.SearchResults{Status: commonSuccessStatus, Results: &schemapb.SearchResultData{
 		TopK:         int64(3),
 		OutputFields: []string{FieldWordCount},
 		FieldsData:   generateFieldData(),
@@ -678,7 +996,7 @@ func TestHybridSearchWithRerank(t *testing.T) {
 
 	queryTestCases := requestBodyTestCase{
 		path:        versionalV2(EntityCategory, HybridSearchAction),
-		requestBody: []byte(`{"collectionName": "hello_milvus", "search": [{"data": [[0.1, 0.2]], "annsField": "book_intro", "metricType": "L2", "limit": 3}, {"data": [[0.1, 0.2]], "annsField": "book_intro", "metricType": "L2", "limit": 3}], "functionScore": {"functions": [{"name": "testRank", "type": "Rerank", "inputFieldNames": ["FieldWordCount"], "params": {"name": "decay"}}]}}`),
+		requestBody: []byte(`{"collectionName": "hello_milvus", "partitionNames": ["part_a"], "search": [{"data": [[0.1, 0.2]], "annsField": "book_intro", "metricType": "L2", "limit": 3}, {"data": [[0.1, 0.2]], "annsField": "book_intro", "metricType": "L2", "limit": 3}], "functionScore": {"functions": [{"name": "testRank", "type": "Rerank", "inputFieldNames": ["FieldWordCount"], "params": {"name": "decay"}}]}}`),
 	}
 	sendReqAndVerify(t, testEngine, queryTestCases.path, http.MethodPost, queryTestCases)
 }
@@ -832,7 +1150,21 @@ func TestFlush(t *testing.T) {
 
 	postTestCases := []requestBodyTestCase{}
 	mp := mocks.NewMockProxy(t)
-	mp.EXPECT().Flush(mock.Anything, mock.Anything).Return(&milvuspb.FlushResponse{}, nil).Once()
+	mp.EXPECT().Flush(mock.Anything, mock.Anything).Return(&milvuspb.FlushResponse{
+		Status: merr.Success(),
+		CollSegIDs: map[string]*schemapb.LongArray{
+			"test": {Data: []int64{1}},
+		},
+		CollFlushTs: map[string]uint64{
+			"test": 100,
+		},
+	}, nil).Once()
+	mp.EXPECT().GetFlushState(mock.Anything, mock.MatchedBy(func(req *milvuspb.GetFlushStateRequest) bool {
+		return req.GetCollectionName() == "test" && req.GetFlushTs() == 100 && assert.ObjectsAreEqual([]int64{1}, req.GetSegmentIDs())
+	})).Return(&milvuspb.GetFlushStateResponse{
+		Status:  merr.Success(),
+		Flushed: true,
+	}, nil).Once()
 	mp.EXPECT().Flush(mock.Anything, mock.Anything).Return(
 		&milvuspb.FlushResponse{
 			Status: &commonpb.Status{
@@ -871,6 +1203,54 @@ func TestFlush(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWaitForFlush(t *testing.T) {
+	t.Run("missing flush timestamp", func(t *testing.T) {
+		h := &HandlersV2{proxy: mocks.NewMockProxy(t)}
+		err := h.waitForFlush(context.Background(), "", "test", &milvuspb.FlushResponse{
+			CollSegIDs: map[string]*schemapb.LongArray{
+				"test": {Data: []int64{1}},
+			},
+		})
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to get flush timestamp")
+	})
+
+	t.Run("get flush state rpc error", func(t *testing.T) {
+		mp := mocks.NewMockProxy(t)
+		mp.EXPECT().GetFlushState(mock.Anything, mock.Anything).Return(nil, errors.New("mock rpc")).Once()
+		h := &HandlersV2{proxy: mp}
+		err := h.waitForFlush(context.Background(), "", "test", &milvuspb.FlushResponse{
+			CollSegIDs: map[string]*schemapb.LongArray{
+				"test": {Data: []int64{1}},
+			},
+			CollFlushTs: map[string]uint64{
+				"test": 100,
+			},
+		})
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "mock rpc")
+	})
+
+	t.Run("context canceled before flush completes", func(t *testing.T) {
+		mp := mocks.NewMockProxy(t)
+		mp.EXPECT().GetFlushState(mock.Anything, mock.Anything).Return(&milvuspb.GetFlushStateResponse{
+			Status: merr.Success(),
+		}, nil).Once()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		h := &HandlersV2{proxy: mp}
+		err := h.waitForFlush(ctx, "", "test", &milvuspb.FlushResponse{
+			CollSegIDs: map[string]*schemapb.LongArray{
+				"test": {Data: []int64{1}},
+			},
+			CollFlushTs: map[string]uint64{
+				"test": 100,
+			},
+		})
+		assert.ErrorIs(t, err, context.Canceled)
+	})
 }
 
 func TestDatabase(t *testing.T) {
@@ -1271,9 +1651,26 @@ func TestCreateCollection(t *testing.T) {
 
 	postTestCases := []requestBodyTestCase{}
 	mp := mocks.NewMockProxy(t)
-	mp.EXPECT().CreateCollection(mock.Anything, mock.Anything).Return(commonSuccessStatus, nil).Times(13)
-	mp.EXPECT().CreateIndex(mock.Anything, mock.Anything).Return(commonSuccessStatus, nil).Times(6)
-	mp.EXPECT().LoadCollection(mock.Anything, mock.Anything).Return(commonSuccessStatus, nil).Times(6)
+	mp.EXPECT().CreateCollection(mock.Anything, mock.Anything).RunAndReturn(func(ctx context.Context, req *milvuspb.CreateCollectionRequest) (*commonpb.Status, error) {
+		hasNegativeTTL := false
+		for _, prop := range req.GetProperties() {
+			if prop.GetKey() == common.CollectionTTLConfigKey && prop.GetValue() == "-100" {
+				hasNegativeTTL = true
+				break
+			}
+		}
+		if hasNegativeTTL {
+			for _, prop := range req.GetProperties() {
+				if prop.GetKey() == "ttl.seconds" && prop.GetValue() == "-100" {
+					return merr.Status(merr.WrapErrParameterInvalidMsg("unexpected ttl.seconds property forwarded")), nil
+				}
+			}
+			return merr.Status(merr.WrapErrParameterInvalidMsg("collection TTL is out of range, expect [-1, 3155760000], got -100")), nil
+		}
+		return commonSuccessStatus, nil
+	}).Times(17)
+	mp.EXPECT().CreateIndex(mock.Anything, mock.Anything).Return(commonSuccessStatus, nil).Times(8)
+	mp.EXPECT().LoadCollection(mock.Anything, mock.Anything).Return(commonSuccessStatus, nil).Times(7)
 	mp.EXPECT().CreateIndex(mock.Anything, mock.Anything).Return(commonErrorStatus, nil).Twice()
 	mp.EXPECT().CreateCollection(mock.Anything, mock.Anything).Return(commonErrorStatus, nil).Twice()
 	testEngine := initHTTPServerV2(mp, false)
@@ -1305,6 +1702,34 @@ func TestCreateCollection(t *testing.T) {
 		requestBody: []byte(`{"collectionName": "` + DefaultCollectionName + `", "dimension": 2, "idType": "Varchar",` +
 			`"params": {"max_length": 256, "enableDynamicField": false, "shardsNum": 2, "consistencyLevel": "unknown", "ttlSeconds": 3600}}`),
 		errMsg:  "consistencyLevel can only be [Strong, Session, Bounded, Eventually, Customized], default: Bounded: invalid parameter[expected=Strong, Session, Bounded, Eventually, Customized][actual=unknown]",
+		errCode: 1100, // ErrParameterInvalid
+	})
+	postTestCases = append(postTestCases, requestBodyTestCase{
+		path: path,
+		requestBody: []byte(`{"collectionName": "` + DefaultCollectionName + `", "dimension": 2, "idType": "Varchar",` +
+			`"params": {"max_length": 256}, "properties": {"collection.ttl.seconds": -100}}`),
+		errMsg:  "collection TTL is out of range, expect [-1, 3155760000], got -100: invalid parameter",
+		errCode: 1100, // ErrParameterInvalid
+	})
+	postTestCases = append(postTestCases, requestBodyTestCase{
+		path: path,
+		requestBody: []byte(`{"collectionName": "` + DefaultCollectionName + `", "dimension": 2, "idType": "Varchar",` +
+			`"params": {"max_length": 256}, "properties": {"ttl.seconds": -100}}`),
+		errMsg:  "collection TTL is out of range, expect [-1, 3155760000], got -100: invalid parameter",
+		errCode: 1100, // ErrParameterInvalid
+	})
+	postTestCases = append(postTestCases, requestBodyTestCase{
+		path: path,
+		requestBody: []byte(`{"collectionName": "` + DefaultCollectionName + `", "dimension": 2, "idType": "Varchar",` +
+			`"params": {"max_length": 256, "ttlSeconds": 3600}, "properties": {"collection.ttl.seconds": 3600}}`),
+		errMsg:  "collection TTL is specified multiple times: invalid parameter",
+		errCode: 1100, // ErrParameterInvalid
+	})
+	postTestCases = append(postTestCases, requestBodyTestCase{
+		path: path,
+		requestBody: []byte(`{"collectionName": "` + DefaultCollectionName + `", "dimension": 2, "idType": "Varchar",` +
+			`"params": {"max_length": 256}, "properties": {"collection.ttl.seconds": 3600, "ttl.seconds": 3600}}`),
+		errMsg:  "collection TTL is specified multiple times: invalid parameter",
 		errCode: 1100, // ErrParameterInvalid
 	})
 	postTestCases = append(postTestCases, requestBodyTestCase{
@@ -1412,11 +1837,53 @@ func TestCreateCollection(t *testing.T) {
 	postTestCases = append(postTestCases, requestBodyTestCase{
 		path: path,
 		requestBody: []byte(`{"collectionName": "` + DefaultCollectionName + `", "schema": {
-		        "fields": [
-		            {"fieldName": "book_id", "dataType": "Int64", "isPrimary": true, "isPartitionKey": true, "elementTypeParams": {}},
-		            {"fieldName": "book_intro", "dataType": "FloatVector", "elementTypeParams": {"dim": 2}}
-		        ]
-		    }, "params": {"partitionKeyIsolation": "true"}}`),
+			        "fields": [
+			            {"fieldName": "book_id", "dataType": "Int64", "isPrimary": true, "isPartitionKey": true, "elementTypeParams": {}},
+			            {"fieldName": "book_intro", "dataType": "FloatVector", "elementTypeParams": {"dim": 2}}
+			        ]
+			    }, "params": {"partitionKeyIsolation": "true"}}`),
+	})
+	// Struct sub-vector index via collection_create indexParams: the
+	// structName[subName] form is registered in fieldNames so users can
+	// create the sub-vector index alongside top-level indexes in one call.
+	postTestCases = append(postTestCases, requestBodyTestCase{
+		path: path,
+		requestBody: []byte(`{"collectionName": "` + DefaultCollectionName + `", "schema": {
+	        "fields": [
+	            {"fieldName": "book_id", "dataType": "Int64", "isPrimary": true, "elementTypeParams": {}},
+	            {"fieldName": "book_intro", "dataType": "FloatVector", "elementTypeParams": {"dim": 2}}
+	        ],
+	        "structFields": [{
+	            "fieldName": "my_struct",
+	            "fields": [
+	                {"fieldName": "sub_vec", "dataType": "ArrayOfVector", "elementDataType": "FloatVector", "elementTypeParams": {"dim": 2, "max_capacity": 4}}
+	            ]
+	        }]
+	    }, "indexParams": [
+	        {"fieldName": "book_intro", "indexName": "book_intro_vector", "metricType": "L2"},
+	        {"fieldName": "my_struct[sub_vec]", "indexName": "sub_vec_idx", "metricType": "L2"}
+	    ]}`),
+	})
+
+	// Struct sub-field qualified name that does not exist in schema is rejected.
+	postTestCases = append(postTestCases, requestBodyTestCase{
+		path: path,
+		requestBody: []byte(`{"collectionName": "` + DefaultCollectionName + `", "schema": {
+	        "fields": [
+	            {"fieldName": "book_id", "dataType": "Int64", "isPrimary": true, "elementTypeParams": {}},
+	            {"fieldName": "book_intro", "dataType": "FloatVector", "elementTypeParams": {"dim": 2}}
+	        ],
+	        "structFields": [{
+	            "fieldName": "my_struct",
+	            "fields": [
+	                {"fieldName": "sub_vec", "dataType": "ArrayOfVector", "elementDataType": "FloatVector", "elementTypeParams": {"dim": 2, "max_capacity": 4}}
+	            ]
+	        }]
+	    }, "indexParams": [
+	        {"fieldName": "my_struct[nonexistent]", "indexName": "bad", "metricType": "L2"}
+	    ]}`),
+		errMsg:  "missing required parameters, error: `my_struct[nonexistent]` hasn't defined in schema",
+		errCode: 1802,
 	})
 	postTestCases = append(postTestCases, requestBodyTestCase{
 		path:        path,
@@ -1598,6 +2065,402 @@ func TestCreateCollection(t *testing.T) {
 	})
 }
 
+func TestBinaryMetricTypesForQuickCreate(t *testing.T) {
+	params := paramtable.Get()
+	key := params.AutoIndexConfig.BinaryIndexParams.Key
+
+	testcases := []struct {
+		name     string
+		config   string
+		expected []string
+	}{
+		{
+			name:     "bin ivf flat uses ivf binary metrics",
+			config:   `{"nlist": 1024, "index_type": "BIN_IVF_FLAT", "metric_type": "HAMMING"}`,
+			expected: indexparamcheck.BinIvfMetrics,
+		},
+		{
+			name:     "missing index type falls back to ivf binary metrics",
+			config:   `{"metric_type": "HAMMING"}`,
+			expected: indexparamcheck.BinIvfMetrics,
+		},
+		{
+			name:     "unknown index type falls back to ivf binary metrics",
+			config:   `{"index_type": "UNKNOWN", "metric_type": "HAMMING"}`,
+			expected: indexparamcheck.BinIvfMetrics,
+		},
+		{
+			name:     "bin flat uses id map binary metrics",
+			config:   `{"index_type": "BIN_FLAT", "metric_type": "HAMMING"}`,
+			expected: indexparamcheck.BinIDMapMetrics,
+		},
+	}
+
+	for _, testcase := range testcases {
+		t.Run(testcase.name, func(t *testing.T) {
+			params.Save(key, testcase.config)
+			t.Cleanup(func() {
+				params.Reset(key)
+			})
+
+			assert.ElementsMatch(t, testcase.expected, binaryMetricTypesForQuickCreate())
+		})
+	}
+}
+
+func TestCreateCollectionQuickVectorFieldType(t *testing.T) {
+	paramtable.Init()
+	paramtable.Get().Save(paramtable.Get().QuotaConfig.QuotaAndLimitsEnabled.Key, "false")
+	defer paramtable.Get().Reset(paramtable.Get().QuotaConfig.QuotaAndLimitsEnabled.Key)
+
+	path := versionalV2(CollectionCategory, CreateAction)
+
+	t.Run("reject invalid vector field type", func(t *testing.T) {
+		proxy := &externalCollectionRESTProxy{}
+		testEngine := initHTTPServerV2(proxy, false)
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader([]byte(`{
+			"collectionName": "book",
+			"dimension": 4,
+			"vectorFieldType": "InvalidVectorType"
+		}`)))
+		w := httptest.NewRecorder()
+		testEngine.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		returnBody := &ReturnErrMsg{}
+		err := json.Unmarshal(w.Body.Bytes(), returnBody)
+		assert.NoError(t, err)
+		assert.Equal(t, int32(1100), returnBody.Code)
+		assert.Equal(t, "vectorFieldType can only be [FloatVector, BinaryVector, Float16Vector, BFloat16Vector, SparseFloatVector], default: FloatVector: invalid parameter[expected=FloatVector, BinaryVector, Float16Vector, BFloat16Vector, SparseFloatVector][actual=InvalidVectorType]", returnBody.Message)
+		assert.Nil(t, proxy.createReq)
+		assert.Empty(t, proxy.createIndexReqs)
+	})
+
+	t.Run("reject sparse vector dimension", func(t *testing.T) {
+		proxy := &externalCollectionRESTProxy{}
+		testEngine := initHTTPServerV2(proxy, false)
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader([]byte(`{
+			"collectionName": "book",
+			"dimension": 4,
+			"vectorFieldType": "SparseFloatVector"
+		}`)))
+		w := httptest.NewRecorder()
+		testEngine.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		returnBody := &ReturnErrMsg{}
+		err := json.Unmarshal(w.Body.Bytes(), returnBody)
+		assert.NoError(t, err)
+		assert.Equal(t, int32(1100), returnBody.Code)
+		assert.Contains(t, returnBody.Message, "dimension should not be specified for SparseFloatVector quick create")
+		assert.Nil(t, proxy.createReq)
+		assert.Empty(t, proxy.createIndexReqs)
+	})
+
+	invalidMetricCases := []struct {
+		name        string
+		body        string
+		expectedMsg string
+	}{
+		{
+			name: "reject binary vector invalid metric",
+			body: `{
+				"collectionName": "book",
+				"dimension": 8,
+				"metricType": "COSINE",
+				"vectorFieldType": "BinaryVector"
+			}`,
+			expectedMsg: "binary vector index does not support metric type: COSINE",
+		},
+		{
+			name: "reject binary vector substructure metric",
+			body: `{
+				"collectionName": "book",
+				"dimension": 8,
+				"metricType": "SUBSTRUCTURE",
+				"vectorFieldType": "BinaryVector"
+			}`,
+			expectedMsg: "binary vector index does not support metric type: SUBSTRUCTURE",
+		},
+		{
+			name: "reject binary vector superstructure metric",
+			body: `{
+				"collectionName": "book",
+				"dimension": 8,
+				"metricType": "SUPERSTRUCTURE",
+				"vectorFieldType": "BinaryVector"
+			}`,
+			expectedMsg: "binary vector index does not support metric type: SUPERSTRUCTURE",
+		},
+		{
+			name: "reject binary vector mhjaccard metric",
+			body: `{
+				"collectionName": "book",
+				"dimension": 8,
+				"metricType": "MHJACCARD",
+				"vectorFieldType": "BinaryVector"
+			}`,
+			expectedMsg: "binary vector index does not support metric type: MHJACCARD",
+		},
+		{
+			name: "reject sparse float vector invalid metric",
+			body: `{
+				"collectionName": "book",
+				"metricType": "COSINE",
+				"vectorFieldType": "SparseFloatVector"
+			}`,
+			expectedMsg: "only IP&BM25 is the supported metric type for sparse index",
+		},
+		{
+			name: "reject sparse float vector bm25 metric",
+			body: `{
+				"collectionName": "book",
+				"metricType": "BM25",
+				"vectorFieldType": "SparseFloatVector"
+			}`,
+			expectedMsg: "only BM25 Function output field support BM25 metric type",
+		},
+	}
+	for _, testcase := range invalidMetricCases {
+		t.Run(testcase.name, func(t *testing.T) {
+			proxy := &externalCollectionRESTProxy{}
+			testEngine := initHTTPServerV2(proxy, false)
+			req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader([]byte(testcase.body)))
+			w := httptest.NewRecorder()
+			testEngine.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusOK, w.Code)
+			returnBody := &ReturnErrMsg{}
+			err := json.Unmarshal(w.Body.Bytes(), returnBody)
+			assert.NoError(t, err)
+			assert.Equal(t, int32(1100), returnBody.Code)
+			assert.Contains(t, returnBody.Message, testcase.expectedMsg)
+			assert.Nil(t, proxy.createReq)
+			assert.Empty(t, proxy.createIndexReqs)
+		})
+	}
+
+	t.Run("binary vector metric follows configured binary auto index", func(t *testing.T) {
+		paramtable.Get().Save(paramtable.Get().AutoIndexConfig.BinaryIndexParams.Key, `{"index_type": "BIN_FLAT", "metric_type": "HAMMING"}`)
+		defer paramtable.Get().Reset(paramtable.Get().AutoIndexConfig.BinaryIndexParams.Key)
+
+		proxy := &externalCollectionRESTProxy{}
+		testEngine := initHTTPServerV2(proxy, false)
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader([]byte(`{
+			"collectionName": "book",
+			"dimension": 8,
+			"metricType": "SUBSTRUCTURE",
+			"vectorFieldType": "BinaryVector"
+		}`)))
+		w := httptest.NewRecorder()
+		testEngine.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		returnBody := &ReturnErrMsg{}
+		err := json.Unmarshal(w.Body.Bytes(), returnBody)
+		assert.NoError(t, err)
+		assert.Equal(t, int32(0), returnBody.Code)
+		require.NotNil(t, proxy.createReq)
+		require.Len(t, proxy.createIndexReqs, 1)
+		require.Len(t, proxy.createIndexReqs[0].GetExtraParams(), 1)
+		assert.Equal(t, common.MetricTypeKey, proxy.createIndexReqs[0].GetExtraParams()[0].GetKey())
+		assert.Equal(t, "SUBSTRUCTURE", proxy.createIndexReqs[0].GetExtraParams()[0].GetValue())
+	})
+
+	testcases := []struct {
+		name             string
+		body             string
+		expectedType     schemapb.DataType
+		expectedDimParam bool
+		expectedMetric   string
+	}{
+		{
+			name: "binary vector default metric",
+			body: `{
+				"collectionName": "book",
+				"dimension": 8,
+				"vectorFieldType": "BinaryVector"
+			}`,
+			expectedType:     schemapb.DataType_BinaryVector,
+			expectedDimParam: true,
+			expectedMetric:   paramtable.BinaryVectorDefaultMetricType,
+		},
+		{
+			name: "float16 vector",
+			body: `{
+				"collectionName": "book",
+				"dimension": 4,
+				"vectorFieldType": "Float16Vector"
+			}`,
+			expectedType:     schemapb.DataType_Float16Vector,
+			expectedDimParam: true,
+			expectedMetric:   DefaultMetricType,
+		},
+		{
+			name: "bfloat16 vector",
+			body: `{
+				"collectionName": "book",
+				"dimension": 4,
+				"vectorFieldType": "BFloat16Vector"
+			}`,
+			expectedType:     schemapb.DataType_BFloat16Vector,
+			expectedDimParam: true,
+			expectedMetric:   DefaultMetricType,
+		},
+		{
+			name: "sparse float vector default metric",
+			body: `{
+				"collectionName": "book",
+				"vectorFieldType": "SparseFloatVector"
+			}`,
+			expectedType:     schemapb.DataType_SparseFloatVector,
+			expectedDimParam: false,
+			expectedMetric:   paramtable.SparseFloatVectorDefaultMetricType,
+		},
+	}
+
+	for _, testcase := range testcases {
+		t.Run(testcase.name, func(t *testing.T) {
+			proxy := &externalCollectionRESTProxy{}
+			testEngine := initHTTPServerV2(proxy, false)
+			req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader([]byte(testcase.body)))
+			w := httptest.NewRecorder()
+			testEngine.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusOK, w.Code)
+			returnBody := &ReturnErrMsg{}
+			err := json.Unmarshal(w.Body.Bytes(), returnBody)
+			assert.NoError(t, err)
+			assert.Equal(t, int32(0), returnBody.Code)
+			require.NotNil(t, proxy.createReq)
+
+			collSchema := &schemapb.CollectionSchema{}
+			require.NoError(t, proto.Unmarshal(proxy.createReq.GetSchema(), collSchema))
+			require.Len(t, collSchema.GetFields(), 2)
+			vectorField := collSchema.GetFields()[1]
+			assert.Equal(t, testcase.expectedType, vectorField.GetDataType())
+
+			dimFound := false
+			for _, typeParam := range vectorField.GetTypeParams() {
+				if typeParam.GetKey() == Dim {
+					dimFound = true
+				}
+			}
+			assert.Equal(t, testcase.expectedDimParam, dimFound)
+
+			require.Len(t, proxy.createIndexReqs, 1)
+			indexReq := proxy.createIndexReqs[0]
+			assert.Equal(t, DefaultVectorFieldName, indexReq.GetFieldName())
+			assert.Equal(t, DefaultVectorFieldName, indexReq.GetIndexName())
+			require.Len(t, indexReq.GetExtraParams(), 1)
+			assert.Equal(t, common.MetricTypeKey, indexReq.GetExtraParams()[0].GetKey())
+			assert.Equal(t, testcase.expectedMetric, indexReq.GetExtraParams()[0].GetValue())
+		})
+	}
+}
+
+func TestCreateCollectionTopLevelConsistencyLevel(t *testing.T) {
+	paramtable.Init()
+	paramtable.Get().Save(paramtable.Get().QuotaConfig.QuotaAndLimitsEnabled.Key, "false")
+	defer paramtable.Get().Reset(paramtable.Get().QuotaConfig.QuotaAndLimitsEnabled.Key)
+
+	path := versionalV2(CollectionCategory, CreateAction)
+
+	t.Run("reject invalid top-level consistency level", func(t *testing.T) {
+		proxy := &externalCollectionRESTProxy{}
+		testEngine := initHTTPServerV2(proxy, false)
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader([]byte(`{
+			"collectionName": "book",
+			"dimension": 4,
+			"consistencyLevel": "Invalid"
+		}`)))
+		w := httptest.NewRecorder()
+		testEngine.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		returnBody := &ReturnErrMsg{}
+		err := json.Unmarshal(w.Body.Bytes(), returnBody)
+		assert.NoError(t, err)
+		assert.Equal(t, int32(1100), returnBody.Code)
+		assert.Contains(t, returnBody.Message, "consistencyLevel can only be")
+		assert.Nil(t, proxy.createReq)
+		assert.Empty(t, proxy.createIndexReqs)
+	})
+
+	t.Run("accept valid top-level consistency level", func(t *testing.T) {
+		proxy := &externalCollectionRESTProxy{}
+		testEngine := initHTTPServerV2(proxy, false)
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader([]byte(`{
+			"collectionName": "book",
+			"dimension": 4,
+			"consistencyLevel": "Strong"
+		}`)))
+		w := httptest.NewRecorder()
+		testEngine.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		returnBody := &ReturnErrMsg{}
+		err := json.Unmarshal(w.Body.Bytes(), returnBody)
+		assert.NoError(t, err)
+		assert.Equal(t, int32(0), returnBody.Code)
+		require.NotNil(t, proxy.createReq)
+		assert.Equal(t, commonpb.ConsistencyLevel_Strong, proxy.createReq.GetConsistencyLevel())
+		require.Len(t, proxy.createIndexReqs, 1)
+	})
+
+	t.Run("reject conflicting consistency levels", func(t *testing.T) {
+		proxy := &externalCollectionRESTProxy{}
+		testEngine := initHTTPServerV2(proxy, false)
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader([]byte(`{
+			"collectionName": "book",
+			"dimension": 4,
+			"consistencyLevel": "Strong",
+			"params": {"consistencyLevel": "Bounded"}
+		}`)))
+		w := httptest.NewRecorder()
+		testEngine.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		returnBody := &ReturnErrMsg{}
+		err := json.Unmarshal(w.Body.Bytes(), returnBody)
+		assert.NoError(t, err)
+		assert.Equal(t, int32(1100), returnBody.Code)
+		assert.Contains(t, returnBody.Message, "top-level consistencyLevel conflicts with params.consistencyLevel")
+		assert.Nil(t, proxy.createReq)
+		assert.Empty(t, proxy.createIndexReqs)
+	})
+}
+
+func TestCreateCollectionStructArrayDuplicateName(t *testing.T) {
+	paramtable.Init()
+	paramtable.Get().Save(paramtable.Get().QuotaConfig.QuotaAndLimitsEnabled.Key, "false")
+	defer paramtable.Get().Reset(paramtable.Get().QuotaConfig.QuotaAndLimitsEnabled.Key)
+
+	testEngine := initHTTPServerV2(mocks.NewMockProxy(t), false)
+	req := httptest.NewRequest(http.MethodPost, versionalV2(CollectionCategory, CreateAction), bytes.NewReader([]byte(`{
+		"collectionName": "test",
+		"schema": {
+			"fields": [
+				{"fieldName": "book_id", "dataType": "Int64", "isPrimary": true, "elementTypeParams": {}}
+			],
+			"structFields": [{
+				"fieldName": "book_id",
+				"fields": [
+					{"fieldName": "sub_int", "dataType": "Array", "elementDataType": "Int32"}
+				]
+			}]
+		}
+	}`)))
+	w := httptest.NewRecorder()
+	testEngine.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	returnBody := &ReturnErrMsg{}
+	err := json.Unmarshal(w.Body.Bytes(), returnBody)
+	assert.Nil(t, err)
+	assert.Equal(t, merr.Code(merr.ErrParameterInvalid), returnBody.Code)
+	assert.Contains(t, returnBody.Message, "duplicated field name: book_id")
+}
+
 func versionalV2(category string, action string) string {
 	return "/v2/vectordb" + category + action
 }
@@ -1609,6 +2472,464 @@ func initHTTPServerV2(proxy types.ProxyComponent, needAuth bool) *gin.Engine {
 	h.RegisterRoutesToV2(appV2)
 
 	return ginHandler
+}
+
+type externalCollectionRESTProxy struct {
+	mockProxyComponent
+	createReq                  *milvuspb.CreateCollectionRequest
+	createIndexReqs            []*milvuspb.CreateIndexRequest
+	describeResp               *milvuspb.DescribeCollectionResponse
+	refreshReq                 *milvuspb.RefreshExternalCollectionRequest
+	listReq                    *milvuspb.ListRefreshExternalCollectionJobsRequest
+	progressReq                *milvuspb.GetRefreshExternalCollectionProgressRequest
+	restoreReq                 *milvuspb.RestoreExternalSnapshotRequest
+	exportReq                  *milvuspb.ExportSnapshotRequest
+	getRestoreSnapshotStateReq *milvuspb.GetRestoreSnapshotStateRequest
+	listRestoreSnapshotJobsReq *milvuspb.ListRestoreSnapshotJobsRequest
+}
+
+func (m *externalCollectionRESTProxy) CreateCollection(ctx context.Context, request *milvuspb.CreateCollectionRequest) (*commonpb.Status, error) {
+	m.createReq = request
+	return commonSuccessStatus, nil
+}
+
+func (m *externalCollectionRESTProxy) CreateIndex(ctx context.Context, request *milvuspb.CreateIndexRequest) (*commonpb.Status, error) {
+	m.createIndexReqs = append(m.createIndexReqs, request)
+	return commonSuccessStatus, nil
+}
+
+func (m *externalCollectionRESTProxy) DescribeCollection(ctx context.Context, request *milvuspb.DescribeCollectionRequest) (*milvuspb.DescribeCollectionResponse, error) {
+	if m.describeResp != nil {
+		return m.describeResp, nil
+	}
+	return m.mockProxyComponent.DescribeCollection(ctx, request)
+}
+
+func (m *externalCollectionRESTProxy) GetLoadState(ctx context.Context, request *milvuspb.GetLoadStateRequest) (*milvuspb.GetLoadStateResponse, error) {
+	return &DefaultLoadStateResp, nil
+}
+
+func (m *externalCollectionRESTProxy) DescribeIndex(ctx context.Context, request *milvuspb.DescribeIndexRequest) (*milvuspb.DescribeIndexResponse, error) {
+	return &DefaultDescIndexesReqp, nil
+}
+
+func (m *externalCollectionRESTProxy) ListAliases(ctx context.Context, request *milvuspb.ListAliasesRequest) (*milvuspb.ListAliasesResponse, error) {
+	return &milvuspb.ListAliasesResponse{
+		Status:  &StatusSuccess,
+		Aliases: []string{DefaultAliasName},
+	}, nil
+}
+
+func (m *externalCollectionRESTProxy) RefreshExternalCollection(ctx context.Context, request *milvuspb.RefreshExternalCollectionRequest) (*milvuspb.RefreshExternalCollectionResponse, error) {
+	m.refreshReq = request
+	return &milvuspb.RefreshExternalCollectionResponse{
+		Status: commonSuccessStatus,
+		JobId:  1001,
+	}, nil
+}
+
+func (m *externalCollectionRESTProxy) GetRefreshExternalCollectionProgress(ctx context.Context, request *milvuspb.GetRefreshExternalCollectionProgressRequest) (*milvuspb.GetRefreshExternalCollectionProgressResponse, error) {
+	m.progressReq = request
+	return &milvuspb.GetRefreshExternalCollectionProgressResponse{
+		Status: commonSuccessStatus,
+		JobInfo: &milvuspb.RefreshExternalCollectionJobInfo{
+			JobId:          request.GetJobId(),
+			CollectionName: "external_books",
+			State:          milvuspb.RefreshExternalCollectionState_RefreshInProgress,
+			Progress:       42,
+			ExternalSource: "s3://bucket/books",
+			ExternalSpec:   `{"format":"parquet"}`,
+			StartTime:      10,
+		},
+	}, nil
+}
+
+func (m *externalCollectionRESTProxy) ListRefreshExternalCollectionJobs(ctx context.Context, request *milvuspb.ListRefreshExternalCollectionJobsRequest) (*milvuspb.ListRefreshExternalCollectionJobsResponse, error) {
+	m.listReq = request
+	return &milvuspb.ListRefreshExternalCollectionJobsResponse{
+		Status: commonSuccessStatus,
+		Jobs: []*milvuspb.RefreshExternalCollectionJobInfo{
+			{
+				JobId:          1001,
+				CollectionName: request.GetCollectionName(),
+				State:          milvuspb.RefreshExternalCollectionState_RefreshCompleted,
+				Progress:       100,
+				ExternalSource: "s3://bucket/books",
+				ExternalSpec:   `{"format":"parquet"}`,
+				StartTime:      10,
+				EndTime:        20,
+			},
+		},
+	}, nil
+}
+
+func (m *externalCollectionRESTProxy) RestoreExternalSnapshot(ctx context.Context, request *milvuspb.RestoreExternalSnapshotRequest) (*milvuspb.RestoreExternalSnapshotResponse, error) {
+	m.restoreReq = request
+	return &milvuspb.RestoreExternalSnapshotResponse{
+		Status: merr.Success(),
+		JobId:  2001,
+	}, nil
+}
+
+func (m *externalCollectionRESTProxy) ExportSnapshot(ctx context.Context, request *milvuspb.ExportSnapshotRequest) (*milvuspb.ExportSnapshotResponse, error) {
+	m.exportReq = request
+	return &milvuspb.ExportSnapshotResponse{
+		Status:              merr.Success(),
+		SnapshotMetadataUri: request.GetTargetS3Path() + "/snapshots/100/metadata/1.json",
+	}, nil
+}
+
+func (m *externalCollectionRESTProxy) GetRestoreSnapshotState(ctx context.Context, request *milvuspb.GetRestoreSnapshotStateRequest) (*milvuspb.GetRestoreSnapshotStateResponse, error) {
+	m.getRestoreSnapshotStateReq = request
+	return &milvuspb.GetRestoreSnapshotStateResponse{
+		Status: merr.Success(),
+		Info: &milvuspb.RestoreSnapshotInfo{
+			JobId:          request.GetJobId(),
+			SnapshotName:   "snapshot_1",
+			DbName:         "default",
+			CollectionName: "restored_collection",
+			State:          milvuspb.RestoreSnapshotState_RestoreSnapshotCompleted,
+			Progress:       100,
+		},
+	}, nil
+}
+
+func (m *externalCollectionRESTProxy) ListRestoreSnapshotJobs(ctx context.Context, request *milvuspb.ListRestoreSnapshotJobsRequest) (*milvuspb.ListRestoreSnapshotJobsResponse, error) {
+	m.listRestoreSnapshotJobsReq = request
+	return &milvuspb.ListRestoreSnapshotJobsResponse{
+		Status: merr.Success(),
+		Jobs: []*milvuspb.RestoreSnapshotInfo{{
+			JobId:          2001,
+			SnapshotName:   "snapshot_1",
+			DbName:         request.GetDbName(),
+			CollectionName: request.GetCollectionName(),
+			State:          milvuspb.RestoreSnapshotState_RestoreSnapshotPending,
+			Progress:       10,
+		}},
+	}, nil
+}
+
+func TestFieldSchemaGetProtoWithExternalField(t *testing.T) {
+	field := &FieldSchema{
+		FieldName:     "title",
+		DataType:      "VarChar",
+		ExternalField: "book_title",
+		ElementTypeParams: map[string]interface{}{
+			common.MaxLengthKey: 256,
+		},
+	}
+
+	got, err := field.GetProto(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, "book_title", got.GetExternalField())
+	assert.Equal(t, schemapb.DataType_VarChar, got.GetDataType())
+}
+
+func TestCreateExternalCollectionRESTV2(t *testing.T) {
+	paramtable.Init()
+	paramtable.Get().Save(paramtable.Get().QuotaConfig.QuotaAndLimitsEnabled.Key, "false")
+	defer paramtable.Get().Reset(paramtable.Get().QuotaConfig.QuotaAndLimitsEnabled.Key)
+
+	testcases := []struct {
+		name   string
+		body   string
+		source string
+		spec   string
+	}{
+		{
+			name: "schema level external config",
+			body: `{
+				"dbName": "default",
+				"collectionName": "external_books",
+				"schema": {
+					"externalSource": "s3://bucket/books",
+					"externalSpec": "{\"format\":\"parquet\"}",
+					"fields": [
+						{"fieldName": "book_intro", "dataType": "FloatVector", "externalField": "embedding", "elementTypeParams": {"dim": 2}},
+						{"fieldName": "title", "dataType": "VarChar", "externalField": "book_title", "elementTypeParams": {"max_length": 256}}
+					]
+				}
+			}`,
+			source: "s3://bucket/books",
+			spec:   `{"format":"parquet"}`,
+		},
+	}
+
+	for _, testcase := range testcases {
+		t.Run(testcase.name, func(t *testing.T) {
+			proxy := &externalCollectionRESTProxy{}
+			testEngine := initHTTPServerV2(proxy, false)
+			req := httptest.NewRequest(http.MethodPost, versionalV2(CollectionCategory, CreateAction), bytes.NewReader([]byte(testcase.body)))
+			w := httptest.NewRecorder()
+			testEngine.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusOK, w.Code)
+			assert.NotNil(t, proxy.createReq)
+			collSchema := &schemapb.CollectionSchema{}
+			assert.NoError(t, proto.Unmarshal(proxy.createReq.GetSchema(), collSchema))
+			assert.Equal(t, testcase.source, collSchema.GetExternalSource())
+			assert.Equal(t, testcase.spec, collSchema.GetExternalSpec())
+			assert.Equal(t, "embedding", collSchema.GetFields()[0].GetExternalField())
+			assert.Equal(t, "book_title", collSchema.GetFields()[1].GetExternalField())
+		})
+	}
+}
+
+func TestCreateExternalCollectionTopLevelConfigRejectedRESTV2(t *testing.T) {
+	paramtable.Init()
+	paramtable.Get().Save(paramtable.Get().QuotaConfig.QuotaAndLimitsEnabled.Key, "false")
+	defer paramtable.Get().Reset(paramtable.Get().QuotaConfig.QuotaAndLimitsEnabled.Key)
+
+	proxy := &externalCollectionRESTProxy{}
+	testEngine := initHTTPServerV2(proxy, false)
+	req := httptest.NewRequest(http.MethodPost, versionalV2(CollectionCategory, CreateAction), bytes.NewReader([]byte(`{
+		"collectionName": "external_books",
+		"externalSource": "s3://bucket/books",
+		"externalSpec": "{\"format\":\"parquet\"}",
+		"schema": {
+			"fields": [
+				{"fieldName": "book_intro", "dataType": "FloatVector", "externalField": "embedding", "elementTypeParams": {"dim": 2}},
+				{"fieldName": "title", "dataType": "VarChar", "externalField": "book_title", "elementTypeParams": {"max_length": 256}}
+			]
+		}
+	}`)))
+	w := httptest.NewRecorder()
+	testEngine.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Nil(t, proxy.createReq)
+	returnBody := &ReturnErrMsg{}
+	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), returnBody))
+	assert.NotZero(t, returnBody.Code)
+	assert.Contains(t, returnBody.Message, "schema.externalSource/schema.externalSpec")
+}
+
+func TestCreateExternalCollectionQuickCreateRejectedRESTV2(t *testing.T) {
+	paramtable.Init()
+	paramtable.Get().Save(paramtable.Get().QuotaConfig.QuotaAndLimitsEnabled.Key, "false")
+	defer paramtable.Get().Reset(paramtable.Get().QuotaConfig.QuotaAndLimitsEnabled.Key)
+
+	proxy := &externalCollectionRESTProxy{}
+	testEngine := initHTTPServerV2(proxy, false)
+	req := httptest.NewRequest(http.MethodPost, versionalV2(CollectionCategory, CreateAction), bytes.NewReader([]byte(`{
+		"collectionName": "external_books",
+		"dimension": 2,
+		"schema": {
+			"externalSource": "s3://bucket/books",
+			"externalSpec": "{\"format\":\"parquet\"}"
+		}
+	}`)))
+	w := httptest.NewRecorder()
+	testEngine.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Nil(t, proxy.createReq)
+	returnBody := &ReturnErrMsg{}
+	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), returnBody))
+	assert.NotZero(t, returnBody.Code)
+	assert.Contains(t, returnBody.Message, "external collection is not supported by quick create")
+}
+
+func TestDescribeExternalCollectionRESTV2(t *testing.T) {
+	paramtable.Init()
+	schema := generateCollectionSchema(schemapb.DataType_Int64, false, false)
+	schema.ExternalSource = "s3://bucket/books"
+	schema.ExternalSpec = `{"format":"parquet"}`
+	schema.Fields[1].ExternalField = "word_count_col"
+	schema.Fields[2].ExternalField = "embedding"
+
+	proxy := &externalCollectionRESTProxy{
+		describeResp: &milvuspb.DescribeCollectionResponse{
+			CollectionName: DefaultCollectionName,
+			Schema:         schema,
+			ShardsNum:      ShardNumDefault,
+			Status:         &StatusSuccess,
+		},
+	}
+	testEngine := initHTTPServerV2(proxy, false)
+	req := httptest.NewRequest(http.MethodPost, versionalV2(CollectionCategory, DescribeAction), bytes.NewReader([]byte(`{"collectionName": "`+DefaultCollectionName+`"}`)))
+	w := httptest.NewRecorder()
+	testEngine.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp map[string]interface{}
+	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, float64(0), resp[HTTPReturnCode])
+	data := resp[HTTPReturnData].(map[string]interface{})
+	assert.Equal(t, "s3://bucket/books", data["externalSource"])
+	assert.Equal(t, `{"format":"parquet"}`, data["externalSpec"])
+	fields := data["fields"].([]interface{})
+	wordCount := fields[1].(map[string]interface{})
+	vector := fields[2].(map[string]interface{})
+	assert.Equal(t, "word_count_col", wordCount["externalField"])
+	assert.Equal(t, "embedding", vector["externalField"])
+}
+
+func TestExternalCollectionJobRoutesRESTV2(t *testing.T) {
+	paramtable.Init()
+	paramtable.Get().Save(paramtable.Get().QuotaConfig.QuotaAndLimitsEnabled.Key, "false")
+	defer paramtable.Get().Reset(paramtable.Get().QuotaConfig.QuotaAndLimitsEnabled.Key)
+
+	proxy := &externalCollectionRESTProxy{}
+	testEngine := initHTTPServerV2(proxy, false)
+
+	req := httptest.NewRequest(http.MethodPost, versionalV2(ExternalCollectionJobCategory, RefreshAction), bytes.NewReader([]byte(`{
+		"dbName": "default",
+		"collectionName": "external_books",
+		"externalSource": "s3://bucket/books_v2",
+		"externalSpec": "{\"format\":\"parquet\"}"
+	}`)))
+	w := httptest.NewRecorder()
+	testEngine.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "external_books", proxy.refreshReq.GetCollectionName())
+	assert.Equal(t, "s3://bucket/books_v2", proxy.refreshReq.GetExternalSource())
+
+	req = httptest.NewRequest(http.MethodPost, versionalV2(ExternalCollectionJobCategory, DescribeAction), bytes.NewReader([]byte(`{"jobId": 1001}`)))
+	w = httptest.NewRecorder()
+	testEngine.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, int64(1001), proxy.progressReq.GetJobId())
+	assert.Contains(t, w.Body.String(), `"progress":42`)
+	assert.Contains(t, w.Body.String(), `"externalSpec":"{\"format\":\"parquet\"}"`)
+
+	req = httptest.NewRequest(http.MethodPost, versionalV2(ExternalCollectionJobCategory, ListAction), bytes.NewReader([]byte(`{"collectionName": "external_books"}`)))
+	w = httptest.NewRecorder()
+	testEngine.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "external_books", proxy.listReq.GetCollectionName())
+	assert.Contains(t, w.Body.String(), `"state":"RefreshCompleted"`)
+	assert.Contains(t, w.Body.String(), `"externalSpec":"{\"format\":\"parquet\"}"`)
+}
+
+func TestRestoreExternalSnapshotRESTV2(t *testing.T) {
+	paramtable.Init()
+	paramtable.Get().Save(paramtable.Get().QuotaConfig.QuotaAndLimitsEnabled.Key, "false")
+	defer paramtable.Get().Reset(paramtable.Get().QuotaConfig.QuotaAndLimitsEnabled.Key)
+
+	proxy := &externalCollectionRESTProxy{}
+	testEngine := initHTTPServerV2(proxy, false)
+
+	req := httptest.NewRequest(http.MethodPost, versionalV2(SnapshotJobCategory, RestoreExternalAction), bytes.NewReader([]byte(`{
+		"dbName": "default",
+		"targetCollectionName": "restored_books",
+		"snapshotMetadataURI": "s3://bucket/files/snapshots/meta.json",
+		"externalSpec": "{\"extfs\":{\"cloud_provider\":\"aws\",\"region\":\"us-west-2\",\"use_iam\":\"true\"}}"
+	}`)))
+	w := httptest.NewRecorder()
+	testEngine.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "default", proxy.restoreReq.GetDbName())
+	assert.Equal(t, "restored_books", proxy.restoreReq.GetTargetCollectionName())
+	assert.Equal(t, "s3://bucket/files/snapshots/meta.json", proxy.restoreReq.GetSnapshotMetadataUri())
+	assert.Equal(t, `{"extfs":{"cloud_provider":"aws","region":"us-west-2","use_iam":"true"}}`, proxy.restoreReq.GetExternalSpec())
+	assert.Contains(t, w.Body.String(), `"jobId":2001`)
+}
+
+func TestExportSnapshotRESTV2(t *testing.T) {
+	paramtable.Init()
+	paramtable.Get().Save(paramtable.Get().QuotaConfig.QuotaAndLimitsEnabled.Key, "false")
+	defer paramtable.Get().Reset(paramtable.Get().QuotaConfig.QuotaAndLimitsEnabled.Key)
+
+	proxy := &externalCollectionRESTProxy{}
+	testEngine := initHTTPServerV2(proxy, false)
+
+	req := httptest.NewRequest(http.MethodPost, versionalV2(SnapshotJobCategory, ExportAction), bytes.NewReader([]byte(`{
+		"dbName": "default",
+		"collectionName": "source_books",
+		"snapshotName": "snapshot_1",
+		"targetS3Path": "s3://foreign-bucket/export-root",
+		"externalSpec": "{\"extfs\":{\"cloud_provider\":\"aws\",\"region\":\"us-west-2\",\"use_iam\":\"true\"}}"
+	}`)))
+	w := httptest.NewRecorder()
+	testEngine.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "default", proxy.exportReq.GetDbName())
+	assert.Equal(t, "source_books", proxy.exportReq.GetCollectionName())
+	assert.Equal(t, "snapshot_1", proxy.exportReq.GetName())
+	assert.Equal(t, "s3://foreign-bucket/export-root", proxy.exportReq.GetTargetS3Path())
+	assert.Equal(t, `{"extfs":{"cloud_provider":"aws","region":"us-west-2","use_iam":"true"}}`, proxy.exportReq.GetExternalSpec())
+	assert.Contains(t, w.Body.String(), `"snapshotMetadataURI":"s3://foreign-bucket/export-root/snapshots/100/metadata/1.json"`)
+}
+
+func TestRestoreSnapshotJobRESTV2(t *testing.T) {
+	paramtable.Init()
+	paramtable.Get().Save(paramtable.Get().QuotaConfig.QuotaAndLimitsEnabled.Key, "false")
+	defer paramtable.Get().Reset(paramtable.Get().QuotaConfig.QuotaAndLimitsEnabled.Key)
+
+	proxy := &externalCollectionRESTProxy{}
+	testEngine := initHTTPServerV2(proxy, false)
+
+	req := httptest.NewRequest(http.MethodPost, versionalV2(SnapshotJobCategory, DescribeAction), bytes.NewReader([]byte(`{"jobId":"2001"}`)))
+	w := httptest.NewRecorder()
+	testEngine.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, int64(2001), proxy.getRestoreSnapshotStateReq.GetJobId())
+	assert.Contains(t, w.Body.String(), `"collectionName":"restored_collection"`)
+	assert.Contains(t, w.Body.String(), `"state":"RestoreSnapshotCompleted"`)
+
+	req = httptest.NewRequest(http.MethodPost, versionalV2(SnapshotJobCategory, ListAction), bytes.NewReader([]byte(`{
+		"dbName": "default",
+		"collectionName": "restored_collection"
+	}`)))
+	w = httptest.NewRecorder()
+	testEngine.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "default", proxy.listRestoreSnapshotJobsReq.GetDbName())
+	assert.Equal(t, "restored_collection", proxy.listRestoreSnapshotJobsReq.GetCollectionName())
+	assert.Contains(t, w.Body.String(), `"records":[`)
+	assert.Contains(t, w.Body.String(), `"state":"RestoreSnapshotPending"`)
+}
+
+func TestRestoreSnapshotJobRESTV2InvalidJobID(t *testing.T) {
+	paramtable.Init()
+	testEngine := initHTTPServerV2(&externalCollectionRESTProxy{}, false)
+
+	req := httptest.NewRequest(http.MethodPost, versionalV2(SnapshotJobCategory, DescribeAction), bytes.NewReader([]byte(`{"jobId":"bad"}`)))
+	w := httptest.NewRecorder()
+	testEngine.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	returnBody := &ReturnErrMsg{}
+	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), returnBody))
+	assert.NotZero(t, returnBody.Code)
+	assert.Contains(t, returnBody.Message, "int64 jobId")
+}
+
+func TestRestoreExternalSnapshotRESTV2RequiresMetadataURI(t *testing.T) {
+	paramtable.Init()
+	testEngine := initHTTPServerV2(&externalCollectionRESTProxy{}, false)
+
+	req := httptest.NewRequest(http.MethodPost, versionalV2(SnapshotJobCategory, RestoreExternalAction), bytes.NewReader([]byte(`{
+		"targetCollectionName": "restored_books"
+	}`)))
+	w := httptest.NewRecorder()
+	testEngine.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	returnBody := &ReturnErrMsg{}
+	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), returnBody))
+	assert.NotZero(t, returnBody.Code)
+	assert.Contains(t, returnBody.Message, "missing required parameters")
+}
+
+func TestExternalCollectionJobDescribeRequiresJobIDRESTV2(t *testing.T) {
+	paramtable.Init()
+	testEngine := initHTTPServerV2(&externalCollectionRESTProxy{}, false)
+
+	req := httptest.NewRequest(http.MethodPost, versionalV2(ExternalCollectionJobCategory, DescribeAction), bytes.NewReader([]byte(`{}`)))
+	w := httptest.NewRecorder()
+	testEngine.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	returnBody := &ReturnErrMsg{}
+	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), returnBody))
+	assert.NotZero(t, returnBody.Code)
+	assert.Contains(t, returnBody.Message, "missing required parameters")
 }
 
 /**
@@ -1749,6 +3070,12 @@ func TestMethodGet(t *testing.T) {
 		Status: &StatusSuccess,
 		Results: []*milvuspb.RoleResult{
 			{Role: &milvuspb.RoleEntity{Name: util.RoleAdmin}},
+		},
+	}, nil).Once()
+	mp.EXPECT().SelectRole(mock.Anything, mock.Anything).Return(&milvuspb.SelectRoleResponse{
+		Status: &StatusSuccess,
+		Results: []*milvuspb.RoleResult{
+			{Role: &milvuspb.RoleEntity{Name: util.RoleAdmin, Description: "admin role"}},
 		},
 	}, nil).Once()
 	mp.EXPECT().SelectGrant(mock.Anything, mock.Anything).Return(&milvuspb.SelectGrantResponse{
@@ -1911,6 +3238,51 @@ var commonSuccessStatus = &commonpb.Status{
 var commonErrorStatus = &commonpb.Status{
 	ErrorCode: commonpb.ErrorCode_CollectionNameNotFound, // 28
 	Reason:    "",
+}
+
+func TestRoleDescriptionV2(t *testing.T) {
+	paramtable.Init()
+	mp := mocks.NewMockProxy(t)
+	mp.EXPECT().CreateRole(mock.Anything, mock.Anything).RunAndReturn(func(ctx context.Context, req *milvuspb.CreateRoleRequest) (*commonpb.Status, error) {
+		assert.Equal(t, "test_role", req.GetEntity().GetName())
+		assert.Equal(t, "role description", req.GetEntity().GetDescription())
+		return commonSuccessStatus, nil
+	}).Once()
+	mp.EXPECT().AlterRole(mock.Anything, mock.Anything).RunAndReturn(func(ctx context.Context, req *milvuspb.AlterRoleRequest) (*commonpb.Status, error) {
+		assert.Equal(t, "test_role", req.GetRoleName())
+		assert.Equal(t, "updated description", req.GetDescription())
+		return commonSuccessStatus, nil
+	}).Once()
+	mp.EXPECT().SelectRole(mock.Anything, mock.Anything).Return(&milvuspb.SelectRoleResponse{
+		Status: &StatusSuccess,
+		Results: []*milvuspb.RoleResult{
+			{Role: &milvuspb.RoleEntity{Name: "test_role", Description: "updated description"}},
+		},
+	}, nil).Once()
+	mp.EXPECT().SelectGrant(mock.Anything, mock.Anything).Return(&milvuspb.SelectGrantResponse{
+		Status: &StatusSuccess,
+	}, nil).Once()
+	testEngine := initHTTPServerV2(mp, false)
+
+	post := func(path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader([]byte(body)))
+		w := httptest.NewRecorder()
+		testEngine.ServeHTTP(w, req)
+		return w
+	}
+
+	w := post(versionalV2(RoleCategory, CreateAction), `{"roleName": "test_role", "description": "role description"}`)
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	w = post(versionalV2(RoleCategory, AlterAction), `{"roleName": "test_role", "description": "updated description"}`)
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	w = post(versionalV2(RoleCategory, DescribeAction), `{"roleName": "test_role"}`)
+	assert.Equal(t, http.StatusOK, w.Code)
+	returnBody := map[string]any{}
+	assert.Nil(t, json.Unmarshal(w.Body.Bytes(), &returnBody))
+	assert.EqualValues(t, 0, returnBody[HTTPReturnCode])
+	assert.Equal(t, "updated description", returnBody[HTTPReturnDescription])
 }
 
 func TestMethodDelete(t *testing.T) {
@@ -2183,6 +3555,112 @@ func TestMethodPost(t *testing.T) {
 	}
 }
 
+func TestUserDescriptionV2(t *testing.T) {
+	paramtable.Init()
+
+	description := "用户描述"
+	mp := mocks.NewMockProxy(t)
+	mp.EXPECT().
+		CreateCredential(mock.Anything, mock.MatchedBy(func(req *milvuspb.CreateCredentialRequest) bool {
+			return req.GetUsername() == util.UserRoot &&
+				req.GetPassword() == crypto.Base64Encode("Milvus") &&
+				req.Description != nil &&
+				req.GetDescription() == description
+		})).
+		Return(commonSuccessStatus, nil).
+		Once()
+	mp.EXPECT().
+		UpdateCredential(mock.Anything, mock.MatchedBy(func(req *milvuspb.UpdateCredentialRequest) bool {
+			return req.GetUsername() == util.UserRoot &&
+				req.GetOldPassword() == "" &&
+				req.GetNewPassword() == "" &&
+				req.Description != nil &&
+				req.GetDescription() == description
+		})).
+		Return(commonSuccessStatus, nil).
+		Once()
+	mp.EXPECT().
+		SelectUser(mock.Anything, mock.Anything).
+		Return(&milvuspb.SelectUserResponse{
+			Status: &StatusSuccess,
+			Results: []*milvuspb.UserResult{
+				{
+					User:        &milvuspb.UserEntity{Name: util.UserRoot},
+					Roles:       []*milvuspb.RoleEntity{{Name: util.RoleAdmin}},
+					Description: description,
+				},
+			},
+		}, nil).
+		Once()
+
+	testEngine := initHTTPServerV2(mp, false)
+	for _, testcase := range []struct {
+		path string
+		body string
+	}{
+		{
+			path: versionalV2(UserCategory, CreateAction),
+			body: `{"userName":"` + util.UserRoot + `","password":"Milvus","description":"` + description + `"}`,
+		},
+		{
+			path: versionalV2(UserCategory, UpdatePasswordAction),
+			body: `{"userName":"` + util.UserRoot + `","description":"` + description + `"}`,
+		},
+		{
+			path: versionalV2(UserCategory, DescribeAction),
+			body: `{"userName":"` + util.UserRoot + `"}`,
+		},
+	} {
+		t.Run(testcase.path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, testcase.path, bytes.NewReader([]byte(testcase.body)))
+			w := httptest.NewRecorder()
+			testEngine.ServeHTTP(w, req)
+			assert.Equal(t, http.StatusOK, w.Code)
+
+			resp := map[string]interface{}{}
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+			assert.Equal(t, float64(0), resp[HTTPReturnCode])
+			if testcase.path == versionalV2(UserCategory, DescribeAction) {
+				assert.Equal(t, description, resp[HTTPReturnDescription])
+				assert.Equal(t, []interface{}{util.RoleAdmin}, resp[HTTPReturnData])
+			}
+		})
+	}
+}
+
+func TestCreateImportJobPreservesRBACRoleContext(t *testing.T) {
+	paramtable.Init()
+	paramtable.Get().Save(proxy.Params.CommonCfg.AuthorizationEnabled.Key, "true")
+	defer paramtable.Get().Reset(proxy.Params.CommonCfg.AuthorizationEnabled.Key)
+	paramtable.Get().Save(proxy.Params.CommonCfg.RootShouldBindRole.Key, "true")
+	defer paramtable.Get().Reset(proxy.Params.CommonCfg.RootShouldBindRole.Key)
+
+	mp := mocks.NewMockProxy(t)
+	mp.EXPECT().ImportV2(mock.Anything, mock.Anything).RunAndReturn(
+		func(ctx context.Context, req *internalpb.ImportRequest) (*internalpb.ImportResponse, error) {
+			roles, ok := ctx.Value(proxy.RBACRoleContextKey).([]string)
+			assert.True(t, ok)
+			assert.ElementsMatch(t, []string{util.RoleAdmin, util.RolePublic}, roles)
+			return &internalpb.ImportResponse{
+				Status: commonSuccessStatus,
+				JobID:  "1234567890",
+			}, nil
+		}).Once()
+	testEngine := initHTTPServerV2(mp, true)
+
+	bodyReader := bytes.NewReader([]byte(`{"collectionName": "` + DefaultCollectionName + `", "files": [["book.json"]]}`))
+	req := httptest.NewRequest(http.MethodPost, versionalV2(ImportJobCategory, CreateAction), bodyReader)
+	req.SetBasicAuth(util.UserRoot, getDefaultRootPassword())
+	w := httptest.NewRecorder()
+	testEngine.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	returnBody := &ReturnErrMsg{}
+	err := json.Unmarshal(w.Body.Bytes(), returnBody)
+	assert.NoError(t, err)
+	assert.Equal(t, merr.Code(nil), returnBody.Code)
+}
+
 func validateTestCases(t *testing.T, testEngine *gin.Engine, queryTestCases []requestBodyTestCase, allowInt64 bool) {
 	for i, testcase := range queryTestCases {
 		t.Run(testcase.path, func(t *testing.T) {
@@ -2346,6 +3824,42 @@ func TestDML(t *testing.T) {
 	})
 
 	validateTestCases(t, testEngine, queryTestCases, false)
+}
+
+func TestQueryOrderByFields(t *testing.T) {
+	paramtable.Init()
+	// disable rate limit
+	paramtable.Get().Save(paramtable.Get().QuotaConfig.QuotaAndLimitsEnabled.Key, "false")
+	defer paramtable.Get().Reset(paramtable.Get().QuotaConfig.QuotaAndLimitsEnabled.Key)
+	mp := mocks.NewMockProxy(t)
+	mp.EXPECT().DescribeCollection(mock.Anything, mock.Anything).Return(&milvuspb.DescribeCollectionResponse{
+		CollectionName: DefaultCollectionName,
+		Schema:         generateCollectionSchema(schemapb.DataType_Int64, false, true),
+		ShardsNum:      ShardNumDefault,
+		Status:         &StatusSuccess,
+	}, nil).Times(2)
+	orderByValues := []string{}
+	mp.EXPECT().Query(mock.Anything, mock.Anything).RunAndReturn(func(ctx context.Context, req *milvuspb.QueryRequest) (*milvuspb.QueryResults, error) {
+		for _, pair := range req.GetQueryParams() {
+			if pair.GetKey() == proxy.OrderByFieldsKey {
+				orderByValues = append(orderByValues, pair.GetValue())
+			}
+		}
+		return &milvuspb.QueryResults{Status: commonSuccessStatus, OutputFields: []string{}, FieldsData: []*schemapb.FieldData{}}, nil
+	}).Times(2)
+	testEngine := initHTTPServerV2(mp, false)
+	validateTestCases(t, testEngine, []requestBodyTestCase{
+		{
+			path:        QueryAction,
+			requestBody: []byte(`{"collectionName": "book", "filter": "book_id > 0", "limit": 10, "orderByFields": ["word_count:desc", "book_id:asc"]}`),
+		},
+		{
+			// no orderByFields -> no order_by_fields query param forwarded
+			path:        QueryAction,
+			requestBody: []byte(`{"collectionName": "book", "filter": "book_id > 0", "limit": 10}`),
+		},
+	}, false)
+	assert.Equal(t, []string{"word_count:desc,book_id:asc"}, orderByValues)
 }
 
 func TestAllowInt64(t *testing.T) {
@@ -2656,13 +4170,13 @@ func TestSearchV2(t *testing.T) {
 	queryTestCases = append(queryTestCases, requestBodyTestCase{
 		path:        SearchAction,
 		requestBody: []byte(`{"collectionName": "book", "data": [[0.1, 0.2]], "annsField": "word_count", "filter": "book_id in [2, 4, 6, 8]", "limit": 4, "outputFields": ["word_count"], "params": {"radius":0.9, "range_filter": 0.1}, "groupingField": "test"}`),
-		errMsg:      "can only accept json format request, error: cannot find a vector field named: word_count",
+		errMsg:      "cannot find a vector field",
 		errCode:     1801,
 	})
 	queryTestCases = append(queryTestCases, requestBodyTestCase{
 		path:        AdvancedSearchAction,
 		requestBody: []byte(`{"collectionName": "hello_milvus", "search": [{"data": [[0.1, 0.2]], "annsField": "float_vector1", "metricType": "L2", "limit": 3}, {"data": [[0.1, 0.2]], "annsField": "float_vector2", "metricType": "L2", "limit": 3}], "rerank": {"strategy": "rrf", "params": {"k":  1}}}`),
-		errMsg:      "can only accept json format request, error: cannot find a vector field named: float_vector1",
+		errMsg:      "cannot find a vector field",
 		errCode:     1801,
 	})
 	// multiple annsFields
@@ -2848,6 +4362,172 @@ func TestGetQuotaMetrics(t *testing.T) {
 	fmt.Println(w.Body.String())
 }
 
+func TestSearchAggregationV2(t *testing.T) {
+	paramtable.Init()
+	paramtable.Get().Save(paramtable.Get().QuotaConfig.QuotaAndLimitsEnabled.Key, "false")
+	defer paramtable.Get().Reset(paramtable.Get().QuotaConfig.QuotaAndLimitsEnabled.Key)
+	paramtable.Get().Save(proxy.Params.QueryNodeCfg.StorageUsageTrackingEnabled.Key, "true")
+	defer paramtable.Get().Reset(proxy.Params.QueryNodeCfg.StorageUsageTrackingEnabled.Key)
+
+	mp := mocks.NewMockProxy(t)
+	mp.EXPECT().DescribeCollection(mock.Anything, mock.Anything).Return(&milvuspb.DescribeCollectionResponse{
+		CollectionName: DefaultCollectionName,
+		Schema:         generateCollectionSchema(schemapb.DataType_Int64, false, true),
+		ShardsNum:      ShardNumDefault,
+		Status:         &StatusSuccess,
+	}, nil).Once()
+	mp.EXPECT().Search(mock.Anything, mock.MatchedBy(func(req *milvuspb.SearchRequest) bool {
+		agg := req.GetSearchAggregation()
+		return agg != nil &&
+			len(agg.GetFields()) == 1 &&
+			agg.GetFields()[0] == "brand" &&
+			agg.GetSize() == 2 &&
+			agg.GetSearchSize() == 4 &&
+			agg.GetMetrics()["avg_price"].GetOp() == "avg" &&
+			agg.GetMetrics()["avg_price"].GetFieldName() == "price" &&
+			agg.GetOrder()[0].GetKey() == "avg_price" &&
+			agg.GetOrder()[0].GetDirection() == "desc" &&
+			agg.GetTopHits().GetSize() == 1 &&
+			agg.GetTopHits().GetSort()[0].GetFieldName() == "_score" &&
+			agg.GetTopHits().GetSort()[0].GetDirection() == "asc" &&
+			agg.GetSubAggregation().GetFields()[0] == "color" &&
+			req.GetIds() == nil
+	})).Return(&milvuspb.SearchResults{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_Success,
+			Code:      merr.Code(nil),
+			ExtraInfo: map[string]string{
+				"scanned_remote_bytes": "11",
+				"scanned_total_bytes":  "22",
+				"cache_hit_ratio":      "0.5",
+			},
+		},
+		Results: &schemapb.SearchResultData{
+			TopK:       0,
+			NumQueries: 1,
+			AggTopks:   []int64{1},
+			Recalls:    []float32{0.75},
+			AggBuckets: []*schemapb.AggBucket{
+				{
+					Key:     []*schemapb.BucketKeyEntry{{FieldId: 101, FieldName: "brand", Value: &schemapb.BucketKeyEntry_StringVal{StringVal: "acme"}}},
+					Count:   3,
+					Metrics: map[string]*schemapb.MetricValue{"avg_price": {Value: &schemapb.MetricValue_DoubleVal{DoubleVal: 12.5}}},
+					Hits: []*schemapb.AggHit{
+						{
+							Pk:    &schemapb.AggHit_IntPk{IntPk: 10},
+							Score: 0.9,
+							Fields: []*schemapb.AggHitField{
+								{FieldId: 201, FieldName: "price", Value: &schemapb.AggHitField_IntVal{IntVal: 99}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}, nil).Once()
+
+	testEngine := initHTTPServerV2(mp, false)
+	req := httptest.NewRequest(http.MethodPost, versionalV2(EntityCategory, SearchAction), bytes.NewReader([]byte(`{
+		"collectionName": "book",
+		"data": [[0.1, 0.2]],
+		"annsField": "book_intro",
+		"limit": 10,
+		"searchAggregation": {
+			"fields": [" brand "],
+			"size": 2,
+			"searchSize": 4,
+			"metrics": {" avg_price ": {"op": " avg ", "fieldName": " price "}},
+			"order": [{"key": " avg_price ", "direction": " desc "}],
+			"topHits": {"size": 1, "sort": [{"fieldName": " _score ", "direction": " asc "}]},
+			"subAggregation": {"fields": ["color"], "size": 1}
+		}
+	}`)))
+	req.Header.Set(HTTPHeaderAllowInt64, "true")
+	w := httptest.NewRecorder()
+	testEngine.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	resp := map[string]interface{}{}
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	assert.NoError(t, err)
+	assert.Equal(t, float64(0), resp[HTTPReturnCode])
+	assert.Equal(t, []interface{}{float64(1)}, resp[HTTPReturnAggTopks])
+	assert.Equal(t, []interface{}{float64(0.75)}, resp[HTTPReturnRecalls])
+	assert.Equal(t, float64(11), resp[HTTPReturnScannedRemoteBytes])
+	assert.Equal(t, float64(22), resp[HTTPReturnScannedTotalBytes])
+	assert.Equal(t, float64(0.5), resp[HTTPReturnCacheHitRatio])
+	data := resp[HTTPReturnData].([]interface{})
+	buckets := data[0].(map[string]interface{})["buckets"].([]interface{})
+	bucket := buckets[0].(map[string]interface{})
+	assert.Equal(t, float64(3), bucket["count"])
+	assert.Equal(t, map[string]interface{}{"avg_price": float64(12.5)}, bucket["metrics"])
+	hits := bucket["hits"].([]interface{})
+	assert.Equal(t, float64(10), hits[0].(map[string]interface{})[FieldBookID])
+	assert.Equal(t, float64(99), hits[0].(map[string]interface{})["price"])
+}
+
+func TestSearchAggregationV2UnsupportedCombinations(t *testing.T) {
+	paramtable.Init()
+	paramtable.Get().Save(paramtable.Get().QuotaConfig.QuotaAndLimitsEnabled.Key, "false")
+	defer paramtable.Get().Reset(paramtable.Get().QuotaConfig.QuotaAndLimitsEnabled.Key)
+
+	mp := mocks.NewMockProxy(t)
+	mp.EXPECT().DescribeCollection(mock.Anything, mock.Anything).Return(&milvuspb.DescribeCollectionResponse{
+		CollectionName: DefaultCollectionName,
+		Schema:         generateCollectionSchema(schemapb.DataType_Int64, false, true),
+		ShardsNum:      ShardNumDefault,
+		Status:         &StatusSuccess,
+	}, nil).Times(5)
+	testEngine := initHTTPServerV2(mp, false)
+
+	searchAggregation := `"searchAggregation": {"fields": ["brand"], "size": 1}`
+	testCases := []requestBodyTestCase{
+		{
+			path:        SearchAction,
+			requestBody: []byte(`{"collectionName":"book","ids":[1],` + searchAggregation + `}`),
+			errCode:     1100,
+			errMsg:      "ids and searchAggregation cannot be used simultaneously",
+		},
+		{
+			path:        SearchAction,
+			requestBody: []byte(`{"collectionName":"book","data":[[0.1,0.2]],"annsField":"book_intro","limit":10,"offset":1,` + searchAggregation + `}`),
+			errCode:     1100,
+			errMsg:      "offset is not supported with searchAggregation",
+		},
+		{
+			path:        SearchAction,
+			requestBody: []byte(`{"collectionName":"book","data":[[0.1,0.2]],"annsField":"book_intro","limit":10,"groupingField":"brand",` + searchAggregation + `}`),
+			errCode:     1100,
+			errMsg:      "groupingField/groupSize/strictGroupSize and searchAggregation cannot be used simultaneously",
+		},
+		{
+			path:        SearchAction,
+			requestBody: []byte(`{"collectionName":"book","data":[[0.1,0.2]],"annsField":"book_intro","limit":10,"searchParams":{"offset":1},` + searchAggregation + `}`),
+			errCode:     1100,
+			errMsg:      "searchParams.offset is not supported with searchAggregation",
+		},
+		{
+			path:        SearchAction,
+			requestBody: []byte(`{"collectionName":"book","data":[[0.1,0.2]],"annsField":"book_intro","limit":10,"searchParams":{"params":{"group_by_fields":"[\"brand\"]"}},` + searchAggregation + `}`),
+			errCode:     1100,
+			errMsg:      "searchParams.group_by_field(s) and searchAggregation cannot be used simultaneously",
+		},
+		{
+			path:        HybridSearchAction,
+			requestBody: []byte(`{"collectionName":"book","search":[{"data":[[0.1,0.2]],"annsField":"book_intro","limit":10}],"rerank":{"strategy":"rrf","params":{}},` + searchAggregation + `}`),
+			errCode:     1100,
+			errMsg:      "searchAggregation is not supported for hybrid search",
+		},
+		{
+			path:        AdvancedSearchAction,
+			requestBody: []byte(`{"collectionName":"book","search":[{"data":[[0.1,0.2]],"annsField":"book_intro","limit":10,` + searchAggregation + `}],"rerank":{"strategy":"rrf","params":{}}}`),
+			errCode:     1100,
+			errMsg:      "searchAggregation is not supported for hybrid search",
+		},
+	}
+	validateTestCases(t, testEngine, testCases, false)
+}
+
 type AddCollectionFieldSuite struct {
 	suite.Suite
 	testEngine *gin.Engine
@@ -2890,6 +4570,169 @@ func (s *AddCollectionFieldSuite) TestAddCollectionFieldNormal() {
 	}
 	s.mp.EXPECT().AddCollectionField(mock.Anything, mock.Anything).Return(merr.Success(), nil)
 	validateRequestBodyTestCases(s.T(), s.testEngine, addFieldTestCases, false)
+}
+
+func (s *AddCollectionFieldSuite) TestAddCollectionStructFieldNormal() {
+	testCases := []struct {
+		name        string
+		requestBody []byte
+	}{
+		{
+			name: "array_with_struct_element",
+			requestBody: []byte(`{"collectionName": "book", "schema": {
+				"fieldName": "clips",
+				"description": "clip metadata",
+				"dataType": "Array",
+				"elementDataType": "Struct",
+				"nullable": true,
+				"elementTypeParams": {"max_capacity": 16},
+				"fields": [
+					{"fieldName": "tag", "dataType": "Array", "elementDataType": "VarChar", "elementTypeParams": {"max_length": 64}},
+					{"fieldName": "emb", "dataType": "ArrayOfVector", "elementDataType": "FloatVector", "elementTypeParams": {"dim": 8}}
+				]
+			}}`),
+		},
+		{
+			name: "array_of_struct",
+			requestBody: []byte(`{"collectionName": "book", "schema": {
+				"fieldName": "clips",
+				"dataType": "ArrayOfStruct",
+				"nullable": true,
+				"typeParams": {"max_capacity": 16},
+				"fields": [
+					{"fieldName": "tag", "dataType": "Array", "elementDataType": "VarChar", "elementTypeParams": {"max_length": 64}},
+					{"fieldName": "emb", "dataType": "ArrayOfVector", "elementDataType": "FloatVector", "elementTypeParams": {"dim": 8}}
+				]
+			}}`),
+		},
+	}
+
+	for _, tc := range testCases {
+		s.Run(tc.name, func() {
+			s.mp.EXPECT().AddCollectionStructField(mock.Anything, mock.MatchedBy(func(req *milvuspb.AddCollectionStructFieldRequest) bool {
+				if req.GetCollectionName() != "book" {
+					return false
+				}
+				structSchema := req.GetStructArrayFieldSchema()
+				if structSchema.GetName() != "clips" || !structSchema.GetNullable() || len(structSchema.GetFields()) != 2 {
+					return false
+				}
+				if kvPairsToMap(structSchema.GetTypeParams())[common.MaxCapacityKey] != "16" {
+					return false
+				}
+				tag := structSchema.GetFields()[0]
+				tagParams := kvPairsToMap(tag.GetTypeParams())
+				if tag.GetName() != "tag" || tag.GetDataType() != schemapb.DataType_Array || tag.GetElementType() != schemapb.DataType_VarChar {
+					return false
+				}
+				if tagParams[common.MaxLengthKey] != "64" || tagParams[common.MaxCapacityKey] != "16" {
+					return false
+				}
+				emb := structSchema.GetFields()[1]
+				embParams := kvPairsToMap(emb.GetTypeParams())
+				if emb.GetName() != "emb" || emb.GetDataType() != schemapb.DataType_ArrayOfVector || emb.GetElementType() != schemapb.DataType_FloatVector {
+					return false
+				}
+				return embParams[common.DimKey] == "8" && embParams[common.MaxCapacityKey] == "16"
+			})).Return(merr.Success(), nil).Once()
+
+			req := httptest.NewRequest(http.MethodPost, versionalV2(CollectionStructFieldCategory, AddAction), bytes.NewReader(tc.requestBody))
+			w := httptest.NewRecorder()
+			s.testEngine.ServeHTTP(w, req)
+			s.Equal(http.StatusOK, w.Code)
+			returnBody := &ReturnErrMsg{}
+			err := json.Unmarshal(w.Body.Bytes(), returnBody)
+			s.NoError(err)
+			s.Equal(int32(0), returnBody.Code)
+		})
+	}
+}
+
+func (s *AddCollectionFieldSuite) TestAddCollectionStructFieldFail() {
+	s.Run("reject_non_struct_array_schema", func() {
+		requestBody := []byte(`{"collectionName": "book", "schema": {
+			"fieldName": "bad_scalar",
+			"dataType": "Int64",
+			"fields": [
+				{"fieldName": "tag", "dataType": "Array", "elementDataType": "VarChar", "elementTypeParams": {"max_length": 64}}
+			]
+		}}`)
+
+		req := httptest.NewRequest(http.MethodPost, versionalV2(CollectionStructFieldCategory, AddAction), bytes.NewReader(requestBody))
+		w := httptest.NewRecorder()
+		s.testEngine.ServeHTTP(w, req)
+		s.Equal(http.StatusOK, w.Code)
+		returnBody := &ReturnErrMsg{}
+		err := json.Unmarshal(w.Body.Bytes(), returnBody)
+		s.NoError(err)
+		s.Equal(merr.Code(merr.ErrParameterInvalid), returnBody.Code)
+		s.Contains(returnBody.Message, "must use ArrayOfStruct or Array with Struct element")
+	})
+
+	s.Run("invalid_struct_schema", func() {
+		requestBody := []byte(`{"collectionName": "book", "schema": {
+			"fieldName": "clips",
+			"dataType": "ArrayOfStruct",
+			"nullable": true,
+			"typeParams": {"max_capacity": 16}
+		}}`)
+
+		req := httptest.NewRequest(http.MethodPost, versionalV2(CollectionStructFieldCategory, AddAction), bytes.NewReader(requestBody))
+		w := httptest.NewRecorder()
+		s.testEngine.ServeHTTP(w, req)
+		s.Equal(http.StatusOK, w.Code)
+		returnBody := &ReturnErrMsg{}
+		err := json.Unmarshal(w.Body.Bytes(), returnBody)
+		s.NoError(err)
+		s.Equal(merr.Code(merr.ErrParameterInvalid), returnBody.Code)
+		s.Contains(returnBody.Message, "must contain at least one sub-field")
+	})
+
+	s.Run("server_error", func() {
+		requestBody := []byte(`{"collectionName": "book", "schema": {
+			"fieldName": "clips",
+			"dataType": "ArrayOfStruct",
+			"nullable": true,
+			"typeParams": {"max_capacity": 16},
+			"fields": [
+				{"fieldName": "tag", "dataType": "Array", "elementDataType": "VarChar", "elementTypeParams": {"max_length": 64}}
+			]
+		}}`)
+
+		s.mp.EXPECT().AddCollectionStructField(mock.Anything, mock.Anything).Return(merr.Status(merr.WrapErrServiceInternal("mock error")), nil).Once()
+
+		req := httptest.NewRequest(http.MethodPost, versionalV2(CollectionStructFieldCategory, AddAction), bytes.NewReader(requestBody))
+		w := httptest.NewRecorder()
+		s.testEngine.ServeHTTP(w, req)
+		s.Equal(http.StatusOK, w.Code)
+		returnBody := &ReturnErrMsg{}
+		err := json.Unmarshal(w.Body.Bytes(), returnBody)
+		s.NoError(err)
+		s.Equal(merr.Code(merr.ErrServiceInternal), returnBody.Code)
+		s.Contains(returnBody.Message, "mock error")
+	})
+}
+
+func (s *AddCollectionFieldSuite) TestAddCollectionFieldRejectsStructArray() {
+	requestBody := []byte(`{"collectionName": "book", "schema": {
+		"fieldName": "clips",
+		"dataType": "ArrayOfStruct",
+		"nullable": true,
+		"typeParams": {"max_capacity": 16},
+		"fields": [
+			{"fieldName": "tag", "dataType": "Array", "elementDataType": "VarChar", "elementTypeParams": {"max_length": 64}}
+		]
+	}}`)
+
+	req := httptest.NewRequest(http.MethodPost, versionalV2(CollectionFieldCategory, AddAction), bytes.NewReader(requestBody))
+	w := httptest.NewRecorder()
+	s.testEngine.ServeHTTP(w, req)
+	s.Equal(http.StatusOK, w.Code)
+	returnBody := &ReturnErrMsg{}
+	err := json.Unmarshal(w.Body.Bytes(), returnBody)
+	s.NoError(err)
+	s.Equal(merr.Code(merr.ErrParameterInvalid), returnBody.Code)
+	s.Contains(returnBody.Message, "/v2/vectordb/collections/struct_fields/add")
 }
 
 func (s *AddCollectionFieldSuite) TestAddCollectionFieldFail() {
@@ -2952,6 +4795,14 @@ func (s *AddCollectionFieldSuite) TestAddCollectionFieldFail() {
 
 func TestAddCollectionFieldSuite(t *testing.T) {
 	suite.Run(t, new(AddCollectionFieldSuite))
+}
+
+func kvPairsToMap(kvs []*commonpb.KeyValuePair) map[string]string {
+	ret := make(map[string]string, len(kvs))
+	for _, kv := range kvs {
+		ret[kv.GetKey()] = kv.GetValue()
+	}
+	return ret
 }
 
 func TestCollectionFunctionSuite(t *testing.T) {
@@ -3060,6 +4911,80 @@ func (s *CollectionFunctionSuite) TestDropCollectionFunctionNormal() {
 		s.mp.EXPECT().DropCollectionFunction(mock.Anything, mock.Anything).Return(&commonpb.Status{ErrorCode: commonpb.ErrorCode_Success}, nil).Maybe()
 
 		validateRequestBodyTestCases(s.T(), s.testEngine, addFunctionTestCases, false)
+	})
+}
+
+func (s *CollectionFunctionSuite) TestAddCollectionFunctionFieldNormal() {
+	s.Run("success", func() {
+		addFunctionFieldTestCases := []requestBodyTestCase{
+			{
+				path:        versionalV2(CollectionCategory, AddFunctionFieldAction),
+				requestBody: []byte(`{"dbName": "db", "collectionName": "coll", "function": {"name": "bm25_fn", "type": "BM25", "inputFieldNames": ["text"], "outputFieldNames": ["sparse"]}, "outputField": {"fieldName": "sparse", "dataType": "SparseFloatVector"}, "indexParams": {"fieldName": "sparse", "indexName": "sparse_idx", "metricType": "BM25", "indexType": "SPARSE_INVERTED_INDEX"}}`),
+				errCode:     0,
+				errMsg:      "",
+			},
+		}
+		s.mp.EXPECT().AlterCollectionSchema(mock.Anything, mock.Anything).Return(&milvuspb.AlterCollectionSchemaResponse{AlterStatus: &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success}}, nil).Maybe()
+
+		validateRequestBodyTestCases(s.T(), s.testEngine, addFunctionFieldTestCases, false)
+	})
+
+	s.Run("bad_request", func() {
+		addFunctionFieldTestCases := []requestBodyTestCase{
+			{
+				path:        versionalV2(CollectionCategory, AddFunctionFieldAction),
+				requestBody: []byte(`{"dbName": "db", "collectionName": "", "function": {"name": "bm25_fn", "type": "BM25", "inputFieldNames": ["text"], "outputFieldNames": ["sparse"]}, "outputField": {"fieldName": "sparse", "dataType": "SparseFloatVector"}, "indexParams": {"fieldName": "sparse"}}`),
+				errCode:     1802,
+				errMsg:      "missing required parameters, error: Key: 'CollectionAddFunctionField.CollectionName' Error:Field validation for 'CollectionName' failed on the 'required' tag",
+			},
+			{
+				path:        versionalV2(CollectionCategory, AddFunctionFieldAction),
+				requestBody: []byte(`{"dbName": "db", "collectionName": "coll", "function": {"name": "bm25_fn", "type": "BM25", "inputFieldNames": ["text"], "outputFieldNames": ["sparse"]}, "outputField": {"fieldName": "sparse", "dataType": "SparseFloatVector"}, "indexParams": {"fieldName": "wrong_field", "indexName": "sparse_idx", "metricType": "BM25", "indexType": "SPARSE_INVERTED_INDEX"}}`),
+				errCode:     1100,
+				errMsg:      `indexParams.fieldName "wrong_field" must match outputField.fieldName "sparse": invalid parameter`,
+			},
+			{
+				path:        versionalV2(CollectionCategory, AddFunctionFieldAction),
+				requestBody: []byte(`invalid json`),
+				errCode:     1801,
+				errMsg:      "can only accept json format request, error: invalid character 'i' looking for beginning of value",
+			},
+		}
+		validateRequestBodyTestCases(s.T(), s.testEngine, addFunctionFieldTestCases, false)
+	})
+}
+
+func (s *CollectionFunctionSuite) TestDropCollectionFunctionFieldNormal() {
+	s.Run("success", func() {
+		dropFunctionFieldTestCases := []requestBodyTestCase{
+			{
+				path:        versionalV2(CollectionCategory, DropFunctionFieldAction),
+				requestBody: []byte(`{"dbName": "db", "collectionName": "coll", "functionName": "bm25_fn"}`),
+				errCode:     0,
+				errMsg:      "",
+			},
+		}
+		s.mp.EXPECT().AlterCollectionSchema(mock.Anything, mock.Anything).Return(&milvuspb.AlterCollectionSchemaResponse{AlterStatus: &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success}}, nil).Maybe()
+
+		validateRequestBodyTestCases(s.T(), s.testEngine, dropFunctionFieldTestCases, false)
+	})
+
+	s.Run("bad_request", func() {
+		dropFunctionFieldTestCases := []requestBodyTestCase{
+			{
+				path:        versionalV2(CollectionCategory, DropFunctionFieldAction),
+				requestBody: []byte(`{"dbName": "db", "collectionName": "coll", "functionName": ""}`),
+				errCode:     1802,
+				errMsg:      "missing required parameters, error: Key: 'CollectionDropFunctionField.FunctionName' Error:Field validation for 'FunctionName' failed on the 'required' tag",
+			},
+			{
+				path:        versionalV2(CollectionCategory, DropFunctionFieldAction),
+				requestBody: []byte(`invalid json`),
+				errCode:     1801,
+				errMsg:      "can only accept json format request, error: invalid character 'i' looking for beginning of value",
+			},
+		}
+		validateRequestBodyTestCases(s.T(), s.testEngine, dropFunctionFieldTestCases, false)
 	})
 }
 
@@ -3179,4 +5104,283 @@ func TestSearchByPK(t *testing.T) {
 	})
 
 	validateTestCases(t, testEngine, queryTestCases, false)
+}
+
+func TestCommitImportJob(t *testing.T) {
+	paramtable.Init()
+
+	t.Run("authorization disabled", func(t *testing.T) {
+		paramtable.Get().Save(proxy.Params.CommonCfg.AuthorizationEnabled.Key, "false")
+		defer paramtable.Get().Reset(proxy.Params.CommonCfg.AuthorizationEnabled.Key)
+
+		mp := mocks.NewMockProxy(t)
+		mp.EXPECT().CommitImport(mock.Anything, mock.Anything).Return(commonSuccessStatus, nil).Once()
+		testEngine := initHTTPServerV2(mp, false)
+		queryTestCases := []requestBodyTestCase{}
+		queryTestCases = append(queryTestCases, requestBodyTestCase{
+			path:        versionalV2(ImportJobCategory, CommitAction),
+			requestBody: []byte(`{"jobId": "123"}`),
+		})
+		queryTestCases = append(queryTestCases, requestBodyTestCase{
+			path:        versionalV2(ImportJobCategory, CommitAction),
+			requestBody: []byte(`{"jobId": "not-a-number"}`),
+			errCode:     1100, // ErrParameterInvalid
+		})
+		for _, testcase := range queryTestCases {
+			t.Run(testcase.path, func(t *testing.T) {
+				req := httptest.NewRequest(http.MethodPost, testcase.path, bytes.NewReader(testcase.requestBody))
+				w := httptest.NewRecorder()
+				testEngine.ServeHTTP(w, req)
+				assert.Equal(t, http.StatusOK, w.Code)
+				returnBody := &ReturnErrMsg{}
+				err := json.Unmarshal(w.Body.Bytes(), returnBody)
+				assert.Nil(t, err)
+				assert.Equal(t, testcase.errCode, returnBody.Code)
+			})
+		}
+	})
+
+	t.Run("authorization enabled denies user without import privilege", func(t *testing.T) {
+		paramtable.Get().Save(proxy.Params.CommonCfg.AuthorizationEnabled.Key, "true")
+		defer paramtable.Get().Reset(proxy.Params.CommonCfg.AuthorizationEnabled.Key)
+
+		mp := mocks.NewMockProxy(t)
+		mp.EXPECT().GetImportProgress(mock.Anything, mock.Anything).Return(&internalpb.GetImportProgressResponse{
+			Status:         &StatusSuccess,
+			CollectionName: DefaultCollectionName,
+		}, nil).Once()
+		testEngine := initHTTPServerV2(mp, true)
+		req := httptest.NewRequest(http.MethodPost, versionalV2(ImportJobCategory, CommitAction), bytes.NewReader([]byte(`{"jobId": "123"}`)))
+		req.SetBasicAuth("test", "test")
+		w := httptest.NewRecorder()
+
+		testEngine.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusForbidden, w.Code)
+		returnBody := &ReturnErrMsg{}
+		err := json.Unmarshal(w.Body.Bytes(), returnBody)
+		assert.Nil(t, err)
+		assert.Equal(t, int32(65535), returnBody.Code)
+		assert.Contains(t, returnBody.Message, "PrivilegeImport: permission deny to test")
+		mp.AssertNotCalled(t, "CommitImport", mock.Anything, mock.Anything)
+	})
+
+	t.Run("authorization enabled returns get progress error", func(t *testing.T) {
+		paramtable.Get().Save(proxy.Params.CommonCfg.AuthorizationEnabled.Key, "true")
+		defer paramtable.Get().Reset(proxy.Params.CommonCfg.AuthorizationEnabled.Key)
+
+		mp := mocks.NewMockProxy(t)
+		mp.EXPECT().GetImportProgress(mock.Anything, mock.Anything).Return(nil, merr.ErrImportFailed).Once()
+		testEngine := initHTTPServerV2(mp, true)
+		req := httptest.NewRequest(http.MethodPost, versionalV2(ImportJobCategory, CommitAction), bytes.NewReader([]byte(`{"jobId": "123"}`)))
+		req.SetBasicAuth(util.UserRoot, getDefaultRootPassword())
+		w := httptest.NewRecorder()
+
+		testEngine.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		returnBody := &ReturnErrMsg{}
+		err := json.Unmarshal(w.Body.Bytes(), returnBody)
+		assert.Nil(t, err)
+		assert.Equal(t, merr.Code(merr.ErrImportFailed), returnBody.Code)
+		mp.AssertNotCalled(t, "CommitImport", mock.Anything, mock.Anything)
+	})
+
+	t.Run("authorization enabled allows root", func(t *testing.T) {
+		paramtable.Get().Save(proxy.Params.CommonCfg.AuthorizationEnabled.Key, "true")
+		defer paramtable.Get().Reset(proxy.Params.CommonCfg.AuthorizationEnabled.Key)
+
+		mp := mocks.NewMockProxy(t)
+		mp.EXPECT().GetImportProgress(mock.Anything, mock.Anything).Return(&internalpb.GetImportProgressResponse{
+			Status:         &StatusSuccess,
+			CollectionName: DefaultCollectionName,
+		}, nil).Once()
+		mp.EXPECT().CommitImport(mock.Anything, mock.Anything).Return(commonSuccessStatus, nil).Once()
+		testEngine := initHTTPServerV2(mp, true)
+		req := httptest.NewRequest(http.MethodPost, versionalV2(ImportJobCategory, CommitAction), bytes.NewReader([]byte(`{"jobId": "123"}`)))
+		req.SetBasicAuth(util.UserRoot, getDefaultRootPassword())
+		w := httptest.NewRecorder()
+
+		testEngine.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		returnBody := &ReturnErrMsg{}
+		err := json.Unmarshal(w.Body.Bytes(), returnBody)
+		assert.Nil(t, err)
+		assert.Equal(t, int32(0), returnBody.Code)
+	})
+}
+
+func TestCreateImportJobAutoCommitOptionValidation(t *testing.T) {
+	paramtable.Init()
+
+	t.Run("accepts omitted true and false strings", func(t *testing.T) {
+		mp := mocks.NewMockProxy(t)
+		mp.EXPECT().ImportV2(mock.Anything, mock.MatchedBy(func(req *internalpb.ImportRequest) bool {
+			return len(req.GetOptions()) == 0
+		})).Return(&internalpb.ImportResponse{Status: commonSuccessStatus, JobID: "0"}, nil).Once()
+		mp.EXPECT().ImportV2(mock.Anything, mock.MatchedBy(func(req *internalpb.ImportRequest) bool {
+			return kvPairsToMap(req.GetOptions())["auto_commit"] == "true"
+		})).Return(&internalpb.ImportResponse{Status: commonSuccessStatus, JobID: "1"}, nil).Once()
+		mp.EXPECT().ImportV2(mock.Anything, mock.MatchedBy(func(req *internalpb.ImportRequest) bool {
+			return kvPairsToMap(req.GetOptions())["auto_commit"] == "false"
+		})).Return(&internalpb.ImportResponse{Status: commonSuccessStatus, JobID: "2"}, nil).Once()
+		mp.EXPECT().ImportV2(mock.Anything, mock.MatchedBy(func(req *internalpb.ImportRequest) bool {
+			return kvPairsToMap(req.GetOptions())["auto_commit"] == "False"
+		})).Return(&internalpb.ImportResponse{Status: commonSuccessStatus, JobID: "3"}, nil).Once()
+		mp.EXPECT().ImportV2(mock.Anything, mock.MatchedBy(func(req *internalpb.ImportRequest) bool {
+			return kvPairsToMap(req.GetOptions())["priority"] == ""
+		})).Return(&internalpb.ImportResponse{Status: commonSuccessStatus, JobID: "4"}, nil).Once()
+		testEngine := initHTTPServerV2(mp, false)
+
+		for _, body := range []string{
+			`{"collectionName": "book", "files": [["a.parquet"]]}`,
+			`{"collectionName": "book", "files": [["a.parquet"]], "options": {"auto_commit": "true"}}`,
+			`{"collectionName": "book", "files": [["a.parquet"]], "options": {"auto_commit": "false"}}`,
+			`{"collectionName": "book", "files": [["a.parquet"]], "options": {"auto_commit": "False"}}`,
+			`{"collectionName": "book", "files": [["a.parquet"]], "options": {"priority": null}}`,
+		} {
+			req := httptest.NewRequest(http.MethodPost, versionalV2(ImportJobCategory, CreateAction), bytes.NewReader([]byte(body)))
+			w := httptest.NewRecorder()
+			testEngine.ServeHTTP(w, req)
+			assert.Equal(t, http.StatusOK, w.Code)
+
+			returnBody := &ReturnErrMsg{}
+			err := json.Unmarshal(w.Body.Bytes(), returnBody)
+			assert.Nil(t, err)
+			assert.Equal(t, merr.Code(nil), returnBody.Code)
+		}
+	})
+
+	for _, testcase := range []requestBodyTestCase{
+		{
+			path:        versionalV2(ImportJobCategory, CreateAction),
+			requestBody: []byte(`{"collectionName": "book", "files": [["a.parquet"]], "options": {"auto_commit": null}}`),
+			errCode:     merr.Code(merr.ErrIncorrectParameterFormat),
+			errMsg:      "options.auto_commit must be one of \"true\" or \"false\"",
+		},
+		{
+			path:        versionalV2(ImportJobCategory, CreateAction),
+			requestBody: []byte(`{"collectionName": "book", "files": [["a.parquet"]], "options": {"auto_commit": ""}}`),
+			errCode:     merr.Code(merr.ErrIncorrectParameterFormat),
+			errMsg:      "options.auto_commit must be one of \"true\" or \"false\"",
+		},
+		{
+			path:        versionalV2(ImportJobCategory, CreateAction),
+			requestBody: []byte(`{"collectionName": "book", "files": [["a.parquet"]], "options": {"auto_commit": "yes"}}`),
+			errCode:     merr.Code(merr.ErrIncorrectParameterFormat),
+			errMsg:      "options.auto_commit must be one of \"true\" or \"false\"",
+		},
+	} {
+		t.Run(string(testcase.requestBody), func(t *testing.T) {
+			mp := mocks.NewMockProxy(t)
+			testEngine := initHTTPServerV2(mp, false)
+			sendReqAndVerify(t, testEngine, testcase.path, http.MethodPost, testcase)
+		})
+	}
+}
+
+func TestAbortImportJob(t *testing.T) {
+	paramtable.Init()
+
+	t.Run("authorization disabled", func(t *testing.T) {
+		paramtable.Get().Save(proxy.Params.CommonCfg.AuthorizationEnabled.Key, "false")
+		defer paramtable.Get().Reset(proxy.Params.CommonCfg.AuthorizationEnabled.Key)
+
+		mp := mocks.NewMockProxy(t)
+		mp.EXPECT().AbortImport(mock.Anything, mock.Anything).Return(commonSuccessStatus, nil).Once()
+		testEngine := initHTTPServerV2(mp, false)
+		queryTestCases := []requestBodyTestCase{}
+		queryTestCases = append(queryTestCases, requestBodyTestCase{
+			path:        versionalV2(ImportJobCategory, AbortAction),
+			requestBody: []byte(`{"jobId": "123"}`),
+		})
+		queryTestCases = append(queryTestCases, requestBodyTestCase{
+			path:        versionalV2(ImportJobCategory, AbortAction),
+			requestBody: []byte(`{"jobId": "not-a-number"}`),
+			errCode:     1100, // ErrParameterInvalid
+		})
+		for _, testcase := range queryTestCases {
+			t.Run(testcase.path, func(t *testing.T) {
+				req := httptest.NewRequest(http.MethodPost, testcase.path, bytes.NewReader(testcase.requestBody))
+				w := httptest.NewRecorder()
+				testEngine.ServeHTTP(w, req)
+				assert.Equal(t, http.StatusOK, w.Code)
+				returnBody := &ReturnErrMsg{}
+				err := json.Unmarshal(w.Body.Bytes(), returnBody)
+				assert.Nil(t, err)
+				assert.Equal(t, testcase.errCode, returnBody.Code)
+			})
+		}
+	})
+
+	t.Run("authorization enabled denies user without import privilege", func(t *testing.T) {
+		paramtable.Get().Save(proxy.Params.CommonCfg.AuthorizationEnabled.Key, "true")
+		defer paramtable.Get().Reset(proxy.Params.CommonCfg.AuthorizationEnabled.Key)
+
+		mp := mocks.NewMockProxy(t)
+		mp.EXPECT().GetImportProgress(mock.Anything, mock.Anything).Return(&internalpb.GetImportProgressResponse{
+			Status:         &StatusSuccess,
+			CollectionName: DefaultCollectionName,
+		}, nil).Once()
+		testEngine := initHTTPServerV2(mp, true)
+		req := httptest.NewRequest(http.MethodPost, versionalV2(ImportJobCategory, AbortAction), bytes.NewReader([]byte(`{"jobId": "123"}`)))
+		req.SetBasicAuth("test", "test")
+		w := httptest.NewRecorder()
+
+		testEngine.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusForbidden, w.Code)
+		returnBody := &ReturnErrMsg{}
+		err := json.Unmarshal(w.Body.Bytes(), returnBody)
+		assert.Nil(t, err)
+		assert.Equal(t, int32(65535), returnBody.Code)
+		assert.Contains(t, returnBody.Message, "PrivilegeImport: permission deny to test")
+		mp.AssertNotCalled(t, "AbortImport", mock.Anything, mock.Anything)
+	})
+
+	t.Run("authorization enabled returns get progress error", func(t *testing.T) {
+		paramtable.Get().Save(proxy.Params.CommonCfg.AuthorizationEnabled.Key, "true")
+		defer paramtable.Get().Reset(proxy.Params.CommonCfg.AuthorizationEnabled.Key)
+
+		mp := mocks.NewMockProxy(t)
+		mp.EXPECT().GetImportProgress(mock.Anything, mock.Anything).Return(nil, merr.ErrImportFailed).Once()
+		testEngine := initHTTPServerV2(mp, true)
+		req := httptest.NewRequest(http.MethodPost, versionalV2(ImportJobCategory, AbortAction), bytes.NewReader([]byte(`{"jobId": "123"}`)))
+		req.SetBasicAuth(util.UserRoot, getDefaultRootPassword())
+		w := httptest.NewRecorder()
+
+		testEngine.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		returnBody := &ReturnErrMsg{}
+		err := json.Unmarshal(w.Body.Bytes(), returnBody)
+		assert.Nil(t, err)
+		assert.Equal(t, merr.Code(merr.ErrImportFailed), returnBody.Code)
+		mp.AssertNotCalled(t, "AbortImport", mock.Anything, mock.Anything)
+	})
+
+	t.Run("authorization enabled allows root", func(t *testing.T) {
+		paramtable.Get().Save(proxy.Params.CommonCfg.AuthorizationEnabled.Key, "true")
+		defer paramtable.Get().Reset(proxy.Params.CommonCfg.AuthorizationEnabled.Key)
+
+		mp := mocks.NewMockProxy(t)
+		mp.EXPECT().GetImportProgress(mock.Anything, mock.Anything).Return(&internalpb.GetImportProgressResponse{
+			Status:         &StatusSuccess,
+			CollectionName: DefaultCollectionName,
+		}, nil).Once()
+		mp.EXPECT().AbortImport(mock.Anything, mock.Anything).Return(commonSuccessStatus, nil).Once()
+		testEngine := initHTTPServerV2(mp, true)
+		req := httptest.NewRequest(http.MethodPost, versionalV2(ImportJobCategory, AbortAction), bytes.NewReader([]byte(`{"jobId": "123"}`)))
+		req.SetBasicAuth(util.UserRoot, getDefaultRootPassword())
+		w := httptest.NewRecorder()
+
+		testEngine.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		returnBody := &ReturnErrMsg{}
+		err := json.Unmarshal(w.Body.Bytes(), returnBody)
+		assert.Nil(t, err)
+		assert.Equal(t, int32(0), returnBody.Code)
+	})
 }

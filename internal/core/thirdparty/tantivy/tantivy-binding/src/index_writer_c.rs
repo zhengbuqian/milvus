@@ -32,6 +32,7 @@ pub extern "C" fn tantivy_create_index(
     num_threads: usize,
     overall_memory_budget_in_bytes: usize,
     enable_user_specified_doc_id: bool,
+    enable_background_merge: bool,
 ) -> RustResult {
     let field_name_str = cstr_to_str!(field_name);
     let path_str = cstr_to_str!(path);
@@ -49,6 +50,7 @@ pub extern "C" fn tantivy_create_index(
         overall_memory_budget_in_bytes,
         tantivy_index_version,
         enable_user_specified_doc_id,
+        enable_background_merge,
     ) {
         Ok(wrapper) => RustResult::from_ptr(create_binding(wrapper)),
         Err(e) => RustResult::from_error(e.to_string()),
@@ -457,6 +459,20 @@ pub extern "C" fn tantivy_index_add_json(
     let real = ptr as *mut IndexWriterWrapper;
     let s = cstr_to_str!(s);
     unsafe { (*real).add_json(s, Some(offset)).into() }
+}
+
+#[no_mangle]
+pub extern "C" fn tantivy_index_add_json_batch(
+    ptr: *mut c_void,
+    array: *const *const c_char,
+    len: usize,
+    offset_begin: i64,
+) -> RustResult {
+    let real = ptr as *mut IndexWriterWrapper;
+    unsafe {
+        let arr = convert_to_rust_slice!(array, len);
+        (*real).add_json_batch(arr, offset_begin).into()
+    }
 }
 
 #[no_mangle]

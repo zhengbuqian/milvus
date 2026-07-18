@@ -17,16 +17,15 @@
 package conc
 
 import (
-	"fmt"
 	"strconv"
 	"sync"
 	"time"
 
 	ants "github.com/panjf2000/ants/v2"
 
-	"github.com/milvus-io/milvus/pkg/v2/util/generic"
-	"github.com/milvus-io/milvus/pkg/v2/util/hardware"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/generic"
+	"github.com/milvus-io/milvus/pkg/v3/util/hardware"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
 )
 
 // A goroutine pool
@@ -71,7 +70,7 @@ func (pool *Pool[T]) Submit(method func() (T, error)) *Future[T] {
 		defer close(future.ch)
 		defer func() {
 			if x := recover(); x != nil {
-				future.err = fmt.Errorf("panicked with error: %v", x)
+				future.err = merr.WrapErrServiceInternalMsg("panicked with error: %v", x)
 				panic(x) // throw panic out
 			}
 		}()

@@ -16,9 +16,11 @@
 
 #pragma once
 
+#include <cstddef>
 #include <memory>
 #include <string>
 
+#include "common/Types.h"
 #include "exec/Driver.h"
 #include "exec/expression/Expr.h"
 #include "exec/operator/Operator.h"
@@ -26,6 +28,12 @@
 
 namespace milvus {
 namespace exec {
+
+bool
+ConvertPredicateToFilteredBitset(TargetBitmapView data,
+                                 TargetBitmapView valid,
+                                 size_t size);
+
 class PhyFilterBitsNode : public Operator {
  public:
     PhyFilterBitsNode(
@@ -71,11 +79,26 @@ class PhyFilterBitsNode : public Operator {
         return "PhyFilterBitsNode";
     }
 
+    void
+    PrefetchAsync(const std::shared_ptr<folly::CPUThreadPoolExecutor>
+                      prefetch_pool) override {
+        exprs_->PrefetchAsync(prefetch_pool);
+    }
+
+    void
+    WaitPrefetch() override {
+        exprs_->WaitPrefetch();
+    }
+
  private:
     std::unique_ptr<ExprSet> exprs_;
     QueryContext* query_context_;
     int64_t num_processed_rows_;
     int64_t need_process_rows_;
+    // Expression filter cache for two-stage search.
+    // Cache backend is the process-level ExprResCacheManager.
+    bool enable_expr_cache_ = false;
+    std::string expr_cache_key_;
 };
 }  // namespace exec
 }  // namespace milvus

@@ -25,28 +25,26 @@ import (
 	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/atomic"
-	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
 	"github.com/milvus-io/milvus/internal/distributed/utils"
 	qn "github.com/milvus-io/milvus/internal/querynodev2"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/dependency"
 	_ "github.com/milvus-io/milvus/internal/util/grpcclient"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/tracer"
-	"github.com/milvus-io/milvus/pkg/v2/util/etcd"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/interceptor"
-	"github.com/milvus-io/milvus/pkg/v2/util/logutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/netutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/internalpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/querypb"
+	"github.com/milvus-io/milvus/pkg/v3/tracer"
+	"github.com/milvus-io/milvus/pkg/v3/util/etcd"
+	"github.com/milvus-io/milvus/pkg/v3/util/funcutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/interceptor"
+	"github.com/milvus-io/milvus/pkg/v3/util/netutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 // UniqueID is an alias for type typeutil.UniqueID, used as a unique identifier for the request.
@@ -78,7 +76,7 @@ func (s *Server) GetQueryNode() types.QueryNodeComponent {
 
 // NewServer create a new QueryNode grpc server.
 func NewServer(ctx context.Context, factory dependency.Factory) (*Server, error) {
-	ctx1, cancel := context.WithCancel(ctx)
+	ctx1, cancel := context.WithCancel(ctx) //nolint:gosec
 
 	s := &Server{
 		ctx:         ctx1,
@@ -95,11 +93,11 @@ func (s *Server) Prepare() error {
 		netutil.OptHighPriorityToUsePort(paramtable.Get().QueryNodeGrpcServerCfg.Port.GetAsInt()),
 	)
 	if err != nil {
-		log.Ctx(s.ctx).Warn("QueryNode fail to create net listener", zap.Error(err))
+		mlog.Warn(s.ctx, "QueryNode fail to create net listener", mlog.Err(err))
 		return err
 	}
 	s.listener = listener
-	log.Ctx(s.ctx).Info("QueryNode listen on", zap.String("address", listener.Addr().String()), zap.Int("port", listener.Port()))
+	mlog.Info(s.ctx, "QueryNode listen on", mlog.String("address", listener.Addr().String()), mlog.Int("port", listener.Port()))
 	paramtable.Get().Save(
 		paramtable.Get().QueryNodeGrpcServerCfg.Port.Key,
 		strconv.FormatInt(int64(listener.Port()), 10))
@@ -109,8 +107,8 @@ func (s *Server) Prepare() error {
 // init initializes QueryNode's grpc service.
 func (s *Server) init() error {
 	etcdConfig := &paramtable.Get().EtcdCfg
-	log := log.Ctx(s.ctx)
-	log.Debug("QueryNode", zap.Int("port", s.listener.Port()))
+
+	mlog.Debug(s.ctx, "QueryNode", mlog.Int("port", s.listener.Port()))
 
 	etcdCli, err := etcd.CreateEtcdClient(
 		etcdConfig.UseEmbedEtcd.GetAsBool(),
@@ -125,13 +123,13 @@ func (s *Server) init() error {
 		etcdConfig.EtcdTLSMinVersion.GetValue(),
 		etcdConfig.ClientOptions()...)
 	if err != nil {
-		log.Debug("QueryNode connect to etcd failed", zap.Error(err))
+		mlog.Debug(s.ctx, "QueryNode connect to etcd failed", mlog.Err(err))
 		return err
 	}
 	s.etcdCli = etcdCli
 	s.SetEtcdClient(etcdCli)
 	s.querynode.SetAddress(s.listener.Address())
-	log.Debug("QueryNode connect to etcd successfully")
+	mlog.Debug(s.ctx, "QueryNode connect to etcd successfully")
 	s.grpcWG.Add(1)
 	go s.startGrpcLoop()
 	// wait for grpc server loop start
@@ -141,9 +139,9 @@ func (s *Server) init() error {
 	}
 
 	s.querynode.UpdateStateCode(commonpb.StateCode_Initializing)
-	log.Debug("QueryNode", zap.Any("State", commonpb.StateCode_Initializing))
+	mlog.Debug(s.ctx, "QueryNode", mlog.Any("State", commonpb.StateCode_Initializing))
 	if err := s.querynode.Init(); err != nil {
-		log.Error("QueryNode init error: ", zap.Error(err))
+		mlog.Error(s.ctx, "QueryNode init error: ", mlog.Err(err))
 		return err
 	}
 	s.serverID.Store(s.querynode.GetNodeID())
@@ -153,13 +151,12 @@ func (s *Server) init() error {
 
 // start starts QueryNode's grpc service.
 func (s *Server) start() error {
-	log := log.Ctx(s.ctx)
 	if err := s.querynode.Start(); err != nil {
-		log.Error("QueryNode start failed", zap.Error(err))
+		mlog.Error(s.ctx, "QueryNode start failed", mlog.Err(err))
 		return err
 	}
 	if err := s.querynode.Register(); err != nil {
-		log.Error("QueryNode register service failed", zap.Error(err))
+		mlog.Error(s.ctx, "QueryNode register service failed", mlog.Err(err))
 		return err
 	}
 	return nil
@@ -186,7 +183,7 @@ func (s *Server) startGrpcLoop() {
 		grpc.MaxSendMsgSize(Params.ServerMaxSendSize.GetAsInt()),
 		grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
 			// otelgrpc.UnaryServerInterceptor(opts...),
-			logutil.UnaryTraceLoggerInterceptor,
+			mlog.UnaryServerInterceptor(typeutil.QueryNodeRole),
 			interceptor.ClusterValidationUnaryServerInterceptor(),
 			interceptor.ServerIDValidationUnaryServerInterceptor(func() int64 {
 				if s.serverID.Load() == 0 {
@@ -197,7 +194,7 @@ func (s *Server) startGrpcLoop() {
 		)),
 		grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(
 			// otelgrpc.StreamServerInterceptor(opts...),
-			logutil.StreamTraceLoggerInterceptor,
+			mlog.StreamServerInterceptor(typeutil.QueryNodeRole),
 			interceptor.ClusterValidationStreamServerInterceptor(),
 			interceptor.ServerIDValidationStreamServerInterceptor(func() int64 {
 				if s.serverID.Load() == 0 {
@@ -218,7 +215,7 @@ func (s *Server) startGrpcLoop() {
 
 	go funcutil.CheckGrpcReady(ctx, s.grpcErrChan)
 	if err := s.grpcServer.Serve(s.listener); err != nil {
-		log.Ctx(s.ctx).Debug("QueryNode Start Grpc Failed!!!!")
+		mlog.Debug(s.ctx, "QueryNode Start Grpc Failed!!!!")
 		s.grpcErrChan <- err
 	}
 }
@@ -228,30 +225,30 @@ func (s *Server) Run() error {
 	if err := s.init(); err != nil {
 		return err
 	}
-	log.Ctx(s.ctx).Debug("QueryNode init done ...")
+	mlog.Debug(s.ctx, "QueryNode init done ...")
 
 	if err := s.start(); err != nil {
 		return err
 	}
-	log.Ctx(s.ctx).Debug("QueryNode start done ...")
+	mlog.Debug(s.ctx, "QueryNode start done ...")
 	return nil
 }
 
 // Stop stops QueryNode's grpc service.
 func (s *Server) Stop() (err error) {
-	logger := log.Ctx(s.ctx)
+	logger := mlog.With()
 	if s.listener != nil {
-		logger = logger.With(zap.String("address", s.listener.Address()))
+		logger = logger.With(mlog.String("address", s.listener.Address()))
 	}
-	logger.Info("QueryNode stopping")
+	logger.Info(s.ctx, "QueryNode stopping")
 	defer func() {
-		logger.Info("QueryNode stopped", zap.Error(err))
+		logger.Info(s.ctx, "QueryNode stopped", mlog.Err(err))
 	}()
 
-	logger.Info("internal server[querynode] start to stop")
+	logger.Info(s.ctx, "internal server[querynode] start to stop")
 	err = s.querynode.Stop()
 	if err != nil {
-		logger.Error("failed to close querynode", zap.Error(err))
+		logger.Error(s.ctx, "failed to close querynode", mlog.Err(err))
 		return err
 	}
 	if s.etcdCli != nil {
@@ -422,6 +419,10 @@ func (s *Server) GetHighlight(ctx context.Context, req *querypb.GetHighlightRequ
 
 func (s *Server) SyncFileResource(ctx context.Context, req *internalpb.SyncFileResourceRequest) (*commonpb.Status, error) {
 	return s.querynode.SyncFileResource(ctx, req)
+}
+
+func (s *Server) ClearReadTaskQueue(ctx context.Context, req *internalpb.ClearReadTaskQueueRequest) (*internalpb.ClearReadTaskQueueResponse, error) {
+	return s.querynode.ClearReadTaskQueue(ctx, req)
 }
 
 func (s *Server) ComputePhraseMatchSlop(ctx context.Context, req *querypb.ComputePhraseMatchSlopRequest) (*querypb.ComputePhraseMatchSlopResponse, error) {

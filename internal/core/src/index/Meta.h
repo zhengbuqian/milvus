@@ -29,6 +29,8 @@ constexpr const char* MATCH_VALUE = "match_value";
 // below configurations will be persistent, do not edit them.
 constexpr const char* MARISA_TRIE_INDEX = "marisa_trie_index";
 constexpr const char* MARISA_STR_IDS = "marisa_trie_str_ids";
+constexpr const char* MARISA_CSR_INDEX = "marisa_csr_index";
+constexpr const char* MARISA_CSR_OFFSETS = "marisa_csr_offsets";
 
 // below meta key of store bitmap indexes
 constexpr const char* BITMAP_INDEX_DATA = "bitmap_index_data";
@@ -89,8 +91,14 @@ constexpr const char* DISK_ANN_PREFIX_PATH = "index_prefix";
 constexpr const char* DISK_ANN_RAW_DATA_PATH = "data_path";
 constexpr const char* EMB_LIST_META_PATH = "emb_list_meta_file_path";
 constexpr const char* EMB_LIST_META_FILE_NAME = "emb_list_meta";
+constexpr const char* EMB_LIST_RAW_INDEX_PATH = "emb_list_raw_index_file_path";
+constexpr const char* EMB_LIST_RAW_INDEX_FILE_NAME = "emb_list_raw_index";
 constexpr const char* EMB_LIST_OFFSETS_PATH = "emb_list_offset_file_path";
 constexpr const char* VALID_DATA_PATH_KEY = "valid_data_file_path";
+
+// JSON path index file names
+constexpr const char* INDEX_NON_EXIST_OFFSET_FILE_NAME =
+    "json_index_non_exist_offsets";
 
 // VecIndex node filtering
 constexpr const char* VEC_OPT_FIELDS_PATH = "opt_fields_path";

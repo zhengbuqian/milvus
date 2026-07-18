@@ -19,10 +19,12 @@
 #include <cstdint>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 
 #include "common/EasyAssert.h"
 #include "common/Types.h"
 #include "fmt/core.h"
+#include "pb/index_coord.pb.h"
 #include "pb/schema.pb.h"
 
 namespace milvus::storage {
@@ -72,6 +74,16 @@ struct FieldDataMeta {
     proto::schema::FieldSchema field_schema;
 };
 
+// Column name mapping used when reading StorageV3 manifests. The index config
+// must not carry raw external_spec because Knowhere also consumes that config.
+struct StorageColumnMapping {
+    std::string schema_column_name;
+    std::string storage_column_name;
+    bool is_external_column = false;
+};
+
+using StorageColumnMappings = std::unordered_map<int64_t, StorageColumnMapping>;
+
 enum CodecType {
     InvalidCodecType = 0,
     InsertDataType = 1,
@@ -89,6 +101,11 @@ struct IndexMeta {
     DataType field_type;
     int64_t dim;
     bool index_non_encoding;
+    // Path format version used by the worker/loader to assemble the object-storage prefix.
+    // See milvus.proto.index.IndexStorePathVersion.
+    milvus::proto::index::IndexStorePathVersion index_store_path_version{
+        milvus::proto::index::IndexStorePathVersion::
+            INDEX_STORE_PATH_VERSION_BUILD_ROOTED};
 };
 
 struct StorageConfig {
@@ -146,6 +163,8 @@ struct MmapConfig {
     bool vector_index_enable_mmap;
     bool vector_field_enable_mmap;
     bool mmap_populate;
+    bool json_stats_enable_mmap;
+    std::string json_stats_mmap_path;
     bool
     GetEnableGrowingMmap() const {
         return growing_enable_mmap;
@@ -191,6 +210,16 @@ struct MmapConfig {
         return mmap_populate;
     }
 
+    [[nodiscard]] bool
+    GetJsonStatsEnableMmap() const {
+        return json_stats_enable_mmap;
+    }
+
+    [[nodiscard]] const std::string&
+    GetJsonStatsMmapPath() const {
+        return json_stats_mmap_path;
+    }
+
     std::string
     GetMmapPath() {
         return mmap_path;
@@ -210,7 +239,10 @@ struct MmapConfig {
            << ", vector_index_enable_mmap=" << std::boolalpha
            << vector_index_enable_mmap
            << ", vector_field_enable_mmap=" << std::boolalpha
-           << vector_field_enable_mmap << "]";
+           << vector_field_enable_mmap
+           << ", json_stats_enable_mmap=" << std::boolalpha
+           << json_stats_enable_mmap
+           << ", json_stats_mmap_path=" << json_stats_mmap_path << "]";
         return ss.str();
     }
 };

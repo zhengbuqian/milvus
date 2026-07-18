@@ -17,6 +17,7 @@
 
 #include "common/Consts.h"
 #include "common/EasyAssert.h"
+#include "common/FastMem.h"
 #include "common/QueryInfo.h"
 #include "common/QueryResult.h"
 #include "common/Utils.h"
@@ -38,12 +39,27 @@ CachedSearchIterator::CachedSearchIterator(
     const milvus::index::VectorIndex& index,
     const knowhere::DataSetPtr& query_ds,
     const SearchInfo& search_info,
-    const BitsetView& bitset) {
+    const BitsetView& bitset,
+    milvus::OpContext* op_context) {
     if (query_ds == nullptr) {
         ThrowInfo(ErrorCode::UnexpectedError,
                   "Query dataset is nullptr, cannot initialize iterator");
     }
-    nq_ = query_ds->GetRows();
+    auto offsets =
+        query_ds->Get<const size_t*>(knowhere::meta::EMB_LIST_OFFSET);
+    if (offsets != nullptr) {
+        nq_ = query_ds->Get<int64_t>(knowhere::meta::NQ);
+        AssertInfo(nq_ > 0, "embedding list query count is missing");
+        auto total_vectors = static_cast<size_t>(query_ds->GetRows());
+        AssertInfo(offsets[nq_] == total_vectors,
+                   "embedding list query offsets are inconsistent with "
+                   "flattened rows: nq={}, terminal_offset={}, rows={}",
+                   nq_,
+                   offsets[nq_],
+                   total_vectors);
+    } else {
+        nq_ = query_ds->GetRows();
+    }
     Init(search_info);
 
     auto search_json = index.PrepareSearchParams(search_info);
@@ -51,7 +67,7 @@ CachedSearchIterator::CachedSearchIterator(
         search_info, batch_size_, index.GetMetricType(), search_json);
 
     auto expected_iterators =
-        index.VectorIterators(query_ds, search_json, bitset);
+        index.VectorIterators(query_ds, search_json, bitset, op_context);
     if (expected_iterators.has_value()) {
         iterators_ = std::move(expected_iterators.value());
     } else {
@@ -152,7 +168,8 @@ CachedSearchIterator::CachedSearchIterator(
             auto buf = std::make_unique<uint8_t[]>(total_bytes);
             auto* ptr = buf.get();
             for (int64_t i = 0; i < chunk_size; ++i) {
-                memcpy(ptr, va_ptr[i].data(), va_ptr[i].byte_size());
+                milvus::fastmem::FastMemcpy(
+                    ptr, va_ptr[i].data(), va_ptr[i].byte_size());
                 ptr += va_ptr[i].byte_size();
             }
             const void* flat_data = buf.get();
@@ -194,9 +211,8 @@ CachedSearchIterator::CachedSearchIterator(
                           });
             int64_t chunk_size = column->chunk_row_nums(chunk_id);
             const auto& offset_mapping = column->GetOffsetMapping();
-            const auto& valid_count_per_chunk = column->GetValidCountPerChunk();
-            if (offset_mapping.IsEnabled() && !valid_count_per_chunk.empty()) {
-                chunk_size = valid_count_per_chunk[chunk_id];
+            if (offset_mapping.IsEnabled()) {
+                chunk_size = column->GetValidCountInChunk(chunk_id);
             }
             // For element-level search on vector array field, chunk_size
             // must be the element count in this chunk, not the row count.
@@ -235,8 +251,7 @@ CachedSearchIterator::NextBatch(const SearchInfo& search_info,
 
     for (size_t query_idx = 0; query_idx < nq_; ++query_idx) {
         auto rst = GetBatchedNextResults(query_idx, search_info);
-        WriteSingleQuerySearchResult(
-            search_result, query_idx, rst, search_info.round_decimal_);
+        WriteSingleQuerySearchResult(search_result, query_idx, rst);
     }
 }
 
@@ -263,8 +278,18 @@ CachedSearchIterator::GetNextValidResult(
     const std::optional<float>& radius,
     const std::optional<float>& range_filter) {
     auto& iterator = iterators_[iterator_idx];
-    while (iterator->HasNext()) {
-        auto result = ConvertIteratorResult(iterator->Next());
+    while (true) {
+        auto has_next = iterator->HasNext();
+        AssertInfo(has_next.has_value(),
+                   "knowhere iterator HasNext failed: {}",
+                   has_next.what());
+        if (!has_next.value()) {
+            break;
+        }
+        auto next = iterator->Next();
+        AssertInfo(
+            next.has_value(), "knowhere iterator Next failed: {}", next.what());
+        auto result = ConvertIteratorResult(next.value());
         if (IsValid(result, last_bound, radius, range_filter)) {
             return result;
         }
@@ -327,8 +352,19 @@ CachedSearchIterator::GetBatchedNextResults(size_t query_idx,
 
     if (num_chunks_ == 1) {
         auto& iterator = iterators_[query_idx];
-        while (iterator->HasNext() && rst.size() < batch_size_) {
-            auto result = ConvertIteratorResult(iterator->Next());
+        while (rst.size() < batch_size_) {
+            auto has_next = iterator->HasNext();
+            AssertInfo(has_next.has_value(),
+                       "knowhere iterator HasNext failed: {}",
+                       has_next.what());
+            if (!has_next.value()) {
+                break;
+            }
+            auto next = iterator->Next();
+            AssertInfo(next.has_value(),
+                       "knowhere iterator Next failed: {}",
+                       next.what());
+            auto result = ConvertIteratorResult(next.value());
             if (IsValid(result, last_bound, radius, range_filter)) {
                 rst.emplace_back(result);
             }
@@ -352,20 +388,11 @@ void
 CachedSearchIterator::WriteSingleQuerySearchResult(
     SearchResult& search_result,
     const size_t idx,
-    std::vector<DisIdPair>& rst,
-    const int64_t round_decimal) {
-    const float multiplier = pow(10.0, round_decimal);
-
+    std::vector<DisIdPair>& rst) {
     std::transform(rst.begin(),
                    rst.end(),
                    search_result.distances_.begin() + idx * batch_size_,
-                   [multiplier, round_decimal](DisIdPair& x) {
-                       if (round_decimal != -1) {
-                           x.first =
-                               std::round(x.first * multiplier) / multiplier;
-                       }
-                       return x.first;
-                   });
+                   [](const DisIdPair& x) { return x.first; });
 
     std::transform(rst.begin(),
                    rst.end(),

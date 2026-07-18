@@ -26,13 +26,13 @@ import (
 
 	"github.com/apache/arrow/go/v17/arrow/memory"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/util/function/chain/expr"
 	"github.com/milvus-io/milvus/internal/util/function/chain/types"
 	"github.com/milvus-io/milvus/internal/util/function/models"
 	"github.com/milvus-io/milvus/internal/util/function/rerank"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
 )
 
 // =============================================================================
@@ -251,7 +251,7 @@ func convertLegacyParams(rankParams []*commonpb.KeyValuePair) (*schemapb.Functio
 //     Merge(Weighted) → Sort/GroupBy → [RoundDecimal] → Select
 //
 //  3. Decay:
-//     Merge(Max|Sum|Avg) → Map(DecayExpr→_decay_score) → Map(ScoreCombine: $score*_decay_score→$score) → Sort/GroupBy → [RoundDecimal] → Select
+//     Merge(Max|Sum|Avg) → Map(DecayExpr→_decay_score) → Map(NumCombine: $score*_decay_score→$score) → Sort/GroupBy → [RoundDecimal] → Select
 //
 //  4. Model:
 //     Merge(Max) → Map(RerankModelExpr) → Sort/GroupBy → [RoundDecimal] → Select
@@ -270,7 +270,7 @@ func buildRerankChainInternal(
 ) (*FuncChain, error) {
 	rerankerName := rerank.GetRerankName(funcSchema)
 	if rerankerName == "" {
-		return nil, merr.WrapErrParameterInvalidMsg("rerank_builder: reranker name not specified")
+		return nil, merr.WrapErrParameterMissingMsg("rerank_builder: reranker name not specified")
 	}
 
 	if alloc == nil {
@@ -331,7 +331,7 @@ func buildRerankChainInternal(
 		fc.Add(groupByOp)
 	} else {
 		// Non-grouping: sort by score and apply limit
-		fc.Sort(types.ScoreFieldName, sortDescending)
+		fc.Sort(types.ScoreFieldName, sortDescending, types.IDFieldName)
 		if searchParams.Limit > 0 {
 			fc.LimitWithOffset(searchParams.Limit, searchParams.Offset)
 		}
@@ -491,7 +491,7 @@ func buildDecayChain(fc *FuncChain, collSchema *schemapb.CollectionSchema, funcS
 		WithForceDescending(true))
 
 	// DecayExpr only computes the decay factor (0~1) into an intermediate column,
-	// then ScoreCombineExpr multiplies it with $score.
+	// then NumCombineExpr multiplies it with $score.
 	decayScoreCol := "_decay_score"
 
 	decayExpr, err := expr.NewDecayExpr(
@@ -509,7 +509,7 @@ func buildDecayChain(fc *FuncChain, collSchema *schemapb.CollectionSchema, funcS
 		[]string{inputField},
 		[]string{decayScoreCol})
 
-	combineExpr, err := expr.NewScoreCombineExpr(expr.ModeMultiply, nil)
+	combineExpr, err := expr.NewNumCombineExpr(expr.ModeMultiply, nil, expr.WithNullPolicy(expr.NumCombineNullAsZero))
 	if err != nil {
 		return merr.WrapErrParameterInvalidMsg("rerank_builder: %v", err)
 	}
@@ -582,13 +582,13 @@ func parseDecayParams(funcSchema *schemapb.FunctionSchema) (MergeStrategy, bool,
 	}
 
 	if !functionSet {
-		return "", false, nil, merr.WrapErrParameterInvalidMsg("decay function not specified")
+		return "", false, nil, merr.WrapErrParameterMissingMsg("decay function not specified")
 	}
 	if !originSet {
-		return "", false, nil, merr.WrapErrParameterInvalidMsg("decay origin not specified")
+		return "", false, nil, merr.WrapErrParameterMissingMsg("decay origin not specified")
 	}
 	if !scaleSet {
-		return "", false, nil, merr.WrapErrParameterInvalidMsg("decay scale not specified")
+		return "", false, nil, merr.WrapErrParameterMissingMsg("decay scale not specified")
 	}
 
 	// Convert score_mode to MergeStrategy
@@ -664,7 +664,7 @@ func parseModelQueries(funcSchema *schemapb.FunctionSchema) ([]string, error) {
 				return nil, merr.WrapErrParameterInvalidMsg("rerank_builder: parse rerank params [queries] failed: %v", err)
 			}
 			if len(queries) == 0 {
-				return nil, merr.WrapErrParameterInvalidMsg("rerank_builder: rerank queries must not be empty")
+				return nil, merr.WrapErrParameterMissingMsg("rerank_builder: rerank queries must not be empty")
 			}
 			return queries, nil
 		}

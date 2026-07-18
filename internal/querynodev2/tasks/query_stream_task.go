@@ -5,10 +5,9 @@ import (
 
 	"github.com/milvus-io/milvus/internal/querynodev2/segments"
 	"github.com/milvus-io/milvus/internal/util/searchutil/scheduler"
-	"github.com/milvus-io/milvus/internal/util/segcore"
 	"github.com/milvus-io/milvus/internal/util/streamrpc"
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/internalpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/querypb"
 )
 
 var _ scheduler.Task = &QueryStreamTask{}
@@ -54,21 +53,17 @@ func (t *QueryStreamTask) IsGpuIndex() bool {
 	return false
 }
 
+func (t *QueryStreamTask) Context() context.Context {
+	return t.ctx
+}
+
 // PreExecute the task, only call once.
 func (t *QueryStreamTask) PreExecute() error {
 	return nil
 }
 
 func (t *QueryStreamTask) Execute() error {
-	retrievePlan, err := segcore.NewRetrievePlan(
-		t.collection.GetCCollection(),
-		t.req.Req.GetSerializedExprPlan(),
-		t.req.Req.GetMvccTimestamp(),
-		t.req.Req.Base.GetMsgID(),
-		t.req.Req.GetConsistencyLevel(),
-		t.req.Req.GetCollectionTtlTimestamps(),
-		t.req.Req.GetEntityTtlPhysicalTime(),
-	)
+	retrievePlan, err := t.collection.NewRetrievePlan(t.req)
 	if err != nil {
 		return err
 	}
@@ -87,10 +82,6 @@ func (t *QueryStreamTask) Execute() error {
 
 func (t *QueryStreamTask) Done(err error) {
 	t.notifier <- err
-}
-
-func (t *QueryStreamTask) Canceled() error {
-	return t.ctx.Err()
 }
 
 func (t *QueryStreamTask) Wait() error {

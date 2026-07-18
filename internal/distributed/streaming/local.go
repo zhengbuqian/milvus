@@ -3,8 +3,8 @@ package streaming
 import (
 	"context"
 
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/types"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 type localServiceImpl struct {
@@ -18,6 +18,15 @@ func (w localServiceImpl) GetLatestMVCCTimestampIfLocal(ctx context.Context, vch
 	defer w.lifetime.Done()
 
 	return w.handlerClient.GetLatestMVCCTimestampIfLocal(ctx, vchannel)
+}
+
+func (w localServiceImpl) PrepareReleaseManualFlushIfLocal(ctx context.Context, collectionID int64, vchannel string, releaseSegmentIDs []int64) (bool, error) {
+	if !w.lifetime.Add(typeutil.LifetimeStateWorking) {
+		return false, ErrWALAccesserClosed
+	}
+	defer w.lifetime.Done()
+
+	return w.handlerClient.PrepareReleaseManualFlushIfLocal(ctx, collectionID, vchannel, releaseSegmentIDs)
 }
 
 // GetMetrics gets the metrics of the wal.

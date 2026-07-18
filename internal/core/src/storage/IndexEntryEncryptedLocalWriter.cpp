@@ -17,6 +17,7 @@
 #include "storage/IndexEntryEncryptedLocalWriter.h"
 
 #include <fcntl.h>
+#include <folly/ScopeGuard.h>
 #include <unistd.h>
 #include <cerrno>
 #include <cstring>
@@ -24,12 +25,17 @@
 #include <utility>
 #include <vector>
 
+#include "storage/Util.h"
+
 #include <boost/uuid/random_generator.hpp>
 #include <boost/uuid/uuid_io.hpp>
 
 #include "common/EasyAssert.h"
+#include "common/FastMem.h"
+#include "folly/ScopeGuard.h"
 #include "nlohmann/json.hpp"
 #include "storage/Crc32cUtil.h"
+#include "storage/EntryStreamUtils.h"
 #include "storage/RemoteOutputStream.h"
 
 namespace milvus::storage {
@@ -49,6 +55,11 @@ IndexEntryEncryptedLocalWriter::IndexEntryEncryptedLocalWriter(
       collection_id_(collection_id),
       slice_size_(slice_size),
       pool_(ThreadPools::GetThreadPool(ThreadPoolPriority::MIDDLE)) {
+    AssertInfo(IsStreamSliceSizeAligned(slice_size_),
+               "Encrypted entry slice_size must be {}-byte aligned, got {}",
+               kStreamSliceAlignment,
+               slice_size_);
+
     auto [encryptor, edek] =
         cipher_plugin_->GetEncryptor(ez_id_, collection_id_);
     edek_ = std::move(edek);
@@ -120,6 +131,11 @@ IndexEntryEncryptedLocalWriter::WriteEntry(const std::string& name,
     size_t remaining = size;
     uint32_t crc = 0;
 
+    // Encryption tasks capture `this`; on error the caller destroys the
+    // writer, so finish them before unwinding (see #46958).
+    auto drain_on_unwind =
+        folly::makeGuard([&pending]() { DrainFutures(pending); });
+
     while (remaining > 0 || !pending.empty()) {
         // Fill the sliding window: read one slice from fd and submit encryption
         while (pending.size() < W && remaining > 0) {
@@ -162,6 +178,11 @@ IndexEntryEncryptedLocalWriter::EncryptAndWriteSlices(const std::string& name,
     size_t remaining = size;
     size_t read_offset = 0;
     uint32_t crc = 0;
+
+    // Encryption tasks capture `this`; on error the caller destroys the
+    // writer, so finish them before unwinding (see #46958).
+    auto drain_on_unwind =
+        folly::makeGuard([&pending]() { DrainFutures(pending); });
 
     while (remaining > 0 || !pending.empty()) {
         while (pending.size() < W && remaining > 0) {
@@ -239,9 +260,9 @@ IndexEntryEncryptedLocalWriter::Finish() {
     uint32_t meta_size_u32 = static_cast<uint32_t>(meta_entry_size);
     uint32_t dir_size_u32 = static_cast<uint32_t>(dir_str.size());
 
-    std::memcpy(footer + 0, &version, sizeof(uint16_t));
-    std::memcpy(footer + 24, &meta_size_u32, sizeof(uint32_t));
-    std::memcpy(footer + 28, &dir_size_u32, sizeof(uint32_t));
+    milvus::fastmem::FastMemcpy(footer + 0, &version, sizeof(uint16_t));
+    milvus::fastmem::FastMemcpy(footer + 24, &meta_size_u32, sizeof(uint32_t));
+    milvus::fastmem::FastMemcpy(footer + 28, &dir_size_u32, sizeof(uint32_t));
 
     written = ::write(local_fd_, footer, MILVUS_V3_FOOTER_SIZE);
     AssertInfo(written == static_cast<ssize_t>(MILVUS_V3_FOOTER_SIZE),
@@ -253,9 +274,10 @@ IndexEntryEncryptedLocalWriter::Finish() {
     total_bytes_written_ = MILVUS_V3_MAGIC_SIZE + current_offset_ +
                            dir_str.size() + MILVUS_V3_FOOTER_SIZE;
 
+    auto cleanup_local_file =
+        folly::makeGuard([this]() { ::unlink(local_path_.c_str()); });
     UploadLocalFile();
 
-    ::unlink(local_path_.c_str());
     finished_ = true;
 }
 
@@ -271,6 +293,7 @@ IndexEntryEncryptedLocalWriter::UploadLocalFile() {
     int read_fd = ::open(local_path_.c_str(), O_RDONLY);
     AssertInfo(
         read_fd != -1, "Failed to open local file for upload: {}", local_path_);
+    auto close_read_fd = folly::makeGuard([read_fd]() { ::close(read_fd); });
 
     constexpr size_t kBufSize = 16 * 1024 * 1024;
     std::vector<char> buf(kBufSize);
@@ -284,14 +307,12 @@ IndexEntryEncryptedLocalWriter::UploadLocalFile() {
             if (errno == EINTR) {
                 continue;
             }
-            ::close(read_fd);
             ThrowInfo(ErrorCode::UnexpectedError,
                       fmt::format("Failed to read local file {}: {}",
                                   local_path_,
                                   strerror(errno)));
         }
     }
-    ::close(read_fd);
     remote_stream->Close();
 }
 

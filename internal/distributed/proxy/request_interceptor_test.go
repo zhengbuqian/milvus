@@ -26,11 +26,11 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/testutils"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
+	"github.com/milvus-io/milvus/pkg/v3/metrics"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/testutils"
 )
 
 type StatsInterceptorSuite struct {
@@ -66,8 +66,8 @@ func (suite *StatsInterceptorSuite) TestUnaryRequestStatsInterceptor() {
 				return merr.Success(), nil
 			},
 			expectLabels: [][]string{
-				{paramtable.GetStringNodeID(), "CreateCollection", metrics.TotalLabel, dbName, collection},
-				{paramtable.GetStringNodeID(), "CreateCollection", metrics.SuccessLabel, dbName, collection},
+				{paramtable.GetStringNodeID(), "CreateCollection", metrics.TotalLabel, metrics.CauseNA, dbName, collection},
+				{paramtable.GetStringNodeID(), "CreateCollection", metrics.SuccessLabel, metrics.CauseNA, dbName, collection},
 			},
 		},
 		{
@@ -83,8 +83,8 @@ func (suite *StatsInterceptorSuite) TestUnaryRequestStatsInterceptor() {
 				return merr.Status(merr.WrapErrServiceInternal("unexpcted")), nil
 			},
 			expectLabels: [][]string{
-				{paramtable.GetStringNodeID(), "CreateCollection", metrics.TotalLabel, dbName, collection},
-				{paramtable.GetStringNodeID(), "CreateCollection", metrics.FailLabel, dbName, collection},
+				{paramtable.GetStringNodeID(), "CreateCollection", metrics.TotalLabel, metrics.CauseNA, dbName, collection},
+				{paramtable.GetStringNodeID(), "CreateCollection", metrics.FailLabel, metrics.CauseSystem, dbName, collection},
 			},
 		},
 		{
@@ -102,8 +102,8 @@ func (suite *StatsInterceptorSuite) TestUnaryRequestStatsInterceptor() {
 				}, nil
 			},
 			expectLabels: [][]string{
-				{paramtable.GetStringNodeID(), "Insert", metrics.TotalLabel, dbName, collection},
-				{paramtable.GetStringNodeID(), "Insert", metrics.RetryLabel, dbName, collection},
+				{paramtable.GetStringNodeID(), "Insert", metrics.TotalLabel, metrics.CauseNA, dbName, collection},
+				{paramtable.GetStringNodeID(), "Insert", metrics.RetryLabel, metrics.CauseNA, dbName, collection},
 			},
 		},
 		{
@@ -119,8 +119,9 @@ func (suite *StatsInterceptorSuite) TestUnaryRequestStatsInterceptor() {
 				return nil, status.Error(codes.Unauthenticated, "auth check failure, please check api key is correct")
 			},
 			expectLabels: [][]string{
-				{paramtable.GetStringNodeID(), "CreateCollection", metrics.TotalLabel, dbName, collection},
-				{paramtable.GetStringNodeID(), "CreateCollection", metrics.RejectedLabel, dbName, collection},
+				{paramtable.GetStringNodeID(), "CreateCollection", metrics.TotalLabel, metrics.CauseNA, dbName, collection},
+				// Unauthenticated is the caller's fault -> rejected, cause=user.
+				{paramtable.GetStringNodeID(), "CreateCollection", metrics.RejectedLabel, metrics.CauseUser, dbName, collection},
 			},
 		},
 	}

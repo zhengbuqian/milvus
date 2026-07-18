@@ -21,7 +21,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 var (
@@ -233,7 +233,7 @@ var (
 			Subsystem: typeutil.ProxyRole,
 			Name:      "req_count",
 			Help:      "count of operation executed",
-		}, []string{nodeIDLabelName, functionLabelName, statusLabelName, databaseLabelName, collectionName})
+		}, []string{nodeIDLabelName, functionLabelName, statusLabelName, causeLabelName, databaseLabelName, collectionName})
 
 	// ProxyReqLatency records the latency for each grpc request.
 	ProxyGRPCLatency = prometheus.NewHistogramVec(
@@ -243,7 +243,7 @@ var (
 			Name:      "grpc_latency",
 			Help:      "latency of each grpc request",
 			Buckets:   buckets, // unit: ms
-		}, []string{nodeIDLabelName, functionLabelName, statusLabelName})
+		}, []string{nodeIDLabelName, functionLabelName, statusLabelName, causeLabelName})
 
 	// ProxyReqLatency records the latency that for all requests, like "CreateCollection".
 	ProxyReqLatency = prometheus.NewHistogramVec(
@@ -363,6 +363,17 @@ var (
 			Help:      "total nq of executing search/query",
 		}, []string{
 			nodeIDLabelName,
+		})
+
+	// ProxyShardLeaderPreferredNodeCount records preferred shard leader selection results.
+	ProxyShardLeaderPreferredNodeCount = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: milvusNamespace,
+			Subsystem: typeutil.ProxyRole,
+			Name:      "shard_leader_preferred_node_count",
+			Help:      "counter of preferred shard leader selection results",
+		}, []string{
+			statusLabelName,
 		})
 
 	// ProxyRateLimitReqCount integrates a counter monitoring metric for the rate-limit rpc requests.
@@ -532,6 +543,7 @@ func RegisterProxy(registry *prometheus.Registry) {
 
 	registry.MustRegister(ProxyWorkLoadScore)
 	registry.MustRegister(ProxyExecutingTotalNq)
+	registry.MustRegister(ProxyShardLeaderPreferredNodeCount)
 	registry.MustRegister(ProxyRateLimitReqCount)
 
 	registry.MustRegister(ProxySlowQueryCount)

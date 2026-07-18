@@ -1,6 +1,7 @@
 package planparserv2
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -9,21 +10,20 @@ import (
 	"github.com/antlr4-go/antlr/v4"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/samber/lo"
-	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/json"
 	planparserv2 "github.com/milvus-io/milvus/internal/parser/planparserv2/generated"
 	"github.com/milvus-io/milvus/internal/parser/planparserv2/rewriter"
 	"github.com/milvus-io/milvus/internal/util/function/rerank"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/planpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/planpb"
+	"github.com/milvus-io/milvus/pkg/v3/util/funcutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 var (
@@ -51,6 +51,56 @@ func ParseExprParams(vals map[string]*schemapb.TemplateValue) *ExprParams {
 	return ep
 }
 
+// parseExpr parses an expression with a two-stage strategy:
+//
+//	Stage 1 (fast): SLL prediction with a throwaway probe listener. For the
+//	  overwhelmingly common unambiguous filter expression SLL parses cleanly and
+//	  the result is identical to a full LL parse, so we return it directly. We do
+//	  not use BailErrorStrategy here: antlr-go's BailErrorStrategy can reach an
+//	  unimplemented ParseCancellationException path ("panic: implement me"), so
+//	  "SLL could not decide" is detected via a syntax error on the probe listener
+//	  instead of a bail/recover.
+//	Stage 2 (accurate): only if stage 1 saw an error. Rewind the tokens and reparse
+//	  with full LL prediction + default error recovery and the real error listener,
+//	  so the result/error is exactly what a pure-LL parse would produce. SLL never
+//	  accepts input that LL rejects, so a clean stage-1 parse equals the LL parse.
+func parseExpr(parser *planparserv2.PlanParser, listener *errorListenerImpl) planparserv2.IExprContext {
+	interp := parser.GetInterpreter()
+
+	// Stage 1 (fast): SLL prediction with a throwaway listener. For the
+	// overwhelmingly common unambiguous filter expression SLL parses cleanly and
+	// the result is identical to a full LL parse, so we return it directly. We do
+	// not use BailErrorStrategy: antlr-go's BailErrorStrategy can hit an
+	// unimplemented ParseCancellationException path ("panic: implement me"), so we
+	// instead detect "SLL could not decide" via a syntax error on a probe
+	// listener. DefaultErrorStrategy's recovery only runs on that rare error path.
+	probe := &errorListenerImpl{}
+	parser.RemoveErrorListeners()
+	parser.AddErrorListener(probe)
+	parser.SetErrorHandler(antlr.NewDefaultErrorStrategy())
+	interp.SetPredictionMode(antlr.PredictionModeSLL)
+	ast := parser.Expr()
+	if probe.Error() == nil {
+		return ast
+	}
+
+	// Stage 2 (accurate): SLL saw an error — it may be a genuine syntax error or
+	// an SLL-only false positive. Rewind the buffered tokens and reparse with full
+	// LL + default recovery and the real listener, so the result/error is exactly
+	// what a pure-LL parse would produce.
+	if tokens, ok := parser.GetTokenStream().(*antlr.CommonTokenStream); ok {
+		tokens.Seek(0)
+		// SetInputStream resets the parser's internal state (context stack,
+		// precedence stack, error handler) while preserving BuildParseTrees.
+		parser.SetInputStream(tokens)
+	}
+	parser.RemoveErrorListeners()
+	parser.AddErrorListener(listener)
+	parser.SetErrorHandler(antlr.NewDefaultErrorStrategy())
+	interp.SetPredictionMode(antlr.PredictionModeLL)
+	return parser.Expr()
+}
+
 func handleInternal(exprStr string) (ast planparserv2.IExprContext, err error) {
 	val, ok := exprCache.Get(exprStr)
 	if ok {
@@ -60,7 +110,7 @@ func handleInternal(exprStr string) (ast planparserv2.IExprContext, err error) {
 		case error:
 			return nil, v
 		default:
-			return nil, fmt.Errorf("unknown cache error: %v", v)
+			return nil, merr.WrapErrQueryPlanMsg("unknown cache error: %v", v)
 		}
 	}
 
@@ -84,14 +134,14 @@ func handleInternal(exprStr string) (ast planparserv2.IExprContext, err error) {
 		return
 	}
 
-	ast = parser.Expr()
+	ast = parseExpr(parser, listener)
 	if err = listener.Error(); err != nil {
 		return
 	}
 
 	if parser.GetCurrentToken().GetTokenType() != antlr.TokenEOF {
-		log.Info("invalid expression", zap.String("expr", exprStr))
-		err = fmt.Errorf("invalid expression: %s", exprStr)
+		mlog.Info(context.TODO(), "invalid expression", mlog.String("expr", exprStr))
+		err = merr.WrapErrQueryPlanMsg("invalid expression: %s", exprStr)
 		return
 	}
 
@@ -106,7 +156,7 @@ func handleInternal(exprStr string) (ast planparserv2.IExprContext, err error) {
 func handleExprInternal(schema *typeutil.SchemaHelper, exprStr string, visitorArgs *ParserVisitorArgs) (result interface{}) {
 	defer func() {
 		if r := recover(); r != nil {
-			result = fmt.Errorf("unsupported expression: %s", exprStr)
+			result = merr.WrapErrQueryPlanMsg("unsupported expression: %s", exprStr)
 		}
 	}()
 
@@ -130,15 +180,25 @@ func parseExprInner(schema *typeutil.SchemaHelper, exprStr string, exprTemplateV
 	ret := handleExprInternal(schema, exprStr, visitorArgs)
 
 	if err := getError(ret); err != nil {
-		return nil, fmt.Errorf("cannot parse expression: %s, error: %s", exprStr, err)
+		return nil, merr.WrapErrQueryPlan(err, "cannot parse expression: %s", exprStr)
 	}
 
 	predicate := getExpr(ret)
 	if predicate == nil {
-		return nil, fmt.Errorf("cannot parse expression: %s", exprStr)
+		return nil, merr.WrapErrQueryPlanMsg("cannot parse expression: %s", exprStr)
 	}
 	if !canBeExecuted(predicate) {
-		return nil, fmt.Errorf("predicate is not a boolean expression: %s, data type: %s", exprStr, predicate.dataType)
+		// Handle standalone boolean literals: true → AlwaysTrueExpr, false → AlwaysFalseExpr.
+		if boolVal := predicate.expr.GetValueExpr().GetValue(); boolVal != nil && IsBool(boolVal) {
+			if boolVal.GetBoolVal() {
+				predicate.expr = alwaysTrueExpr()
+			} else {
+				predicate.expr = alwaysFalseExpr()
+			}
+			predicate.nodeDependent = false
+		} else {
+			return nil, merr.WrapErrQueryPlanMsg("predicate is not a boolean expression: %s, data type: %s", exprStr, predicate.dataType)
+		}
 	}
 
 	valueMap, err := UnmarshalExpressionValues(exprTemplateValues)
@@ -162,15 +222,15 @@ func parseIdentifierInner(schema *typeutil.SchemaHelper, identifier string, chec
 	ret := handleExprInternal(schema, identifier, visitorArgs)
 
 	if err := getError(ret); err != nil {
-		return fmt.Errorf("cannot parse identifier: %s, error: %s", identifier, err)
+		return merr.WrapErrQueryPlan(err, "cannot parse identifier: %s", identifier)
 	}
 
 	predicate := getExpr(ret)
 	if predicate == nil {
-		return fmt.Errorf("cannot parse identifier: %s", identifier)
+		return merr.WrapErrQueryPlanMsg("cannot parse identifier: %s", identifier)
 	}
 	if predicate.expr.GetColumnExpr() == nil {
-		return fmt.Errorf("cannot parse identifier: %s", identifier)
+		return merr.WrapErrQueryPlanMsg("cannot parse identifier: %s", identifier)
 	}
 
 	return checkFunc(predicate.expr)
@@ -217,12 +277,12 @@ func CreateSearchPlanArgs(schema *typeutil.SchemaHelper, exprStr string, vectorF
 
 	expr, err := parse()
 	if err != nil {
-		log.Info("CreateSearchPlan failed", zap.Error(err))
+		mlog.Info(context.TODO(), "CreateSearchPlan failed", mlog.Err(err))
 		return nil, err
 	}
 	vectorField, err := schema.GetFieldFromName(vectorFieldName)
 	if err != nil {
-		log.Info("CreateSearchPlan failed", zap.Error(err))
+		mlog.Info(context.TODO(), "CreateSearchPlan failed", mlog.Err(err))
 		return nil, err
 	}
 	// plan ok with schema, check ann field
@@ -232,7 +292,7 @@ func CreateSearchPlanArgs(schema *typeutil.SchemaHelper, exprStr string, vectorF
 
 	var vectorType planpb.VectorType
 	if !typeutil.IsVectorType(dataType) {
-		return nil, fmt.Errorf("field (%s) to search is not of vector data type", vectorFieldName)
+		return nil, merr.WrapErrQueryPlanMsg("field (%s) to search is not of vector data type", vectorFieldName)
 	}
 	switch dataType {
 	case schemapb.DataType_BinaryVector:
@@ -260,13 +320,13 @@ func CreateSearchPlanArgs(schema *typeutil.SchemaHelper, exprStr string, vectorF
 		case schemapb.DataType_Int8Vector:
 			vectorType = planpb.VectorType_EmbListInt8Vector
 		default:
-			log.Error("Invalid elementType for ArrayOfVector", zap.Any("elementType", elementType))
-			return nil, fmt.Errorf("unsupported element type for ArrayOfVector: %v", elementType)
+			mlog.Error(context.TODO(), "Invalid elementType for ArrayOfVector", mlog.Any("elementType", elementType))
+			return nil, merr.WrapErrQueryPlanMsg("unsupported element type for ArrayOfVector: %v", elementType)
 		}
 
 	default:
-		log.Error("Invalid dataType", zap.Any("dataType", dataType))
-		return nil, fmt.Errorf("unsupported vector data type: %v", dataType)
+		mlog.Error(context.TODO(), "Invalid dataType", mlog.Any("dataType", dataType))
+		return nil, merr.WrapErrQueryPlanMsg("unsupported vector data type: %v", dataType)
 	}
 
 	scorers, options, err := CreateSearchScorers(schema, functionScorer, exprTemplateValues)
@@ -275,7 +335,7 @@ func CreateSearchPlanArgs(schema *typeutil.SchemaHelper, exprStr string, vectorF
 	}
 
 	if len(scorers) != 0 && (queryInfo.GroupByFieldId != -1 || queryInfo.SearchIteratorV2Info != nil) {
-		return nil, fmt.Errorf("don't support use segment scorer with group_by or search_iterator")
+		return nil, merr.WrapErrQueryPlanMsg("don't support use segment scorer with group_by or search_iterator")
 	}
 
 	exprParams := ParseExprParams(exprTemplateValues)
@@ -369,19 +429,19 @@ func CreateSearchScorer(schema *typeutil.SchemaHelper, function *schemapb.Functi
 		if ok {
 			expr, err := ParseExpr(schema, filter, exprTemplateValues)
 			if err != nil {
-				return nil, fmt.Errorf("parse expr failed with error: {%v}", err)
+				return nil, merr.WrapErrQueryPlan(err, "parse expr failed")
 			}
 			scorer.Filter = expr
 		}
 
 		weightStr, ok := funcutil.TryGetAttrByKeyFromRepeatedKV(rerank.WeightKey, function.GetParams())
 		if !ok {
-			return nil, fmt.Errorf("must set weight params for weight scorer")
+			return nil, merr.WrapErrQueryPlanMsg("must set weight params for weight scorer")
 		}
 
 		weight, err := strconv.ParseFloat(weightStr, 32)
 		if err != nil {
-			return nil, fmt.Errorf("parse function scorer weight params failed with error: {%v}", err)
+			return nil, merr.WrapErrQueryPlan(err, "parse function scorer weight params failed")
 		}
 		scorer.Weight = float32(weight)
 

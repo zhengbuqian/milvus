@@ -3,10 +3,10 @@ package util
 import (
 	"google.golang.org/protobuf/proto"
 
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexcgopb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/metautil"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/indexcgopb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/indexpb"
+	"github.com/milvus-io/milvus/pkg/v3/util/metautil"
 )
 
 func ParseStorageConfig(s *indexpb.StorageConfig) (*indexcgopb.StorageConfig, error) {
@@ -25,8 +25,7 @@ func GetSegmentInsertFiles(fieldBinlogs []*datapb.FieldBinlog, storageConfig *in
 		filePaths := make([]string, 0)
 		columnGroupID := insertLog.GetFieldID()
 		for _, binlog := range insertLog.GetBinlogs() {
-			filePath := metautil.BuildInsertLogPath(storageConfig.GetRootPath(), collectionID, partitionID, segmentID, columnGroupID, binlog.GetLogID())
-			filePaths = append(filePaths, filePath)
+			filePaths = append(filePaths, getInsertLogPath(binlog, storageConfig, collectionID, partitionID, segmentID, columnGroupID))
 		}
 		insertLogs = append(insertLogs, &indexcgopb.FieldInsertFiles{
 			FilePaths: filePaths,
@@ -35,4 +34,12 @@ func GetSegmentInsertFiles(fieldBinlogs []*datapb.FieldBinlog, storageConfig *in
 	return &indexcgopb.SegmentInsertFiles{
 		FieldInsertFiles: insertLogs,
 	}
+}
+
+func getInsertLogPath(binlog *datapb.Binlog, storageConfig *indexpb.StorageConfig, collectionID int64, partitionID int64, segmentID int64, columnGroupID int64) string {
+	filePath := binlog.GetLogPath()
+	if filePath != "" {
+		return filePath
+	}
+	return metautil.BuildInsertLogPath(storageConfig.GetRootPath(), collectionID, partitionID, segmentID, columnGroupID, binlog.GetLogID())
 }

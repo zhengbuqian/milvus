@@ -104,6 +104,18 @@ PhyElementFilterBitsNode::GetOutput() {
         array_offsets->ElementIDRangeOfRow(query_context_->get_active_count());
     query_context_->set_active_element_count(first_elem);
 
+    if (first_elem == 0) {
+        // No active row has struct elements. Keep the output as a doc-level
+        // all-filtered bitmap so downstream operators can still consume a
+        // non-empty filter and convert it if they need element-level input.
+        TargetBitmap bitset(query_context_->get_active_count(), true);
+        TargetBitmap valid_bitset(query_context_->get_active_count(), true);
+        std::vector<VectorPtr> col_res;
+        col_res.push_back(std::make_shared<ColumnVector>(
+            std::move(bitset), std::move(valid_bitset)));
+        return std::make_shared<RowVector>(col_res);
+    }
+
     // Step 2: Prepare doc bitset
     auto col_input = GetColumnVector(input_);
     TargetBitmapView doc_bitset(col_input->GetRawData(), col_input->size());
@@ -165,6 +177,7 @@ PhyElementFilterBitsNode::EvaluateElementExpression(
     if (doc_hit_ratio < DOC_HIT_RATIO_THRESHOLD_LOW) {
         offset_mode = true;
     } else if (doc_hit_ratio < DOC_HIT_RATIO_THRESHOLD_HIGH) {
+        element_exprs_->WaitPrefetch();
         offset_mode = !std::all_of(
             element_exprs_->exprs().begin(),
             element_exprs_->exprs().end(),

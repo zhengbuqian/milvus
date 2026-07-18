@@ -27,10 +27,14 @@ import (
 	"github.com/bytedance/mockey"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/encoding/protojson"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
+	"github.com/milvus-io/milvus/internal/snapshotio"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/indexpb"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
 )
 
 func TestExploreFiles_EmptyColumns(t *testing.T) {
@@ -42,7 +46,7 @@ func TestExploreFiles_EmptyColumns(t *testing.T) {
 	}
 
 	// Empty columns should still work
-	files, _, err := ExploreFilesReturnManifestPath([]string{}, "parquet", "/tmp", "/nonexistent", config, nil)
+	files, _, err := ExploreFilesReturnManifestPath([]string{}, "parquet", "/tmp", "/nonexistent", config, ExternalSpecContext{})
 
 	// Expect error due to nonexistent directory
 	assert.Error(t, err)
@@ -63,7 +67,7 @@ func TestExploreFiles_InvalidDirectory(t *testing.T) {
 		"/nonexistent/base",
 		"/nonexistent/explore",
 		config,
-		nil,
+		ExternalSpecContext{},
 	)
 
 	assert.Error(t, err)
@@ -78,7 +82,7 @@ func TestGetFileInfo_NonexistentFile(t *testing.T) {
 		RootPath:    tmpDir,
 	}
 
-	info, err := GetFileInfo("parquet", "/nonexistent/file.parquet", config, nil)
+	info, err := GetFileInfo("parquet", "/nonexistent/file.parquet", config, ExternalSpecContext{})
 
 	assert.Error(t, err)
 	assert.Nil(t, info)
@@ -97,7 +101,7 @@ func TestGetFileInfo_InvalidFormat(t *testing.T) {
 	err := os.WriteFile(tmpFile, []byte("not a parquet file"), 0o600)
 	require.NoError(t, err)
 
-	info, err := GetFileInfo("parquet", tmpFile, config, nil)
+	info, err := GetFileInfo("parquet", tmpFile, config, ExternalSpecContext{})
 
 	// Should fail because it's not a valid parquet file
 	assert.Error(t, err)
@@ -152,6 +156,176 @@ func TestCreateManifestForSegment_InvalidBasePath(t *testing.T) {
 		fragments,
 		config,
 	)
+}
+
+func TestManifestColumnGroupsToFragments_DeduplicatesByPathRange(t *testing.T) {
+	groups := []manifestColumnGroup{
+		{
+			Columns: []string{"id", "vector"},
+			Fragments: []Fragment{
+				{FilePath: "a.parquet", StartRow: 0, EndRow: 10, RowCount: 10},
+			},
+		},
+		{
+			Columns: []string{"score"},
+			Fragments: []Fragment{
+				{FilePath: "a.parquet", StartRow: 0, EndRow: 10, RowCount: 10},
+			},
+		},
+	}
+
+	fragments := manifestColumnGroupsToFragments(groups)
+	assert.Len(t, fragments, 1)
+	assert.Equal(t, "a.parquet", fragments[0].FilePath)
+	assert.Equal(t, int64(0), fragments[0].StartRow)
+	assert.Equal(t, int64(10), fragments[0].EndRow)
+}
+
+func TestColumnsToAppend_SkipsExistingSameFragments(t *testing.T) {
+	existing := []manifestColumnGroup{
+		{
+			Columns: []string{"id"},
+			Fragments: []Fragment{
+				{FilePath: "a.parquet", StartRow: 0, EndRow: 10, RowCount: 10},
+			},
+		},
+	}
+	requested := []string{"id", "score"}
+	fragments := []Fragment{{FilePath: "a.parquet", StartRow: 0, EndRow: 10, RowCount: 10}}
+
+	columns, err := columnsToAppend(existing, requested, fragments)
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"score"}, columns)
+}
+
+func TestColumnsToAppendRejectsExistingDifferentFragments(t *testing.T) {
+	existing := []manifestColumnGroup{
+		{
+			Columns: []string{"id"},
+			Fragments: []Fragment{
+				{FilePath: "a.parquet", StartRow: 0, EndRow: 5, RowCount: 5},
+			},
+		},
+	}
+	requested := []string{"id"}
+	fragments := []Fragment{{FilePath: "a.parquet", StartRow: 0, EndRow: 10, RowCount: 10}}
+
+	_, err := columnsToAppend(existing, requested, fragments)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "already exists with different fragments")
+}
+
+func TestColumnsToAppendRejectsDuplicateExistingColumnWithDifferentFragments(t *testing.T) {
+	existing := []manifestColumnGroup{
+		{
+			Columns: []string{"id"},
+			Fragments: []Fragment{
+				{FilePath: "a.parquet", StartRow: 0, EndRow: 10, RowCount: 10},
+			},
+		},
+		{
+			Columns: []string{"id"},
+			Fragments: []Fragment{
+				{FilePath: "a.parquet", StartRow: 10, EndRow: 20, RowCount: 10},
+			},
+		},
+	}
+	requested := []string{"id"}
+	fragments := []Fragment{{FilePath: "a.parquet", StartRow: 0, EndRow: 10, RowCount: 10}}
+
+	_, err := columnsToAppend(existing, requested, fragments)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "column id already exists with different fragments")
+}
+
+func TestColumnsToAppend_DeduplicatesDuplicateRequestedMissingColumns(t *testing.T) {
+	requested := []string{"score", "id", "score", "id"}
+	fragments := []Fragment{{FilePath: "a.parquet", StartRow: 0, EndRow: 10, RowCount: 10}}
+
+	columns, err := columnsToAppend(nil, requested, fragments)
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"score", "id"}, columns)
+}
+
+func TestAppendSegmentManifestColumnsUsesCommitManifestUpdates(t *testing.T) {
+	ctx := context.Background()
+	config := &indexpb.StorageConfig{StorageType: "local"}
+	oldManifestPath := MarshalManifestPath("segment", 3)
+	fragments := []Fragment{{FilePath: "a.parquet", StartRow: 0, EndRow: 10, RowCount: 10}}
+
+	mockRead := mockey.Mock(readColumnGroupsFromManifest).Return(nil, nil).Build()
+	defer mockRead.UnPatch()
+
+	var gotBasePath string
+	var gotVersion int64
+	var gotAddNewColumnGroups bool
+	mockCommit := mockey.Mock(CommitManifestUpdates).
+		To(func(basePath string, baseVersion int64, storageConfig *indexpb.StorageConfig, updates *ManifestUpdates) (string, error) {
+			gotBasePath = basePath
+			gotVersion = baseVersion
+			cgs, ok := updates.NewFiles.(*ColumnGroups)
+			require.True(t, ok)
+			require.NotNil(t, cgs.cColumnGroups)
+			gotAddNewColumnGroups = cgs.addNewColumnGroups
+			return MarshalManifestPath(basePath, baseVersion+1), nil
+		}).Build()
+	defer mockCommit.UnPatch()
+
+	got, err := AppendSegmentManifestColumns(ctx, oldManifestPath, "parquet", []string{"score"}, fragments, config)
+	require.NoError(t, err)
+	assert.Equal(t, MarshalManifestPath("segment", 4), got)
+	assert.Equal(t, "segment", gotBasePath)
+	assert.Equal(t, int64(3), gotVersion)
+	assert.True(t, gotAddNewColumnGroups)
+}
+
+func TestAppendSegmentManifestColumnsValidationPaths(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := AppendSegmentManifestColumns(ctx, "manifest", "parquet", []string{"score"}, []Fragment{
+		{FilePath: "a.parquet", StartRow: 0, EndRow: 10, RowCount: 10},
+	}, &indexpb.StorageConfig{StorageType: "local"})
+	assert.ErrorIs(t, err, context.Canceled)
+
+	oldManifestPath := MarshalManifestPath("segment", 3)
+	got, err := AppendSegmentManifestColumns(context.Background(), oldManifestPath, "parquet", nil, []Fragment{
+		{FilePath: "a.parquet", StartRow: 0, EndRow: 10, RowCount: 10},
+	}, &indexpb.StorageConfig{StorageType: "local"})
+	assert.NoError(t, err)
+	assert.Equal(t, oldManifestPath, got)
+
+	_, err = AppendSegmentManifestColumns(context.Background(), oldManifestPath, "parquet", []string{"score"}, nil,
+		&indexpb.StorageConfig{StorageType: "local"})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "fragments cannot be empty")
+}
+
+func TestAppendSegmentManifestColumnsReadAndNoopPaths(t *testing.T) {
+	config := &indexpb.StorageConfig{StorageType: "local"}
+	oldManifestPath := MarshalManifestPath("segment", 3)
+	fragments := []Fragment{{FilePath: "a.parquet", StartRow: 0, EndRow: 10, RowCount: 10}}
+
+	mockReadErr := mockey.Mock(readColumnGroupsFromManifest).Return(nil, fmt.Errorf("read failed")).Build()
+	_, err := AppendSegmentManifestColumns(context.Background(), oldManifestPath, "parquet", []string{"score"}, fragments, config)
+	mockReadErr.UnPatch()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to read manifest column groups")
+
+	existing := []manifestColumnGroup{{
+		Columns:   []string{"score"},
+		Fragments: fragments,
+	}}
+	mockReadNoop := mockey.Mock(readColumnGroupsFromManifest).Return(existing, nil).Build()
+	got, err := AppendSegmentManifestColumns(context.Background(), oldManifestPath, "parquet", []string{"score"}, fragments, config)
+	mockReadNoop.UnPatch()
+	assert.NoError(t, err)
+	assert.Equal(t, oldManifestPath, got)
+
+	mockReadParse := mockey.Mock(readColumnGroupsFromManifest).Return(nil, nil).Build()
+	_, err = AppendSegmentManifestColumns(context.Background(), "not-json", "parquet", []string{"score"}, fragments, config)
+	mockReadParse.UnPatch()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to parse manifest path")
 }
 
 func TestFileInfo_Struct(t *testing.T) {
@@ -295,6 +469,49 @@ func TestGetColumnNamesFromSchema_WithExternalField(t *testing.T) {
 	assert.Equal(t, []string{"external_id", "vector", "raw_text"}, columns)
 }
 
+func TestGetColumnNamesFromSchema_MilvusTableUsesSourceFieldIDs(t *testing.T) {
+	schema := &schemapb.CollectionSchema{
+		ExternalSource: "s3://bucket/snapshots/100/metadata/200.json",
+		ExternalSpec:   `{"format":"milvus-table"}`,
+		Fields: []*schemapb.FieldSchema{
+			{FieldID: 0, Name: "__virtual_pk__"},
+			{FieldID: 100, Name: "target_pk", ExternalField: "pk"},
+			{FieldID: 101, Name: "target_vector", ExternalField: "vector"},
+		},
+	}
+	columns := GetColumnNamesFromSchema(schema)
+	assert.Equal(t, []string{"100", "101"}, columns)
+}
+
+func TestGetColumnNamesFromSchema_MilvusTableSourceSchemaUsesFieldIDs(t *testing.T) {
+	schema := &schemapb.CollectionSchema{
+		ExternalSource: "s3://bucket/snapshots/100/metadata/200.json",
+		ExternalSpec:   `{"format":"milvus-table"}`,
+		Fields: []*schemapb.FieldSchema{
+			{FieldID: 100, Name: "pk"},
+			{FieldID: 101, Name: "vector"},
+		},
+	}
+	columns := GetColumnNamesFromSchema(schema)
+	assert.Equal(t, []string{"100", "101"}, columns)
+}
+
+func TestGetColumnNamesFromSchema_MilvusTableRealPKIncludesTimestamp(t *testing.T) {
+	schema := &schemapb.CollectionSchema{
+		ExternalSource: "s3://bucket/snapshots/100/metadata/200.json",
+		ExternalSpec:   `{"format":"milvus-table"}`,
+		Fields: []*schemapb.FieldSchema{
+			{FieldID: 100, Name: "pk", IsPrimaryKey: true},
+			{FieldID: 101, Name: "vector"},
+			{FieldID: common.TimeStampField, Name: common.TimeStampFieldName, DataType: schemapb.DataType_Int64},
+			{FieldID: common.RowIDField, Name: common.RowIDFieldName, DataType: schemapb.DataType_Int64},
+		},
+	}
+
+	columns := GetColumnNamesFromSchema(schema)
+	assert.Equal(t, []string{"100", "101", "1"}, columns)
+}
+
 func TestGetColumnNamesFromSchema_EmptyFields(t *testing.T) {
 	schema := &schemapb.CollectionSchema{
 		Fields: []*schemapb.FieldSchema{},
@@ -303,12 +520,70 @@ func TestGetColumnNamesFromSchema_EmptyFields(t *testing.T) {
 	assert.Nil(t, columns)
 }
 
+func TestGetColumnNamesFromSchema_ExternalSkipsFunctionOutputAndSystemFields(t *testing.T) {
+	schema := &schemapb.CollectionSchema{
+		ExternalSource: "s3://bucket/path",
+		Fields: []*schemapb.FieldSchema{
+			{Name: "id", ExternalField: "external_id"},
+			{Name: "virtual_pk"},
+			{Name: "sparse", IsFunctionOutput: true},
+		},
+	}
+	columns := GetColumnNamesFromSchema(schema)
+	assert.Equal(t, []string{"external_id"}, columns)
+}
+
+func TestGetColumnNamesFromSchema_MilvusTableSkipsFunctionOutput(t *testing.T) {
+	schema := &schemapb.CollectionSchema{
+		ExternalSource: "s3://bucket/snapshots/100/metadata/200.json",
+		ExternalSpec:   `{"format":"milvus-table"}`,
+		Fields: []*schemapb.FieldSchema{
+			{FieldID: 100, Name: "text", ExternalField: "text"},
+			{FieldID: 101, Name: "vec", ExternalField: "vec"},
+			{FieldID: 102, Name: "sparse", DataType: schemapb.DataType_SparseFloatVector, IsFunctionOutput: true},
+		},
+		Functions: []*schemapb.FunctionSchema{
+			{
+				Name:             "bm25",
+				InputFieldNames:  []string{"text"},
+				OutputFieldNames: []string{"sparse"},
+			},
+		},
+	}
+
+	columns := GetColumnNamesFromSchema(schema)
+	assert.Equal(t, []string{"100", "101"}, columns)
+}
+
+func TestHasExternalPrimaryKey(t *testing.T) {
+	assert.False(t, HasExternalPrimaryKey(nil))
+
+	assert.True(t, HasExternalPrimaryKey(&schemapb.CollectionSchema{
+		Fields: []*schemapb.FieldSchema{
+			{Name: "id", IsPrimaryKey: true, ExternalField: "source_id"},
+		},
+	}))
+
+	assert.False(t, HasExternalPrimaryKey(&schemapb.CollectionSchema{
+		Fields: []*schemapb.FieldSchema{
+			{Name: "__virtual_pk__", IsPrimaryKey: true},
+			{Name: "id", ExternalField: "source_id"},
+		},
+	}))
+
+	assert.False(t, HasExternalPrimaryKey(&schemapb.CollectionSchema{
+		Fields: []*schemapb.FieldSchema{
+			{Name: "id", ExternalField: "source_id"},
+		},
+	}))
+}
+
 func TestBuildCurrentSegmentFragments_NoManifest(t *testing.T) {
 	segments := []*datapb.SegmentInfo{
 		{ID: 1, NumOfRows: 1000},
 		{ID: 2, NumOfRows: 2000},
 	}
-	result, err := BuildCurrentSegmentFragments(segments, nil)
+	result, err := BuildCurrentSegmentFragments(segments, nil, nil)
 	assert.NoError(t, err)
 	assert.Len(t, result, 2)
 
@@ -326,7 +601,7 @@ func TestBuildCurrentSegmentFragments_NoManifest(t *testing.T) {
 }
 
 func TestBuildCurrentSegmentFragments_EmptySegments(t *testing.T) {
-	result, err := BuildCurrentSegmentFragments(nil, nil)
+	result, err := BuildCurrentSegmentFragments(nil, nil, nil)
 	assert.NoError(t, err)
 	assert.Empty(t, result)
 }
@@ -336,10 +611,100 @@ func TestBuildCurrentSegmentFragments_ManifestPathWithNilConfig(t *testing.T) {
 	segments := []*datapb.SegmentInfo{
 		{ID: 1, NumOfRows: 500, ManifestPath: "some/path"},
 	}
-	result, err := BuildCurrentSegmentFragments(segments, nil)
+	result, err := BuildCurrentSegmentFragments(segments, nil, nil)
 	assert.NoError(t, err)
 	assert.Len(t, result[1], 1)
 	assert.Equal(t, int64(500), result[1][0].RowCount)
+}
+
+func TestBuildCurrentSegmentFragments_PassesColumns(t *testing.T) {
+	storageConfig := &indexpb.StorageConfig{RootPath: "files", StorageType: "local"}
+	segments := []*datapb.SegmentInfo{
+		{ID: 1, NumOfRows: 500, ManifestPath: MarshalManifestPath("files/insert_log/1/2/3", 1)},
+	}
+	expected := []Fragment{{FragmentID: 7, FilePath: "/data/file.parquet", RowCount: 500}}
+
+	called := false
+	mockRead := mockey.Mock(ReadFragmentsFromManifest).
+		To(func(manifestPath string, storageConfig *indexpb.StorageConfig, columns []string) ([]Fragment, error) {
+			assert.Equal(t, []string{"text_col"}, append([]string(nil), columns...))
+			called = true
+			return expected, nil
+		}).Build()
+	defer mockRead.UnPatch()
+
+	result, err := BuildCurrentSegmentFragments(segments, storageConfig, []string{"text_col"})
+	require.NoError(t, err)
+	assert.Equal(t, expected, result[1])
+	assert.True(t, called)
+}
+
+func TestBuildCurrentSegmentFragments_ManifestErrorsAndEmptyResult(t *testing.T) {
+	storageConfig := &indexpb.StorageConfig{RootPath: "files", StorageType: "local"}
+	segments := []*datapb.SegmentInfo{
+		{ID: 1, NumOfRows: 500, ManifestPath: MarshalManifestPath("files/insert_log/1/2/3", 1)},
+	}
+
+	mockRead := mockey.Mock(ReadFragmentsFromManifest).Return(nil, fmt.Errorf("read failed")).Build()
+	_, err := BuildCurrentSegmentFragments(segments, storageConfig, []string{"text_col"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to read manifest for segment 1")
+	mockRead.UnPatch()
+
+	mockRead = mockey.Mock(ReadFragmentsFromManifest).Return(nil, nil).Build()
+	defer mockRead.UnPatch()
+	result, err := BuildCurrentSegmentFragments(segments, storageConfig, []string{"missing_col"})
+	require.NoError(t, err)
+	require.Len(t, result[1], 1)
+	assert.Equal(t, int64(1), result[1][0].FragmentID)
+	assert.Equal(t, int64(500), result[1][0].RowCount)
+}
+
+func TestReadFragmentsFromManifest_FiltersColumns(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := &indexpb.StorageConfig{StorageType: "local", BucketName: tmpDir, RootPath: tmpDir}
+	fragments := []Fragment{
+		{FragmentID: 0, FilePath: filepath.Join(tmpDir, "data-1.parquet"), StartRow: 0, EndRow: 10, RowCount: 10},
+		{FragmentID: 1, FilePath: filepath.Join(tmpDir, "data-2.parquet"), StartRow: 10, EndRow: 20, RowCount: 10},
+	}
+
+	manifestPath, err := CreateManifestForSegment(
+		filepath.Join(tmpDir, "segment"),
+		[]string{"text_col", "101"},
+		"parquet",
+		fragments,
+		config,
+	)
+	require.NoError(t, err)
+
+	got, err := ReadFragmentsFromManifest(manifestPath, config, []string{"text_col"})
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, fragments[0].FilePath, got[0].FilePath)
+	assert.Equal(t, int64(0), got[0].StartRow)
+	assert.Equal(t, int64(10), got[0].EndRow)
+	assert.Equal(t, int64(10), got[0].RowCount)
+	assert.Equal(t, fragments[1].FilePath, got[1].FilePath)
+
+	got, err = ReadFragmentsFromManifest(manifestPath, config, []string{"missing_col"})
+	require.NoError(t, err)
+	assert.Empty(t, got)
+
+	has, err := ManifestHasColumns(manifestPath, config, []string{"text_col", "101"})
+	require.NoError(t, err)
+	assert.True(t, has)
+
+	has, err = ManifestHasColumns(manifestPath, config, []string{"text_col", "missing_col"})
+	require.NoError(t, err)
+	assert.False(t, has)
+
+	has, err = ManifestHasColumns(manifestPath, config, nil)
+	require.NoError(t, err)
+	assert.True(t, has)
+
+	_, err = ReadFragmentsFromManifest("bad manifest", config, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to parse manifest path")
 }
 
 func TestMarshalUnmarshalManifestPath(t *testing.T) {
@@ -381,195 +746,22 @@ func TestCreateSegmentManifestWithBasePath_CanceledContext(t *testing.T) {
 	assert.ErrorIs(t, err, context.Canceled)
 }
 
-func TestEnsureHTTPScheme(t *testing.T) {
-	tests := []struct {
-		name    string
-		address string
-		useSSL  bool
-		want    string
-	}{
-		{
-			name:    "no scheme, no SSL → prepend http://",
-			address: "localhost:9000",
-			useSSL:  false,
-			want:    "http://localhost:9000",
-		},
-		{
-			name:    "no scheme, with SSL → keep as-is",
-			address: "localhost:9000",
-			useSSL:  true,
-			want:    "localhost:9000",
-		},
-		{
-			name:    "has http:// scheme, no SSL → keep as-is",
-			address: "http://localhost:9000",
-			useSSL:  false,
-			want:    "http://localhost:9000",
-		},
-		{
-			name:    "has https:// scheme, no SSL → keep as-is",
-			address: "https://s3.amazonaws.com",
-			useSSL:  false,
-			want:    "https://s3.amazonaws.com",
-		},
-		{
-			name:    "has https:// scheme, with SSL → keep as-is",
-			address: "https://s3.amazonaws.com",
-			useSSL:  true,
-			want:    "https://s3.amazonaws.com",
-		},
-		{
-			name:    "IP address, no SSL → prepend http://",
-			address: "10.0.0.1:9000",
-			useSSL:  false,
-			want:    "http://10.0.0.1:9000",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := ensureHTTPScheme(tt.address, tt.useSSL)
-			assert.Equal(t, tt.want, got)
-		})
-	}
-}
-
-func TestBuildExtfsOverrides(t *testing.T) {
-	baseConfig := &indexpb.StorageConfig{
-		Address:    "localhost:9000",
-		BucketName: "a-bucket",
-		UseSSL:     false,
-	}
-	sslConfig := &indexpb.StorageConfig{
-		Address:    "s3.amazonaws.com",
-		BucketName: "a-bucket",
-		UseSSL:     true,
-	}
-
-	tests := []struct {
-		name           string
-		externalSource string
-		config         *indexpb.StorageConfig
-		wantBucket     string
-		wantAddress    string
-	}{
-		{
-			name:           "relative path → baseline from storageConfig",
-			externalSource: "data/files/",
-			config:         baseConfig,
-			wantBucket:     "a-bucket",
-			wantAddress:    "http://localhost:9000",
-		},
-		{
-			name:           "empty string → baseline from storageConfig",
-			externalSource: "",
-			config:         baseConfig,
-			wantBucket:     "a-bucket",
-			wantAddress:    "http://localhost:9000",
-		},
-		{
-			name:           "s3 URI with empty host and bucket",
-			externalSource: "s3:///external-bucket/some/prefix",
-			config:         baseConfig,
-			wantBucket:     "external-bucket",
-			wantAddress:    "",
-		},
-		{
-			name:           "s3 URI with host and bucket",
-			externalSource: "s3://minio:9000/external-bucket/prefix",
-			config:         baseConfig,
-			wantBucket:     "external-bucket",
-			wantAddress:    "http://minio:9000",
-		},
-		{
-			name:           "s3 URI with host and bucket, SSL enabled",
-			externalSource: "s3://s3.amazonaws.com/my-bucket/data",
-			config:         sslConfig,
-			wantBucket:     "my-bucket",
-			wantAddress:    "s3.amazonaws.com",
-		},
-		{
-			name:           "s3 URI with only bucket, no prefix",
-			externalSource: "s3:///just-bucket",
-			config:         baseConfig,
-			wantBucket:     "just-bucket",
-			wantAddress:    "",
-		},
-		{
-			name:           "s3 URI with trailing slash",
-			externalSource: "s3:///external-bucket/prefix/",
-			config:         baseConfig,
-			wantBucket:     "external-bucket",
-			wantAddress:    "",
-		},
-		{
-			name:           "gs URI scheme",
-			externalSource: "gs:///gcs-bucket/data",
-			config:         baseConfig,
-			wantBucket:     "gcs-bucket",
-			wantAddress:    "",
-		},
-		{
-			name:           "host with http:// already in address (no SSL)",
-			externalSource: "s3://http://already-has-scheme/bucket/key",
-			config:         baseConfig,
-			// url.Parse treats "http" as host for s3://http://...
-			// but this is a degenerate case; just verify no panic
-			wantBucket: "",
-		},
-	}
-	prefix := "extfs.42."
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := BuildExtfsOverrides(tt.externalSource, tt.config, prefix, nil)
-			assert.NotNil(t, got)
-			if tt.wantBucket != "" {
-				assert.Equal(t, tt.wantBucket, got[prefix+"bucket_name"])
-			}
-			if tt.wantAddress != "" {
-				assert.Equal(t, tt.wantAddress, got[prefix+"address"])
-			}
-		})
-	}
-}
-
-func TestBuildExtfsOverrides_OverrideKeys(t *testing.T) {
-	prefix := ExtfsPrefixForCollection(99)
-	config := &indexpb.StorageConfig{UseSSL: false, BucketName: "original"}
-	got := BuildExtfsOverrides("s3://host:9000/bucket/path", config, prefix, nil)
-	require.NotNil(t, got)
-
-	assert.Contains(t, got, prefix+"bucket_name")
-	assert.Contains(t, got, prefix+"address")
-	assert.Equal(t, "bucket", got[prefix+"bucket_name"])
-	assert.Equal(t, "http://host:9000", got[prefix+"address"])
-}
-
-func TestBuildExtfsOverrides_SpecExtfsOverrides(t *testing.T) {
-	prefix := ExtfsPrefixForCollection(100)
-	config := &indexpb.StorageConfig{
-		UseSSL:  false,
-		UseIAM:  false,
-		Region:  "us-east-1",
-		Address: "localhost:9000",
-	}
-	specExtfs := map[string]string{
-		prefix + "use_iam": "true",
-		prefix + "region":  "us-west-2",
-	}
-	got := BuildExtfsOverrides("s3:///ext-bucket/data", config, prefix, specExtfs)
-	require.NotNil(t, got)
-
-	// Spec overrides win over storageConfig defaults
-	assert.Equal(t, "true", got[prefix+"use_iam"])
-	assert.Equal(t, "us-west-2", got[prefix+"region"])
-	// URI-derived bucket
-	assert.Equal(t, "ext-bucket", got[prefix+"bucket_name"])
-}
+// The cgo bridge (loon_properties_inject_external_spec) and Tier-1/2 endpoint
+// derivation logic are covered by the C++ gtest suite in test_external_take.cpp.
+// Go-side coverage is exercised indirectly through callers that invoke
+// injectExternalSpecProperties (GetFileInfo, ExploreFilesReturnManifestPath,
+// SampleExternalFieldSizes).
 
 func TestExtfsPrefixForCollection(t *testing.T) {
 	assert.Equal(t, "extfs.42.", ExtfsPrefixForCollection(42))
 	assert.Equal(t, "extfs.0.", ExtfsPrefixForCollection(0))
 }
+
+// NOTE: the Go-side BuildExtfsOverrides / NormalizeExternalSource /
+// effectiveSpecAddress helpers were collapsed into the C++ InjectExternalSpecProperties
+// pipeline. Tier-1/2 endpoint derivation and AWS-form rewriting are covered by
+// the C++ gtest suite in test_external_take.cpp. Go callers exercise the cgo
+// bridge indirectly through the public FFI wrappers.
 
 func TestFilterFileInfosByFormat(t *testing.T) {
 	files := []FileInfo{
@@ -614,78 +806,39 @@ func TestFilterFileInfosByFormat(t *testing.T) {
 	assert.Equal(t, 0, skipped)
 }
 
-func TestCopyStorageConfigToExtfs(t *testing.T) {
-	cfg := &indexpb.StorageConfig{
-		StorageType:       "minio",
-		BucketName:        "test-bucket",
-		Address:           "localhost:9000",
-		RootPath:          "/data",
-		AccessKeyID:       "ak123",
-		SecretAccessKey:   "sk456",
-		CloudProvider:     "aws",
-		IAMEndpoint:       "https://sts.amazonaws.com",
-		Region:            "us-east-1",
-		SslCACert:         "cert-pem",
-		GcpCredentialJSON: "",
-		UseSSL:            true,
-		UseIAM:            false,
-		UseVirtualHost:    true,
+// Regression for index-drift bug: DataCoord and DataNode both call
+// NormalizeFileInfos on the same raw manifest and MUST produce the
+// identical indexed view, regardless of input ordering. Without sort,
+// arrow's GetFileInfo can return files in different orders on each
+// process and the [fileIndexBegin, fileIndexEnd) slice picks different
+// files on the two sides, leading to silent data loss or "Invalid
+// parquet magic" failures on Spark `_SUCCESS`/`.crc` strays.
+func TestNormalizeFileInfos_StableSortAndFilter(t *testing.T) {
+	rawA := []FileInfo{
+		{FilePath: "data/_SUCCESS"},
+		{FilePath: "data/part-2.parquet"},
+		{FilePath: "data/.crc"},
+		{FilePath: "data/part-1.parquet"},
+		{FilePath: "data/README.md"},
+	}
+	// Reordered "DataNode side" view (arrow GetFileInfo gives no order).
+	rawB := []FileInfo{
+		{FilePath: "data/part-1.parquet"},
+		{FilePath: "data/README.md"},
+		{FilePath: "data/_SUCCESS"},
+		{FilePath: "data/part-2.parquet"},
+		{FilePath: "data/.crc"},
 	}
 
-	prefix := "extfs.42."
-	overrides := make(map[string]string)
-	copyStorageConfigToExtfs(overrides, prefix, cfg)
+	gotA, skippedA := NormalizeFileInfos(rawA, "parquet")
+	gotB, skippedB := NormalizeFileInfos(rawB, "parquet")
 
-	// String fields
-	assert.Equal(t, "minio", overrides[prefix+"storage_type"])
-	assert.Equal(t, "test-bucket", overrides[prefix+"bucket_name"])
-	assert.Equal(t, "localhost:9000", overrides[prefix+"address"]) // useSSL=true, no http:// prepended
-	assert.Equal(t, "/data", overrides[prefix+"root_path"])
-	assert.Equal(t, "ak123", overrides[prefix+"access_key_id"])
-	assert.Equal(t, "sk456", overrides[prefix+"access_key_value"])
-	assert.Equal(t, "aws", overrides[prefix+"cloud_provider"])
-	assert.Equal(t, "https://sts.amazonaws.com", overrides[prefix+"iam_endpoint"])
-	assert.Equal(t, "us-east-1", overrides[prefix+"region"])
-	assert.Equal(t, "cert-pem", overrides[prefix+"ssl_ca_cert"])
-
-	// Boolean fields
-	assert.Equal(t, "true", overrides[prefix+"use_ssl"])
-	assert.Equal(t, "false", overrides[prefix+"use_iam"])
-	assert.Equal(t, "true", overrides[prefix+"use_virtual_host"])
-
-	// Empty GcpCredentialJSON should not be in overrides
-	_, hasGcp := overrides[prefix+"gcp_credential_json"]
-	assert.False(t, hasGcp)
-}
-
-func TestCopyStorageConfigToExtfs_NoSSL(t *testing.T) {
-	cfg := &indexpb.StorageConfig{
-		Address: "localhost:9000",
-		UseSSL:  false,
-	}
-	overrides := make(map[string]string)
-	copyStorageConfigToExtfs(overrides, "extfs.2.", cfg)
-
-	// UseSSL=false → ensureHTTPScheme prepends "http://"
-	assert.Equal(t, "http://localhost:9000", overrides["extfs.2.address"])
-	assert.Equal(t, "false", overrides["extfs.2.use_ssl"])
-}
-
-func TestCopyStorageConfigToExtfs_EmptyConfig(t *testing.T) {
-	cfg := &indexpb.StorageConfig{}
-	overrides := make(map[string]string)
-	copyStorageConfigToExtfs(overrides, "extfs.1.", cfg)
-
-	// Boolean fields always present (default false)
-	assert.Equal(t, "false", overrides["extfs.1.use_ssl"])
-	assert.Equal(t, "false", overrides["extfs.1.use_iam"])
-	assert.Equal(t, "false", overrides["extfs.1.use_virtual_host"])
-
-	// Empty string fields should not be present
-	_, hasBucket := overrides["extfs.1.bucket_name"]
-	assert.False(t, hasBucket)
-	_, hasAddr := overrides["extfs.1.address"]
-	assert.False(t, hasAddr)
+	assert.Equal(t, 2, len(gotA))
+	assert.Equal(t, 3, skippedA)
+	assert.Equal(t, gotA, gotB, "two views of same manifest must produce identical indexed slice")
+	assert.Equal(t, "data/part-1.parquet", gotA[0].FilePath)
+	assert.Equal(t, "data/part-2.parquet", gotA[1].FilePath)
+	assert.Equal(t, skippedA, skippedB)
 }
 
 func TestMakePropertiesFromStorageConfig_ExtraKVsOverride(t *testing.T) {
@@ -707,13 +860,246 @@ func TestMakePropertiesFromStorageConfig_ExtraKVsOverride(t *testing.T) {
 	defer FreeProperties(props)
 }
 
+func TestMakePropertiesFromStorageConfig_UsesConfiguredStorageFormat(t *testing.T) {
+	paramtable.Init()
+	params := paramtable.Get()
+	require.NoError(t, params.Save(params.DataNodeCfg.StorageFormat.Key, "parquet"))
+	t.Cleanup(func() {
+		_ = params.Reset(params.DataNodeCfg.StorageFormat.Key)
+	})
+
+	config := &indexpb.StorageConfig{
+		StorageType: "local",
+		BucketName:  t.TempDir(),
+		RootPath:    t.TempDir(),
+	}
+
+	props, err := MakePropertiesFromStorageConfig(config, nil)
+	require.NoError(t, err)
+	defer FreeProperties(props)
+	assert.Equal(t, "parquet", loonPropertyString(props, PropertyWriterFormat))
+}
+
+func TestMakePropertiesFromStorageConfig_ExtraKVsOverrideStorageFormat(t *testing.T) {
+	paramtable.Init()
+	params := paramtable.Get()
+	require.NoError(t, params.Save(params.DataNodeCfg.StorageFormat.Key, "vortex"))
+	t.Cleanup(func() {
+		_ = params.Reset(params.DataNodeCfg.StorageFormat.Key)
+	})
+
+	config := &indexpb.StorageConfig{
+		StorageType: "local",
+		BucketName:  t.TempDir(),
+		RootPath:    t.TempDir(),
+	}
+
+	props, err := MakePropertiesFromStorageConfig(config, map[string]string{
+		PropertyWriterFormat: "parquet",
+	})
+	require.NoError(t, err)
+	defer FreeProperties(props)
+	assert.Equal(t, "parquet", loonPropertyString(props, PropertyWriterFormat))
+}
+
+func TestNormalizeExternalPathForStorage_UsesInjectedExtfsEndpoint(t *testing.T) {
+	config := &indexpb.StorageConfig{
+		StorageType: "local",
+		BucketName:  "/tmp",
+		RootPath:    "/tmp",
+	}
+	extfs := ExternalSpecContext{
+		CollectionID: 42,
+		Source:       "s3://liyiyang-test/all_types_v2/",
+		Spec:         `{"format":"parquet","extfs":{"cloud_provider":"aws","region":"us-west-2","access_key_id":"ak","access_key_value":"sk"}}`,
+	}
+
+	props, err := MakePropertiesFromStorageConfig(config, nil)
+	require.NoError(t, err)
+	defer FreeProperties(props)
+	require.NoError(t, injectExternalSpecProperties(props, extfs.CollectionID, extfs.Source, extfs.Spec))
+
+	got, err := normalizeExternalPathForStorage(extfs.Source, props, extfs)
+	require.NoError(t, err)
+	assert.Equal(t, "s3://s3.us-west-2.amazonaws.com/liyiyang-test/all_types_v2/", got)
+
+	got, err = normalizeExternalPathForStorage("s3://liyiyang-test/a/b/file.parquet?versionId=1", props, extfs)
+	require.NoError(t, err)
+	assert.Equal(t, "s3://s3.us-west-2.amazonaws.com/liyiyang-test/a/b/file.parquet?versionId=1", got)
+}
+
+func TestNormalizeExternalPathForStorage_EndpointFormUnchanged(t *testing.T) {
+	config := &indexpb.StorageConfig{
+		StorageType: "local",
+		BucketName:  "/tmp",
+		RootPath:    "/tmp",
+	}
+	source := "s3://s3.us-west-2.amazonaws.com/liyiyang-test/all_types_v2/"
+	extfs := ExternalSpecContext{
+		CollectionID: 42,
+		Source:       source,
+		Spec:         `{"format":"parquet","extfs":{"cloud_provider":"aws","region":"us-west-2","access_key_id":"ak","access_key_value":"sk"}}`,
+	}
+
+	props, err := MakePropertiesFromStorageConfig(config, nil)
+	require.NoError(t, err)
+	defer FreeProperties(props)
+	require.NoError(t, injectExternalSpecProperties(props, extfs.CollectionID, extfs.Source, extfs.Spec))
+
+	got, err := normalizeExternalPathForStorage(source, props, extfs)
+	require.NoError(t, err)
+	assert.Equal(t, source, got)
+}
+
+func TestNormalizeExternalPathForStorage_NoRewriteCases(t *testing.T) {
+	config := &indexpb.StorageConfig{
+		StorageType: "local",
+		BucketName:  "/tmp",
+		RootPath:    "/tmp",
+	}
+	prefix := ExtfsPrefixForCollection(42)
+	props, err := MakePropertiesFromStorageConfig(config, map[string]string{
+		prefix + "address":     "https://s3.us-west-2.amazonaws.com",
+		prefix + "bucket_name": "liyiyang-test",
+	})
+	require.NoError(t, err)
+	defer FreeProperties(props)
+
+	path := "s3://liyiyang-test/all_types_v2/"
+
+	got, err := normalizeExternalPathForStorage(path, props, ExternalSpecContext{CollectionID: 42})
+	require.NoError(t, err)
+	assert.Equal(t, path, got)
+
+	got, err = normalizeExternalPathForStorage(
+		path,
+		nil,
+		ExternalSpecContext{CollectionID: 42, Source: "s3://liyiyang-test/all_types_v2/"},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, path, got)
+
+	got, err = normalizeExternalPathForStorage(
+		"relative/path",
+		props,
+		ExternalSpecContext{CollectionID: 42, Source: "s3://liyiyang-test/all_types_v2/"},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "relative/path", got)
+
+	got, err = normalizeExternalPathForStorage(
+		"s3://other-bucket/all_types_v2/",
+		props,
+		ExternalSpecContext{CollectionID: 42, Source: "s3://liyiyang-test/all_types_v2/"},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "s3://other-bucket/all_types_v2/", got)
+}
+
+func TestNormalizeExternalPathForStorage_BareAddress(t *testing.T) {
+	config := &indexpb.StorageConfig{
+		StorageType: "local",
+		BucketName:  "/tmp",
+		RootPath:    "/tmp",
+	}
+	prefix := ExtfsPrefixForCollection(42)
+	props, err := MakePropertiesFromStorageConfig(config, map[string]string{
+		prefix + "address":     "s3.us-west-2.amazonaws.com",
+		prefix + "bucket_name": "liyiyang-test",
+	})
+	require.NoError(t, err)
+	defer FreeProperties(props)
+
+	got, err := normalizeExternalPathForStorage(
+		"s3://liyiyang-test/all_types_v2/",
+		props,
+		ExternalSpecContext{CollectionID: 42, Source: "s3://liyiyang-test/all_types_v2/"},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "s3://s3.us-west-2.amazonaws.com/liyiyang-test/all_types_v2/", got)
+}
+
+func TestResolveExternalSourceRelativePath_UsesSourceBucketRoot(t *testing.T) {
+	config := &indexpb.StorageConfig{
+		StorageType: "local",
+		BucketName:  "/tmp",
+		RootPath:    "/tmp",
+	}
+	extfs := ExternalSpecContext{
+		CollectionID: 42,
+		Source:       "s3://source-bucket/snapshots/100/metadata/200.json",
+		Spec:         `{"format":"milvus-table","extfs":{"cloud_provider":"aws","region":"us-west-2","access_key_id":"ak","access_key_value":"sk"}}`,
+	}
+
+	props, err := MakePropertiesFromStorageConfig(config, nil)
+	require.NoError(t, err)
+	defer FreeProperties(props)
+	require.NoError(t, injectExternalSpecProperties(props, extfs.CollectionID, extfs.Source, extfs.Spec))
+
+	got, err := resolveExternalSourceRelativePath("files/insert_log/1/2/3", props, extfs)
+	require.NoError(t, err)
+	assert.Equal(t, "s3://s3.us-west-2.amazonaws.com/source-bucket/files/insert_log/1/2/3", got)
+}
+
+func TestNormalizeExternalPathForFilesystem_RemoteURI(t *testing.T) {
+	config := &indexpb.StorageConfig{
+		StorageType: "local",
+		BucketName:  "/tmp",
+		RootPath:    "/tmp",
+	}
+	prefix := ExtfsPrefixForCollection(42)
+	props, err := MakePropertiesFromStorageConfig(config, map[string]string{
+		prefix + "address":     "http://localhost:9000",
+		prefix + "bucket_name": "a-bucket",
+	})
+	require.NoError(t, err)
+	defer FreeProperties(props)
+
+	lookupPath, filePath, err := normalizeExternalPathForFilesystem(
+		"s3://localhost:9000/a-bucket/files/snapshots/metadata.json",
+		props,
+		ExternalSpecContext{CollectionID: 42, Source: "s3://localhost:9000/a-bucket/files/"},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "s3://localhost:9000/a-bucket/files/snapshots/metadata.json", lookupPath)
+	assert.Equal(t, "files/snapshots/metadata.json", filePath)
+
+	lookupPath, filePath, err = normalizeExternalPathForFilesystem(
+		"s3://a-bucket/files/snapshots/metadata.json",
+		props,
+		ExternalSpecContext{CollectionID: 42, Source: "s3://a-bucket/files/"},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "s3://localhost:9000/a-bucket/files/snapshots/metadata.json", lookupPath)
+	assert.Equal(t, "files/snapshots/metadata.json", filePath)
+
+	lookupPath, filePath, err = normalizeExternalPathForFilesystem(
+		"s3://other-bucket/files/snapshots/metadata.json",
+		props,
+		ExternalSpecContext{CollectionID: 42, Source: "s3://a-bucket/files/"},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "s3://other-bucket/files/snapshots/metadata.json", lookupPath)
+	assert.Equal(t, "s3://other-bucket/files/snapshots/metadata.json", filePath)
+
+	lookupPath, filePath, err = normalizeExternalPathForFilesystem(
+		"files/source/_delta/9001",
+		props,
+		ExternalSpecContext{CollectionID: 42, Source: "s3://a-bucket/snapshots/100/metadata/200.json"},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "s3://localhost:9000/a-bucket/files/source/_delta/9001", lookupPath)
+	assert.Equal(t, "files/source/_delta/9001", filePath)
+}
+
 // ==================== SampleExternalFieldSizes Tests ====================
 
 func TestSampleExternalFieldSizes_NilStorageConfig(t *testing.T) {
 	result, err := SampleExternalFieldSizes(
 		`{"base_path":"/tmp","ver":1}`, 100, 42,
 		"s3://bucket/data/", `{"format":"parquet"}`,
-		nil, nil,
+		nil,
+		nil,
 	)
 	assert.Nil(t, result)
 	assert.Error(t, err)
@@ -729,7 +1115,8 @@ func TestSampleExternalFieldSizes_EmptyManifestPath(t *testing.T) {
 	result, err := SampleExternalFieldSizes(
 		"", 100, 42,
 		"", "",
-		config, nil,
+		nil,
+		config,
 	)
 	assert.Nil(t, result)
 	assert.Error(t, err)
@@ -746,28 +1133,27 @@ func TestSampleExternalFieldSizes_InvalidManifestPath(t *testing.T) {
 	result, err := SampleExternalFieldSizes(
 		`{"base_path":"/nonexistent/path","ver":1}`, 100, 42,
 		"", "",
-		config, nil,
+		nil,
+		config,
 	)
 	assert.Nil(t, result)
 	assert.Error(t, err)
 }
 
-func TestSampleExternalFieldSizes_WithSpecExtfs(t *testing.T) {
+func TestSampleExternalFieldSizes_WithSpec(t *testing.T) {
 	config := &indexpb.StorageConfig{
 		StorageType: "local",
 		BucketName:  "/tmp",
 		RootPath:    "/tmp",
 	}
-	specExtfs := map[string]string{
-		"extfs.42.region":  "us-west-2",
-		"extfs.42.use_ssl": "true",
-	}
 	// Will fail at manifest read (no real file), but validates that
-	// properties construction with specExtfs doesn't panic
+	// properties construction with extfs injection via cgo doesn't panic.
 	result, err := SampleExternalFieldSizes(
 		`{"base_path":"/nonexistent","ver":1}`, 100, 42,
-		"s3://s3.us-west-2.amazonaws.com/ext-bucket/data/", `{"format":"parquet"}`,
-		config, specExtfs,
+		"s3://s3.us-west-2.amazonaws.com/ext-bucket/data/",
+		`{"format":"parquet","extfs":{"region":"us-west-2","use_ssl":"true"}}`,
+		nil,
+		config,
 	)
 	assert.Nil(t, result)
 	assert.Error(t, err)
@@ -780,7 +1166,7 @@ func TestExploreFilesReturnManifestPath_InvalidDir(t *testing.T) {
 	config := &indexpb.StorageConfig{StorageType: "local", BucketName: tmpDir, RootPath: tmpDir}
 
 	_, _, err := ExploreFilesReturnManifestPath(
-		[]string{"col1"}, "parquet", "/nonexistent/base", "/nonexistent/explore", config, nil,
+		[]string{"col1"}, "parquet", "/nonexistent/base", "/nonexistent/explore", config, ExternalSpecContext{},
 	)
 	assert.Error(t, err)
 }
@@ -790,17 +1176,33 @@ func TestExploreFilesReturnManifestPath_EmptyColumns(t *testing.T) {
 	config := &indexpb.StorageConfig{StorageType: "local", BucketName: tmpDir, RootPath: tmpDir}
 
 	_, _, err := ExploreFilesReturnManifestPath(
-		[]string{}, "parquet", "/nonexistent", "/nonexistent", config, nil,
+		[]string{}, "parquet", "/nonexistent", "/nonexistent", config, ExternalSpecContext{},
 	)
 	assert.Error(t, err)
 }
 
 func TestExploreFilesReturnManifestPath_PropertiesError(t *testing.T) {
 	_, _, err := ExploreFilesReturnManifestPath(
-		[]string{"col1"}, "parquet", "/base", "/explore", nil, nil,
+		[]string{"col1"}, "parquet", "/base", "/explore", nil, ExternalSpecContext{},
 	)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "properties")
+}
+
+func TestResolveMilvusTableSnapshotMetadataPathRejectsNonJSONPath(t *testing.T) {
+	spec := `{"format":"milvus-table"}`
+
+	t.Run("accepts snapshot metadata JSON path", func(t *testing.T) {
+		metadataPath, err := resolveMilvusTableSnapshotMetadataPath("s3://bucket/snapshots/100/metadata/200.json", spec)
+		require.NoError(t, err)
+		assert.Equal(t, "s3://bucket/snapshots/100/metadata/200.json", metadataPath)
+	})
+
+	t.Run("rejects base path", func(t *testing.T) {
+		_, err := resolveMilvusTableSnapshotMetadataPath("s3://bucket", spec)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "snapshot metadata JSON path")
+	})
 }
 
 // ==================== ReadFileInfosFromManifestPath Tests ====================
@@ -819,10 +1221,288 @@ func TestReadFileInfosFromManifestPath_NilConfig(t *testing.T) {
 	assert.Contains(t, err.Error(), "properties")
 }
 
+func TestBuildMilvusTableFileInfosFromSnapshotMetadata(t *testing.T) {
+	metadata := &datapb.SnapshotMetadata{
+		FormatVersion: 2,
+		ManifestList: []string{
+			"segment-20.avro",
+			"segment-10.avro",
+		},
+		Storagev2ManifestList: []*datapb.StorageV2SegmentManifest{
+			{SegmentId: 20, Manifest: `{"base_path":"source/20","ver":1}`},
+			{SegmentId: 10, Manifest: `{"base_path":"source/10","ver":2}`},
+		},
+	}
+	metadataBytes, err := protojson.MarshalOptions{UseProtoNames: true}.Marshal(metadata)
+	require.NoError(t, err)
+
+	segments := map[string]*datapb.SegmentDescription{
+		"segment-10.avro": {SegmentId: 10, NumOfRows: 100},
+		"segment-20.avro": {SegmentId: 20, NumOfRows: 200},
+	}
+	fileInfos, err := buildMilvusTableFileInfosFromSnapshotMetadata(metadataBytes, func(manifestPath string, formatVersion int32) (*datapb.SegmentDescription, error) {
+		require.Equal(t, int32(2), formatVersion)
+		return segments[manifestPath], nil
+	}, nil)
+
+	require.NoError(t, err)
+	require.Equal(t, []FileInfo{
+		{FilePath: `{"base_path":"source/10","ver":2}`, NumRows: 100, SourceSegmentID: 10},
+		{FilePath: `{"base_path":"source/20","ver":1}`, NumRows: 200, SourceSegmentID: 20},
+	}, fileInfos)
+}
+
+func TestBuildMilvusTableFileInfosFromSnapshotMetadata_ResolvesManifestBasePath(t *testing.T) {
+	metadata := &datapb.SnapshotMetadata{
+		FormatVersion: 2,
+		ManifestList:  []string{"segment-manifest.avro"},
+		Storagev2ManifestList: []*datapb.StorageV2SegmentManifest{
+			{SegmentId: 10, Manifest: `{"base_path":"files/insert_log/10","ver":2}`},
+		},
+	}
+	metadataBytes, err := protojson.MarshalOptions{UseProtoNames: true}.Marshal(metadata)
+	require.NoError(t, err)
+
+	resolvedManifest := MarshalManifestPath("s3://source-bucket/files/insert_log/10", 2)
+	fileInfos, err := buildMilvusTableFileInfosFromSnapshotMetadata(
+		metadataBytes,
+		func(manifestPath string, formatVersion int32) (*datapb.SegmentDescription, error) {
+			require.Equal(t, "segment-manifest.avro", manifestPath)
+			require.Equal(t, int32(2), formatVersion)
+			return &datapb.SegmentDescription{
+				SegmentId: 10,
+				NumOfRows: 100,
+			}, nil
+		},
+		func(manifestPath string) (string, error) {
+			return resolveMilvusTableSourceManifestPath(manifestPath, func(sourcePath string) (string, error) {
+				return "s3://source-bucket/" + sourcePath, nil
+			})
+		},
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, []FileInfo{
+		{FilePath: resolvedManifest, NumRows: 100, SourceSegmentID: 10},
+	}, fileInfos)
+}
+
+func TestResolveMilvusTableSegmentDeltalogPaths(t *testing.T) {
+	segment := &datapb.SegmentDescription{
+		Deltalogs: []*datapb.FieldBinlog{{
+			Binlogs: []*datapb.Binlog{{
+				LogPath: "files/delta_log/10/1",
+			}},
+		}},
+	}
+
+	err := resolveMilvusTableSegmentDeltalogPaths(segment, func(sourcePath string) (string, error) {
+		return "s3://source-bucket/" + sourcePath, nil
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "s3://source-bucket/files/delta_log/10/1", segment.GetDeltalogs()[0].GetBinlogs()[0].GetLogPath())
+}
+
+func TestBuildMilvusTableFileInfosFromSnapshotMetadata_NoStorageV2(t *testing.T) {
+	metadataBytes, err := protojson.MarshalOptions{UseProtoNames: true}.Marshal(&datapb.SnapshotMetadata{})
+	require.NoError(t, err)
+
+	_, err = buildMilvusTableFileInfosFromSnapshotMetadata(metadataBytes, nil, nil)
+
+	require.Error(t, err)
+	assert.True(t, IsMilvusTableStorageV2ManifestListMissing(err))
+	assert.Contains(t, err.Error(), "storagev2_manifest_list")
+	assert.Contains(t, err.Error(), "common.storage.useLoonFFI=true")
+}
+
+func TestBuildMilvusTableFileInfosFromSnapshotMetadata_SourceSegmentDeltalogsSkipped(t *testing.T) {
+	metadata := &datapb.SnapshotMetadata{
+		FormatVersion: 2,
+		ManifestList:  []string{"segment-manifest.avro"},
+		Storagev2ManifestList: []*datapb.StorageV2SegmentManifest{
+			{SegmentId: 10, Manifest: `{"base_path":"source/10","ver":2}`},
+		},
+	}
+	metadataBytes, err := protojson.MarshalOptions{UseProtoNames: true}.Marshal(metadata)
+	require.NoError(t, err)
+
+	expected := []*datapb.FieldBinlog{{
+		Binlogs: []*datapb.Binlog{{LogPath: "files/source/10/_delta/1", EntriesNum: 8}},
+	}}
+	fileInfos, err := buildMilvusTableFileInfosFromSnapshotMetadata(metadataBytes, func(manifestPath string, formatVersion int32) (*datapb.SegmentDescription, error) {
+		require.Equal(t, "segment-manifest.avro", manifestPath)
+		require.Equal(t, int32(2), formatVersion)
+		return &datapb.SegmentDescription{
+			SegmentId:    10,
+			SegmentLevel: datapb.SegmentLevel_L1,
+			NumOfRows:    100,
+			Deltalogs:    expected,
+		}, nil
+	}, nil)
+
+	require.NoError(t, err)
+	require.Len(t, fileInfos, 1)
+	require.Equal(t, int64(10), fileInfos[0].SourceSegmentID)
+	require.Empty(t, fileInfos[0].Deltalogs)
+}
+
+func TestBuildMilvusTableFileInfosFromSnapshotMetadata_L0Deltalogs(t *testing.T) {
+	metadata := &datapb.SnapshotMetadata{
+		FormatVersion: 2,
+		ManifestList:  []string{"source-manifest.avro", "l0-manifest.avro"},
+		Storagev2ManifestList: []*datapb.StorageV2SegmentManifest{
+			{SegmentId: 10, Manifest: `{"base_path":"source/10","ver":2}`},
+		},
+	}
+	metadataBytes, err := protojson.MarshalOptions{UseProtoNames: true}.Marshal(metadata)
+	require.NoError(t, err)
+
+	l0Deltalogs := []*datapb.FieldBinlog{{
+		FieldID: 100,
+		Binlogs: []*datapb.Binlog{{
+			LogPath:    "files/delta_log/1",
+			EntriesNum: 8,
+		}},
+	}}
+	fileInfos, err := buildMilvusTableFileInfosFromSnapshotMetadata(metadataBytes, func(manifestPath string, formatVersion int32) (*datapb.SegmentDescription, error) {
+		require.Equal(t, int32(2), formatVersion)
+		switch manifestPath {
+		case "source-manifest.avro":
+			return &datapb.SegmentDescription{
+				SegmentId:    10,
+				SegmentLevel: datapb.SegmentLevel_L1,
+				NumOfRows:    100,
+			}, nil
+		case "l0-manifest.avro":
+			return &datapb.SegmentDescription{
+				SegmentId:    20,
+				SegmentLevel: datapb.SegmentLevel_L0,
+				Deltalogs:    l0Deltalogs,
+			}, nil
+		default:
+			return nil, fmt.Errorf("unexpected manifest path %s", manifestPath)
+		}
+	}, nil)
+
+	require.NoError(t, err)
+	require.Len(t, fileInfos, 1)
+	require.Equal(t, int64(10), fileInfos[0].SourceSegmentID)
+	require.Equal(t, l0Deltalogs, fileInfos[0].Deltalogs)
+}
+
+func TestBuildMilvusTableFileInfosFromSnapshotMetadata_DeltalogsBySegmentLevel(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		manifestList  []string
+		wantDeltalogs bool
+	}{
+		{name: "source_segment", manifestList: []string{"source-manifest.avro"}, wantDeltalogs: false},
+		{name: "l0_overlay", manifestList: []string{"source-manifest.avro", "l0-manifest.avro"}, wantDeltalogs: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			metadata := &datapb.SnapshotMetadata{
+				FormatVersion: 2,
+				ManifestList:  tc.manifestList,
+				Storagev2ManifestList: []*datapb.StorageV2SegmentManifest{
+					{SegmentId: 10, Manifest: `{"base_path":"source/10","ver":2}`},
+				},
+			}
+			metadataBytes, err := protojson.MarshalOptions{UseProtoNames: true}.Marshal(metadata)
+			require.NoError(t, err)
+
+			fileInfos, err := buildMilvusTableFileInfosFromSnapshotMetadata(
+				metadataBytes,
+				func(manifestPath string, formatVersion int32) (*datapb.SegmentDescription, error) {
+					require.Equal(t, int32(2), formatVersion)
+					switch manifestPath {
+					case "source-manifest.avro":
+						return &datapb.SegmentDescription{
+							SegmentId:    10,
+							SegmentLevel: datapb.SegmentLevel_L1,
+							NumOfRows:    100,
+						}, nil
+					case "l0-manifest.avro":
+						return &datapb.SegmentDescription{
+							SegmentId:    20,
+							SegmentLevel: datapb.SegmentLevel_L0,
+							Deltalogs: []*datapb.FieldBinlog{{
+								FieldID: 100,
+								Binlogs: []*datapb.Binlog{{
+									LogPath:    "files/delta_log/1",
+									EntriesNum: 1,
+								}},
+							}},
+						}, nil
+					default:
+						return nil, fmt.Errorf("unexpected manifest path %s", manifestPath)
+					}
+				},
+				nil,
+			)
+
+			require.NoError(t, err)
+			require.Len(t, fileInfos, 1)
+			if tc.wantDeltalogs {
+				require.Len(t, fileInfos[0].Deltalogs, 1)
+				require.Len(t, fileInfos[0].Deltalogs[0].GetBinlogs(), 1)
+				assert.Equal(t, "files/delta_log/1", fileInfos[0].Deltalogs[0].GetBinlogs()[0].GetLogPath())
+			} else {
+				assert.Empty(t, fileInfos[0].Deltalogs)
+			}
+		})
+	}
+}
+
+func TestReadMilvusSnapshotSegmentManifest_Deltalogs(t *testing.T) {
+	data, err := snapshotio.MarshalSegmentManifest(&datapb.SegmentDescription{
+		SegmentId:      100,
+		PartitionId:    10,
+		SegmentLevel:   datapb.SegmentLevel_L1,
+		ChannelName:    "by-dev-rootcoord-dml_0_100v0",
+		NumOfRows:      128,
+		StorageVersion: 3,
+		IsSorted:       true,
+		Deltalogs: []*datapb.FieldBinlog{{
+			FieldID: 100,
+			Binlogs: []*datapb.Binlog{{
+				EntriesNum:    8,
+				TimestampFrom: 1,
+				TimestampTo:   2,
+				LogPath:       "delta/100/1",
+				LogSize:       64,
+				LogID:         1,
+				MemorySize:    64,
+			}},
+		}},
+	})
+	require.NoError(t, err)
+
+	segment, err := readMilvusSnapshotSegmentManifest("manifest.avro", snapshotio.SnapshotFormatVersion, func(path string) ([]byte, error) {
+		require.Equal(t, "manifest.avro", path)
+		return data, nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(100), segment.GetSegmentId())
+	require.Len(t, segment.GetDeltalogs(), 1)
+	require.Len(t, segment.GetDeltalogs()[0].GetBinlogs(), 1)
+	require.Equal(t, "delta/100/1", segment.GetDeltalogs()[0].GetBinlogs()[0].GetLogPath())
+}
+
+func TestReadMilvusSnapshotSegmentManifest_ParseErrorIncludesPath(t *testing.T) {
+	_, err := readMilvusSnapshotSegmentManifest("bad-manifest.avro", snapshotio.SnapshotFormatVersion, func(path string) ([]byte, error) {
+		require.Equal(t, "bad-manifest.avro", path)
+		return []byte("not a segment manifest"), nil
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse source segment manifest bad-manifest.avro")
+}
+
 // ==================== GetFileInfo Additional Tests ====================
 
 func TestGetFileInfo_PropertiesError(t *testing.T) {
-	_, err := GetFileInfo("parquet", "/some/file.parquet", nil, nil)
+	_, err := GetFileInfo("parquet", "/some/file.parquet", nil, ExternalSpecContext{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "properties")
 }
@@ -886,7 +1566,7 @@ func TestFetchFragmentsFromExternalSourceWithRange_HappyPath(t *testing.T) {
 	defer mockRead.UnPatch()
 
 	fragments, err := FetchFragmentsFromExternalSourceWithRange(
-		ctx, "parquet", []string{"col1"}, "s3:///bucket/path", config,
+		ctx, "parquet", []string{"col1"}, "s3://endpoint/bucket/path", config,
 		0, 3, "/manifest.json", ExternalFetchOptions{CollectionID: 1, RowLimit: 5000},
 	)
 	assert.NoError(t, err)
@@ -1008,28 +1688,6 @@ func TestFetchFragmentsFromExternalSourceWithRange_FileIndexEndClamped(t *testin
 	assert.NotEmpty(t, fragments)
 }
 
-func TestFetchFragmentsFromExternalSourceWithRange_FormatProperties(t *testing.T) {
-	ctx := context.Background()
-	tmpDir := t.TempDir()
-	config := &indexpb.StorageConfig{StorageType: "local", BucketName: tmpDir, RootPath: tmpDir}
-
-	mockRead := mockey.Mock(ReadFileInfosFromManifestPath).Return([]FileInfo{
-		{FilePath: "f1.parquet", NumRows: 100},
-	}, nil).Build()
-	defer mockRead.UnPatch()
-
-	fragments, err := FetchFragmentsFromExternalSourceWithRange(
-		ctx, "parquet", nil, "", config,
-		0, 1, "/manifest.json", ExternalFetchOptions{
-			CollectionID: 1,
-			SpecExtfs:    map[string]string{"iceberg.snapshot_id": "42"},
-			RowLimit:     1000,
-		},
-	)
-	assert.NoError(t, err)
-	assert.Len(t, fragments, 1)
-}
-
 func TestMakePropertiesFromStorageConfig_WithExtraKVs(t *testing.T) {
 	tmpDir := t.TempDir()
 	config := &indexpb.StorageConfig{
@@ -1069,7 +1727,7 @@ func TestRowLimitOrDefault(t *testing.T) {
 func TestFetchRowCountsConcurrently_AllKnownSkipsFFI(t *testing.T) {
 	// All fileInfos already have NumRows > 0 → no GetFileInfo call.
 	mockCalled := int32(0)
-	m := mockey.Mock(GetFileInfo).To(func(format, path string, cfg *indexpb.StorageConfig, kv map[string]string) (*FileInfo, error) {
+	m := mockey.Mock(GetFileInfo).To(func(format, path string, cfg *indexpb.StorageConfig, extfs ExternalSpecContext) (*FileInfo, error) {
 		atomic.AddInt32(&mockCalled, 1)
 		return &FileInfo{FilePath: path, NumRows: 99}, nil
 	}).Build()
@@ -1080,14 +1738,14 @@ func TestFetchRowCountsConcurrently_AllKnownSkipsFFI(t *testing.T) {
 		{FilePath: "b", NumRows: 20},
 		{FilePath: "c", NumRows: 30},
 	}
-	got, err := fetchRowCountsConcurrently(context.Background(), "parquet", fileInfos, &indexpb.StorageConfig{}, nil)
+	got, err := fetchRowCountsConcurrently(context.Background(), "parquet", fileInfos, &indexpb.StorageConfig{}, ExternalSpecContext{})
 	assert.NoError(t, err)
 	assert.Equal(t, []int64{10, 20, 30}, got)
 	assert.Equal(t, int32(0), atomic.LoadInt32(&mockCalled))
 }
 
 func TestFetchRowCountsConcurrently_MissingFilled(t *testing.T) {
-	m := mockey.Mock(GetFileInfo).To(func(format, path string, cfg *indexpb.StorageConfig, kv map[string]string) (*FileInfo, error) {
+	m := mockey.Mock(GetFileInfo).To(func(format, path string, cfg *indexpb.StorageConfig, extfs ExternalSpecContext) (*FileInfo, error) {
 		return &FileInfo{FilePath: path, NumRows: 777}, nil
 	}).Build()
 	defer m.UnPatch()
@@ -1097,7 +1755,7 @@ func TestFetchRowCountsConcurrently_MissingFilled(t *testing.T) {
 		{FilePath: "b", NumRows: 0},
 		{FilePath: "c", NumRows: -1},
 	}
-	got, err := fetchRowCountsConcurrently(context.Background(), "parquet", fileInfos, &indexpb.StorageConfig{}, nil)
+	got, err := fetchRowCountsConcurrently(context.Background(), "parquet", fileInfos, &indexpb.StorageConfig{}, ExternalSpecContext{})
 	assert.NoError(t, err)
 	assert.Equal(t, []int64{10, 777, 777}, got)
 }
@@ -1107,7 +1765,7 @@ func TestFetchRowCountsConcurrently_WorkerErrorPropagated(t *testing.T) {
 	defer m.UnPatch()
 
 	_, err := fetchRowCountsConcurrently(context.Background(), "parquet",
-		[]FileInfo{{FilePath: "x", NumRows: 0}}, &indexpb.StorageConfig{}, nil)
+		[]FileInfo{{FilePath: "x", NumRows: 0}}, &indexpb.StorageConfig{}, ExternalSpecContext{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to get file info")
 }
@@ -1121,7 +1779,7 @@ func TestFetchRowCountsConcurrently_CtxPreCancelled(t *testing.T) {
 	cancel()
 
 	_, err := fetchRowCountsConcurrently(ctx, "parquet",
-		[]FileInfo{{FilePath: "x", NumRows: 0}}, &indexpb.StorageConfig{}, nil)
+		[]FileInfo{{FilePath: "x", NumRows: 0}}, &indexpb.StorageConfig{}, ExternalSpecContext{})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
 }
@@ -1134,14 +1792,14 @@ func TestFetchRowCountsConcurrently_CtxCancelledDuringRun(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	m := mockey.Mock(GetFileInfo).To(func(_ string, _ string, _ *indexpb.StorageConfig, _ map[string]string) (*FileInfo, error) {
+	m := mockey.Mock(GetFileInfo).To(func(_ string, _ string, _ *indexpb.StorageConfig, _ ExternalSpecContext) (*FileInfo, error) {
 		cancel()
 		return &FileInfo{NumRows: 10}, nil
 	}).Build()
 	defer m.UnPatch()
 
 	_, err := fetchRowCountsConcurrently(ctx, "parquet",
-		[]FileInfo{{FilePath: "x", NumRows: 0}}, &indexpb.StorageConfig{}, nil)
+		[]FileInfo{{FilePath: "x", NumRows: 0}}, &indexpb.StorageConfig{}, ExternalSpecContext{})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
 }

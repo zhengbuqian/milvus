@@ -19,10 +19,14 @@ package storage
 import (
 	"testing"
 
+	"github.com/apache/arrow/go/v17/arrow"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 func TestConvertArrowSchema(t *testing.T) {
@@ -75,6 +79,80 @@ func TestConvertArrowSchema(t *testing.T) {
 	}
 }
 
+func TestSchemaForManifestRead_MilvusTableUsesSourceColumns(t *testing.T) {
+	schema := &schemapb.CollectionSchema{
+		ExternalSpec: `{"format":"milvus-table"}`,
+		Fields: []*schemapb.FieldSchema{
+			{FieldID: 99, Name: common.VirtualPKFieldName, DataType: schemapb.DataType_Int64},
+			{FieldID: 100, Name: "target_pk", DataType: schemapb.DataType_Int64, ExternalField: "pk"},
+		},
+	}
+
+	resolver := typeutil.NewStorageColumnResolver(schema)
+	assert.True(t, resolver.IsMilvusTable())
+
+	fields := resolver.ManifestStoredFields()
+	require.Len(t, fields, 1)
+	assert.Equal(t, "pk", schema.GetFields()[1].GetExternalField())
+	assert.Equal(t, int64(100), fields[0].GetFieldID())
+
+	arrowSchema, err := ConvertToArrowSchemaWithNameResolver(schema, true, resolver.ManifestStoredColumnName)
+	assert.NoError(t, err)
+	assert.Equal(t, "100", arrowSchema.Field(0).Name)
+}
+
+func TestSchemaForManifestRead_MilvusTableSourceSchemaUsesFieldID(t *testing.T) {
+	schema := &schemapb.CollectionSchema{
+		ExternalSpec: `{"format":"milvus-table"}`,
+		Fields: []*schemapb.FieldSchema{
+			{FieldID: 100, Name: "pk", DataType: schemapb.DataType_Int64},
+		},
+	}
+
+	resolver := typeutil.NewStorageColumnResolver(schema)
+	fields := resolver.ManifestStoredFields()
+	assert.Empty(t, schema.GetFields()[0].GetExternalField())
+	assert.Equal(t, int64(100), fields[0].GetFieldID())
+
+	arrowSchema, err := ConvertToArrowSchemaWithNameResolver(schema, true, resolver.ManifestStoredColumnName)
+	assert.NoError(t, err)
+	assert.Equal(t, "100", arrowSchema.Field(0).Name)
+}
+
+func TestSchemaForManifestRead_NonMilvusTableKeepsExternalField(t *testing.T) {
+	schema := &schemapb.CollectionSchema{
+		ExternalSpec: `{"format":"parquet"}`,
+		Fields: []*schemapb.FieldSchema{
+			{FieldID: 100, Name: "target_pk", DataType: schemapb.DataType_Int64, ExternalField: "pk"},
+		},
+	}
+
+	resolver := typeutil.NewStorageColumnResolver(schema)
+	assert.False(t, resolver.IsMilvusTable())
+
+	fields := resolver.ManifestStoredFields()
+	require.Len(t, fields, 1)
+	assert.Equal(t, schema.GetFields()[0], fields[0])
+
+	arrowSchema, err := ConvertToArrowSchemaWithNameResolver(schema, true, resolver.ManifestStoredColumnName)
+	assert.NoError(t, err)
+	assert.Equal(t, "pk", arrowSchema.Field(0).Name)
+}
+
+func TestStorageColumnResolverManifestStoredColumnName(t *testing.T) {
+	resolver := typeutil.NewStorageColumnResolver(&schemapb.CollectionSchema{
+		ExternalSpec: `{"format":"milvus-table"}`,
+	})
+
+	columnName, ok := resolver.ManifestStoredColumnName(&schemapb.FieldSchema{FieldID: 100, Name: "pk"})
+	assert.True(t, ok)
+	assert.Equal(t, "100", columnName)
+
+	columnName, ok = resolver.ManifestStoredColumnName(&schemapb.FieldSchema{FieldID: 101, Name: common.VirtualPKFieldName})
+	assert.False(t, ok)
+	assert.Empty(t, columnName)
+}
+
 func TestConvertArrowSchemaWithoutDim(t *testing.T) {
 	fieldSchemas := []*schemapb.FieldSchema{
 		{FieldID: 1, Name: "field0", DataType: schemapb.DataType_Bool},
@@ -100,4 +178,133 @@ func TestConvertArrowSchemaWithoutDim(t *testing.T) {
 	}
 	_, err := ConvertToArrowSchema(schema, false)
 	assert.Error(t, err)
+}
+
+func TestFilterRowIDFromSchema(t *testing.T) {
+	t.Run("removes RowID field", func(t *testing.T) {
+		schema := &schemapb.CollectionSchema{
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: common.RowIDField, Name: "RowID", DataType: schemapb.DataType_Int64},
+				{FieldID: 100, Name: "pk", DataType: schemapb.DataType_Int64},
+				{FieldID: 101, Name: "text", DataType: schemapb.DataType_Text},
+			},
+		}
+		filtered := FilterRowIDFromSchema(schema)
+		assert.Len(t, filtered.Fields, 2)
+		for _, f := range filtered.Fields {
+			assert.NotEqual(t, common.RowIDField, f.FieldID)
+		}
+	})
+
+	t.Run("no RowID field", func(t *testing.T) {
+		schema := &schemapb.CollectionSchema{
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "pk", DataType: schemapb.DataType_Int64},
+				{
+					FieldID: 101, Name: "vec", DataType: schemapb.DataType_FloatVector,
+					TypeParams: []*commonpb.KeyValuePair{{Key: "dim", Value: "128"}},
+				},
+			},
+		}
+		filtered := FilterRowIDFromSchema(schema)
+		assert.Len(t, filtered.Fields, 2)
+	})
+
+	t.Run("deep copy correctness", func(t *testing.T) {
+		schema := &schemapb.CollectionSchema{
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: common.RowIDField, Name: "RowID", DataType: schemapb.DataType_Int64},
+				{FieldID: 100, Name: "pk", DataType: schemapb.DataType_Int64},
+			},
+		}
+		filtered := FilterRowIDFromSchema(schema)
+		// mutate output
+		filtered.Fields[0].Name = "MUTATED"
+		// original unchanged
+		assert.Equal(t, "pk", schema.Fields[1].Name)
+	})
+
+	t.Run("empty schema", func(t *testing.T) {
+		schema := &schemapb.CollectionSchema{Fields: []*schemapb.FieldSchema{}}
+		filtered := FilterRowIDFromSchema(schema)
+		assert.Len(t, filtered.Fields, 0)
+	})
+}
+
+func TestOverrideTextFieldsToBinary(t *testing.T) {
+	t.Run("TEXT fields converted to binary", func(t *testing.T) {
+		schema := &schemapb.CollectionSchema{
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "pk", DataType: schemapb.DataType_Int64},
+				{FieldID: 101, Name: "content", DataType: schemapb.DataType_Text},
+			},
+		}
+		arrowSchema := arrow.NewSchema([]arrow.Field{
+			{Name: "pk", Type: arrow.PrimitiveTypes.Int64},
+			{Name: "content", Type: arrow.BinaryTypes.String},
+		}, nil)
+
+		result := overrideTextFieldsToBinary(schema, arrowSchema)
+		assert.Equal(t, arrow.BinaryTypes.Binary, result.Field(1).Type)
+		// non-TEXT field unchanged
+		assert.Equal(t, arrow.PrimitiveTypes.Int64, result.Field(0).Type)
+	})
+
+	t.Run("no TEXT fields returns same pointer", func(t *testing.T) {
+		schema := &schemapb.CollectionSchema{
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "pk", DataType: schemapb.DataType_Int64},
+				{FieldID: 101, Name: "name", DataType: schemapb.DataType_VarChar},
+			},
+		}
+		arrowSchema := arrow.NewSchema([]arrow.Field{
+			{Name: "pk", Type: arrow.PrimitiveTypes.Int64},
+			{Name: "name", Type: arrow.BinaryTypes.String},
+		}, nil)
+
+		result := overrideTextFieldsToBinary(schema, arrowSchema)
+		assert.True(t, result == arrowSchema) // same pointer
+	})
+
+	t.Run("mixed types with multiple TEXT", func(t *testing.T) {
+		schema := &schemapb.CollectionSchema{
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "pk", DataType: schemapb.DataType_Int64},
+				{FieldID: 101, Name: "t1", DataType: schemapb.DataType_Text},
+				{FieldID: 102, Name: "name", DataType: schemapb.DataType_VarChar},
+				{FieldID: 103, Name: "t2", DataType: schemapb.DataType_Text},
+			},
+		}
+		arrowSchema := arrow.NewSchema([]arrow.Field{
+			{Name: "pk", Type: arrow.PrimitiveTypes.Int64},
+			{Name: "t1", Type: arrow.BinaryTypes.String},
+			{Name: "name", Type: arrow.BinaryTypes.String},
+			{Name: "t2", Type: arrow.BinaryTypes.String},
+		}, nil)
+
+		result := overrideTextFieldsToBinary(schema, arrowSchema)
+		assert.Equal(t, arrow.PrimitiveTypes.Int64, result.Field(0).Type)
+		assert.Equal(t, arrow.BinaryTypes.Binary, result.Field(1).Type) // TEXT → binary
+		assert.Equal(t, arrow.BinaryTypes.String, result.Field(2).Type) // VarChar unchanged
+		assert.Equal(t, arrow.BinaryTypes.Binary, result.Field(3).Type) // TEXT → binary
+	})
+
+	t.Run("arrow schema shorter than proto fields", func(t *testing.T) {
+		schema := &schemapb.CollectionSchema{
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, Name: "pk", DataType: schemapb.DataType_Int64},
+				{FieldID: 101, Name: "content", DataType: schemapb.DataType_Text},
+				{FieldID: 102, Name: "extra", DataType: schemapb.DataType_Text},
+			},
+		}
+		arrowSchema := arrow.NewSchema([]arrow.Field{
+			{Name: "pk", Type: arrow.PrimitiveTypes.Int64},
+			{Name: "content", Type: arrow.BinaryTypes.String},
+		}, nil)
+
+		// should not panic even though proto has more fields
+		result := overrideTextFieldsToBinary(schema, arrowSchema)
+		assert.Equal(t, 2, result.NumFields())
+		assert.Equal(t, arrow.BinaryTypes.Binary, result.Field(1).Type)
+	})
 }

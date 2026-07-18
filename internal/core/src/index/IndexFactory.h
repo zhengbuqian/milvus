@@ -19,6 +19,7 @@
 #include <stdint.h>
 #include <map>
 #include <string>
+#include <vector>
 
 #include "arrow/util/macros.h"
 #include "common/Types.h"
@@ -47,6 +48,9 @@ class IndexFactory {
         return instance;
     }
 
+    static bool
+    CanUseIndexRawDataForField(DataType field_type, bool has_raw_data);
+
     LoadResourceRequest
     IndexLoadResource(DataType field_type,
                       DataType element_type,
@@ -56,6 +60,18 @@ class IndexFactory {
                       bool mmap_enable,
                       int64_t num_rows,
                       int64_t dim);
+
+    LoadResourceRequest
+    IndexLoadResource(DataType field_type,
+                      DataType element_type,
+                      IndexVersion index_version,
+                      uint64_t index_size_in_bytes,
+                      const std::map<std::string, std::string>& index_params,
+                      bool mmap_enable,
+                      int64_t num_rows,
+                      int64_t dim,
+                      const std::vector<std::string>& index_files,
+                      const storage::FileManagerContext& file_manager_context);
 
     LoadResourceRequest
     VecIndexLoadResource(DataType field_type,
@@ -73,7 +89,19 @@ class IndexFactory {
         IndexVersion index_version,
         uint64_t index_size_in_bytes,
         const std::map<std::string, std::string>& index_params,
-        bool mmap_enable);
+        bool mmap_enable,
+        int64_t num_rows);
+
+    LoadResourceRequest
+    ScalarIndexLoadResource(
+        DataType field_type,
+        IndexVersion index_version,
+        uint64_t index_size_in_bytes,
+        const std::map<std::string, std::string>& index_params,
+        bool mmap_enable,
+        int64_t num_rows,
+        const std::vector<std::string>& index_files,
+        const storage::FileManagerContext& file_manager_context);
 
     IndexBasePtr
     CreateIndex(const CreateIndexInfo& create_index_info,
@@ -139,6 +167,11 @@ class IndexFactory {
 
     IndexBasePtr
     CreateNestedIndexScalarIndexSort(
+        const storage::FileManagerContext& file_manager_context =
+            storage::FileManagerContext());
+
+    IndexBasePtr
+    CreateNestedIndexBitmap(
         const storage::FileManagerContext& file_manager_context =
             storage::FileManagerContext());
 

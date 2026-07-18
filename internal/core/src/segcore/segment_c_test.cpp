@@ -1024,6 +1024,57 @@ TEST(CApiTest, RetrieveTestWithExpr) {
     DeleteSegment(segment);
 }
 
+TEST(CApiTest, RetrieveByOffsetsChecksExternalLoadedManifest) {
+    auto schema = std::make_shared<Schema>();
+    auto pk_field = FieldId(100);
+    auto missing_field = FieldId(101);
+    schema->AddField(FieldMeta(FieldName("pk"),
+                               pk_field,
+                               DataType::INT64,
+                               false,
+                               std::nullopt,
+                               "pk_col"));
+    schema->AddField(FieldMeta(FieldName("new_field"),
+                               missing_field,
+                               DataType::INT64,
+                               false,
+                               std::nullopt,
+                               "new_col"));
+    schema->set_primary_field_id(pk_field);
+    schema->set_external_source("s3://bucket/table");
+
+    auto segment = CreateSealedSegment(schema);
+    auto* sealed = dynamic_cast<ChunkedSegmentSealedImpl*>(segment.get());
+    ASSERT_NE(sealed, nullptr);
+
+    proto::segcore::SegmentLoadInfo load_info;
+    load_info.set_segmentid(1);
+    load_info.set_num_of_rows(1);
+    load_info.set_manifest_path("/manifest/v1");
+    sealed->SetLoadInfo(load_info);
+
+    auto plan = std::make_unique<query::RetrievePlan>(schema);
+    plan->field_ids_ = {missing_field};
+    plan->access_entries_ = {missing_field};
+
+    int64_t offsets[] = {0};
+    CRetrieveResult* retrieve_result = nullptr;
+    auto status =
+        CRetrieveByOffsets(static_cast<CSegmentInterface>(segment.get()),
+                           plan.get(),
+                           offsets,
+                           1,
+                           &retrieve_result);
+
+    ASSERT_EQ(status.error_code, FieldNotLoaded);
+    ASSERT_NE(status.error_msg, nullptr);
+    EXPECT_NE(std::string(status.error_msg).find("RefreshExternalCollection"),
+              std::string::npos)
+        << status.error_msg;
+    EXPECT_EQ(retrieve_result, nullptr);
+    free(const_cast<char*>(status.error_msg));
+}
+
 TEST(CApiTest, GetMemoryUsageInBytesTest) {
     auto collection = NewCollection(get_default_schema_config().c_str());
     CSegmentInterface segment;
@@ -1399,8 +1450,7 @@ TEST(CApiTest, SealedSegment_search_float_With_Expr_Predicate_Range) {
     auto segment = CreateSealedWithFieldDataLoaded(schema, dataset);
 
     // load vec index
-    status = UpdateSealedSegmentIndex(segment.get(), &load_index_info);
-    ASSERT_EQ(status.error_code, Success);
+    segment->LoadIndex(load_index_info);
 
     CSearchResult c_search_result_on_bigIndex;
     auto res_after_load_index = CSearch(segment.get(),
@@ -1766,6 +1816,86 @@ TEST(CApiTest, RetrieveScalarFieldFromSealedSegmentWithIndex) {
     DeleteRetrievePlan(plan.release());
     DeleteRetrieveResult(retrieve_result);
 
+    DeleteSegment(segment);
+}
+
+TEST(
+    CApiTest,
+    RetrieveScalarFieldFromColumnWhenIndexHasRawDataAndPreferFieldDataEnabled) {
+    auto schema = std::make_shared<Schema>();
+    auto i32_fid = schema->AddDebugField("age32", DataType::INT32);
+    auto i64_fid = schema->AddDebugField("age64", DataType::INT64);
+    schema->set_primary_field_id(i64_fid);
+
+    auto segment = CreateSealedSegment(schema).release();
+
+    int N = ROW_COUNT;
+    auto raw_data = DataGen(schema, N);
+
+    auto cm = milvus::storage::RemoteChunkManagerSingleton::GetInstance()
+                  .GetRemoteChunkManager();
+    auto load_info = PrepareInsertBinlog(
+        kCollectionID, kPartitionID, kSegmentID, raw_data, cm);
+    auto status = LoadFieldData(segment, &load_info);
+    ASSERT_EQ(status.error_code, Success);
+
+    auto age32_col = raw_data.get_col<int32_t>(i32_fid);
+    std::vector<int32_t> age32_index_col(age32_col.begin(), age32_col.end());
+    for (auto& value : age32_index_col) {
+        value += 1;
+    }
+
+    GenScalarIndexing(N, age32_index_col.data());
+    auto age32_index = milvus::index::CreateScalarIndexSort<int32_t>();
+    age32_index->Build(N, age32_index_col.data());
+
+    LoadIndexInfo load_index_info;
+    load_index_info.field_id = i32_fid.get();
+    load_index_info.field_type = DataType::INT32;
+    load_index_info.index_params = GenIndexParams(age32_index.get());
+    load_index_info.cache_index =
+        CreateTestCacheIndex("test", std::move(age32_index));
+    segment->LoadIndex(load_index_info);
+
+    auto age64_col = raw_data.get_col<int64_t>(i64_fid);
+    auto plan = std::make_unique<query::RetrievePlan>(schema);
+    plan->plan_node_ = std::make_unique<query::RetrievePlanNode>();
+    std::vector<proto::plan::GenericValue> retrieve_row_ids;
+    proto::plan::GenericValue val;
+    val.set_int64_val(age64_col[0]);
+    retrieve_row_ids.push_back(val);
+    auto term_expr = std::make_shared<milvus::expr::TermFilterExpr>(
+        milvus::expr::ColumnInfo(
+            i64_fid, DataType::INT64, std::vector<std::string>()),
+        retrieve_row_ids);
+    plan->plan_node_->plannodes_ = CreateRetrievePlanByExpr(term_expr);
+    plan->field_ids_ = {i32_fid};
+
+    auto& segcore_config = milvus::segcore::SegcoreConfig::default_config();
+    auto previous_prefer_field_data =
+        segcore_config.get_prefer_field_data_when_index_has_raw_data();
+    segcore_config.set_prefer_field_data_when_index_has_raw_data(true);
+    auto reset_prefer_field_data = [&]() {
+        segcore_config.set_prefer_field_data_when_index_has_raw_data(
+            previous_prefer_field_data);
+    };
+
+    CRetrieveResult* retrieve_result = nullptr;
+    auto res = CRetrieve(
+        segment, plan.get(), raw_data.timestamps_[N - 1], &retrieve_result);
+    reset_prefer_field_data();
+    ASSERT_EQ(res.error_code, Success);
+
+    auto query_result = std::make_unique<proto::segcore::RetrieveResults>();
+    auto suc = query_result->ParseFromArray(retrieve_result->proto_blob,
+                                            retrieve_result->proto_size);
+    ASSERT_TRUE(suc);
+    ASSERT_EQ(query_result->fields_data().size(), 1);
+    ASSERT_EQ(query_result->fields_data(0).scalars().int_data().data(0),
+              age32_col[0]);
+
+    DeleteRetrievePlan(plan.release());
+    DeleteRetrieveResult(retrieve_result);
     DeleteSegment(segment);
 }
 

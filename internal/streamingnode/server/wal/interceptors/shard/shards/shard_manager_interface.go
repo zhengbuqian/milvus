@@ -2,13 +2,13 @@ package shards
 
 import (
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/interceptors/shard/utils"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/message"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/types"
 )
 
 type ShardManager interface {
-	log.WithLogger
+	mlog.WithLogger
 
 	Channel() types.PChannelInfo
 
@@ -53,7 +53,8 @@ type ShardManager interface {
 	// Returns the IDs of flushed segments (non-empty only for schema changes).
 	AlterCollection(msg message.MutableAlterCollectionMessageV2) ([]int64, error)
 
-	CheckIfCollectionSchemaVersionMatch(collectionID int64, schemaVersion int32) (int32, error)
+	// CheckIfCollectionSchemaVersionMatch validates insert header schema version against in-memory collection state.
+	CheckIfCollectionSchemaVersionMatch(header *message.InsertMessageHeader) (int32, error)
 
 	Close()
 }

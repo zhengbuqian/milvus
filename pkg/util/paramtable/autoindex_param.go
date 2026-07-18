@@ -19,13 +19,12 @@ package paramtable
 import (
 	"strconv"
 
-	"github.com/cockroachdb/errors"
-
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/metric"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/util/funcutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/metric"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 // /////////////////////////////////////////////////////////////////////////////
@@ -218,7 +217,7 @@ func (p *AutoIndexConfig) init(base *BaseTable) {
 	p.ScalarAutoIndexParams = ParamItem{
 		Key:          "scalarAutoIndex.params.build",
 		Version:      "2.4.0",
-		DefaultValue: `{"int": "HYBRID","varchar": "HYBRID","bool": "BITMAP", "float": "HYBRID", "json": "INVERTED", "geometry": "RTREE", "timestamptz": "STL_SORT"}`,
+		DefaultValue: `{"int": "HYBRID","varchar": "HYBRID","bool": "BITMAP", "float": "HYBRID", "json": "HYBRID", "geometry": "RTREE", "timestamptz": "STL_SORT"}`,
 	}
 	p.ScalarAutoIndexParams.Init(base.mgr)
 
@@ -421,7 +420,7 @@ func GetBuildParamFormatter(defaultMetricsType metric.MetricType, tag string) fu
 	return func(originValue string) string {
 		m, err := funcutil.JSONToMap(originValue)
 		if err != nil {
-			panic(errors.Wrapf(err, "failed to parse %s config value", tag))
+			panic(merr.Wrapf(err, "failed to parse %s config value", tag))
 		}
 		_, ok := m[common.MetricTypeKey]
 		if ok {
@@ -430,7 +429,7 @@ func GetBuildParamFormatter(defaultMetricsType metric.MetricType, tag string) fu
 		m[common.MetricTypeKey] = defaultMetricsType
 		ret, err := funcutil.MapToJSON(m)
 		if err != nil {
-			panic(errors.Wrapf(err, "failed to convert updated %s map to json", tag))
+			panic(merr.Wrapf(err, "failed to convert updated %s map to json", tag))
 		}
 		return ret
 	}

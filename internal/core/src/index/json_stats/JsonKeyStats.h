@@ -70,6 +70,7 @@
 class CollectSingleJsonStatsInfoAccessor;
 // Forward declaration of test accessor in global namespace for friend declaration
 class TraverseJsonForBuildStatsAccessor;
+class JsonStatsProjectionTestAccessor;
 
 namespace milvus::index {
 class JsonKeyStats : public ScalarIndex<std::string> {
@@ -208,7 +209,7 @@ class JsonKeyStats : public ScalarIndex<std::string> {
         }
         auto ca = SemiInlineGet(bson_index_cache_slot_->PinCells(op_ctx, {0}));
         auto index = ca->get_cell_of(0);
-        return PinWrapper<BsonInvertedIndex*>(ca, index);
+        return PinWrapper<BsonInvertedIndex*>(std::move(ca), index);
     }
 
     void
@@ -673,6 +674,7 @@ class JsonKeyStats : public ScalarIndex<std::string> {
     int64_t num_rows_{0};
     bool is_built_ = false;
     std::string path_;
+    milvus::storage::FileManagerContext file_manager_context_;
     milvus::storage::ChunkManagerPtr rcm_;
     std::shared_ptr<milvus::storage::MemFileManagerImpl> mem_file_manager_;
     std::shared_ptr<milvus::storage::DiskFileManagerImpl> disk_file_manager_;
@@ -685,6 +687,7 @@ class JsonKeyStats : public ScalarIndex<std::string> {
     std::set<JsonKey> column_keys_;
     std::shared_ptr<JsonStatsParquetWriter> parquet_writer_;
     std::shared_ptr<BsonInvertedIndex> bson_inverted_index_;
+    std::string shard_;
     // cache slot for bson inverted index when using translator
     std::shared_ptr<milvus::cachinglayer::CacheSlot<BsonInvertedIndex>>
         bson_index_cache_slot_;
@@ -718,6 +721,7 @@ class JsonKeyStats : public ScalarIndex<std::string> {
     // Friend accessor for unit tests to call private methods safely.
     friend class ::TraverseJsonForBuildStatsAccessor;
     friend class ::CollectSingleJsonStatsInfoAccessor;
+    friend class ::JsonStatsProjectionTestAccessor;
 };
 
 }  // namespace milvus::index

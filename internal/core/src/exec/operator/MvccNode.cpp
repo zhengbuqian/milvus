@@ -74,6 +74,7 @@ PhyMvccNode::GetOutput() {
     }
 
     tracer::AddEvent(fmt::format("input_rows: {}", active_count_));
+    WaitPrefetch();
 
     // Visibility filtering disabled globally: skip all filtering.
     if (!segcore::SegcoreConfig::default_config()
@@ -82,7 +83,9 @@ PhyMvccNode::GetOutput() {
                                                TargetBitmap(active_count_),
                                                TargetBitmap(active_count_))
                                          : GetColumnVector(input_);
-        query_context->set_all_rows_visible(true);
+        if (is_source_node_) {
+            query_context->set_all_rows_visible(true);
+        }
         is_finished_ = true;
         return std::make_shared<RowVector>(std::vector<VectorPtr>{col_input});
     }

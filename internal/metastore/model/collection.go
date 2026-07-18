@@ -21,11 +21,11 @@ import (
 
 	"github.com/samber/lo"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	pb "github.com/milvus-io/milvus/pkg/v2/proto/etcdpb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	pb "github.com/milvus-io/milvus/pkg/v3/proto/etcdpb"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/message"
 )
 
 // TODO: These collection is dirty implementation and easy to be broken, we should drop it in the future.
@@ -58,7 +58,6 @@ type Collection struct {
 	FileResourceIds      []int64
 	ExternalSource       string
 	ExternalSpec         string
-	DoPhysicalBackfill   bool
 }
 
 type ShardInfo struct {
@@ -101,7 +100,6 @@ func (c *Collection) ShallowClone() *Collection {
 		FileResourceIds:      c.FileResourceIds,
 		ExternalSource:       c.ExternalSource,
 		ExternalSpec:         c.ExternalSpec,
-		DoPhysicalBackfill:   c.DoPhysicalBackfill,
 	}
 }
 
@@ -143,7 +141,32 @@ func (c *Collection) Clone() *Collection {
 		FileResourceIds:      slices.Clone(c.FileResourceIds),
 		ExternalSource:       c.ExternalSource,
 		ExternalSpec:         c.ExternalSpec,
-		DoPhysicalBackfill:   c.DoPhysicalBackfill,
+	}
+}
+
+// ToCollectionSchemaPB returns a schemapb.CollectionSchema populated from the
+// current Collection. All schema-level fields are copied verbatim — callers
+// override Version, Properties, EnableDynamicField, etc. after the call when
+// the operation requires a different value.
+//
+// Centralizing the conversion here ensures that newly added schema fields are
+// propagated consistently across every rootcoord broadcast/response path.
+func (c *Collection) ToCollectionSchemaPB() *schemapb.CollectionSchema {
+	return &schemapb.CollectionSchema{
+		Name:               c.Name,
+		Description:        c.Description,
+		AutoID:             c.AutoID,
+		Fields:             MarshalFieldModels(c.Fields),
+		StructArrayFields:  MarshalStructArrayFieldModels(c.StructArrayFields),
+		Functions:          MarshalFunctionModels(c.Functions),
+		EnableDynamicField: c.EnableDynamicField,
+		EnableNamespace:    c.EnableNamespace,
+		Properties:         c.Properties,
+		DbName:             c.DBName,
+		Version:            c.SchemaVersion,
+		FileResourceIds:    c.FileResourceIds,
+		ExternalSource:     c.ExternalSource,
+		ExternalSpec:       c.ExternalSpec,
 	}
 }
 
@@ -194,9 +217,9 @@ func (c *Collection) ApplyUpdates(header *message.AlterCollectionMessageHeader, 
 			c.Functions = UnmarshalFunctionModels(updates.Schema.Functions)
 			c.StructArrayFields = UnmarshalStructArrayFieldModels(updates.Schema.StructArrayFields)
 			c.SchemaVersion = updates.Schema.Version
+			c.FileResourceIds = updates.Schema.GetFileResourceIds()
 			c.ExternalSource = updates.Schema.ExternalSource
 			c.ExternalSpec = updates.Schema.ExternalSpec
-			c.DoPhysicalBackfill = updates.Schema.DoPhysicalBackfill
 		case message.FieldMaskCollectionExternalSpec:
 			// Defensive: only overwrite when the update carries a value.
 			// Legacy WAL messages from before the atomic-tuple invariant may
@@ -270,7 +293,6 @@ func UnmarshalCollectionModel(coll *pb.CollectionInfo) *Collection {
 		FileResourceIds:      coll.Schema.GetFileResourceIds(),
 		ExternalSource:       coll.Schema.ExternalSource,
 		ExternalSpec:         coll.Schema.ExternalSpec,
-		DoPhysicalBackfill:   coll.Schema.DoPhysicalBackfill,
 	}
 }
 
@@ -326,7 +348,6 @@ func marshalCollectionModelWithConfig(coll *Collection, c *config) *pb.Collectio
 		FileResourceIds:    coll.FileResourceIds,
 		ExternalSource:     coll.ExternalSource,
 		ExternalSpec:       coll.ExternalSpec,
-		DoPhysicalBackfill: coll.DoPhysicalBackfill,
 	}
 
 	if c.withFields {

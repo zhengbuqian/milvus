@@ -14,7 +14,8 @@ FROM amazonlinux:2023
 ARG TARGETARCH
 ARG MILVUS_ASAN_LIB
 
-RUN yum install -y wget libgomp libaio libatomic openblas-devel tzdata && \
+RUN yum install -y wget libgomp libaio libatomic tzdata && \
+    yum upgrade -y openssl openssl-libs && \
     rm -rf /var/cache/yum/*
 
 # Add Tini

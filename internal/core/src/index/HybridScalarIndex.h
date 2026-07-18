@@ -111,6 +111,11 @@ class HybridScalarIndex : public ScalarIndex<T> {
     }
 
     bool
+    ShouldUseOp(proto::plan::OpType op) const override {
+        return internal_index_->ShouldUseOp(op);
+    }
+
+    bool
     SupportPatternMatch() const override {
         return internal_index_->SupportPatternMatch();
     }
@@ -118,21 +123,6 @@ class HybridScalarIndex : public ScalarIndex<T> {
     const TargetBitmap
     PatternMatch(const std::string& pattern, proto::plan::OpType op) override {
         return internal_index_->PatternMatch(pattern, op);
-    }
-
-    bool
-    TryUsePatternQuery() const override {
-        return internal_index_->TryUsePatternQuery();
-    }
-
-    bool
-    SupportPatternQuery() const override {
-        return internal_index_->SupportPatternQuery();
-    }
-
-    const TargetBitmap
-    PatternQuery(const std::string& pattern) override {
-        return internal_index_->PatternQuery(pattern);
     }
 
     const TargetBitmap
@@ -187,6 +177,16 @@ class HybridScalarIndex : public ScalarIndex<T> {
     LoadEntries(storage::IndexEntryReader& reader,
                 const Config& config) override;
 
+ protected:
+    ScalarIndexType
+    SelectIndexBuildType(const std::vector<FieldDataPtr>& field_datas);
+
+    ScalarIndexType
+    SelectIndexTypeByCardinality(size_t cardinality);
+
+    void
+    BuildInternal(const std::vector<FieldDataPtr>& field_datas);
+
  private:
     ScalarIndexType
     SelectBuildTypeForPrimitiveType(
@@ -196,22 +196,13 @@ class HybridScalarIndex : public ScalarIndex<T> {
     SelectBuildTypeForArrayType(const std::vector<FieldDataPtr>& field_datas);
 
     ScalarIndexType
-    SelectIndexBuildType(const std::vector<FieldDataPtr>& field_datas);
-
-    ScalarIndexType
     SelectIndexBuildType(size_t n, const T* values);
-
-    ScalarIndexType
-    SelectIndexTypeByCardinality(size_t cardinality);
 
     BinarySet
     SerializeIndexType();
 
     void
     DeserializeIndexType(const BinarySet& binary_set);
-
-    void
-    BuildInternal(const std::vector<FieldDataPtr>& field_datas);
 
     std::shared_ptr<ScalarIndex<T>>
     GetInternalIndex();

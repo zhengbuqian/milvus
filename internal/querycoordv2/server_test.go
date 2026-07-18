@@ -33,9 +33,9 @@ import (
 	"github.com/stretchr/testify/suite"
 	"github.com/tikv/client-go/v2/txnkv"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	coordMocks "github.com/milvus-io/milvus/internal/mocks"
 	"github.com/milvus-io/milvus/internal/querycoordv2/checkers"
 	"github.com/milvus-io/milvus/internal/querycoordv2/dist"
@@ -48,19 +48,19 @@ import (
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/broadcaster/registry"
 	kvfactory "github.com/milvus-io/milvus/internal/util/dependency/kv"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/rootcoordpb"
-	"github.com/milvus-io/milvus/pkg/v2/util"
-	"github.com/milvus-io/milvus/pkg/v2/util/commonpbutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/metricsinfo"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/syncutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/tikv"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/metrics"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/querypb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/rootcoordpb"
+	"github.com/milvus-io/milvus/pkg/v3/util"
+	"github.com/milvus-io/milvus/pkg/v3/util/commonpbutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/metricsinfo"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/syncutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/tikv"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 func TestMain(m *testing.M) {
@@ -428,6 +428,9 @@ func TestApplyLoadConfigChanges(t *testing.T) {
 		// Mock paramtable.ParamItem.GetAsStrings() for ClusterLevelLoadResourceGroups
 		mockey.Mock((*paramtable.ParamItem).GetAsStrings).Return([]string{"default", "rg1"}).Build()
 
+		// Mock force override config disabled by default.
+		mockey.Mock((*paramtable.ParamItem).GetAsBool).Return(false).Build()
+
 		// Mock UpdateLoadConfig to capture the call
 		var updateLoadConfigCalled bool
 		var capturedCollectionIDs []int64
@@ -461,6 +464,143 @@ func TestApplyLoadConfigChanges(t *testing.T) {
 		watcher.Trigger()
 		time.Sleep(1 * time.Second)
 		watcher.Close()
+	})
+}
+
+func TestApplyLoadConfigChangesForceOverrideUserSpecifiedReplicaMode(t *testing.T) {
+	mockey.PatchConvey("TestApplyLoadConfigChangesForceOverrideUserSpecifiedReplicaMode", t, func() {
+		ctx := context.Background()
+
+		testServer := &Server{}
+		testServer.meta = &meta.Meta{}
+		testServer.ctx = ctx
+
+		mockCollection1 := &meta.Collection{
+			CollectionLoadInfo: &querypb.CollectionLoadInfo{
+				CollectionID:             1001,
+				UserSpecifiedReplicaMode: false,
+			},
+		}
+		mockCollection2 := &meta.Collection{
+			CollectionLoadInfo: &querypb.CollectionLoadInfo{
+				CollectionID:             1002,
+				UserSpecifiedReplicaMode: true,
+			},
+		}
+
+		mockey.Mock((*meta.CollectionManager).GetAll).Return([]int64{1001, 1002}).Build()
+		mockey.Mock((*meta.CollectionManager).GetCollection).To(func(m *meta.CollectionManager, ctx context.Context, collectionID int64) *meta.Collection {
+			switch collectionID {
+			case 1001:
+				return mockCollection1
+			case 1002:
+				return mockCollection2
+			}
+			return nil
+		}).Build()
+		mockey.Mock((*paramtable.ParamItem).GetAsInt32).Return(int32(2)).Build()
+		mockey.Mock((*paramtable.ParamItem).GetAsStrings).Return([]string{"default", "rg1"}).Build()
+		mockey.Mock((*paramtable.ParamItem).GetAsBool).Return(true).Build()
+
+		var capturedCollectionIDs []int64
+		mockey.Mock((*Server).updateLoadConfig).To(func(s *Server, ctx context.Context, collectionIDs []int64, newReplicaNum int32, newRGs []string, needWaitRGReady ...bool) error {
+			capturedCollectionIDs = collectionIDs
+			return nil
+		}).Build()
+
+		watcher := &LoadConfigWatcher{
+			s:         testServer,
+			notifier:  syncutil.NewAsyncTaskNotifier[struct{}](),
+			triggerCh: make(chan struct{}, 10),
+		}
+		watcher.applyLoadConfigChanges()
+
+		assert.Equal(t, []int64{1001, 1002}, capturedCollectionIDs, "Force override should include user-specified replica mode collections")
+	})
+}
+
+func TestApplyLoadConfigChangesSkipsReleasedCollection(t *testing.T) {
+	mockey.PatchConvey("TestApplyLoadConfigChangesSkipsReleasedCollection", t, func() {
+		ctx := context.Background()
+
+		testServer := &Server{}
+		testServer.meta = &meta.Meta{}
+		testServer.ctx = ctx
+
+		mockCollection := &meta.Collection{
+			CollectionLoadInfo: &querypb.CollectionLoadInfo{
+				CollectionID:             1001,
+				UserSpecifiedReplicaMode: false,
+			},
+		}
+
+		mockey.Mock((*meta.CollectionManager).GetAll).Return([]int64{1001, 1002}).Build()
+		mockey.Mock((*meta.CollectionManager).GetCollection).To(func(m *meta.CollectionManager, ctx context.Context, collectionID int64) *meta.Collection {
+			if collectionID == 1001 {
+				return mockCollection
+			}
+			return nil
+		}).Build()
+		mockey.Mock((*paramtable.ParamItem).GetAsInt32).Return(int32(2)).Build()
+		mockey.Mock((*paramtable.ParamItem).GetAsStrings).Return([]string{"default", "rg1"}).Build()
+		mockey.Mock((*paramtable.ParamItem).GetAsBool).Return(false).Build()
+
+		var capturedCollectionIDs []int64
+		mockey.Mock((*Server).updateLoadConfig).To(func(s *Server, ctx context.Context, collectionIDs []int64, newReplicaNum int32, newRGs []string, needWaitRGReady ...bool) error {
+			capturedCollectionIDs = collectionIDs
+			return nil
+		}).Build()
+
+		watcher := &LoadConfigWatcher{
+			s:         testServer,
+			notifier:  syncutil.NewAsyncTaskNotifier[struct{}](),
+			triggerCh: make(chan struct{}, 10),
+		}
+		watcher.applyLoadConfigChanges()
+
+		assert.Equal(t, []int64{1001}, capturedCollectionIDs)
+	})
+}
+
+func TestApplyLoadConfigChangesWhenForceOverrideConfigChanges(t *testing.T) {
+	mockey.PatchConvey("TestApplyLoadConfigChangesWhenForceOverrideConfigChanges", t, func() {
+		ctx := context.Background()
+
+		testServer := &Server{}
+		testServer.meta = &meta.Meta{}
+		testServer.ctx = ctx
+
+		mockCollection := &meta.Collection{
+			CollectionLoadInfo: &querypb.CollectionLoadInfo{
+				CollectionID:             1002,
+				UserSpecifiedReplicaMode: true,
+			},
+		}
+
+		mockey.Mock((*meta.CollectionManager).GetAll).Return([]int64{1002}).Build()
+		mockey.Mock((*meta.CollectionManager).GetCollection).Return(mockCollection).Build()
+		mockey.Mock((*paramtable.ParamItem).GetAsInt32).Return(int32(2)).Build()
+		mockey.Mock((*paramtable.ParamItem).GetAsStrings).Return([]string{"default", "rg1"}).Build()
+		mockey.Mock((*paramtable.ParamItem).GetAsBool).Return(true).Build()
+
+		var updateLoadConfigCalled bool
+		mockey.Mock((*Server).updateLoadConfig).To(func(s *Server, ctx context.Context, collectionIDs []int64, newReplicaNum int32, newRGs []string, needWaitRGReady ...bool) error {
+			updateLoadConfigCalled = true
+			assert.Equal(t, []int64{1002}, collectionIDs)
+			return nil
+		}).Build()
+
+		watcher := &LoadConfigWatcher{
+			s:                                    testServer,
+			notifier:                             syncutil.NewAsyncTaskNotifier[struct{}](),
+			triggerCh:                            make(chan struct{}, 10),
+			previousReplicaNum:                   2,
+			previousRGs:                          []string{"default", "rg1"},
+			previousForceOverrideUserReplicaMode: false,
+		}
+		watcher.applyLoadConfigChanges()
+
+		assert.True(t, updateLoadConfigCalled, "force override config change should trigger load config update even when replica/RG config is unchanged")
 	})
 }
 
@@ -651,7 +791,7 @@ func (suite *ServerSuite) hackServer() {
 		}, nil).Maybe()
 		suite.expectGetRecoverInfo(collection)
 	}
-	log.Debug("server hacked")
+	mlog.Debug(suite.ctx, "server hacked")
 }
 
 func (suite *ServerSuite) hackBroker(server *Server) {

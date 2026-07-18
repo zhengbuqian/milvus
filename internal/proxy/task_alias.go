@@ -19,12 +19,12 @@ package proxy
 import (
 	"context"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
 	"github.com/milvus-io/milvus/internal/types"
-	"github.com/milvus-io/milvus/pkg/v2/util/commonpbutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/commonpbutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
 )
 
 // CreateAliasTask contains task information of CreateAlias
@@ -191,7 +191,9 @@ func (t *DropAliasTask) Execute(ctx context.Context) error {
 	var err error
 	t.result, err = t.mixCoord.DropAlias(ctx, t.DropAliasRequest)
 	if err = merr.CheckRPCCall(t.result, err); err != nil {
-		return err
+		// alias/collection/db names are caller-supplied; a not-found from rootcoord
+		// is the user's input error, not a system fault.
+		return merr.WrapErrAsInputErrorWhen(err, merr.ErrAliasNotFound, merr.ErrCollectionNotFound, merr.ErrDatabaseNotFound)
 	}
 	return nil
 }
@@ -277,7 +279,9 @@ func (t *AlterAliasTask) Execute(ctx context.Context) error {
 	var err error
 	t.result, err = t.mixCoord.AlterAlias(ctx, t.AlterAliasRequest)
 	if err = merr.CheckRPCCall(t.result, err); err != nil {
-		return err
+		// alias/collection/db names are caller-supplied; a not-found from rootcoord
+		// is the user's input error, not a system fault.
+		return merr.WrapErrAsInputErrorWhen(err, merr.ErrAliasNotFound, merr.ErrCollectionNotFound, merr.ErrDatabaseNotFound)
 	}
 	return nil
 }
@@ -347,7 +351,10 @@ func (a *DescribeAliasTask) PreExecute(ctx context.Context) error {
 func (a *DescribeAliasTask) Execute(ctx context.Context) error {
 	var err error
 	a.result, err = a.mixCoord.DescribeAlias(ctx, a.DescribeAliasRequest)
-	return merr.CheckRPCCall(a.result, err)
+	// alias/collection/db names are caller-supplied; a not-found from rootcoord is
+	// the user's input error, not a system fault.
+	return merr.WrapErrAsInputErrorWhen(merr.CheckRPCCall(a.result, err),
+		merr.ErrAliasNotFound, merr.ErrCollectionNotFound, merr.ErrDatabaseNotFound)
 }
 
 func (a *DescribeAliasTask) PostExecute(ctx context.Context) error {

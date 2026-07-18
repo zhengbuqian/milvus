@@ -5,10 +5,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/streamingpb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/util/replicateutil"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/streamingpb"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/types"
+	"github.com/milvus-io/milvus/pkg/v3/util/replicateutil"
 )
 
 func TestPChannelAvailableInReplication(t *testing.T) {
@@ -65,6 +65,23 @@ func TestPChannelAvailableInReplication(t *testing.T) {
 		State:   streamingpb.PChannelMetaState_PCHANNEL_META_STATE_UNINITIALIZED,
 	}, replicaConfig)
 	assert.False(t, pchannel.AvailableInReplication())
+}
+
+func TestPChannelStatsManagerPChannels(t *testing.T) {
+	ResetStaticPChannelStatsManager()
+	RecoverPChannelStatsManager([]string{
+		"by-dev-rootcoord-dml_0_100v0",
+		"by-dev-rootcoord-dml_3_101v0",
+	})
+
+	stats := StaticPChannelStatsManager.Get()
+	assert.ElementsMatch(t, []string{
+		"by-dev-rootcoord-dml_0",
+		"by-dev-rootcoord-dml_3",
+	}, stats.PChannels())
+
+	stats.RemoveVChannel("by-dev-rootcoord-dml_0_100v0")
+	assert.ElementsMatch(t, []string{"by-dev-rootcoord-dml_3"}, stats.PChannels())
 }
 
 func TestPChannel(t *testing.T) {

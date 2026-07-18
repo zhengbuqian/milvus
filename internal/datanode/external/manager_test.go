@@ -26,8 +26,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/indexpb"
 )
 
 func TestExternalCollectionManager_Basic(t *testing.T) {
@@ -126,6 +126,33 @@ func TestExternalCollectionManager_SubmitTask_Success(t *testing.T) {
 	assert.Equal(t, []int64{1, 2}, info.KeptSegments)
 }
 
+func TestExternalCollectionManager_SubmitTask_DefaultsNoneStateToFinished(t *testing.T) {
+	ctx := context.Background()
+	manager := NewExternalCollectionManager(ctx, 4)
+	defer manager.Close()
+
+	clusterID := "test-cluster"
+	taskID := int64(20)
+	collID := int64(2000)
+
+	req := &datapb.RefreshExternalCollectionTaskRequest{
+		TaskID:       taskID,
+		CollectionID: collID,
+	}
+
+	err := manager.SubmitTask(clusterID, req, func(ctx context.Context) (*datapb.RefreshExternalCollectionTaskResponse, error) {
+		return &datapb.RefreshExternalCollectionTaskResponse{
+			State: indexpb.JobState_JobStateNone,
+		}, nil
+	})
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		info := manager.Get(clusterID, taskID)
+		return info != nil && info.State == indexpb.JobState_JobStateFinished
+	}, time.Second, 10*time.Millisecond)
+}
+
 func TestExternalCollectionManager_SubmitTask_Failure(t *testing.T) {
 	ctx := context.Background()
 	manager := NewExternalCollectionManager(ctx, 4)
@@ -160,6 +187,44 @@ func TestExternalCollectionManager_SubmitTask_Failure(t *testing.T) {
 	assert.NotNil(t, info)
 	assert.Equal(t, indexpb.JobState_JobStateFailed, info.State)
 	assert.Equal(t, expectedError.Error(), info.FailReason)
+}
+
+// Regression for #49225: a panic inside taskFunc (e.g. divide-by-zero from a
+// malformed external parquet) must be isolated to the task — the manager pool
+// goroutine must NOT crash the process, and the task must surface as Failed.
+func TestExternalCollectionManager_SubmitTask_PanicIsolated(t *testing.T) {
+	ctx := context.Background()
+	manager := NewExternalCollectionManager(ctx, 4)
+	defer manager.Close()
+
+	clusterID := "test-cluster"
+	taskID := int64(4242)
+	collID := int64(9999)
+
+	req := &datapb.RefreshExternalCollectionTaskRequest{
+		TaskID:       taskID,
+		CollectionID: collID,
+	}
+
+	taskFunc := func(ctx context.Context) (*datapb.RefreshExternalCollectionTaskResponse, error) {
+		var zero int64
+		// Reproduces the original #49225 crash shape.
+		_ = int64(1) / zero
+		return nil, nil
+	}
+
+	err := manager.SubmitTask(clusterID, req, taskFunc)
+	assert.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		info := manager.Get(clusterID, taskID)
+		return info != nil && info.State == indexpb.JobState_JobStateFailed
+	}, time.Second, 10*time.Millisecond)
+
+	info := manager.Get(clusterID, taskID)
+	assert.NotNil(t, info)
+	assert.Equal(t, indexpb.JobState_JobStateFailed, info.State)
+	assert.Contains(t, info.FailReason, "panic")
 }
 
 func TestExternalCollectionManager_CancelTask(t *testing.T) {
@@ -210,9 +275,13 @@ func TestExternalCollectionManager_CancelTask(t *testing.T) {
 		}
 	}, time.Second, 10*time.Millisecond)
 
-	info := manager.Get(clusterID, taskID)
+	var info *TaskInfo
+	require.Eventually(t, func() bool {
+		info = manager.Get(clusterID, taskID)
+		return info != nil && info.State == indexpb.JobState_JobStateFailed
+	}, time.Second, 10*time.Millisecond)
+
 	require.NotNil(t, info)
-	assert.Equal(t, indexpb.JobState_JobStateFailed, info.State)
 	assert.Contains(t, info.FailReason, "context canceled")
 }
 

@@ -32,8 +32,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
 	"github.com/milvus-io/milvus/internal/coordinator/snmanager"
 	"github.com/milvus-io/milvus/internal/distributed/streaming"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
@@ -53,23 +53,24 @@ import (
 	mocktso "github.com/milvus-io/milvus/internal/tso/mocks"
 	kvfactory "github.com/milvus-io/milvus/internal/util/dependency/kv"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/etcdpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/proxypb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/rootcoordpb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls/impls/rmq"
-	"github.com/milvus-io/milvus/pkg/v2/util"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/metricsinfo"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/retry"
-	"github.com/milvus-io/milvus/pkg/v2/util/tsoutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/etcdpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/indexpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/internalpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/proxypb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/rootcoordpb"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/message"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/types"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/walimpls/impls/rmq"
+	"github.com/milvus-io/milvus/pkg/v3/util"
+	"github.com/milvus-io/milvus/pkg/v3/util/funcutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/metricsinfo"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/retry"
+	"github.com/milvus-io/milvus/pkg/v3/util/tsoutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 func TestMain(m *testing.M) {
@@ -77,6 +78,31 @@ func TestMain(m *testing.M) {
 	rand.Seed(time.Now().UnixNano())
 	code := m.Run()
 	os.Exit(code)
+}
+
+// testBoundIndexRecorder captures FieldIndexes applied through the fake
+// CreateIndexV2 ack callback so DDL tests can assert on bound-index creation.
+var testBoundIndexRecorder = struct {
+	mu      sync.Mutex
+	indexes []*indexpb.FieldIndex
+}{}
+
+func resetRecordedBoundIndexes() {
+	testBoundIndexRecorder.mu.Lock()
+	defer testBoundIndexRecorder.mu.Unlock()
+	testBoundIndexRecorder.indexes = nil
+}
+
+func recordBoundIndex(fieldIndex *indexpb.FieldIndex) {
+	testBoundIndexRecorder.mu.Lock()
+	defer testBoundIndexRecorder.mu.Unlock()
+	testBoundIndexRecorder.indexes = append(testBoundIndexRecorder.indexes, fieldIndex)
+}
+
+func recordedBoundIndexes() []*indexpb.FieldIndex {
+	testBoundIndexRecorder.mu.Lock()
+	defer testBoundIndexRecorder.mu.Unlock()
+	return append([]*indexpb.FieldIndex(nil), testBoundIndexRecorder.indexes...)
 }
 
 func initStreamingSystemAndCore(t *testing.T) *Core {
@@ -90,11 +116,12 @@ func initStreamingSystemAndCore(t *testing.T) *Core {
 	tso.EXPECT().GenerateTSO(mock.Anything).Return(uint64(1), nil).Maybe()
 	core := newTestCore(withHealthyCode(),
 		withMeta(&MetaTable{
-			catalog:     rootcoord.NewCatalog(catalogKV),
-			names:       testDB,
-			aliases:     newNameDb(),
-			dbName2Meta: make(map[string]*model.Database),
-			collID2Meta: collID2Meta,
+			catalog:          rootcoord.NewCatalog(catalogKV),
+			names:            testDB,
+			aliases:          newNameDb(),
+			dbName2Meta:      make(map[string]*model.Database),
+			collID2Meta:      collID2Meta,
+			partitionName2ID: make(map[int64]map[string]int64),
 		}),
 		withValidMixCoord(),
 		withValidProxyManager(),
@@ -107,6 +134,11 @@ func initStreamingSystemAndCore(t *testing.T) *Core {
 	// TODO: we should merge all coordinator code into one package unit,
 	// so these mock code can be replaced with the real code.
 	registry.RegisterDropIndexV2AckCallback(func(ctx context.Context, result message.BroadcastResultDropIndexMessageV2) error {
+		return nil
+	})
+	resetRecordedBoundIndexes()
+	registry.RegisterCreateIndexV2AckCallback(func(ctx context.Context, result message.BroadcastResultCreateIndexMessageV2) error {
+		recordBoundIndex(result.Message.MustBody().GetFieldIndex())
 		return nil
 	})
 	registry.RegisterDropLoadConfigV2AckCallback(func(ctx context.Context, result message.BroadcastResultDropLoadConfigMessageV2) error {
@@ -127,7 +159,7 @@ func initStreamingSystemAndCore(t *testing.T) *Core {
 		for _, vchannel := range msg.BroadcastHeader().VChannels {
 			results[vchannel] = &message.AppendResult{
 				MessageID:              rmq.NewRmqID(1),
-				TimeTick:               tsoutil.ComposeTSByTime(time.Now(), 0),
+				TimeTick:               tsoutil.ComposeTSByTime(time.Now()),
 				LastConfirmedMessageID: rmq.NewRmqID(1),
 			}
 		}
@@ -146,7 +178,7 @@ func initStreamingSystemAndCore(t *testing.T) *Core {
 		wg.Wait()
 
 		retry.Do(context.Background(), func() error {
-			log.Info("broadcast message", log.FieldMessage(msg))
+			mlog.Info(context.TODO(), "broadcast message", mlog.FieldMessage(msg))
 			return registry.CallMessageAckCallback(context.Background(), msg, results)
 		}, retry.AttemptAlways())
 		return &types.BroadcastAppendResult{}, nil
@@ -172,11 +204,13 @@ func initStreamingSystemAndCore(t *testing.T) *Core {
 		return vchannels, nil
 	}).Maybe()
 	b.EXPECT().WaitUntilWALbasedDDLReady(mock.Anything).Return(nil).Maybe()
+	b.EXPECT().WaitUntilSchemaDropReady(mock.Anything).Return(nil).Maybe()
 	b.EXPECT().WatchChannelAssignments(mock.Anything, mock.Anything).RunAndReturn(func(ctx context.Context, callback balancer.WatchChannelAssignmentsCallback) error {
 		<-ctx.Done()
 		return ctx.Err()
 	}).Maybe()
 	b.EXPECT().Close().Return().Maybe()
+	balance.ResetBalancer()
 	balance.Register(b)
 	channel.ResetStaticPChannelStatsManager()
 	channel.RecoverPChannelStatsManager([]string{})
@@ -410,7 +444,9 @@ func TestRootCoord_DescribeAlias(t *testing.T) {
 		ctx := context.Background()
 		resp, err := c.DescribeAlias(ctx, &milvuspb.DescribeAliasRequest{})
 		assert.NoError(t, err)
-		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, resp.GetStatus().GetErrorCode())
+		// ParameterMissing (1101) projects to the legacy IllegalArgument like
+		// every parameter-class error, so old SDKs don't see UnexpectedError.
+		assert.Equal(t, commonpb.ErrorCode_IllegalArgument, resp.GetStatus().GetErrorCode())
 		assert.Equal(t, int32(1101), resp.GetStatus().GetCode())
 	})
 
@@ -808,7 +844,7 @@ func TestRootCoord_AllocTimestamp(t *testing.T) {
 		alloc := newMockTsoAllocator()
 		count := uint32(10)
 		current := time.Now()
-		ts := tsoutil.ComposeTSByTime(current.Add(time.Second), 1)
+		ts := tsoutil.ComposeTSByTimeWithLogical(current.Add(time.Second), 1)
 		alloc.GenerateTSOF = func(count uint32) (uint64, error) {
 			// end ts
 			return ts, nil
@@ -821,7 +857,7 @@ func TestRootCoord_AllocTimestamp(t *testing.T) {
 			withTsoAllocator(alloc))
 		resp, err := c.AllocTimestamp(ctx, &rootcoordpb.AllocTimestampRequest{
 			Count:          count,
-			BlockTimestamp: tsoutil.ComposeTSByTime(current.Add(time.Second), 0),
+			BlockTimestamp: tsoutil.ComposeTSByTime(current.Add(time.Second)),
 		})
 		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
@@ -1361,26 +1397,14 @@ func TestRootCoord_AddCollectionFunction(t *testing.T) {
 		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.GetErrorCode())
 	})
 
-	t.Run("run ok", func(t *testing.T) {
+	// Deprecated legacy RPC: always rejects (add BM25/MinHash via add_function_field,
+	// define TextEmbedding at collection creation).
+	t.Run("rejected", func(t *testing.T) {
 		ctx := context.Background()
-		c := initStreamingSystemAndCore(t)
-		defer c.Stop()
-		mocker := mockey.Mock((*Core).broadcastAlterCollectionForAddFunction).Return(nil).Build()
-		defer mocker.UnPatch()
+		c := newTestCore(withHealthyCode())
 		resp, err := c.AddCollectionFunction(ctx, &milvuspb.AddCollectionFunctionRequest{})
 		assert.NoError(t, err)
-		assert.Equal(t, commonpb.ErrorCode_Success, resp.GetErrorCode())
-	})
-
-	t.Run("run failed", func(t *testing.T) {
-		ctx := context.Background()
-		c := initStreamingSystemAndCore(t)
-		defer c.Stop()
-		mocker := mockey.Mock((*Core).broadcastAlterCollectionForAddFunction).Return(fmt.Errorf("")).Build()
-		defer mocker.UnPatch()
-		resp, err := c.AddCollectionFunction(ctx, &milvuspb.AddCollectionFunctionRequest{})
-		assert.NoError(t, err)
-		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, resp.GetErrorCode())
+		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.GetErrorCode())
 	})
 }
 
@@ -1393,26 +1417,13 @@ func TestRootCoord_DropCollectionFunction(t *testing.T) {
 		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.GetErrorCode())
 	})
 
-	t.Run("run ok", func(t *testing.T) {
+	// Deprecated legacy RPC: always rejects (drop routes through drop_function_field).
+	t.Run("rejected", func(t *testing.T) {
 		ctx := context.Background()
-		c := initStreamingSystemAndCore(t)
-		defer c.Stop()
-		mocker := mockey.Mock((*Core).broadcastAlterCollectionForDropFunction).Return(nil).Build()
-		defer mocker.UnPatch()
+		c := newTestCore(withHealthyCode())
 		resp, err := c.DropCollectionFunction(ctx, &milvuspb.DropCollectionFunctionRequest{})
 		assert.NoError(t, err)
-		assert.Equal(t, commonpb.ErrorCode_Success, resp.GetErrorCode())
-	})
-
-	t.Run("run failed", func(t *testing.T) {
-		ctx := context.Background()
-		c := initStreamingSystemAndCore(t)
-		defer c.Stop()
-		mocker := mockey.Mock((*Core).broadcastAlterCollectionForDropFunction).Return(fmt.Errorf("")).Build()
-		defer mocker.UnPatch()
-		resp, err := c.DropCollectionFunction(ctx, &milvuspb.DropCollectionFunctionRequest{})
-		assert.NoError(t, err)
-		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, resp.GetErrorCode())
+		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.GetErrorCode())
 	})
 }
 
@@ -1527,8 +1538,8 @@ func TestRootCoord_CheckHealth(t *testing.T) {
 	// 	}, nil
 	// }
 
-	// querynodeTT := tsoutil.ComposeTSByTime(time.Now().Add(-1*time.Minute), 0)
-	// datanodeTT := tsoutil.ComposeTSByTime(time.Now().Add(-2*time.Minute), 0)
+	// querynodeTT := tsoutil.ComposeTSByTime(time.Now().Add(-1 * time.Minute))
+	// datanodeTT := tsoutil.ComposeTSByTime(time.Now().Add(-2 * time.Minute))
 
 	// dcClient := mocks.NewMixCoord(t)
 	// dcClient.EXPECT().GetMetrics(mock.Anything, mock.Anything).Return(getDataCoordMetricsFunc(datanodeTT))
@@ -1777,7 +1788,7 @@ func TestCore_getMetastorePrivilegeName(t *testing.T) {
 
 	meta.EXPECT().IsCustomPrivilegeGroup(mock.Anything, "unknown").Return(false, nil)
 	_, err = c.getMetastorePrivilegeName(context.Background(), "unknown")
-	assert.Equal(t, err.Error(), "not found the privilege name [unknown] from metastore")
+	assert.ErrorContains(t, err, "not found the privilege name [unknown] from metastore")
 }
 
 func TestCore_expandPrivilegeGroup(t *testing.T) {

@@ -17,21 +17,20 @@
 package pipeline
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
-	"go.uber.org/zap"
-
 	"github.com/milvus-io/milvus/internal/querynodev2/delegator"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgdispatcher"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/metricsinfo"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/timerecord"
-	"github.com/milvus-io/milvus/pkg/v2/util/tsoutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/metrics"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/mq/msgdispatcher"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/metricsinfo"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/timerecord"
+	"github.com/milvus-io/milvus/pkg/v3/util/tsoutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 // Manager manage pipeline in querynode
@@ -65,9 +64,9 @@ func (m *manager) Add(collectionID UniqueID, channel string) (Pipeline, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	log.Info("start create pipeine",
-		zap.Int64("collectionID", collectionID),
-		zap.String("channel", channel),
+	mlog.Info(context.TODO(), "start create pipeine",
+		mlog.FieldCollectionID(collectionID),
+		mlog.String("channel", channel),
 	)
 	tr := timerecord.NewTimeRecorder("add dmChannel")
 	collection := m.dataManager.Collection.Get(collectionID)
@@ -103,8 +102,8 @@ func (m *manager) Get(channel string) Pipeline {
 
 	pipeline, ok := m.channel2Pipeline[channel]
 	if !ok {
-		log.Warn("pipeline not existed",
-			zap.String("channel", channel),
+		mlog.Warn(context.TODO(), "pipeline not existed",
+			mlog.String("channel", channel),
 		)
 		return nil
 	}
@@ -122,7 +121,7 @@ func (m *manager) Remove(channels ...string) {
 			pipeline.Close()
 			delete(m.channel2Pipeline, channel)
 		} else {
-			log.Warn("pipeline to be removed doesn't existed", zap.String("channel", channel))
+			mlog.Warn(context.TODO(), "pipeline to be removed doesn't existed", mlog.String("channel", channel))
 		}
 	}
 	metrics.QueryNodeNumFlowGraphs.WithLabelValues(paramtable.GetStringNodeID()).Dec()

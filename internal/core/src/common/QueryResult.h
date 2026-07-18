@@ -27,9 +27,12 @@
 #include <boost/dynamic_bitset.hpp>
 #include <NamedType/named_type.hpp>
 
+#include "common/BitsetView.h"
+#include "common/EasyAssert.h"
 #include "common/FieldMeta.h"
 #include "common/ArrayOffsets.h"
 #include "common/OffsetMapping.h"
+#include "common/Types.h"
 #include "pb/schema.pb.h"
 #include "knowhere/index/index_node.h"
 
@@ -176,10 +179,18 @@ class ChunkMergeIterator : public VectorIterator {
         if (!heap_.empty()) {
             auto top = heap_.top();
             heap_.pop();
-            if (iterators_[top->GetIteratorIdx()]->HasNext()) {
-                auto origin_pair = iterators_[top->GetIteratorIdx()]->Next();
+            auto& iter = iterators_[top->GetIteratorIdx()];
+            auto has_next = iter->HasNext();
+            AssertInfo(has_next.has_value(),
+                       "knowhere iterator HasNext failed: {}",
+                       has_next.what());
+            if (has_next.value()) {
+                auto origin_pair = iter->Next();
+                AssertInfo(origin_pair.has_value(),
+                           "knowhere iterator Next failed: {}",
+                           origin_pair.what());
                 auto off_dis_pair = std::make_shared<OffsetDisPair>(
-                    origin_pair, top->GetIteratorIdx());
+                    origin_pair.value(), top->GetIteratorIdx());
                 heap_.push(off_dis_pair);
             }
             auto result = top->GetOffDis();
@@ -203,12 +214,25 @@ class ChunkMergeIterator : public VectorIterator {
     void
     seal() {
         sealed = true;
-        int idx = 0;
-        for (auto& iter : iterators_) {
-            if (iter->HasNext()) {
+        // idx must track each chunk's position in iterators_, because Next()
+        // refills from iterators_[OffsetDisPair::GetIteratorIdx()]. Incrementing
+        // only for non-empty iterators would misalign the index once a leading
+        // iterator is empty (e.g. emptied by a bitset filter), stamping later
+        // chunks with the wrong iterator and silently dropping their remaining
+        // results from the merged top-k.
+        for (int idx = 0; idx < static_cast<int>(iterators_.size()); ++idx) {
+            auto& iter = iterators_[idx];
+            auto has_next = iter->HasNext();
+            AssertInfo(has_next.has_value(),
+                       "knowhere iterator HasNext failed: {}",
+                       has_next.what());
+            if (has_next.value()) {
                 auto origin_pair = iter->Next();
+                AssertInfo(origin_pair.has_value(),
+                           "knowhere iterator Next failed: {}",
+                           origin_pair.what());
                 auto off_dis_pair =
-                    std::make_shared<OffsetDisPair>(origin_pair, idx++);
+                    std::make_shared<OffsetDisPair>(origin_pair.value(), idx);
                 heap_.push(off_dis_pair);
             }
         }
@@ -277,6 +301,14 @@ struct SearchResult {
         this->vector_iterators_ = vector_iterators;
     }
 
+    BitsetView
+    PinBitset(TargetBitmap&& bitset) {
+        auto pinned = std::make_unique<TargetBitmap>(std::move(bitset));
+        auto view = BitsetView(*pinned);
+        pinned_bitsets_.emplace_back(std::move(pinned));
+        return view;
+    }
+
  public:
     int64_t total_nq_;
     int64_t unity_topK_;
@@ -322,6 +354,7 @@ struct SearchResult {
         element_iterators_;
     std::shared_ptr<const IArrayOffsets> array_offsets_{nullptr};
     std::vector<std::unique_ptr<uint8_t[]>> chunk_buffers_{};
+    std::vector<TargetBitmapPtr> pinned_bitsets_{};
 
     bool
     HasIterators() const {

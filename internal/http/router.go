@@ -56,6 +56,8 @@ const (
 	RouteGcPause  = "/management/datacoord/garbage_collection/pause"
 	RouteGcResume = "/management/datacoord/garbage_collection/resume"
 
+	RouteCommitBackfill = "/management/datacoord/backfill/commit"
+
 	RouteSuspendQueryCoordBalance = "/management/querycoord/balance/suspend"
 	RouteResumeQueryCoordBalance  = "/management/querycoord/balance/resume"
 	RouteQueryCoordBalanceStatus  = "/management/querycoord/balance/status"
@@ -67,6 +69,7 @@ const (
 	RouteListQueryNode              = "/management/querycoord/node/list"
 	RouteGetQueryNodeDistribution   = "/management/querycoord/distribution/get"
 	RouteCheckQueryNodeDistribution = "/management/querycoord/distribution/check"
+	RouteClearReadTaskQueue         = "/management/query/task_queue/clear"
 )
 
 const (

@@ -10,28 +10,28 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/samber/lo"
 	"go.uber.org/atomic"
-	"go.uber.org/zap"
+	"golang.org/x/time/rate"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/msgpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/allocator"
 	"github.com/milvus-io/milvus/internal/flushcommon/metacache"
 	"github.com/milvus-io/milvus/internal/flushcommon/metacache/pkoracle"
 	"github.com/milvus-io/milvus/internal/flushcommon/syncmgr"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/storagev2/packed"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgstream"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/util/conc"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/metautil"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/retry"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/metrics"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/mq/msgstream"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/util/conc"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/metautil"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/retry"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 const (
@@ -141,8 +141,8 @@ type writeBufferBase struct {
 	taskObserverCallback func(t syncmgr.Task, err error) // execute when a sync task finished, should be concurrent safe.
 
 	// pre build logger
-	logger        *log.MLogger
-	cpRatedLogger *log.MLogger
+	logger        *mlog.Logger
+	cpRatedLogger *mlog.Logger
 }
 
 func newWriteBufferBase(channel string, metacache metacache.MetaCache, syncMgr syncmgr.SyncManager, option *writeBufferOption) (*writeBufferBase, error) {
@@ -172,9 +172,9 @@ func newWriteBufferBase(channel string, metacache metacache.MetaCache, syncMgr s
 		taskObserverCallback: option.taskObserverCallback,
 	}
 
-	wb.logger = log.With(zap.Int64("collectionID", wb.collectionID),
-		zap.String("channel", wb.channelName))
-	wb.cpRatedLogger = wb.logger.WithRateGroup(fmt.Sprintf("writebuffer_cp_%s", wb.channelName), 1, 60)
+	wb.logger = mlog.With(mlog.Int64("collectionID", wb.collectionID),
+		mlog.String("channel", wb.channelName))
+	wb.cpRatedLogger = wb.logger
 
 	return wb, nil
 }
@@ -230,14 +230,14 @@ func (wb *writeBufferBase) MemorySize() int64 {
 }
 
 func (wb *writeBufferBase) EvictBuffer(policies ...SyncPolicy) {
-	log := wb.logger
+	logger := wb.logger
 
 	wb.mut.Lock()
 
 	// need valid checkpoint before triggering syncing
 	if wb.checkpoint == nil {
 		wb.mut.Unlock()
-		log.Warn("evict buffer before buffering data")
+		logger.Warn(context.TODO(), "evict buffer before buffering data")
 		return
 	}
 
@@ -246,7 +246,7 @@ func (wb *writeBufferBase) EvictBuffer(policies ...SyncPolicy) {
 
 	var futures []*conc.Future[struct{}]
 	if len(segmentIDs) > 0 {
-		log.Info("evict buffer find segments to sync", zap.Int64s("segmentIDs", segmentIDs))
+		logger.Info(context.TODO(), "evict buffer find segments to sync", mlog.Int64s("segmentIDs", segmentIDs))
 		futures = wb.syncSegments(context.Background(), segmentIDs)
 	}
 
@@ -258,7 +258,7 @@ func (wb *writeBufferBase) EvictBuffer(policies ...SyncPolicy) {
 }
 
 func (wb *writeBufferBase) GetCheckpoint() *msgpb.MsgPosition {
-	log := wb.cpRatedLogger
+	logger := wb.cpRatedLogger
 	wb.mut.RLock()
 	defer wb.mut.RUnlock()
 
@@ -275,21 +275,21 @@ func (wb *writeBufferBase) GetCheckpoint() *msgpb.MsgPosition {
 
 	if checkpoint == nil {
 		// all buffer are empty
-		log.RatedDebug(60, "checkpoint from latest consumed msg", zap.Uint64("cpTimestamp", wb.checkpoint.GetTimestamp()))
+		logger.RatedDebug(context.TODO(), rate.Limit(60), "checkpoint from latest consumed msg", mlog.Uint64("cpTimestamp", wb.checkpoint.GetTimestamp()))
 		return wb.checkpoint
 	}
 
-	log.RatedDebug(20, "checkpoint evaluated",
-		zap.String("cpSource", checkpoint.source),
-		zap.Int64("segmentID", checkpoint.segmentID),
-		zap.Uint64("cpTimestamp", checkpoint.position.GetTimestamp()))
+	logger.RatedDebug(context.TODO(), rate.Limit(20), "checkpoint evaluated",
+		mlog.String("cpSource", checkpoint.source),
+		mlog.FieldSegmentID(checkpoint.segmentID),
+		mlog.Uint64("cpTimestamp", checkpoint.position.GetTimestamp()))
 	return checkpoint.position
 }
 
 func (wb *writeBufferBase) triggerSync() (segmentIDs []int64) {
 	segmentsToSync := wb.getSegmentsToSync(wb.checkpoint.GetTimestamp(), wb.syncPolicies...)
 	if len(segmentsToSync) > 0 {
-		log.Info("write buffer get segments to sync", zap.Int64s("segmentIDs", segmentsToSync))
+		mlog.Info(context.TODO(), "write buffer get segments to sync", mlog.Int64s("segmentIDs", segmentsToSync))
 		// ignore future here, use callback to handle error
 		wb.syncSegments(context.Background(), segmentsToSync)
 	}
@@ -297,11 +297,13 @@ func (wb *writeBufferBase) triggerSync() (segmentIDs []int64) {
 	return segmentsToSync
 }
 
-func (wb *writeBufferBase) sealSegments(_ context.Context, segmentIDs []int64) error {
+func (wb *writeBufferBase) sealSegments(ctx context.Context, segmentIDs []int64) error {
 	for _, segmentID := range segmentIDs {
 		_, ok := wb.metaCache.GetSegmentByID(segmentID)
 		if !ok {
-			log.Warn("cannot find segment when sealSegments", zap.Int64("segmentID", segmentID), zap.String("channel", wb.channelName))
+			mlog.Warn(ctx, "cannot find segment when sealSegments",
+				mlog.Int64("segmentID", segmentID),
+				mlog.String("channel", wb.channelName))
 			return merr.WrapErrSegmentNotFound(segmentID)
 		}
 	}
@@ -314,7 +316,7 @@ func (wb *writeBufferBase) sealSegments(_ context.Context, segmentIDs []int64) e
 
 func (wb *writeBufferBase) sealAllSegments(ctx context.Context) error {
 	allSegmentIds := wb.metaCache.GetSegmentIDsBy()
-	log.Ctx(ctx).Info("seal all segments", zap.Int64s("segmentIDs", allSegmentIds))
+	mlog.Info(ctx, "seal all segments", mlog.Int64s("segmentIDs", allSegmentIds))
 	// mark segment flushing if segment was growing
 	wb.metaCache.UpdateSegments(metacache.UpdateState(commonpb.SegmentState_Sealed),
 		metacache.WithSegmentIDs(allSegmentIds...),
@@ -331,16 +333,15 @@ func (wb *writeBufferBase) dropPartitions(partitionIDs []int64) {
 }
 
 func (wb *writeBufferBase) syncSegments(ctx context.Context, segmentIDs []int64) []*conc.Future[struct{}] {
-	log := log.Ctx(ctx)
 	result := make([]*conc.Future[struct{}], 0, len(segmentIDs))
 	for _, segmentID := range segmentIDs {
 		syncTask, err := wb.getSyncTask(ctx, segmentID)
 		if err != nil {
 			if errors.Is(err, merr.ErrSegmentNotFound) {
-				log.Warn("segment not found in meta", zap.Int64("segmentID", segmentID))
+				mlog.Warn(ctx, "segment not found in meta", mlog.FieldSegmentID(segmentID))
 				continue
 			} else {
-				log.Fatal("failed to get sync task", zap.Int64("segmentID", segmentID), zap.Error(err))
+				mlog.Fatal(ctx, "failed to get sync task", mlog.FieldSegmentID(segmentID), mlog.Err(err))
 			}
 		}
 
@@ -359,12 +360,12 @@ func (wb *writeBufferBase) syncSegments(ctx context.Context, segmentIDs []int64)
 
 			if syncTask.IsFlush() {
 				wb.metaCache.RemoveSegments(metacache.WithSegmentIDs(syncTask.SegmentID()))
-				log.Info("flushed segment removed", zap.Int64("segmentID", syncTask.SegmentID()), zap.String("channel", syncTask.ChannelName()))
+				mlog.Info(ctx, "flushed segment removed", mlog.FieldSegmentID(syncTask.SegmentID()), mlog.String("channel", syncTask.ChannelName()))
 			}
 			return nil
 		})
 		if err != nil {
-			log.Fatal("failed to sync data", zap.Int64("segmentID", segmentID), zap.Error(err))
+			mlog.Fatal(ctx, "failed to sync data", mlog.Int64("segmentID", syncTask.SegmentID()), mlog.Err(err))
 		}
 		result = append(result, future)
 	}
@@ -379,7 +380,7 @@ func (wb *writeBufferBase) getSegmentsToSync(ts typeutil.Timestamp, policies ...
 	for _, policy := range policies {
 		result := policy.SelectSegments(buffers, ts)
 		if len(result) > 0 {
-			log.Info("SyncPolicy selects segments", zap.Int64s("segmentIDs", result), zap.String("reason", policy.Reason()))
+			mlog.Info(context.TODO(), "SyncPolicy selects segments", mlog.Int64s("segmentIDs", result), mlog.String("reason", policy.Reason()))
 			segments.Insert(result...)
 		}
 	}
@@ -558,7 +559,7 @@ func (wb *writeBufferBase) CreateNewGrowingSegment(partitionID int64, segmentID 
 		wb.metaCache.AddSegment(segmentInfo, func(_ *datapb.SegmentInfo) pkoracle.PkStat {
 			return pkoracle.NewBloomFilterSetWithBatchSize(wb.getEstBatchSize())
 		}, metacache.NewBM25StatsFactory, metacache.SetStartPosRecorded(false))
-		log.Info("add growing segment", zap.Int64("segmentID", segmentID), zap.String("channel", wb.channelName), zap.Int64("storage version", storageVersion))
+		mlog.Info(context.TODO(), "add growing segment", mlog.FieldSegmentID(segmentID), mlog.String("channel", wb.channelName), mlog.Int64("storage version", storageVersion))
 	}
 }
 
@@ -570,12 +571,9 @@ func (wb *writeBufferBase) bufferDelete(segmentID int64, pks []storage.PrimaryKe
 }
 
 func (wb *writeBufferBase) getSyncTask(ctx context.Context, segmentID int64) (syncmgr.Task, error) {
-	log := log.Ctx(ctx).With(
-		zap.Int64("segmentID", segmentID),
-	)
 	segmentInfo, ok := wb.metaCache.GetSegmentByID(segmentID) // wb.metaCache.GetSegmentsBy(metacache.WithSegmentIDs(segmentID))
 	if !ok {
-		log.Warn("segment info not found in meta cache", zap.Int64("segmentID", segmentID))
+		mlog.Warn(ctx, "segment info not found in meta cache", mlog.FieldSegmentID(segmentID))
 		return nil, merr.WrapErrSegmentNotFound(segmentID)
 	}
 	var batchSize int64
@@ -642,7 +640,12 @@ func (wb *writeBufferBase) getSyncTask(ctx context.Context, segmentID int64) (sy
 		WithSchema(schema).
 		WithSyncPack(pack).
 		WithStorageConfig(packed.CreateStorageConfig()).
-		WithWriteRetryOptions(retry.AttemptAlways(), retry.MaxSleepTime(10*time.Second))
+		// The flush write path must keep retrying: aborting surfaces the error
+		// to SyncTask.HandleError, whose default callback panics the datanode.
+		// retry.Do short-circuits InputError-typed errors unless an explicit
+		// RetryErr predicate is supplied, so AttemptAlways alone is not enough.
+		WithWriteRetryOptions(retry.AttemptAlways(), retry.MaxSleepTime(10*time.Second),
+			retry.RetryErr(func(error) bool { return true }))
 	return task, nil
 }
 
@@ -653,7 +656,6 @@ func (wb *writeBufferBase) getEstBatchSize() uint {
 }
 
 func (wb *writeBufferBase) Close(ctx context.Context, drop bool) {
-	log := wb.logger
 	// sink all data and call Drop for meta writer
 	wb.mut.Lock()
 	defer wb.mut.Unlock()
@@ -687,20 +689,20 @@ func (wb *writeBufferBase) Close(ctx context.Context, drop bool) {
 			return nil
 		})
 		if err != nil {
-			log.Fatal("failed to sync segment", zap.Int64("segmentID", id), zap.Error(err))
+			mlog.Fatal(ctx, "failed to sync segment", mlog.Int64("segmentID", syncTask.SegmentID()), mlog.Err(err))
 		}
 		futures = append(futures, f)
 	}
 
 	err := conc.AwaitAll(futures...)
 	if err != nil {
-		log.Error("failed to sink write buffer data", zap.Error(err))
+		mlog.Error(ctx, "failed to sink write buffer data", mlog.Err(err))
 		// TODO change to remove channel in the future
 		panic(err)
 	}
 	err = wb.metaWriter.DropChannel(ctx, wb.channelName)
 	if err != nil {
-		log.Error("failed to drop channel", zap.Error(err))
+		mlog.Error(ctx, "failed to drop channel", mlog.Err(err))
 		// TODO change to remove channel in the future
 		panic(err)
 	}
@@ -709,6 +711,11 @@ func (wb *writeBufferBase) Close(ctx context.Context, drop bool) {
 // prepareInsert transfers InsertMsg into organized InsertData grouped by segmentID
 // also returns primary key field data
 func PrepareInsert(collSchema *schemapb.CollectionSchema, pkField *schemapb.FieldSchema, insertMsgs []*msgstream.InsertMsg) ([]*InsertData, error) {
+	bm25OutputFieldIDs, err := getBM25OutputFieldIDs(collSchema)
+	if err != nil {
+		return nil, err
+	}
+
 	groups := lo.GroupBy(insertMsgs, func(msg *msgstream.InsertMsg) int64 { return msg.SegmentID })
 	segmentPartition := lo.SliceToMap(insertMsgs, func(msg *msgstream.InsertMsg) (int64, int64) { return msg.GetSegmentID(), msg.GetPartitionID() })
 
@@ -730,8 +737,17 @@ func PrepareInsert(collSchema *schemapb.CollectionSchema, pkField *schemapb.Fiel
 		for _, msg := range msgs {
 			data, err := storage.InsertMsgToInsertData(msg, collSchema)
 			if err != nil {
-				log.Warn("failed to transfer insert msg to insert data", zap.Error(err))
+				mlog.Warn(context.TODO(), "failed to transfer insert msg to insert data", mlog.Err(err))
 				return nil, err
+			}
+
+			if len(bm25OutputFieldIDs) > 0 {
+				if inData.bm25Stats == nil {
+					inData.bm25Stats = make(map[int64]*storage.BM25Stats)
+				}
+				if err := appendBM25StatsFromInsertData(inData.bm25Stats, bm25OutputFieldIDs, data); err != nil {
+					return nil, err
+				}
 			}
 
 			pkFieldData, err := storage.GetPkFromInsertData(collSchema, data)
@@ -780,4 +796,41 @@ func PrepareInsert(collSchema *schemapb.CollectionSchema, pkField *schemapb.Fiel
 	}
 
 	return result, nil
+}
+
+func getBM25OutputFieldIDs(schema *schemapb.CollectionSchema) ([]int64, error) {
+	outputFieldIDs := make([]int64, 0)
+	for _, fn := range schema.GetFunctions() {
+		if fn.GetType() != schemapb.FunctionType_BM25 {
+			continue
+		}
+
+		outputField := typeutil.GetFunctionOutputField(schema, fn)
+		if outputField == nil {
+			return nil, merr.WrapErrFunctionFailedMsg("function %s output field not found", fn.GetName())
+		}
+
+		outputFieldIDs = append(outputFieldIDs, outputField.GetFieldID())
+	}
+	return outputFieldIDs, nil
+}
+
+func appendBM25StatsFromInsertData(stats map[int64]*storage.BM25Stats, outputFieldIDs []int64, data *storage.InsertData) error {
+	for _, outputFieldID := range outputFieldIDs {
+		outputData, ok := data.Data[outputFieldID]
+		if !ok {
+			return merr.WrapErrFunctionFailedMsg("BM25 output field %d not found in insert data", outputFieldID)
+		}
+
+		sparseData, ok := outputData.(*storage.SparseFloatVectorFieldData)
+		if !ok {
+			return merr.WrapErrFunctionFailedMsg("BM25 output field %d is not sparse vector data", outputFieldID)
+		}
+
+		if _, ok := stats[outputFieldID]; !ok {
+			stats[outputFieldID] = storage.NewBM25Stats()
+		}
+		stats[outputFieldID].AppendBytes(sparseData.GetContents()...)
+	}
+	return nil
 }

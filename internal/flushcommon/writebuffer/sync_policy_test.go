@@ -7,13 +7,13 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/msgpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/flushcommon/metacache"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/tsoutil"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/tsoutil"
 )
 
 type SyncPolicySuite struct {
@@ -55,21 +55,21 @@ func (s *SyncPolicySuite) TestSyncStalePolicy() {
 	buffer, err := newSegmentBuffer(100, s.collSchema)
 	s.Require().NoError(err)
 
-	ids := policy.SelectSegments([]*segmentBuffer{buffer}, tsoutil.ComposeTSByTime(time.Now(), 0))
+	ids := policy.SelectSegments([]*segmentBuffer{buffer}, tsoutil.ComposeTSByTime(time.Now()))
 	s.Equal(0, len(ids), "empty buffer shall not be synced")
 
 	buffer.insertBuffer.startPos = &msgpb.MsgPosition{
-		Timestamp: tsoutil.ComposeTSByTime(time.Now().Add(-time.Minute*3), 0),
+		Timestamp: tsoutil.ComposeTSByTime(time.Now().Add(-time.Minute * 3)),
 	}
 
-	ids = policy.SelectSegments([]*segmentBuffer{buffer}, tsoutil.ComposeTSByTime(time.Now(), 0))
+	ids = policy.SelectSegments([]*segmentBuffer{buffer}, tsoutil.ComposeTSByTime(time.Now()))
 	s.ElementsMatch([]int64{100}, ids)
 
 	buffer.insertBuffer.startPos = &msgpb.MsgPosition{
-		Timestamp: tsoutil.ComposeTSByTime(time.Now().Add(-time.Minute), 0),
+		Timestamp: tsoutil.ComposeTSByTime(time.Now().Add(-time.Minute)),
 	}
 
-	ids = policy.SelectSegments([]*segmentBuffer{buffer}, tsoutil.ComposeTSByTime(time.Now(), 0))
+	ids = policy.SelectSegments([]*segmentBuffer{buffer}, tsoutil.ComposeTSByTime(time.Now()))
 	s.Equal(0, len(ids), "")
 }
 
@@ -78,7 +78,7 @@ func (s *SyncPolicySuite) TestSyncDroppedPolicy() {
 	policy := GetDroppedSegmentPolicy(metacache)
 	ids := []int64{1, 2, 3}
 	metacache.EXPECT().GetSegmentIDsBy(mock.Anything).Return(ids)
-	result := policy.SelectSegments([]*segmentBuffer{}, tsoutil.ComposeTSByTime(time.Now(), 0))
+	result := policy.SelectSegments([]*segmentBuffer{}, tsoutil.ComposeTSByTime(time.Now()))
 	s.ElementsMatch(ids, result)
 }
 
@@ -89,7 +89,7 @@ func (s *SyncPolicySuite) TestSealedSegmentsPolicy() {
 	metacache.EXPECT().GetSegmentIDsBy(mock.Anything).Return(ids)
 	metacache.EXPECT().UpdateSegments(mock.Anything, mock.Anything, mock.Anything).Return()
 
-	result := policy.SelectSegments([]*segmentBuffer{}, tsoutil.ComposeTSByTime(time.Now(), 0))
+	result := policy.SelectSegments([]*segmentBuffer{}, tsoutil.ComposeTSByTime(time.Now()))
 	s.ElementsMatch(ids, result)
 }
 

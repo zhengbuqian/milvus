@@ -27,13 +27,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cockroachdb/errors"
 	"github.com/tidwall/gjson"
 	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
 	"github.com/milvus-io/milvus/internal/compaction"
 	"github.com/milvus-io/milvus/internal/datanode/compactor"
 	"github.com/milvus-io/milvus/internal/datanode/external"
@@ -44,14 +42,15 @@ import (
 	"github.com/milvus-io/milvus/internal/util/analyzer"
 	"github.com/milvus-io/milvus/internal/util/fileresource"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/util/conc"
-	"github.com/milvus-io/milvus/pkg/v2/util/expr"
-	"github.com/milvus-io/milvus/pkg/v2/util/lifetime"
-	"github.com/milvus-io/milvus/pkg/v2/util/metricsinfo"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/metrics"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/util/conc"
+	"github.com/milvus-io/milvus/pkg/v3/util/expr"
+	"github.com/milvus-io/milvus/pkg/v3/util/lifetime"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/metricsinfo"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 const (
@@ -154,19 +153,18 @@ func (node *DataNode) SetMixCoordClient(mixc types.MixCoordClient) error {
 
 // Register register datanode to etcd
 func (node *DataNode) Register() error {
-	log := log.Ctx(node.ctx)
-	log.Debug("node begin to register to etcd", zap.String("serverName", node.session.ServerName), zap.Int64("ServerID", node.session.ServerID))
+	mlog.Debug(node.ctx, "node begin to register to etcd", mlog.String("serverName", node.session.ServerName), mlog.Int64("ServerID", node.session.ServerID))
 	node.session.Register()
 
 	metrics.NumNodes.WithLabelValues(fmt.Sprint(node.GetNodeID()), typeutil.DataNodeRole).Inc()
-	log.Info("DataNode Register Finished")
+	mlog.Info(node.ctx, "DataNode Register Finished")
 	return nil
 }
 
 func (node *DataNode) initSession() error {
 	node.session = sessionutil.NewSession(node.ctx)
 	if node.session == nil {
-		return errors.New("failed to initialize session")
+		return merr.WrapErrServiceInternalMsg("failed to initialize session")
 	}
 	node.session.Init(typeutil.DataNodeRole, node.address, false)
 	sessionutil.SaveServerInfo(typeutil.DataNodeRole, node.session.ServerID)
@@ -184,16 +182,16 @@ func (node *DataNode) Init() error {
 	var initError error
 	node.initOnce.Do(func() {
 		node.registerMetricsRequest()
-		log.Ctx(node.ctx).Info("DataNode server initializing")
+		mlog.Info(node.ctx, "DataNode server initializing")
 		if err := node.initSession(); err != nil {
-			log.Error("DataNode server init session failed", zap.Error(err))
+			mlog.Error(node.ctx, "DataNode server init session failed", mlog.Err(err))
 			initError = err
 			return
 		}
 
 		serverID := node.GetNodeID()
-		log := log.Ctx(node.ctx).With(zap.String("role", typeutil.DataNodeRole), zap.Int64("nodeID", serverID))
-		log.Info("DataNode server init succeeded")
+		log := mlog.With(mlog.String("role", typeutil.DataNodeRole), mlog.FieldNodeID(serverID))
+		log.Info(node.ctx, "DataNode server init succeeded")
 
 		syncMgr := syncmgr.NewSyncManager(nil)
 		node.syncMgr = syncMgr
@@ -202,12 +200,12 @@ func (node *DataNode) Init() error {
 		if fileMode == fileresource.SyncMode {
 			storageConfig := compaction.CreateStorageConfig()
 			if storageConfig.GetStorageType() != "local" && storageConfig.GetAddress() == "" {
-				log.Info("No storage address configured in yaml, file resource sync mode is disabled")
+				log.Info(node.ctx, "No storage address configured in yaml, file resource sync mode is disabled")
 				fileresource.InitManager(nil, fileresource.CloseMode)
 			} else {
 				cm, err := node.storageFactory.NewChunkManager(node.ctx, storageConfig)
 				if err != nil {
-					log.Error("Init chunk manager for file resource manager failed", zap.Error(err))
+					log.Error(node.ctx, "Init chunk manager for file resource manager failed", mlog.Err(err))
 					initError = err
 					return
 				}
@@ -223,10 +221,15 @@ func (node *DataNode) Init() error {
 		err := index.InitSegcore(serverID)
 		if err != nil {
 			initError = err
+			return
 		}
 
-		analyzer.InitOptions()
-		log.Info("init datanode done", zap.String("Address", node.address))
+		if err := analyzer.InitOptions(); err != nil {
+			log.Error(node.ctx, "DataNode init analyzer options failed", mlog.Err(err))
+			initError = err
+			return
+		}
+		log.Info(node.ctx, "init datanode done", mlog.String("Address", node.address))
 	})
 	return initError
 }
@@ -241,12 +244,11 @@ func (node *DataNode) registerMetricsRequest() {
 		func(ctx context.Context, req *milvuspb.GetMetricsRequest, jsonReq gjson.Result) (string, error) {
 			return node.syncMgr.TaskStatsJSON(), nil
 		})
-	log.Ctx(node.ctx).Info("register metrics actions finished")
+	mlog.Info(node.ctx, "register metrics actions finished")
 }
 
 // Start will update DataNode state to HEALTHY
 func (node *DataNode) Start() error {
-	log := log.Ctx(node.ctx)
 	var startErr error
 	node.startOnce.Do(func() {
 		go node.compactionExecutor.Start(node.ctx)
@@ -260,7 +262,16 @@ func (node *DataNode) Start() error {
 		}
 
 		node.UpdateStateCode(commonpb.StateCode_Healthy)
-		log.Info("datanode start successfully")
+
+		// Eagerly construct the goroutine pools up front so the first Prometheus
+		// scrape reads them without triggering pool creation / warmup as a side effect.
+		initPools()
+		metrics.SetDataNodePoolCollectFn(
+			fmt.Sprint(node.GetNodeID()),
+			collectPoolStats,
+		)
+
+		mlog.Info(node.ctx, "datanode start successfully")
 	})
 	return startErr
 }
@@ -282,7 +293,7 @@ func (node *DataNode) isHealthy() bool {
 // ReadyToFlush tells whether DataNode is ready for flushing
 func (node *DataNode) ReadyToFlush() error {
 	if !node.isHealthy() {
-		return errors.New("DataNode not in HEALTHY state")
+		return merr.Wrap(merr.ErrServiceNotReady, "DataNode not in HEALTHY state")
 	}
 	return nil
 }
@@ -297,7 +308,7 @@ func (node *DataNode) Stop() error {
 		if node.syncMgr != nil {
 			err := node.syncMgr.Close()
 			if err != nil {
-				log.Error("sync manager close failed", zap.Error(err))
+				mlog.Error(node.ctx, "sync manager close failed", mlog.Err(err))
 			}
 		}
 

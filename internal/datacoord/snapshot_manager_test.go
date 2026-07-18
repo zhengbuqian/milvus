@@ -28,20 +28,21 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/datacoord/allocator"
 	"github.com/milvus-io/milvus/internal/datacoord/broker"
 	"github.com/milvus-io/milvus/internal/distributed/streaming"
+	catalogmocks "github.com/milvus-io/milvus/internal/metastore/mocks"
 	"github.com/milvus-io/milvus/internal/mocks/distributed/mock_streaming"
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/broadcaster"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/rootcoordpb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/rootcoordpb"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/message"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/types"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 // --- Test CreateSnapshot ---
@@ -93,6 +94,7 @@ func TestSnapshotManager_CreateSnapshot_Success(t *testing.T) {
 		mockHandler,
 		nil, // broker
 		nil, // getChannelsFunc
+		nil, // indexEngineVersionManager
 	)
 
 	// Execute
@@ -144,6 +146,7 @@ func TestSnapshotManager_CreateSnapshot_WithCompactionProtection(t *testing.T) {
 		mockHandler,
 		nil,
 		nil,
+		nil, // indexEngineVersionManager
 	)
 
 	snapshotID, err := sm.CreateSnapshot(ctx, 100, "protected_snap", "with protection", 3600)
@@ -171,6 +174,7 @@ func TestSnapshotManager_CreateSnapshot_DuplicateName(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil, /* indexEngineVersionManager */
 	)
 
 	// Execute
@@ -205,6 +209,7 @@ func TestSnapshotManager_CreateSnapshot_AllocatorError(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil, /* indexEngineVersionManager */
 	)
 
 	// Execute
@@ -242,6 +247,7 @@ func TestSnapshotManager_CreateSnapshot_GenSnapshotError(t *testing.T) {
 		mockHandler,
 		nil,
 		nil,
+		nil, // indexEngineVersionManager
 	)
 
 	// Execute
@@ -287,6 +293,7 @@ func TestSnapshotManager_CreateSnapshot_SaveError(t *testing.T) {
 		mockHandler,
 		nil,
 		nil,
+		nil, // indexEngineVersionManager
 	)
 
 	// Execute
@@ -324,6 +331,7 @@ func TestSnapshotManager_CreateSnapshot_ClearsSnapshotPendingOnGenSnapshotError(
 		mockHandler,
 		nil,
 		nil,
+		nil, // indexEngineVersionManager
 	)
 
 	_, err := sm.CreateSnapshot(ctx, 100, "test_snap", "desc", 3600)
@@ -369,6 +377,7 @@ func TestSnapshotManager_CreateSnapshot_ClearsSnapshotPendingOnSaveError(t *test
 		mockHandler,
 		nil,
 		nil,
+		nil, // indexEngineVersionManager
 	)
 
 	_, err := sm.CreateSnapshot(ctx, 100, "test_snap", "desc", 3600)
@@ -423,6 +432,7 @@ func TestSnapshotManager_CreateSnapshot_PendingHeldEvenWithoutLongTermProtection
 		mockHandler,
 		nil,
 		nil,
+		nil, // indexEngineVersionManager
 	)
 
 	_, err := sm.CreateSnapshot(ctx, 100, "test_snap", "desc", 0) // compactionProtectionSeconds = 0
@@ -455,6 +465,7 @@ func TestSnapshotManager_CreateSnapshot_ClearsSnapshotPendingOnAllocError(t *tes
 		nil,
 		nil,
 		nil,
+		nil, // indexEngineVersionManager
 	)
 
 	_, err := sm.CreateSnapshot(ctx, 100, "test_snap", "desc", 3600)
@@ -489,6 +500,7 @@ func TestSnapshotManager_DropSnapshot_Success(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil, /* indexEngineVersionManager */
 	)
 
 	// Execute
@@ -515,6 +527,7 @@ func TestSnapshotManager_DropSnapshot_NotFound_Idempotent(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil, /* indexEngineVersionManager */
 	)
 
 	// Execute - should succeed even if snapshot doesn't exist (idempotent)
@@ -547,6 +560,7 @@ func TestSnapshotManager_DropSnapshot_Error(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil, /* indexEngineVersionManager */
 	)
 
 	// Execute
@@ -582,6 +596,7 @@ func TestSnapshotManager_GetSnapshot_Success(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil, /* indexEngineVersionManager */
 	)
 
 	// Execute
@@ -609,6 +624,7 @@ func TestSnapshotManager_GetSnapshot_NotFound(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil, /* indexEngineVersionManager */
 	)
 
 	// Execute
@@ -651,6 +667,7 @@ func TestSnapshotManager_DescribeSnapshot_Success(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil, /* indexEngineVersionManager */
 	)
 
 	// Execute
@@ -678,6 +695,7 @@ func TestSnapshotManager_DescribeSnapshot_NotFound(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil, /* indexEngineVersionManager */
 	)
 
 	// Execute
@@ -711,6 +729,7 @@ func TestSnapshotManager_ListSnapshots_Success(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil, /* indexEngineVersionManager */
 	)
 
 	// Execute
@@ -738,6 +757,7 @@ func TestSnapshotManager_ListSnapshots_Error(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil, /* indexEngineVersionManager */
 	)
 
 	// Execute
@@ -785,6 +805,7 @@ func TestSnapshotManager_GetRestoreState_Success(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil, // indexEngineVersionManager
 	)
 
 	// Execute
@@ -815,6 +836,7 @@ func TestSnapshotManager_GetRestoreState_NotFound(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil, // indexEngineVersionManager
 	)
 
 	// Execute
@@ -866,6 +888,7 @@ func TestSnapshotManager_ListRestoreJobs_Success(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil, // indexEngineVersionManager
 	)
 
 	// Execute - no filter
@@ -925,6 +948,7 @@ func TestSnapshotManager_ListRestoreJobs_FilterByCollectionID(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil, // indexEngineVersionManager
 	)
 
 	// Execute - filter by collection ID 100
@@ -987,7 +1011,7 @@ func TestSnapshotManager_ListRestoreJobs_FilterByDbID(t *testing.T) {
 	m.collections.Insert(200, &collectionInfo{ID: 200, DatabaseID: 1})
 	m.collections.Insert(300, &collectionInfo{ID: 300, DatabaseID: 2})
 
-	sm := NewSnapshotManager(m, nil, &copySegmentMeta{}, nil, nil, nil, nil)
+	sm := NewSnapshotManager(m, nil, &copySegmentMeta{}, nil, nil, nil, nil, nil)
 
 	t.Run("dbID_filter", func(t *testing.T) {
 		// dbID=1 should return jobs for collections 100 and 200
@@ -1792,6 +1816,67 @@ func TestCreateRestoreJob_PropagatesPinID(t *testing.T) {
 	assert.Equal(t, int64(100), captured.GetSourceCollectionId())
 }
 
+func TestCreateRestoreJob_PreRegistersTargetSegmentsAsImporting(t *testing.T) {
+	ctx := context.Background()
+
+	snapshotData := &SnapshotData{
+		SnapshotInfo: &datapb.SnapshotInfo{Name: "snap1", CollectionId: 100},
+		Collection:   &datapb.CollectionDescription{},
+		Segments: []*datapb.SegmentDescription{{
+			SegmentId:      11,
+			PartitionId:    10,
+			SegmentLevel:   datapb.SegmentLevel_L1,
+			ChannelName:    "src-ch",
+			NumOfRows:      123,
+			StorageVersion: 3,
+			IsSorted:       true,
+		}},
+	}
+
+	catalog := catalogmocks.NewDataCoordCatalog(t)
+	catalog.EXPECT().AddSegment(mock.Anything, mock.Anything).RunAndReturn(func(ctx context.Context, seg *datapb.SegmentInfo) error {
+		assert.Equal(t, int64(2001), seg.GetID())
+		assert.Equal(t, int64(200), seg.GetCollectionID())
+		assert.Equal(t, int64(20), seg.GetPartitionID())
+		assert.Equal(t, "dst-ch", seg.GetInsertChannel())
+		assert.Equal(t, commonpb.SegmentState_Importing, seg.GetState())
+		assert.True(t, seg.GetIsImporting())
+		assert.Equal(t, int64(3), seg.GetStorageVersion())
+		return nil
+	}).Once()
+	catalog.EXPECT().SaveChannelCheckpoint(mock.Anything, "dst-ch", mock.Anything).Return(nil).Once()
+
+	mt := &meta{ctx: ctx, catalog: catalog, segments: NewSegmentsInfo(), channelCPs: newChannelCps()}
+	mt.segments.SetSegment(11, NewSegmentInfo(&datapb.SegmentInfo{ID: 11}))
+
+	var err error
+
+	mockAlloc := allocator.NewMockAllocator(t)
+	mockAlloc.EXPECT().AllocN(int64(1)).Return(int64(2001), int64(2002), nil)
+
+	mockHandler := NewNMockHandler(t)
+	mockHandler.EXPECT().GetCollection(mock.Anything, int64(200)).Return(&collectionInfo{StartPositions: []*commonpb.KeyDataPair{{Key: "dst-ch", Data: []byte{1}}}}, nil)
+
+	addJobCalled := false
+	mAddJob := mockey.Mock((*copySegmentMeta).AddJob).To(
+		func(_ *copySegmentMeta, _ context.Context, _ CopySegmentJob) error {
+			addJobCalled = true
+			return nil
+		}).Build()
+	defer mAddJob.UnPatch()
+
+	sm := &snapshotManager{
+		meta:            mt,
+		allocator:       mockAlloc,
+		handler:         mockHandler,
+		copySegmentMeta: &copySegmentMeta{},
+	}
+
+	err = sm.createRestoreJob(ctx, int64(200), map[string]string{"src-ch": "dst-ch"}, map[int64]int64{10: 20}, snapshotData, int64(42), int64(7))
+	require.NoError(t, err)
+	assert.True(t, addJobCalled)
+}
+
 // TestSnapshotManager_HasActivePins_Delegation verifies the manager-layer wrapper
 // delegates to snapshotMeta.HasActivePins and propagates both result and error.
 func TestSnapshotManager_HasActivePins_Delegation(t *testing.T) {
@@ -1944,6 +2029,7 @@ func TestNewSnapshotManager(t *testing.T) {
 		mockHandler,
 		mockBroker,
 		getChannelsFunc,
+		nil, // indexEngineVersionManager
 	)
 
 	assert.NotNil(t, sm)
@@ -2777,6 +2863,7 @@ func TestSnapshotManager_DropSnapshotsByCollection_Success(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil,
 	)
 
 	err := sm.DropSnapshotsByCollection(ctx, 100)
@@ -2793,6 +2880,7 @@ func TestSnapshotManager_DropSnapshotsByCollection_Error(t *testing.T) {
 	sm := NewSnapshotManager(
 		nil,
 		&snapshotMeta{},
+		nil,
 		nil,
 		nil,
 		nil,
@@ -2815,6 +2903,7 @@ func TestSnapshotManager_DropSnapshotsByCollection_NoSnapshots(t *testing.T) {
 	sm := NewSnapshotManager(
 		nil,
 		&snapshotMeta{},
+		nil,
 		nil,
 		nil,
 		nil,

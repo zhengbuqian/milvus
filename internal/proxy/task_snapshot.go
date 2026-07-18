@@ -19,16 +19,14 @@ package proxy
 import (
 	"context"
 
-	"go.uber.org/zap"
-
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
 	"github.com/milvus-io/milvus/internal/types"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/util/commonpbutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/util/commonpbutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
 )
 
 const (
@@ -51,8 +49,8 @@ func resolveCollectionNames(ctx context.Context, collectionID int64) (string, st
 	}
 	collInfo, err := globalMetaCache.GetCollectionInfo(ctx, "", "", collectionID)
 	if err != nil {
-		log.Ctx(ctx).Warn("failed to resolve collection names from ID",
-			zap.Int64("collectionID", collectionID), zap.Error(err))
+		mlog.Warn(ctx, "failed to resolve collection names from ID",
+			mlog.FieldCollectionID(collectionID), mlog.Err(err))
 		return "", ""
 	}
 	return collInfo.dbName, collInfo.schema.Name
@@ -135,10 +133,10 @@ func (cst *createSnapshotTask) PreExecute(ctx context.Context) error {
 }
 
 func (cst *createSnapshotTask) Execute(ctx context.Context) error {
-	log.Ctx(ctx).Info("proxy create snapshot",
-		zap.String("snapshotName", cst.req.GetName()),
-		zap.String("collectionName", cst.req.GetCollectionName()),
-		zap.Int64("collectionID", cst.collectionID),
+	mlog.Info(ctx, "proxy create snapshot",
+		mlog.String("snapshotName", cst.req.GetName()),
+		mlog.FieldCollectionName(cst.req.GetCollectionName()),
+		mlog.FieldCollectionID(cst.collectionID),
 	)
 
 	var err error
@@ -220,7 +218,7 @@ func (dst *dropSnapshotTask) PreExecute(ctx context.Context) error {
 	}
 
 	if dst.req.GetCollectionName() == "" {
-		return merr.WrapErrParameterInvalidMsg("collection_name is required for drop snapshot")
+		return merr.WrapErrParameterMissingMsg("collection_name is required for drop snapshot")
 	}
 	collectionID, err := globalMetaCache.GetCollectionID(ctx, dst.req.GetDbName(), dst.req.GetCollectionName())
 	if err != nil {
@@ -232,10 +230,10 @@ func (dst *dropSnapshotTask) PreExecute(ctx context.Context) error {
 }
 
 func (dst *dropSnapshotTask) Execute(ctx context.Context) error {
-	log.Ctx(ctx).Info("proxy drop snapshot",
-		zap.String("snapshotName", dst.req.GetName()),
-		zap.String("collectionName", dst.req.GetCollectionName()),
-		zap.Int64("collectionID", dst.collectionID),
+	mlog.Info(ctx, "proxy drop snapshot",
+		mlog.String("snapshotName", dst.req.GetName()),
+		mlog.FieldCollectionName(dst.req.GetCollectionName()),
+		mlog.FieldCollectionID(dst.collectionID),
 	)
 
 	var err error
@@ -315,7 +313,7 @@ func (dst *describeSnapshotTask) PreExecute(ctx context.Context) error {
 	}
 
 	if dst.req.GetCollectionName() == "" {
-		return merr.WrapErrParameterInvalidMsg("collection_name is required for describe snapshot")
+		return merr.WrapErrParameterMissingMsg("collection_name is required for describe snapshot")
 	}
 	collectionID, err := globalMetaCache.GetCollectionID(ctx, dst.req.GetDbName(), dst.req.GetCollectionName())
 	if err != nil {
@@ -327,8 +325,8 @@ func (dst *describeSnapshotTask) PreExecute(ctx context.Context) error {
 }
 
 func (dst *describeSnapshotTask) Execute(ctx context.Context) error {
-	log.Ctx(ctx).Info("proxy describe snapshot",
-		zap.String("snapshotName", dst.req.GetName()),
+	mlog.Info(ctx, "proxy describe snapshot",
+		mlog.String("snapshotName", dst.req.GetName()),
 	)
 
 	result, err := dst.mixCoord.DescribeSnapshot(ctx, &datapb.DescribeSnapshotRequest{
@@ -350,17 +348,17 @@ func (dst *describeSnapshotTask) Execute(ctx context.Context) error {
 
 	collectionName, err := globalMetaCache.GetCollectionName(ctx, "", snapshotInfo.GetCollectionId())
 	if err != nil {
-		log.Ctx(ctx).Warn("DescribeSnapshot fail to get collection name",
-			zap.Error(err))
+		mlog.Warn(ctx, "DescribeSnapshot fail to get collection name",
+			mlog.Err(err))
 		return err
 	}
 	var partitionNames []string
 	for _, partitionID := range snapshotInfo.GetPartitionIds() {
 		partitionName, err := globalMetaCache.GetPartitionName(ctx, "", collectionName, partitionID)
 		if err != nil {
-			log.Ctx(ctx).Warn("DescribeSnapshot fail to get partition name",
-				zap.Int64("partitionID", partitionID),
-				zap.Error(err))
+			mlog.Warn(ctx, "DescribeSnapshot fail to get partition name",
+				mlog.FieldPartitionID(partitionID),
+				mlog.Err(err))
 		}
 		partitionNames = append(partitionNames, partitionName)
 	}
@@ -446,7 +444,7 @@ func (lst *listSnapshotsTask) PreExecute(ctx context.Context) error {
 	}
 
 	if lst.req.GetCollectionName() == "" {
-		return merr.WrapErrParameterInvalidMsg("collection_name is required for ListSnapshots")
+		return merr.WrapErrParameterMissingMsg("collection_name is required for ListSnapshots")
 	}
 
 	collectionID, err := globalMetaCache.GetCollectionID(ctx, lst.req.GetDbName(), lst.req.GetCollectionName())
@@ -459,9 +457,9 @@ func (lst *listSnapshotsTask) PreExecute(ctx context.Context) error {
 }
 
 func (lst *listSnapshotsTask) Execute(ctx context.Context) error {
-	log.Ctx(ctx).Info("proxy list snapshots",
-		zap.String("collectionName", lst.req.GetCollectionName()),
-		zap.Int64("collectionID", lst.collectionID),
+	mlog.Info(ctx, "proxy list snapshots",
+		mlog.FieldCollectionName(lst.req.GetCollectionName()),
+		mlog.FieldCollectionID(lst.collectionID),
 	)
 
 	result, err := lst.mixCoord.ListSnapshots(ctx, &datapb.ListSnapshotsRequest{
@@ -550,12 +548,12 @@ func (rst *restoreSnapshotTask) PreExecute(ctx context.Context) error {
 
 	// Validate source collection name
 	if rst.req.GetCollectionName() == "" {
-		return merr.WrapErrParameterInvalidMsg("collection_name is required for restore snapshot")
+		return merr.WrapErrParameterMissingMsg("collection_name is required for restore snapshot")
 	}
 
 	// Validate target collection name (required, cheap checks before RPC)
 	if rst.req.GetTargetCollectionName() == "" {
-		return merr.WrapErrParameterInvalidMsg("target_collection_name is required for restore snapshot")
+		return merr.WrapErrParameterMissingMsg("target_collection_name is required for restore snapshot")
 	}
 	if err := ValidateCollectionName(rst.req.GetTargetCollectionName()); err != nil {
 		return err
@@ -572,12 +570,12 @@ func (rst *restoreSnapshotTask) PreExecute(ctx context.Context) error {
 }
 
 func (rst *restoreSnapshotTask) Execute(ctx context.Context) error {
-	log.Ctx(ctx).Info("proxy restore snapshot",
-		zap.String("snapshotName", rst.req.GetName()),
-		zap.String("sourceCollection", rst.req.GetCollectionName()),
-		zap.String("sourceDb", rst.req.GetDbName()),
-		zap.String("targetCollection", rst.req.GetTargetCollectionName()),
-		zap.String("targetDb", rst.req.GetTargetDbName()),
+	mlog.Info(ctx, "proxy restore snapshot",
+		mlog.String("snapshotName", rst.req.GetName()),
+		mlog.String("sourceCollection", rst.req.GetCollectionName()),
+		mlog.String("sourceDb", rst.req.GetDbName()),
+		mlog.String("targetCollection", rst.req.GetTargetCollectionName()),
+		mlog.String("targetDb", rst.req.GetTargetDbName()),
 	)
 
 	// Delegate directly to DataCoord which handles the entire restore process
@@ -591,8 +589,8 @@ func (rst *restoreSnapshotTask) Execute(ctx context.Context) error {
 		SourceCollectionId:   rst.collectionID,
 	})
 	if err = merr.CheckRPCCall(resp, err); err != nil {
-		log.Ctx(ctx).Warn("RestoreSnapshot failed",
-			zap.Error(err))
+		mlog.Warn(ctx, "RestoreSnapshot failed",
+			mlog.Err(err))
 		rst.result = &milvuspb.RestoreSnapshotResponse{Status: merr.Status(err)}
 		return err
 	}
@@ -663,8 +661,8 @@ func (grst *getRestoreSnapshotStateTask) PreExecute(ctx context.Context) error {
 }
 
 func (grst *getRestoreSnapshotStateTask) Execute(ctx context.Context) error {
-	log.Ctx(ctx).Info("proxy get restore snapshot state",
-		zap.Int64("jobID", grst.req.GetJobId()),
+	mlog.Info(ctx, "proxy get restore snapshot state",
+		mlog.FieldJobID(grst.req.GetJobId()),
 	)
 
 	result, err := grst.mixCoord.GetRestoreSnapshotState(ctx, &datapb.GetRestoreSnapshotStateRequest{
@@ -784,9 +782,9 @@ func (lrst *listRestoreSnapshotJobsTask) PreExecute(ctx context.Context) error {
 }
 
 func (lrst *listRestoreSnapshotJobsTask) Execute(ctx context.Context) error {
-	log.Ctx(ctx).Info("proxy list restore snapshot jobs",
-		zap.String("collectionName", lrst.req.GetCollectionName()),
-		zap.Int64("collectionID", lrst.collectionID),
+	mlog.Info(ctx, "proxy list restore snapshot jobs",
+		mlog.FieldCollectionName(lrst.req.GetCollectionName()),
+		mlog.FieldCollectionID(lrst.collectionID),
 	)
 
 	result, err := lrst.mixCoord.ListRestoreSnapshotJobs(ctx, &datapb.ListRestoreSnapshotJobsRequest{
@@ -896,7 +894,7 @@ func (pst *pinSnapshotDataTask) PreExecute(ctx context.Context) error {
 	}
 
 	if pst.req.GetCollectionName() == "" {
-		return merr.WrapErrParameterInvalidMsg("collection_name is required for pin snapshot data")
+		return merr.WrapErrParameterMissingMsg("collection_name is required for pin snapshot data")
 	}
 
 	if pst.req.GetTtlSeconds() < 0 {
@@ -916,10 +914,10 @@ func (pst *pinSnapshotDataTask) PreExecute(ctx context.Context) error {
 }
 
 func (pst *pinSnapshotDataTask) Execute(ctx context.Context) error {
-	log.Ctx(ctx).Info("proxy pin snapshot data",
-		zap.String("snapshotName", pst.req.GetName()),
-		zap.String("collectionName", pst.req.GetCollectionName()),
-		zap.Int64("collectionID", pst.collectionID),
+	mlog.Info(ctx, "proxy pin snapshot data",
+		mlog.String("snapshotName", pst.req.GetName()),
+		mlog.FieldCollectionName(pst.req.GetCollectionName()),
+		mlog.FieldCollectionID(pst.collectionID),
 	)
 
 	resp, err := pst.mixCoord.PinSnapshotData(ctx, &datapb.PinSnapshotDataRequest{
@@ -1001,14 +999,14 @@ func (ust *unpinSnapshotDataTask) OnEnqueue() error {
 
 func (ust *unpinSnapshotDataTask) PreExecute(ctx context.Context) error {
 	if ust.req.GetPinId() == 0 {
-		return merr.WrapErrParameterInvalidMsg("pin_id is required for unpin snapshot data")
+		return merr.WrapErrParameterMissingMsg("pin_id is required for unpin snapshot data")
 	}
 	return nil
 }
 
 func (ust *unpinSnapshotDataTask) Execute(ctx context.Context) error {
-	log.Ctx(ctx).Info("proxy unpin snapshot data",
-		zap.Int64("pinID", ust.req.GetPinId()),
+	mlog.Info(ctx, "proxy unpin snapshot data",
+		mlog.Int64("pinID", ust.req.GetPinId()),
 	)
 
 	var err error

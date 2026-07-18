@@ -24,9 +24,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"golang.org/x/time/rate"
 
-	"github.com/milvus-io/milvus/pkg/v2/mocks/streaming/util/mock_message"
-	"github.com/milvus-io/milvus/pkg/v2/proto/streamingpb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/ratelimit"
+	"github.com/milvus-io/milvus/pkg/v3/mocks/streaming/util/mock_message"
+	"github.com/milvus-io/milvus/pkg/v3/proto/streamingpb"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/ratelimit"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
 )
 
 func TestProduceRateLimiter(t *testing.T) {
@@ -164,7 +165,7 @@ func TestProduceRateLimiter(t *testing.T) {
 		res, err := rl.RequestReservation(context.Background(), msg)
 		assert.Error(t, err)
 		assert.Nil(t, res)
-		assert.Equal(t, ErrSlowDown, err)
+		assert.ErrorIs(t, err, merr.ErrServiceRateLimit)
 	})
 }
 

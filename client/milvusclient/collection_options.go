@@ -21,10 +21,10 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"github.com/milvus-io/milvus/client/v2/entity"
-	"github.com/milvus-io/milvus/client/v2/index"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
+	"github.com/milvus-io/milvus/client/v3/entity"
+	"github.com/milvus-io/milvus/client/v3/index"
 )
 
 // CreateCollectionOption is the interface builds CreateCollectionRequest.
@@ -461,6 +461,49 @@ func (c *addCollectionFieldOption) Validate() error {
 
 func NewAddCollectionFieldOption(collectionName string, field *entity.Field) *addCollectionFieldOption {
 	return &addCollectionFieldOption{
+		collectionName: collectionName,
+		fieldSch:       field,
+	}
+}
+
+type AddCollectionStructFieldOption interface {
+	Request() *milvuspb.AddCollectionStructFieldRequest
+	// Validate validates the option before sending request
+	Validate() error
+}
+
+type addCollectionStructFieldOption struct {
+	collectionName string
+	fieldSch       *entity.Field
+}
+
+func (c *addCollectionStructFieldOption) Request() *milvuspb.AddCollectionStructFieldRequest {
+	collSchema := entity.NewSchema().WithField(c.fieldSch).ProtoMessage()
+	return &milvuspb.AddCollectionStructFieldRequest{
+		CollectionName:         c.collectionName,
+		StructArrayFieldSchema: collSchema.GetStructArrayFields()[0],
+	}
+}
+
+// Validate validates the option before sending request
+func (c *addCollectionStructFieldOption) Validate() error {
+	if c == nil {
+		return fmt.Errorf("add collection struct field option is nil")
+	}
+	if c.fieldSch == nil {
+		return fmt.Errorf("struct array field schema is required")
+	}
+	if c.fieldSch.DataType != entity.FieldTypeArray || c.fieldSch.ElementType != entity.FieldTypeStruct {
+		return fmt.Errorf("adding struct array field requires data type Array and element type Struct, field name = %s", c.fieldSch.Name)
+	}
+	if c.fieldSch.StructSchema == nil {
+		return fmt.Errorf("struct schema is required for struct array field %s", c.fieldSch.Name)
+	}
+	return c.fieldSch.StructSchema.Validate(c.fieldSch.Name)
+}
+
+func NewAddCollectionStructFieldOption(collectionName string, field *entity.Field) *addCollectionStructFieldOption {
+	return &addCollectionStructFieldOption{
 		collectionName: collectionName,
 		fieldSch:       field,
 	}

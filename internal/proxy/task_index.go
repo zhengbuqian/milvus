@@ -22,25 +22,23 @@ import (
 	"strings"
 
 	"github.com/cockroachdb/errors"
-	"go.uber.org/zap"
-	"google.golang.org/protobuf/proto"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/indexparamcheck"
 	"github.com/milvus-io/milvus/internal/util/vecindexmgr"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/commonpbutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/indexparams"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/metric"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/indexpb"
+	"github.com/milvus-io/milvus/pkg/v3/util/commonpbutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/funcutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/indexparams"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/metric"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 const (
@@ -208,61 +206,19 @@ func (cit *createIndexTask) parseFunctionParamsToIndex(indexParamsMap map[string
 	if !cit.fieldSchema.GetIsFunctionOutput() {
 		return nil
 	}
-
-	switch cit.functionSchema.GetType() {
-	case schemapb.FunctionType_Unknown:
-		return errors.New("unknown function type encountered")
-
-	case schemapb.FunctionType_BM25:
-		// set default BM25 params if not provided in index params
-		if _, ok := indexParamsMap["bm25_k1"]; !ok {
-			indexParamsMap["bm25_k1"] = "1.2"
-		}
-
-		if _, ok := indexParamsMap["bm25_b"]; !ok {
-			indexParamsMap["bm25_b"] = "0.75"
-		}
-
-		if _, ok := indexParamsMap["bm25_avgdl"]; !ok {
-			indexParamsMap["bm25_avgdl"] = "100"
-		}
-
-		if metricType, ok := indexParamsMap["metric_type"]; !ok {
-			indexParamsMap["metric_type"] = metric.BM25
-		} else if metricType != metric.BM25 {
-			return fmt.Errorf("index metric type of BM25 function output field must be BM25, got %s", metricType)
-		}
-
-	default:
-		return nil
-	}
-
-	return nil
+	return indexparamcheck.FillFunctionOutputIndexParams(cit.functionSchema.GetType(), indexParamsMap)
 }
 
 func (cit *createIndexTask) parseIndexParams(ctx context.Context) error {
 	cit.newExtraParams = cit.req.GetExtraParams()
+	if err := indexparamcheck.ValidateIndexParamsSize(cit.newExtraParams...); err != nil {
+		return err
+	}
 
 	isVecIndex := typeutil.IsVectorType(cit.fieldSchema.DataType)
-	indexParamsMap := make(map[string]string)
-
-	keys := typeutil.NewSet[string]()
-	for _, kv := range cit.req.GetExtraParams() {
-		if keys.Contain(kv.GetKey()) {
-			return merr.WrapErrParameterInvalidMsg("duplicated index param (key=%s) (value=%s) found", kv.GetKey(), kv.GetValue())
-		}
-		keys.Insert(kv.GetKey())
-		if kv.Key == common.ParamsKey {
-			params, err := funcutil.JSONToMap(kv.Value)
-			if err != nil {
-				return err
-			}
-			for k, v := range params {
-				indexParamsMap[k] = v
-			}
-		} else {
-			indexParamsMap[kv.Key] = kv.Value
-		}
+	indexParamsMap, err := indexparamcheck.ExpandIndexParams(cit.req.GetExtraParams())
+	if err != nil {
+		return err
 	}
 
 	if jsonCastType, exist := indexParamsMap[common.JSONCastTypeKey]; exist {
@@ -270,6 +226,14 @@ func (cit *createIndexTask) parseIndexParams(ctx context.Context) error {
 	}
 	if jsonCastFunction, exist := indexParamsMap[common.JSONCastFunctionKey]; exist {
 		indexParamsMap[common.JSONCastFunctionKey] = strings.ToUpper(strings.TrimSpace(jsonCastFunction))
+	}
+
+	if err := indexparamcheck.ValidateIndexParamsMapSize(indexParamsMap); err != nil {
+		return err
+	}
+
+	if cit.fieldSchema.GetDataType() == schemapb.DataType_Text {
+		return merr.WrapErrParameterInvalidMsg("TEXT field does not support user-created scalar index")
 	}
 
 	if err := ValidateAutoIndexMmapConfig(isVecIndex, indexParamsMap); err != nil {
@@ -280,21 +244,21 @@ func (cit *createIndexTask) parseIndexParams(ctx context.Context) error {
 	if exist && specifyIndexType != "" {
 		// todo(SpadeA): mmap check for struct array index
 		if err := indexparamcheck.ValidateMmapIndexParams(specifyIndexType, indexParamsMap); err != nil {
-			log.Ctx(ctx).Warn("Invalid mmap type params", zap.String(common.IndexTypeKey, specifyIndexType), zap.Error(err))
+			mlog.Warn(ctx, "Invalid mmap type params", mlog.String(common.IndexTypeKey, specifyIndexType), mlog.Err(err))
 			return merr.WrapErrParameterInvalidMsg("invalid mmap type params: %s", err.Error())
 		}
 		// todo(SpadeA): check for struct array index
 		checker, err := indexparamcheck.GetIndexCheckerMgrInstance().GetChecker(specifyIndexType)
 		// not enable hybrid index for user, used in milvus internally
 		if err != nil || indexparamcheck.IsHYBRIDChecker(checker) {
-			log.Ctx(ctx).Warn("Failed to get index checker", zap.String(common.IndexTypeKey, specifyIndexType), zap.Error(err))
+			mlog.Warn(ctx, "Failed to get index checker", mlog.String(common.IndexTypeKey, specifyIndexType), mlog.Err(err))
 			return merr.WrapErrParameterInvalid("valid index", fmt.Sprintf("invalid index type: %s", specifyIndexType))
 		}
 	}
 
 	// Validate warmup policy if specified
 	if err := indexparamcheck.ValidateWarmupIndexParams(indexParamsMap); err != nil {
-		log.Ctx(ctx).Warn("Invalid warmup params", zap.Error(err))
+		mlog.Warn(ctx, "Invalid warmup params", mlog.Err(err))
 		return merr.WrapErrParameterInvalidMsg("invalid warmup params: %s", err.Error())
 	}
 
@@ -327,21 +291,28 @@ func (cit *createIndexTask) parseIndexParams(ctx context.Context) error {
 				} else if typeutil.IsGeometryType(dataType) {
 					return Params.AutoIndexConfig.ScalarGeometryIndexType.GetValue(), nil
 				}
-				return "", fmt.Errorf("create auto index on type:%s is not supported", dataType.String())
+				return "", merr.WrapErrParameterInvalidMsg("create auto index on type:%s is not supported", dataType.String())
 			}()
 			if err != nil {
 				return merr.WrapErrParameterInvalid("supported field", err.Error())
 			}
 
+			if typeutil.IsJSONType(cit.fieldSchema.DataType) && indexType == indexparamcheck.IndexHybrid {
+				// Full JSON cast is only implemented by the inverted JSON
+				// index; HYBRID supports typed JSON path indexes.
+				if castType, ok := indexParamsMap[common.JSONCastTypeKey]; ok && strings.EqualFold(castType, "JSON") {
+					indexType = indexparamcheck.IndexINVERTED
+				}
+			}
 			indexParamsMap[common.IndexTypeKey] = indexType
 			cit.isAutoIndex = true
 		}
 	} else {
 		specifyIndexType, exist := indexParamsMap[common.IndexTypeKey]
 		if Params.AutoIndexConfig.Enable.GetAsBool() { // `enable` only for cloud instance.
-			log.Ctx(ctx).Info("create index trigger AutoIndex",
-				zap.String("original type", specifyIndexType),
-				zap.String("final type", Params.AutoIndexConfig.AutoIndexTypeName.GetValue()))
+			mlog.Info(ctx, "create index trigger AutoIndex",
+				mlog.String("original type", specifyIndexType),
+				mlog.String("final type", Params.AutoIndexConfig.AutoIndexTypeName.GetValue()))
 
 			metricType, metricTypeExist := indexParamsMap[common.MetricTypeKey]
 
@@ -368,7 +339,7 @@ func (cit *createIndexTask) parseIndexParams(ctx context.Context) error {
 				(typeutil.IsArrayOfVectorType(cit.fieldSchema.DataType) && typeutil.IsBinaryVectorType(cit.fieldSchema.ElementType)) {
 				if metricTypeExist && funcutil.SliceContain(indexparamcheck.DeduplicateMetrics, metricType) {
 					if !Params.AutoIndexConfig.EnableDeduplicateIndex.GetAsBool() {
-						log.Ctx(ctx).Warn("Deduplicate index is not enabled, but metric type is deduplicate.")
+						mlog.Warn(ctx, "Deduplicate index is not enabled, but metric type is deduplicate.")
 						return merr.WrapErrParameterInvalidMsg("Deduplicate index is not enabled, but metric type is deduplicate.")
 					}
 					// override binary vector index params by autoindex deduplicate params
@@ -402,12 +373,12 @@ func (cit *createIndexTask) parseIndexParams(ctx context.Context) error {
 			}
 		} else { // behavior change after 2.2.9, adapt autoindex logic here.
 			useAutoIndex := func(autoIndexConfig map[string]string) {
-				fields := make([]zap.Field, 0, len(autoIndexConfig))
+				fields := make([]mlog.Field, 0, len(autoIndexConfig))
 				for k, v := range autoIndexConfig {
 					indexParamsMap[k] = v
-					fields = append(fields, zap.String(k, v))
+					fields = append(fields, mlog.String(k, v))
 				}
-				log.Ctx(ctx).Info("AutoIndex triggered", fields...)
+				mlog.Info(ctx, "AutoIndex triggered", fields...)
 			}
 			metricType, metricTypeExist := indexParamsMap[common.MetricTypeKey]
 
@@ -422,12 +393,12 @@ func (cit *createIndexTask) parseIndexParams(ctx context.Context) error {
 				}
 
 				if len(indexParamsMap) > numberParams+1 {
-					return errors.New("only metric type can be passed when use AutoIndex")
+					return merr.WrapErrParameterInvalidMsg("only metric type can be passed when use AutoIndex")
 				}
 
 				if len(indexParamsMap) == numberParams+1 {
 					if !metricTypeExist {
-						return errors.New("only metric type can be passed when use AutoIndex")
+						return merr.WrapErrParameterInvalidMsg("only metric type can be passed when use AutoIndex")
 					}
 
 					// only metric type is passed.
@@ -492,7 +463,7 @@ func (cit *createIndexTask) parseIndexParams(ctx context.Context) error {
 
 		indexType, exist := indexParamsMap[common.IndexTypeKey]
 		if !exist {
-			return errors.New("IndexType not specified")
+			return merr.WrapErrParameterMissingMsg("IndexType not specified")
 		}
 		//  index parameters defined in the YAML file are merged with the user-provided parameters during create stage
 		if Params.KnowhereConfig.Enable.GetAsBool() {
@@ -532,22 +503,8 @@ func (cit *createIndexTask) parseIndexParams(ctx context.Context) error {
 				return merr.WrapErrParameterInvalid("valid index params", "invalid index params", "int vector index does not support metric type: "+metricType)
 			}
 		} else if typeutil.IsArrayOfVectorType(cit.fieldSchema.DataType) {
-			if !funcutil.SliceContain(indexparamcheck.EmbListMetrics, metricType) {
-				if typeutil.IsDenseFloatVectorType(cit.fieldSchema.ElementType) {
-					if !funcutil.SliceContain(indexparamcheck.FloatVectorMetrics, metricType) {
-						return merr.WrapErrParameterInvalid("valid index params", "invalid index params", "array of vector with float element type does not support metric type: "+metricType)
-					}
-				} else if typeutil.IsBinaryVectorType(cit.fieldSchema.ElementType) {
-					if !funcutil.SliceContain(indexparamcheck.BinaryVectorMetrics, metricType) {
-						return merr.WrapErrParameterInvalid("valid index params", "invalid index params", "array of vector with binary element type does not support metric type: "+metricType)
-					}
-				} else if typeutil.IsIntVectorType(cit.fieldSchema.ElementType) {
-					if !funcutil.SliceContain(indexparamcheck.IntVectorMetrics, metricType) {
-						return merr.WrapErrParameterInvalid("valid index params", "invalid index params", "array of vector with int element type does not support metric type: "+metricType)
-					}
-				} else {
-					return merr.WrapErrParameterInvalid("valid index params", "invalid index params", "array of vector index does not support metric type: "+metricType)
-				}
+			if err := indexparamcheck.ValidateArrayOfVectorMetricType(cit.fieldSchema.ElementType, metricType); err != nil {
+				return merr.WrapErrParameterInvalid("valid index params", "invalid index params", err.Error())
 			}
 		}
 	}
@@ -559,8 +516,19 @@ func (cit *createIndexTask) parseIndexParams(ctx context.Context) error {
 		}
 	}
 
-	err := checkTrain(ctx, cit.fieldSchema, indexParamsMap)
+	if err := indexparamcheck.ValidateIndexParamsMapSize(indexParamsMap); err != nil {
+		return err
+	}
+
+	err = checkTrain(ctx, cit.fieldSchema, indexParamsMap)
 	if err != nil {
+		// checkTrain may propagate errors from indexparamcheck (not yet
+		// merr-standardized). Already-merr errors (leaves / fillDimension /
+		// the merr-returning checkers) pass through with their real code;
+		// only legacy plain errors get wrapped once into ParameterInvalid.
+		if merr.IsMilvusError(err) {
+			return err
+		}
 		return merr.WrapErrParameterInvalid("valid index params", "invalid index params", err.Error())
 	}
 
@@ -592,47 +560,25 @@ func (cit *createIndexTask) parseIndexParams(ctx context.Context) error {
 func (cit *createIndexTask) getIndexedFieldAndFunction(ctx context.Context) error {
 	schema, err := globalMetaCache.GetCollectionSchema(ctx, cit.req.GetDbName(), cit.req.GetCollectionName())
 	if err != nil {
-		log.Ctx(ctx).Error("failed to get collection schema", zap.Error(err))
-		return fmt.Errorf("failed to get collection schema: %s", err)
+		mlog.Error(ctx, "failed to get collection schema", mlog.Err(err))
+		return merr.Wrap(err, "failed to get collection schema")
 	}
 
 	field, err := schema.schemaHelper.GetFieldFromNameDefaultJSON(cit.req.GetFieldName())
 	if err != nil {
-		log.Ctx(ctx).Error("create index on non-exist field", zap.Error(err))
-		return fmt.Errorf("cannot create index on non-exist field: %s", cit.req.GetFieldName())
+		mlog.Error(ctx, "create index on non-exist field", mlog.Err(err))
+		return merr.WrapErrParameterInvalidMsg("cannot create index on non-exist field: %s", cit.req.GetFieldName())
 	}
 
 	if field.IsFunctionOutput {
 		function, err := schema.schemaHelper.GetFunctionByOutputField(field)
 		if err != nil {
-			log.Ctx(ctx).Error("create index failed, cannot find function of function output field", zap.Error(err))
-			return fmt.Errorf("create index failed, cannot find function of function output field: %s", cit.req.GetFieldName())
+			mlog.Error(ctx, "create index failed, cannot find function of function output field", mlog.Err(err))
+			return merr.WrapErrParameterInvalidMsg("create index failed, cannot find function of function output field: %s", cit.req.GetFieldName())
 		}
 		cit.functionSchema = function
 	}
 	cit.fieldSchema = field
-	return nil
-}
-
-func fillDimension(field *schemapb.FieldSchema, indexParams map[string]string) error {
-	if !typeutil.IsVectorType(field.GetDataType()) {
-		return nil
-	}
-	params := make([]*commonpb.KeyValuePair, 0, len(field.GetTypeParams())+len(field.GetIndexParams()))
-	params = append(params, field.GetTypeParams()...)
-	params = append(params, field.GetIndexParams()...)
-	dimensionInSchema, err := funcutil.GetAttrByKeyFromRepeatedKV(DimKey, params)
-	if err != nil {
-		return errors.New("dimension not found in schema")
-	}
-	dimension, exist := indexParams[DimKey]
-	if exist {
-		if dimensionInSchema != dimension {
-			return fmt.Errorf("dimension mismatch, dimension in schema: %s, dimension: %s", dimensionInSchema, dimension)
-		}
-	} else {
-		indexParams[DimKey] = dimensionInSchema
-	}
 	return nil
 }
 
@@ -649,10 +595,9 @@ func checkTrain(ctx context.Context, field *schemapb.FieldSchema, indexParams ma
 		indexParams[common.HybridHighCardinalityIndexTypeKey] = paramtable.Get().DataCoordCfg.HybridIndexHighCardinalityIndexType.GetValue()
 	}
 
-	checker, err := indexparamcheck.GetIndexCheckerMgrInstance().GetChecker(indexType)
-	if err != nil {
-		log.Ctx(ctx).Warn("Failed to get index checker", zap.String(common.IndexTypeKey, indexType))
-		return fmt.Errorf("invalid index type: %s", indexType)
+	if _, err := indexparamcheck.GetIndexCheckerMgrInstance().GetChecker(indexType); err != nil {
+		mlog.Warn(ctx, "Failed to get index checker", mlog.String(common.IndexTypeKey, indexType))
+		return merr.WrapErrParameterInvalidMsg("invalid index type: %s", indexType)
 	}
 
 	// For ArrayOfVector with non-EmbList metrics (e.g., COSINE, L2, IP), each embedding
@@ -670,32 +615,12 @@ func checkTrain(ctx context.Context, field *schemapb.FieldSchema, indexParams ma
 	if typeutil.IsVectorType(field.DataType) && indexType != indexparamcheck.AutoIndex {
 		exist := CheckVecIndexWithDataTypeExist(indexType, effectiveDataType, effectiveElementType)
 		if !exist {
-			return fmt.Errorf("data type %s can't build with this index %s", schemapb.DataType_name[int32(field.GetDataType())], indexType)
+			return merr.WrapErrParameterInvalidMsg("data type %s can't build with this index %s", schemapb.DataType_name[int32(field.GetDataType())], indexType)
 		}
 	}
 
-	isSparse := typeutil.IsSparseFloatVectorType(field.DataType)
-
-	if !isSparse {
-		if err := fillDimension(field, indexParams); err != nil {
-			return err
-		}
-	}
-
-	effectiveField := field
-	if effectiveDataType != field.DataType {
-		effectiveField = proto.Clone(field).(*schemapb.FieldSchema)
-		effectiveField.DataType = effectiveDataType
-		effectiveField.ElementType = effectiveElementType
-	}
-
-	if err := checker.CheckValidDataType(indexType, effectiveField); err != nil {
-		log.Ctx(ctx).Info("create index with invalid data type", zap.Error(err), zap.String("data_type", field.GetDataType().String()))
-		return err
-	}
-
-	if err := checker.CheckTrain(effectiveDataType, effectiveElementType, indexParams); err != nil {
-		log.Ctx(ctx).Info("create index with invalid parameters", zap.Error(err))
+	if err := indexparamcheck.ValidateFieldIndexParams(field, indexParams); err != nil {
+		mlog.Info(ctx, "create index with invalid parameters", mlog.Err(err), mlog.String("data_type", field.GetDataType().String()))
 		return err
 	}
 
@@ -736,10 +661,10 @@ func (cit *createIndexTask) PreExecute(ctx context.Context) error {
 }
 
 func (cit *createIndexTask) Execute(ctx context.Context) error {
-	log.Ctx(ctx).Info("proxy create index", zap.Int64("collectionID", cit.collectionID), zap.Int64("fieldID", cit.fieldSchema.GetFieldID()),
-		zap.String("indexName", cit.req.GetIndexName()), zap.Any("typeParams", cit.fieldSchema.GetTypeParams()),
-		zap.Any("indexParams", cit.req.GetExtraParams()),
-		zap.Any("newExtraParams", cit.newExtraParams),
+	mlog.Info(ctx, "proxy create index", mlog.Int64("collectionID", cit.collectionID), mlog.Int64("fieldID", cit.fieldSchema.GetFieldID()),
+		mlog.String("indexName", cit.req.GetIndexName()), mlog.Any("typeParams", cit.fieldSchema.GetTypeParams()),
+		mlog.Any("indexParams", cit.req.GetExtraParams()),
+		mlog.Any("newExtraParams", cit.newExtraParams),
 	)
 
 	var err error
@@ -871,14 +796,14 @@ func (t *alterIndexTask) PreExecute(ctx context.Context) error {
 }
 
 func (t *alterIndexTask) Execute(ctx context.Context) error {
-	log := log.Ctx(ctx).With(
-		zap.String("collection", t.req.GetCollectionName()),
-		zap.String("indexName", t.req.GetIndexName()),
-		zap.Any("params", t.req.GetExtraParams()),
-		zap.Any("deletekeys", t.req.GetDeleteKeys()),
+	log := mlog.With(
+		mlog.String("collection", t.req.GetCollectionName()),
+		mlog.String("indexName", t.req.GetIndexName()),
+		mlog.Any("params", t.req.GetExtraParams()),
+		mlog.Any("deletekeys", t.req.GetDeleteKeys()),
 	)
 
-	log.Info("alter index")
+	log.Info(ctx, "alter index")
 
 	var err error
 	req := &indexpb.AlterIndexRequest{
@@ -964,8 +889,8 @@ func (dit *describeIndexTask) PreExecute(ctx context.Context) error {
 func (dit *describeIndexTask) Execute(ctx context.Context) error {
 	schema, err := globalMetaCache.GetCollectionSchema(ctx, dit.GetDbName(), dit.GetCollectionName())
 	if err != nil {
-		log.Ctx(ctx).Error("failed to get collection schema", zap.Error(err))
-		return fmt.Errorf("failed to get collection schema: %s", err)
+		mlog.Error(ctx, "failed to get collection schema", mlog.Err(err))
+		return merr.Wrap(err, "failed to get collection schema")
 	}
 
 	resp, err := dit.mixCoord.DescribeIndex(ctx, &indexpb.DescribeIndexRequest{CollectionID: dit.collectionID, IndexName: dit.IndexName, Timestamp: dit.Timestamp})
@@ -986,8 +911,8 @@ func (dit *describeIndexTask) Execute(ctx context.Context) error {
 	for _, indexInfo := range resp.IndexInfos {
 		field, err := schema.schemaHelper.GetFieldFromID(indexInfo.FieldID)
 		if err != nil {
-			log.Ctx(ctx).Error("failed to get collection field", zap.Error(err))
-			return fmt.Errorf("failed to get collection field: %d", indexInfo.FieldID)
+			mlog.Error(ctx, "failed to get collection field", mlog.Err(err))
+			return merr.WrapErrParameterInvalidMsg("failed to get collection field: %d", indexInfo.FieldID)
 		}
 		params := indexInfo.GetUserIndexParams()
 		if params == nil {
@@ -1000,7 +925,7 @@ func (dit *describeIndexTask) Execute(ctx context.Context) error {
 		if field.IsDynamic {
 			jsonPath, err := funcutil.GetAttrByKeyFromRepeatedKV(common.JSONPathKey, indexInfo.GetIndexParams())
 			if err != nil {
-				log.Ctx(ctx).Warn("failed to get json path for dynamic field", zap.Error(err))
+				mlog.Warn(ctx, "failed to get json path for dynamic field", mlog.Err(err))
 			} else if jsonPath != "" {
 				// Skip leading "/" and find next "/" to get first path segment
 				trimmedPath := strings.TrimPrefix(jsonPath, "/")
@@ -1104,8 +1029,8 @@ func (dit *getIndexStatisticsTask) PreExecute(ctx context.Context) error {
 func (dit *getIndexStatisticsTask) Execute(ctx context.Context) error {
 	schema, err := globalMetaCache.GetCollectionSchema(ctx, dit.GetDbName(), dit.GetCollectionName())
 	if err != nil {
-		log.Ctx(ctx).Error("failed to get collection schema", zap.String("collection_name", dit.GetCollectionName()), zap.Error(err))
-		return fmt.Errorf("failed to get collection schema: %s", dit.GetCollectionName())
+		mlog.Error(ctx, "failed to get collection schema", mlog.String("collection_name", dit.GetCollectionName()), mlog.Err(err))
+		return merr.Wrap(err, "failed to get collection schema")
 	}
 	schemaHelper := schema.schemaHelper
 
@@ -1120,8 +1045,8 @@ func (dit *getIndexStatisticsTask) Execute(ctx context.Context) error {
 	for _, indexInfo := range resp.IndexInfos {
 		field, err := schemaHelper.GetFieldFromID(indexInfo.FieldID)
 		if err != nil {
-			log.Ctx(ctx).Error("failed to get collection field", zap.Int64("field_id", indexInfo.FieldID), zap.Error(err))
-			return fmt.Errorf("failed to get collection field: %d", indexInfo.FieldID)
+			mlog.Error(ctx, "failed to get collection field", mlog.Int64("field_id", indexInfo.FieldID), mlog.Err(err))
+			return merr.WrapErrParameterInvalidMsg("failed to get collection field: %d", indexInfo.FieldID)
 		}
 		params := indexInfo.GetUserIndexParams()
 		if params == nil {
@@ -1211,11 +1136,11 @@ func (dit *dropIndexTask) PreExecute(ctx context.Context) error {
 }
 
 func (dit *dropIndexTask) Execute(ctx context.Context) error {
-	ctxLog := log.Ctx(ctx)
-	ctxLog.Info("proxy drop index", zap.Int64("collID", dit.collectionID),
-		zap.String("field_name", dit.FieldName),
-		zap.String("index_name", dit.IndexName),
-		zap.String("db_name", dit.DbName),
+	ctxLog := mlog.With()
+	ctxLog.Info(ctx, "proxy drop index", mlog.Int64("collID", dit.collectionID),
+		mlog.String("field_name", dit.FieldName),
+		mlog.String("index_name", dit.IndexName),
+		mlog.String("db_name", dit.DbName),
 	)
 
 	var err error
@@ -1226,7 +1151,7 @@ func (dit *dropIndexTask) Execute(ctx context.Context) error {
 		DropAll:      false,
 	})
 	if err = merr.CheckRPCCall(dit.result, err); err != nil {
-		ctxLog.Warn("drop index failed", zap.Error(err))
+		ctxLog.Warn(ctx, "drop index failed", mlog.Err(err))
 		return err
 	}
 	return nil

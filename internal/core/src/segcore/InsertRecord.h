@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
@@ -279,15 +280,26 @@ class OffsetMap {
     //   - has_more flag indicating if there are more results
     virtual std::
         tuple<std::vector<int64_t>, std::vector<std::vector<int32_t>>, bool>
-        find_first_n_element(int64_t limit,
-                             const BitsetTypeView& element_bitset,
-                             const IArrayOffsets* array_offsets) const = 0;
+        find_first_n_element(
+            int64_t limit,
+            const BitsetTypeView& element_bitset,
+            const IArrayOffsets* array_offsets,
+            const std::optional<QueryIteratorCursor>& cursor) const = 0;
 
     virtual void
     clear() = 0;
 
     virtual size_t
     memory_size() const = 0;
+
+    // Returns true if the implementation stores nothing per-row (e.g.
+    // VirtualPKOffsetMap derives pk→offset via bit-extract). Callers that
+    // fall back to full pk-column scans (GetAllChunks + two-pointers) can
+    // short-circuit to find_range() when this is true — O(M) not O(M+N).
+    virtual bool
+    is_zero_storage() const {
+        return false;
+    }
 };
 
 template <typename T>
@@ -409,9 +421,11 @@ class OffsetOrderedMap : public OffsetMap {
     }
 
     std::tuple<std::vector<int64_t>, std::vector<std::vector<int32_t>>, bool>
-    find_first_n_element(int64_t limit,
-                         const BitsetTypeView& element_bitset,
-                         const IArrayOffsets* array_offsets) const override {
+    find_first_n_element(
+        int64_t limit,
+        const BitsetTypeView& element_bitset,
+        const IArrayOffsets* array_offsets,
+        const std::optional<QueryIteratorCursor>& cursor) const override {
         std::shared_lock<std::shared_mutex> lck(mtx_);
 
         if (limit == Unlimited || limit == NoLimit) {
@@ -419,7 +433,7 @@ class OffsetOrderedMap : public OffsetMap {
         }
 
         return find_first_n_element_by_index(
-            limit, element_bitset, array_offsets);
+            limit, element_bitset, array_offsets, cursor);
     }
 
     void
@@ -467,9 +481,11 @@ class OffsetOrderedMap : public OffsetMap {
     }
 
     std::tuple<std::vector<int64_t>, std::vector<std::vector<int32_t>>, bool>
-    find_first_n_element_by_index(int64_t limit,
-                                  const BitsetTypeView& element_bitset,
-                                  const IArrayOffsets* array_offsets) const {
+    find_first_n_element_by_index(
+        int64_t limit,
+        const BitsetTypeView& element_bitset,
+        const IArrayOffsets* array_offsets,
+        const std::optional<QueryIteratorCursor>& cursor) const {
         std::vector<int64_t> doc_offsets;
         std::vector<std::vector<int32_t>> element_indices;
 
@@ -504,6 +520,10 @@ class OffsetOrderedMap : public OffsetMap {
                     if (elem_id >= element_size) {
                         continue;
                     }
+                    if (is_skipped_by_cursor(
+                            it->first, elem_id - first_elem, cursor)) {
+                        continue;
+                    }
                     if (!element_bitset[elem_id]) {  // 0 means pass filter
                         matching_indices.push_back(
                             static_cast<int32_t>(elem_id - first_elem));
@@ -518,11 +538,35 @@ class OffsetOrderedMap : public OffsetMap {
                     // PK hit, no need to continue traversing older offsets with the same PK.
                     break;
                 }
+                if (is_cursor_pk(it->first, cursor)) {
+                    // The cursor applies to the newest visible row for this PK.
+                    // Do not fall through to older offsets of the same PK.
+                    break;
+                }
             }
         }
 
-        bool has_more = more_hit_than_limit && (it != map_.end());
+        bool has_more = more_hit_than_limit && hit_num >= limit;
         return {std::move(doc_offsets), std::move(element_indices), has_more};
+    }
+
+    bool
+    is_skipped_by_cursor(
+        const T& pk,
+        int64_t element_offset,
+        const std::optional<QueryIteratorCursor>& cursor) const {
+        return is_cursor_pk(pk, cursor) &&
+               element_offset <= cursor->last_element_offset;
+    }
+
+    bool
+    is_cursor_pk(const T& pk,
+                 const std::optional<QueryIteratorCursor>& cursor) const {
+        if (!cursor.has_value()) {
+            return false;
+        }
+        auto last_pk = std::get_if<T>(&cursor->last_pk);
+        return last_pk != nullptr && *last_pk == pk;
     }
 
  private:
@@ -663,9 +707,11 @@ class OffsetOrderedArray : public OffsetMap {
     }
 
     std::tuple<std::vector<int64_t>, std::vector<std::vector<int32_t>>, bool>
-    find_first_n_element(int64_t limit,
-                         const BitsetTypeView& element_bitset,
-                         const IArrayOffsets* array_offsets) const override {
+    find_first_n_element(
+        int64_t limit,
+        const BitsetTypeView& element_bitset,
+        const IArrayOffsets* array_offsets,
+        const std::optional<QueryIteratorCursor>& cursor) const override {
         check_search();
 
         if (limit == Unlimited || limit == NoLimit) {
@@ -673,7 +719,7 @@ class OffsetOrderedArray : public OffsetMap {
         }
 
         return find_first_n_element_by_index(
-            limit, element_bitset, array_offsets);
+            limit, element_bitset, array_offsets, cursor);
     }
 
     void
@@ -714,9 +760,11 @@ class OffsetOrderedArray : public OffsetMap {
     }
 
     std::tuple<std::vector<int64_t>, std::vector<std::vector<int32_t>>, bool>
-    find_first_n_element_by_index(int64_t limit,
-                                  const BitsetTypeView& element_bitset,
-                                  const IArrayOffsets* array_offsets) const {
+    find_first_n_element_by_index(
+        int64_t limit,
+        const BitsetTypeView& element_bitset,
+        const IArrayOffsets* array_offsets,
+        const std::optional<QueryIteratorCursor>& cursor) const {
         std::vector<int64_t> doc_offsets;
         std::vector<std::vector<int32_t>> element_indices;
 
@@ -746,6 +794,10 @@ class OffsetOrderedArray : public OffsetMap {
                 if (elem_id >= element_size) {
                     continue;
                 }
+                if (is_skipped_by_cursor(
+                        it->first, elem_id - first_elem, cursor)) {
+                    continue;
+                }
                 if (!element_bitset[elem_id]) {  // 0 means pass filter
                     matching_indices.push_back(
                         static_cast<int32_t>(elem_id - first_elem));
@@ -760,8 +812,21 @@ class OffsetOrderedArray : public OffsetMap {
             }
         }
 
-        bool has_more = more_hit_than_limit && (it != array_.end());
+        bool has_more = more_hit_than_limit && hit_num >= limit;
         return {std::move(doc_offsets), std::move(element_indices), has_more};
+    }
+
+    bool
+    is_skipped_by_cursor(
+        const T& pk,
+        int64_t element_offset,
+        const std::optional<QueryIteratorCursor>& cursor) const {
+        if (!cursor.has_value()) {
+            return false;
+        }
+        auto last_pk = std::get_if<T>(&cursor->last_pk);
+        return last_pk != nullptr && *last_pk == pk &&
+               element_offset <= cursor->last_element_offset;
     }
 
     void
@@ -908,9 +973,11 @@ class VirtualPKOffsetMap : public OffsetMap {
     }
 
     std::tuple<std::vector<int64_t>, std::vector<std::vector<int32_t>>, bool>
-    find_first_n_element(int64_t limit,
-                         const BitsetTypeView& element_bitset,
-                         const IArrayOffsets* array_offsets) const override {
+    find_first_n_element(
+        int64_t limit,
+        const BitsetTypeView& element_bitset,
+        const IArrayOffsets* array_offsets,
+        const std::optional<QueryIteratorCursor>& cursor) const override {
         // External tables don't support array fields, but implement
         // the interface for completeness.
         auto element_size = static_cast<int64_t>(element_bitset.size());
@@ -931,7 +998,8 @@ class VirtualPKOffsetMap : public OffsetMap {
             std::vector<int32_t> matching;
             for (int64_t e = first_elem; e < last_elem && hit_num < limit;
                  e++) {
-                if (e < element_size && !element_bitset[e]) {
+                if (e < element_size && !element_bitset[e] &&
+                    !is_skipped_by_cursor(doc, e - first_elem, cursor)) {
                     matching.push_back(static_cast<int32_t>(e - first_elem));
                     hit_num++;
                 }
@@ -954,6 +1022,24 @@ class VirtualPKOffsetMap : public OffsetMap {
     size_t
     memory_size() const override {
         return sizeof(VirtualPKOffsetMap);
+    }
+
+    bool
+    is_skipped_by_cursor(
+        int64_t doc,
+        int64_t element_offset,
+        const std::optional<QueryIteratorCursor>& cursor) const {
+        if (!cursor.has_value()) {
+            return false;
+        }
+        auto last_pk = std::get_if<int64_t>(&cursor->last_pk);
+        return last_pk != nullptr && *last_pk == (shifted_segment_id_ | doc) &&
+               element_offset <= cursor->last_element_offset;
+    }
+
+    bool
+    is_zero_storage() const override {
+        return true;
     }
 
  private:
@@ -1010,6 +1096,14 @@ class InsertRecordSealed {
     bool
     contain(const PkType& pk) const {
         return pk2offset_->contain(pk);
+    }
+
+    // Returns true when the owned pk2offset_ is zero-storage (currently only
+    // VirtualPKOffsetMap). Sealed search_pks uses this to short-circuit the
+    // sorted two-pointers path.
+    bool
+    pk2offset_is_zero_storage() const {
+        return pk2offset_ != nullptr && pk2offset_->is_zero_storage();
     }
 
     std::vector<SegOffset>
@@ -1285,7 +1379,7 @@ class InsertRecordGrowing {
         const Schema& schema,
         const int64_t size_per_chunk,
         const storage::MmapChunkDescriptorPtr mmap_descriptor = nullptr)
-        : timestamps_(size_per_chunk) {
+        : timestamps_(size_per_chunk), row_ids_(size_per_chunk) {
         std::optional<FieldId> pk_field_id = schema.get_primary_field_id();
         for (auto& field : schema) {
             auto field_id = field.first;
@@ -1412,15 +1506,25 @@ class InsertRecordGrowing {
         return timestamps_;
     }
 
+    const ConcurrentVector<int64_t>&
+    row_ids() const {
+        return row_ids_;
+    }
+
     void
     clear() {
         timestamps_.clear();
+        row_ids_.clear();
         timestamp_index_ = TimestampIndex();
         if (pk2offset_) {
             pk2offset_->clear();
         }
         reserved = 0;
-        data_.clear();
+        {
+            std::unique_lock<std::shared_mutex> lck(field_map_mutex_);
+            data_.clear();
+            valid_data_.clear();
+        }
         ack_responder_.clear();
     }
 
@@ -1550,6 +1654,7 @@ class InsertRecordGrowing {
                     field_id, size_per_chunk, scalar_mmap_descriptor);
                 return;
             }
+            case DataType::STRING:
             case DataType::VARCHAR:
             case DataType::TEXT: {
                 this->append_data<std::string>(
@@ -1588,12 +1693,10 @@ class InsertRecordGrowing {
     // get data without knowing the type
     VectorBase*
     get_data_base(FieldId field_id) const {
-        AssertInfo(data_.find(field_id) != data_.end(),
-                   "Cannot find field_data with field_id: " +
-                       std::to_string(field_id.get()));
-        AssertInfo(data_.at(field_id) != nullptr,
-                   "data_ at i is null" + std::to_string(field_id.get()));
-        return data_.at(field_id).get();
+        // Guard the field map against concurrent structural modification
+        // (e.g. append_field_meta during schema evolution rehashing data_).
+        std::shared_lock<std::shared_mutex> lck(field_map_mutex_);
+        return get_data_base_unlocked(field_id);
     }
 
     // get field data in given type, const version
@@ -1618,35 +1721,41 @@ class InsertRecordGrowing {
 
     ThreadSafeValidDataPtr
     get_valid_data(FieldId field_id) const {
-        AssertInfo(valid_data_.find(field_id) != valid_data_.end(),
-                   "Cannot find valid_data with field_id: " +
-                       std::to_string(field_id.get()));
-        AssertInfo(valid_data_.at(field_id) != nullptr,
-                   "valid_data_ at i is null" + std::to_string(field_id.get()));
-        return valid_data_.at(field_id);
+        // Guard the field map against concurrent structural modification
+        // (e.g. append_field_meta during schema evolution rehashing valid_data_).
+        std::shared_lock<std::shared_mutex> lck(field_map_mutex_);
+        return get_valid_data_unlocked(field_id);
     }
 
     bool
     is_data_exist(FieldId field_id) const {
+        std::shared_lock<std::shared_mutex> lck(field_map_mutex_);
         return data_.find(field_id) != data_.end();
     }
 
     bool
     is_valid_data_exist(FieldId field_id) const {
-        return valid_data_.find(field_id) != valid_data_.end();
+        std::shared_lock<std::shared_mutex> lck(field_map_mutex_);
+        return is_valid_data_exist_unlocked(field_id);
     }
 
     SpanBase
     get_span_base(FieldId field_id, int64_t chunk_id) const {
-        auto data = get_data_base(field_id);
-        if (is_valid_data_exist(field_id)) {
+        // Take the shared lock once for the whole span resolution instead of
+        // re-locking inside each of get_data_base / is_valid_data_exist /
+        // get_valid_data. This both removes the redundant lock churn on this
+        // hot path and gives a consistent snapshot of the field map across the
+        // three lookups.
+        std::shared_lock<std::shared_mutex> lck(field_map_mutex_);
+        auto data = get_data_base_unlocked(field_id);
+        if (is_valid_data_exist_unlocked(field_id)) {
             auto size = data->get_chunk_size(chunk_id);
             auto element_offset = data->get_element_offset(chunk_id);
-            return SpanBase(
-                data->get_chunk_data(chunk_id),
-                get_valid_data(field_id)->get_chunk_data(element_offset),
-                size,
-                data->get_element_size());
+            return SpanBase(data->get_chunk_data(chunk_id),
+                            get_valid_data_unlocked(field_id)->get_chunk_data(
+                                element_offset),
+                            size,
+                            data->get_element_size());
         }
         return data->get_span_base(chunk_id);
     }
@@ -1654,7 +1763,9 @@ class InsertRecordGrowing {
     // append a column of scalar type
     void
     append_valid_data(FieldId field_id) {
-        valid_data_.emplace(field_id, std::make_shared<ThreadSafeValidData>());
+        auto valid_data = std::make_shared<ThreadSafeValidData>();
+        std::unique_lock<std::shared_mutex> lck(field_map_mutex_);
+        valid_data_.emplace(field_id, std::move(valid_data));
     }
 
     // append a column of vector type
@@ -1666,14 +1777,16 @@ class InsertRecordGrowing {
                 const storage::MmapChunkDescriptorPtr mmap_descriptor) {
         static_assert(std::is_base_of_v<VectorTrait, VectorType>);
         bool use_mapping_storage = is_valid_data_exist(field_id);
-        data_.emplace(
-            field_id,
-            std::make_unique<ConcurrentVector<VectorType>>(
-                dim,
-                size_per_chunk,
-                mmap_descriptor,
-                use_mapping_storage ? get_valid_data(field_id) : nullptr,
-                use_mapping_storage));
+        // Resolve valid_data and build the column before taking the write lock
+        // so the shared-lock readers above are not nested inside the unique lock.
+        auto column = std::make_unique<ConcurrentVector<VectorType>>(
+            dim,
+            size_per_chunk,
+            mmap_descriptor,
+            use_mapping_storage ? get_valid_data(field_id) : nullptr,
+            use_mapping_storage);
+        std::unique_lock<std::shared_mutex> lck(field_map_mutex_);
+        data_.emplace(field_id, std::move(column));
     }
 
     // append a column of scalar or sparse float vector type
@@ -1684,26 +1797,28 @@ class InsertRecordGrowing {
                 const storage::MmapChunkDescriptorPtr mmap_descriptor) {
         static_assert(IsScalar<Type> || IsSparse<Type>);
         bool use_mapping_storage = is_valid_data_exist(field_id);
+        // Resolve valid_data and build the column before taking the write lock
+        // so the shared-lock readers above are not nested inside the unique lock.
+        std::unique_ptr<ConcurrentVector<Type>> column;
         if constexpr (IsSparse<Type>) {
-            data_.emplace(
-                field_id,
-                std::make_unique<ConcurrentVector<Type>>(
-                    size_per_chunk,
-                    mmap_descriptor,
-                    use_mapping_storage ? get_valid_data(field_id) : nullptr,
-                    use_mapping_storage));
+            column = std::make_unique<ConcurrentVector<Type>>(
+                size_per_chunk,
+                mmap_descriptor,
+                use_mapping_storage ? get_valid_data(field_id) : nullptr,
+                use_mapping_storage);
         } else {
-            data_.emplace(
-                field_id,
-                std::make_unique<ConcurrentVector<Type>>(
-                    size_per_chunk,
-                    mmap_descriptor,
-                    use_mapping_storage ? get_valid_data(field_id) : nullptr));
+            column = std::make_unique<ConcurrentVector<Type>>(
+                size_per_chunk,
+                mmap_descriptor,
+                use_mapping_storage ? get_valid_data(field_id) : nullptr);
         }
+        std::unique_lock<std::shared_mutex> lck(field_map_mutex_);
+        data_.emplace(field_id, std::move(column));
     }
 
     void
     drop_field_data(FieldId field_id) {
+        std::unique_lock<std::shared_mutex> lck(field_map_mutex_);
         data_.erase(field_id);
         valid_data_.erase(field_id);
     }
@@ -1720,6 +1835,7 @@ class InsertRecordGrowing {
 
  public:
     ConcurrentVector<Timestamp> timestamps_;
+    ConcurrentVector<int64_t> row_ids_;
     std::atomic<int64_t> reserved = 0;
     TimestampIndex timestamp_index_;
     std::unique_ptr<OffsetMap> pk2offset_;
@@ -1728,9 +1844,52 @@ class InsertRecordGrowing {
     AckResponder ack_responder_;
 
  private:
+    // Unlocked field-map lookups. Callers MUST already hold field_map_mutex_
+    // (at least shared). These let multi-lookup hot paths such as
+    // get_span_base resolve under a single lock acquisition.
+    VectorBase*
+    get_data_base_unlocked(FieldId field_id) const {
+        AssertInfo(data_.find(field_id) != data_.end(),
+                   "Cannot find field_data with field_id: " +
+                       std::to_string(field_id.get()));
+        AssertInfo(data_.at(field_id) != nullptr,
+                   "data_ at i is null" + std::to_string(field_id.get()));
+        return data_.at(field_id).get();
+    }
+
+    ThreadSafeValidDataPtr
+    get_valid_data_unlocked(FieldId field_id) const {
+        AssertInfo(valid_data_.find(field_id) != valid_data_.end(),
+                   "Cannot find valid_data with field_id: " +
+                       std::to_string(field_id.get()));
+        AssertInfo(valid_data_.at(field_id) != nullptr,
+                   "valid_data_ at i is null" + std::to_string(field_id.get()));
+        return valid_data_.at(field_id);
+    }
+
+    bool
+    is_valid_data_exist_unlocked(FieldId field_id) const {
+        return valid_data_.find(field_id) != valid_data_.end();
+    }
+
     std::unordered_map<FieldId, std::unique_ptr<VectorBase>> data_{};
     std::unordered_map<FieldId, ThreadSafeValidDataPtr> valid_data_{};
     mutable std::shared_mutex shared_mutex_{};
+    // Protects the structure of data_ / valid_data_ against concurrent
+    // rehash: structural writes (append_*/drop/clear during schema evolution)
+    // take it unique, lookups (get_data_base/get_valid_data/...) take it shared.
+    // Kept separate from shared_mutex_ so frequent reads do not contend with
+    // pk inserts.
+    //
+    // PRECONDITION: this lock only protects the map structure, NOT element
+    // lifetime. The raw VectorBase* returned by get_data_base() escapes the
+    // shared lock, so callers rely on no concurrent erase()/clear() of the
+    // entry they hold (append-only mutation is safe). Today that holds because
+    // drop_field_data() has no callers and clear() is never called
+    // concurrently with reads; whoever adds drop-field support (e.g. schema
+    // evolution dropping fields) must also fence element lifetime, this lock
+    // alone will not save the escaped pointers.
+    mutable std::shared_mutex field_map_mutex_{};
 };
 
 // Keep the original template API via alias

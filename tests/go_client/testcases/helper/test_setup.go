@@ -1,16 +1,23 @@
 package helper
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
-	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
-	client "github.com/milvus-io/milvus/client/v2/milvusclient"
-	"github.com/milvus-io/milvus/pkg/v2/log"
+	client "github.com/milvus-io/milvus/client/v3/milvusclient"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
 	"github.com/milvus-io/milvus/tests/go_client/base"
 	"github.com/milvus-io/milvus/tests/go_client/common"
 )
@@ -64,26 +71,26 @@ func GetTEIModelDim() int {
 }
 
 func parseLogConfig() {
-	log.Info("Parser Log Level", zap.String("logLevel", *logLevel))
+	mlog.Info(context.TODO(), "Parser Log Level", mlog.String("logLevel", *logLevel))
 	switch *logLevel {
 	case "debug", "DEBUG", "Debug":
-		log.SetLevel(zap.DebugLevel)
+		mlog.SetLevel(mlog.DebugLevel)
 	case "info", "INFO", "Info":
-		log.SetLevel(zap.InfoLevel)
+		mlog.SetLevel(mlog.InfoLevel)
 	case "warn", "WARN", "Warn":
-		log.SetLevel(zap.WarnLevel)
+		mlog.SetLevel(mlog.WarnLevel)
 	case "error", "ERROR", "Error":
-		log.SetLevel(zap.ErrorLevel)
+		mlog.SetLevel(mlog.ErrorLevel)
 	default:
-		log.SetLevel(zap.InfoLevel)
+		mlog.SetLevel(mlog.InfoLevel)
 	}
 }
 
 func setup() {
-	log.Info("Start to setup all......")
+	mlog.Info(context.TODO(), "Start to setup all......")
 	flag.Parse()
 	parseLogConfig()
-	log.Info("Parser Milvus address", zap.String("address", *addr))
+	mlog.Info(context.TODO(), "Parser Milvus address", mlog.String("address", *addr))
 
 	// set default milvus client config
 	setDefaultClientConfig(&client.ClientConfig{Address: *addr})
@@ -91,12 +98,12 @@ func setup() {
 
 // Teardown teardown
 func teardown() {
-	log.Info("Start to tear down all.....")
+	mlog.Info(context.TODO(), "Start to tear down all.....")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*common.DefaultTimeout)
 	defer cancel()
 	mc, err := base.NewMilvusClient(ctx, &client.ClientConfig{Address: GetAddr(), Username: GetUser(), Password: GetPassword()})
 	if err != nil {
-		log.Error("teardown failed to connect milvus with error", zap.Error(err))
+		mlog.Error(context.TODO(), "teardown failed to connect milvus with error", mlog.Err(err))
 		return
 	}
 	defer mc.Close(ctx)
@@ -115,11 +122,85 @@ func teardown() {
 	}
 }
 
+// managementBaseURL returns the Milvus management API base URL (port 9091)
+// derived from the gRPC addr flag (e.g. http://host:19530 -> http://host:9091).
+func managementBaseURL() string {
+	host := ""
+	rawAddr := strings.TrimSpace(*addr)
+	if rawAddr != "" {
+		parseAddr := rawAddr
+		if !strings.Contains(rawAddr, "://") {
+			parseAddr = "http://" + rawAddr
+		}
+		if u, err := url.Parse(parseAddr); err == nil {
+			host = u.Hostname()
+		}
+	}
+	if host == "" {
+		host = "localhost"
+	}
+	return fmt.Sprintf("http://%s", net.JoinHostPort(host, "9091"))
+}
+
+// AlterServerConfig changes a Milvus server config via the management HTTP API.
+// It returns the previous value so the caller can restore it.
+// If the management API is unreachable, it returns ("", error).
+func AlterServerConfig(key, value string) (string, error) {
+	// Get current value first
+	prev, _ := GetServerConfig(key)
+
+	body, _ := json.Marshal(map[string]string{"key": key, "value": value})
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	resp, err := httpClient.Post(managementBaseURL()+"/management/config/alter",
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("management API unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("alter config failed (HTTP %d): %s", resp.StatusCode, string(respBody))
+	}
+	mlog.Info(context.TODO(), "AlterServerConfig", mlog.String("key", key), mlog.String("value", value), mlog.String("prev", prev))
+	return prev, nil
+}
+
+// GetServerConfig reads a config value from the management API.
+func GetServerConfig(key string) (string, error) {
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	resp, err := httpClient.Get(managementBaseURL() + "/management/config/get?keys=" + url.QueryEscape(key))
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("get config failed (HTTP %d): %s", resp.StatusCode, string(respBody))
+	}
+	var result struct {
+		Configs []struct {
+			Key   string `json:"key"`
+			Value string `json:"value"`
+			Error string `json:"error"`
+		} `json:"configs"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", fmt.Errorf("decode config response: %w", err)
+	}
+	if len(result.Configs) == 0 {
+		return "", fmt.Errorf("config %q not found", key)
+	}
+	if result.Configs[0].Error != "" {
+		return "", fmt.Errorf("get config %q failed: %s", key, result.Configs[0].Error)
+	}
+	return result.Configs[0].Value, nil
+}
+
 func RunTests(m *testing.M) int {
 	setup()
 	code := m.Run()
 	if code != 0 {
-		log.Error("Tests failed and exited", zap.Int("code", code))
+		mlog.Error(context.TODO(), "Tests failed and exited", mlog.Int("code", code))
 	}
 	teardown()
 	return code

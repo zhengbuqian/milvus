@@ -24,15 +24,15 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/msgpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/mocks/util/mock_segcore"
 	"github.com/milvus-io/milvus/internal/querynodev2/delegator"
 	"github.com/milvus-io/milvus/internal/querynodev2/segments"
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgdispatcher"
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgstream"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/mq/msgdispatcher"
+	"github.com/milvus-io/milvus/pkg/v3/mq/msgstream"
+	"github.com/milvus-io/milvus/pkg/v3/proto/querypb"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
 )
 
 type PipelineTestSuite struct {
@@ -122,11 +122,13 @@ func (suite *PipelineTestSuite) TestBasic() {
 			}
 		})
 
-	suite.delegator.EXPECT().ProcessDelete(mock.Anything, mock.Anything).Run(
-		func(deleteData []*delegator.DeleteData, ts uint64) {
-			for _, data := range deleteData {
-				for _, pk := range data.PrimaryKeys {
-					suite.True(lo.Contains(suite.deletePKs, pk.GetValue().(int64)))
+	suite.delegator.EXPECT().ProcessDeleteBatches(mock.Anything).Run(
+		func(batches []delegator.DeleteBatch) {
+			for _, batch := range batches {
+				for _, data := range batch.Data {
+					for _, pk := range data.PrimaryKeys {
+						suite.True(lo.Contains(suite.deletePKs, pk.GetValue().(int64)))
+					}
 				}
 			}
 		})

@@ -19,10 +19,9 @@ package task
 import (
 	"time"
 
-	"go.uber.org/zap"
-
 	"github.com/milvus-io/milvus/internal/datacoord/session"
-	"github.com/milvus-io/milvus/pkg/v2/taskcommon"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/taskcommon"
 )
 
 type Task interface {
@@ -39,11 +38,11 @@ type Task interface {
 	DropTaskOnWorker(cluster session.Cluster)
 }
 
-func WrapTaskLog(task Task, fields ...zap.Field) []zap.Field {
-	res := []zap.Field{
-		zap.Int64("ID", task.GetTaskID()),
-		zap.String("type", task.GetTaskType()),
-		zap.String("state", task.GetTaskState().String()),
+func WrapTaskLog(task Task, fields ...mlog.Field) []mlog.Field {
+	res := []mlog.Field{
+		mlog.Int64("ID", task.GetTaskID()),
+		mlog.String("type", task.GetTaskType()),
+		mlog.String("state", task.GetTaskState().String()),
 	}
 	res = append(res, fields...)
 	return res

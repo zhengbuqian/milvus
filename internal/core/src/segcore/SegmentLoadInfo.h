@@ -30,6 +30,8 @@
 #include "common/Schema.h"
 #include "common/Types.h"
 #include "common/protobuf_utils.h"
+#include "index/IndexFactory.h"
+#include "index/Meta.h"
 #include "milvus-storage/column_groups.h"
 #include "pb/common.pb.h"
 #include "pb/index_cgo_msg.pb.h"
@@ -84,6 +86,12 @@ struct LoadDiff {
     // Indexes that need to be dropped (field_id set)
     std::set<FieldId> indexes_to_drop;
 
+    // JSON indexes that need to be dropped, keyed by field and nested path.
+    // JSON fields may have multiple indexes, so a field-only drop loses the
+    // identity needed to preserve sibling paths.
+    std::unordered_map<FieldId, std::unordered_set<std::string>>
+        json_indexes_to_drop;
+
     // Field data that need to be dropped (field_id set)
     // Only populated when both current and new use binlog mode
     std::unordered_set<FieldId> field_data_to_drop;
@@ -97,6 +105,19 @@ struct LoadDiff {
     std::unordered_map<FieldId,
                        std::shared_ptr<proto::indexcgo::LoadTextIndexInfo>>
         text_indexes_to_load;
+
+    // JSON stats that need to be loaded from pre-built files
+    std::unordered_map<FieldId,
+                       std::shared_ptr<proto::indexcgo::LoadJsonKeyIndexInfo>>
+        json_stats_to_load;
+
+    // JSON stats that need to replace existing stats
+    std::unordered_map<FieldId,
+                       std::shared_ptr<proto::indexcgo::LoadJsonKeyIndexInfo>>
+        json_stats_to_replace;
+
+    // JSON stats that need to be dropped
+    std::unordered_set<FieldId> json_stats_to_drop;
 
     // Text fields that need text indexes created from raw data
     std::unordered_set<FieldId> text_indexes_to_create;
@@ -121,8 +142,10 @@ struct LoadDiff {
                !column_groups_to_lazyload.empty() ||
                !column_groups_to_lazyreplace.empty() ||
                !fields_to_reload.empty() || !indexes_to_drop.empty() ||
-               !field_data_to_drop.empty() || !fields_to_fill_default.empty() ||
-               !text_indexes_to_load.empty() ||
+               !json_indexes_to_drop.empty() || !field_data_to_drop.empty() ||
+               !fields_to_fill_default.empty() ||
+               !text_indexes_to_load.empty() || !json_stats_to_load.empty() ||
+               !json_stats_to_replace.empty() || !json_stats_to_drop.empty() ||
                !text_indexes_to_create.empty() || manifest_updated ||
                load_external_manifest;
     }
@@ -273,6 +296,19 @@ struct LoadDiff {
         }
         oss << "], ";
 
+        // json_indexes_to_drop
+        oss << "json_indexes_to_drop=[";
+        first = true;
+        for (const auto& [field_id, paths] : json_indexes_to_drop) {
+            for (const auto& path : paths) {
+                if (!first)
+                    oss << ", ";
+                first = false;
+                oss << field_id.get() << ":" << path;
+            }
+        }
+        oss << "], ";
+
         // field_data_to_drop
         oss << "field_data_to_drop=[";
         first = true;
@@ -299,6 +335,39 @@ struct LoadDiff {
         oss << "text_indexes_to_load=[";
         first = true;
         for (const auto& [field_id, stats] : text_indexes_to_load) {
+            if (!first)
+                oss << ", ";
+            first = false;
+            oss << field_id.get();
+        }
+        oss << "], ";
+
+        // json_stats_to_load
+        oss << "json_stats_to_load=[";
+        first = true;
+        for (const auto& [field_id, stats] : json_stats_to_load) {
+            if (!first)
+                oss << ", ";
+            first = false;
+            oss << field_id.get();
+        }
+        oss << "], ";
+
+        // json_stats_to_replace
+        oss << "json_stats_to_replace=[";
+        first = true;
+        for (const auto& [field_id, stats] : json_stats_to_replace) {
+            if (!first)
+                oss << ", ";
+            first = false;
+            oss << field_id.get();
+        }
+        oss << "], ";
+
+        // json_stats_to_drop
+        oss << "json_stats_to_drop=[";
+        first = true;
+        for (const auto& field_id : json_stats_to_drop) {
             if (!first)
                 oss << ", ";
             first = false;
@@ -367,14 +436,20 @@ class SegmentLoadInfo {
 
     /**
      * @brief Copy constructor
-     * @note Rebuilds cache instead of copying (LoadIndexInfo is not copyable)
+     * @note Reuses converted field-index cache; binlog pointers are rebuilt for
+     *       this instance's protobuf storage.
      */
     SegmentLoadInfo(const SegmentLoadInfo& other)
         : info_(other.info_),
           schema_(other.schema_),
+          converted_field_index_cache_(other.converted_field_index_cache_),
+          field_index_id_cache_(other.field_index_id_cache_),
+          json_index_path_cache_(other.json_index_path_cache_),
+          field_index_has_raw_data_(other.field_index_has_raw_data_),
+          fields_filled_with_default_(other.fields_filled_with_default_),
           column_groups_(other.column_groups_),
           created_text_indexes_(other.created_text_indexes_) {
-        BuildCache();
+        BuildFieldBinlogCache();
     }
 
     /**
@@ -383,9 +458,13 @@ class SegmentLoadInfo {
     SegmentLoadInfo(SegmentLoadInfo&& other) noexcept
         : info_(std::move(other.info_)),
           schema_(std::move(other.schema_)),
-          converted_index_infos_(std::move(other.converted_index_infos_)),
           converted_field_index_cache_(
               std::move(other.converted_field_index_cache_)),
+          field_index_id_cache_(std::move(other.field_index_id_cache_)),
+          json_index_path_cache_(std::move(other.json_index_path_cache_)),
+          field_index_has_raw_data_(std::move(other.field_index_has_raw_data_)),
+          fields_filled_with_default_(
+              std::move(other.fields_filled_with_default_)),
           field_binlog_cache_(std::move(other.field_binlog_cache_)),
           column_groups_(std::move(other.column_groups_)),
           created_text_indexes_(std::move(other.created_text_indexes_)) {
@@ -393,16 +472,22 @@ class SegmentLoadInfo {
 
     /**
      * @brief Copy assignment operator
-     * @note Rebuilds cache instead of copying (LoadIndexInfo is not copyable)
+     * @note Reuses converted field-index cache; binlog pointers are rebuilt for
+     *       this instance's protobuf storage.
      */
     SegmentLoadInfo&
     operator=(const SegmentLoadInfo& other) {
         if (this != &other) {
             info_ = other.info_;
             schema_ = other.schema_;
+            converted_field_index_cache_ = other.converted_field_index_cache_;
+            field_index_id_cache_ = other.field_index_id_cache_;
+            json_index_path_cache_ = other.json_index_path_cache_;
+            field_index_has_raw_data_ = other.field_index_has_raw_data_;
             column_groups_ = other.column_groups_;
+            fields_filled_with_default_ = other.fields_filled_with_default_;
             created_text_indexes_ = other.created_text_indexes_;
-            BuildCache();
+            BuildFieldBinlogCache();
         }
         return *this;
     }
@@ -415,9 +500,14 @@ class SegmentLoadInfo {
         if (this != &other) {
             info_ = std::move(other.info_);
             schema_ = std::move(other.schema_);
-            converted_index_infos_ = std::move(other.converted_index_infos_);
             converted_field_index_cache_ =
                 std::move(other.converted_field_index_cache_);
+            field_index_id_cache_ = std::move(other.field_index_id_cache_);
+            json_index_path_cache_ = std::move(other.json_index_path_cache_);
+            field_index_has_raw_data_ =
+                std::move(other.field_index_has_raw_data_);
+            fields_filled_with_default_ =
+                std::move(other.fields_filled_with_default_);
             field_binlog_cache_ = std::move(other.field_binlog_cache_);
             column_groups_ = std::move(other.column_groups_);
             created_text_indexes_ = std::move(other.created_text_indexes_);
@@ -515,6 +605,13 @@ class SegmentLoadInfo {
     [[nodiscard]] bool
     GetUseTakeForOutput() const {
         return info_.use_take_for_output();
+    }
+
+    [[nodiscard]] bool
+    HasFieldInSchema(FieldId field_id) const {
+        return field_id.get() < START_USER_FIELDID ||
+               schema_->get_fields().find(field_id) !=
+                   schema_->get_fields().end();
     }
 
     [[nodiscard]] int64_t
@@ -707,11 +804,32 @@ class SegmentLoadInfo {
     // ==================== Column Groups Cache ====================
 
     /**
-     * @brief Get column groups from manifest
+     * @brief Get column groups from manifest (lazy-cached, thread-compatible)
      * @return Shared pointer to ColumnGroups, nullptr if manifest is empty
+     *
+     * The cache is populated on first access. Callers are responsible for
+     * serializing concurrent first-time calls on the same instance.
+     * ChunkedSegmentSealedImpl publishes loaded manifest snapshots only after
+     * this cache is initialized, so query paths only read the cached value via
+     * HasManifestColumn.
      */
     [[nodiscard]] std::shared_ptr<milvus_storage::api::ColumnGroups>
-    GetColumnGroups();
+    GetColumnGroups() const;
+
+    // Checks the already cached manifest column groups. It intentionally does
+    // not parse the manifest on demand because query paths call this method.
+    [[nodiscard]] bool
+    HasManifestColumn(const std::string& column_name) const;
+
+    // Reuses manifest column groups when another load info points at the same
+    // manifest path.
+    void
+    InheritCachedColumnGroupsFrom(const SegmentLoadInfo& source) {
+        if (source.HasManifestPath() &&
+            source.GetManifestPath() == GetManifestPath()) {
+            column_groups_ = source.column_groups_;
+        }
+    }
 
     /**
      * @brief Pre-populate the column group cache without parsing a manifest
@@ -822,6 +940,37 @@ class SegmentLoadInfo {
         return info_.jsonkeystatslogs();
     }
 
+    // ==================== Default-Filled Fields Tracking ====================
+
+    void
+    SetFieldFilledWithDefault(FieldId field_id) {
+        fields_filled_with_default_.insert(field_id);
+    }
+
+    void
+    ClearFieldFilledWithDefault(FieldId field_id) {
+        fields_filled_with_default_.erase(field_id);
+    }
+
+    [[nodiscard]] bool
+    IsFieldFilledWithDefault(FieldId field_id) const {
+        return fields_filled_with_default_.find(field_id) !=
+               fields_filled_with_default_.end();
+    }
+
+    [[nodiscard]] const std::set<FieldId>&
+    GetFieldsFilledWithDefault() const {
+        return fields_filled_with_default_;
+    }
+
+    void
+    SetFieldsFilledWithDefault(const std::set<FieldId>& field_ids) {
+        fields_filled_with_default_ = field_ids;
+    }
+
+    [[nodiscard]] std::set<FieldId>
+    GetDefaultFilledFieldsForNewInfo(const SegmentLoadInfo& new_info) const;
+
     // ==================== Created Text Indexes Tracking ====================
 
     void
@@ -914,6 +1063,53 @@ class SegmentLoadInfo {
         BuildCache();
     }
 
+    void
+    ReplaceSchemaForReopen(SchemaPtr schema) {
+        if (!schema) {
+            return;
+        }
+        schema_ = std::move(schema);
+        PruneRuntimeStateNotInSchema();
+    }
+
+    void
+    CompactRuntimeInfoForManifest() {
+        if (!HasManifestPath()) {
+            return;
+        }
+        if (info_.index_infos_size() == 0 && info_.binlog_paths_size() == 0 &&
+            info_.statslogs_size() == 0 && info_.deltalogs_size() == 0 &&
+            info_.bm25logs_size() == 0 &&
+            converted_field_index_cache_.empty()) {
+            return;
+        }
+
+        ProtoType compact;
+        compact.set_segmentid(info_.segmentid());
+        compact.set_partitionid(info_.partitionid());
+        compact.set_collectionid(info_.collectionid());
+        compact.set_dbid(info_.dbid());
+        compact.set_flush_time(info_.flush_time());
+        compact.set_num_of_rows(info_.num_of_rows());
+        *compact.mutable_compactionfrom() = info_.compactionfrom();
+        compact.set_segment_size(info_.segment_size());
+        compact.set_insert_channel(info_.insert_channel());
+        compact.set_readableversion(info_.readableversion());
+        compact.set_storageversion(info_.storageversion());
+        compact.set_is_sorted(info_.is_sorted());
+        *compact.mutable_textstatslogs() = info_.textstatslogs();
+        *compact.mutable_jsonkeystatslogs() = info_.jsonkeystatslogs();
+        compact.set_priority(info_.priority());
+        compact.set_manifest_path(info_.manifest_path());
+        compact.set_use_take_for_output(info_.use_take_for_output());
+        compact.set_estimated_bytes_per_row(info_.estimated_bytes_per_row());
+        compact.set_commit_timestamp(info_.commit_timestamp());
+        info_.Swap(&compact);
+        field_binlog_cache_.clear();
+        decltype(converted_field_index_cache_)().swap(
+            converted_field_index_cache_);
+    }
+
     /**
      * @brief Check if the SegmentLoadInfo is empty/unset
      */
@@ -966,9 +1162,43 @@ class SegmentLoadInfo {
         const proto::segcore::TextIndexStats& text_index_stats,
         FieldId field_id) const;
 
+    [[nodiscard]] std::shared_ptr<proto::indexcgo::LoadJsonKeyIndexInfo>
+    ConvertJsonKeyStatsToLoadJsonKeyIndexInfo(
+        const proto::segcore::JsonKeyStats& json_key_stats,
+        FieldId field_id) const;
+
  private:
     void
-    BuildCache() {
+    PruneRuntimeStateNotInSchema() {
+        auto prune_map = [this](auto& values) {
+            for (auto it = values.begin(); it != values.end();) {
+                if (!HasFieldInSchema(it->first)) {
+                    it = values.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        };
+        auto prune_set = [this](auto& values) {
+            for (auto it = values.begin(); it != values.end();) {
+                if (!HasFieldInSchema(*it)) {
+                    it = values.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        };
+
+        prune_map(converted_field_index_cache_);
+        prune_map(field_index_id_cache_);
+        prune_map(json_index_path_cache_);
+        prune_set(field_index_has_raw_data_);
+        prune_set(fields_filled_with_default_);
+        prune_set(created_text_indexes_);
+    }
+
+    void
+    BuildFieldBinlogCache() {
         field_binlog_cache_.clear();
         // Build binlog cache
         for (int i = 0; i < info_.binlog_paths_size(); i++) {
@@ -976,23 +1206,57 @@ class SegmentLoadInfo {
             auto field_id = FieldId(binlog.fieldid());
             field_binlog_cache_[field_id] = &binlog;
         }
+    }
+
+    void
+    BuildCache() {
+        BuildFieldBinlogCache();
 
         // Convert index infos to LoadIndexInfo and build per-field cache
-        converted_index_infos_.clear();
         converted_field_index_cache_.clear();
+        field_index_id_cache_.clear();
+        json_index_path_cache_.clear();
         field_index_has_raw_data_.clear();
         for (int i = 0; i < info_.index_infos_size(); i++) {
             const auto& index_info = info_.index_infos(i);
             if (index_info.index_file_paths_size() == 0) {
                 continue;
             }
+            auto field_id = FieldId(index_info.fieldid());
+            if (!HasFieldInSchema(field_id)) {
+                continue;
+            }
+            field_index_id_cache_[field_id].push_back(index_info.indexid());
             auto load_index_info = ConvertFieldIndexInfoToLoadIndexInfo(
                 &index_info, info_.segmentid());
-            converted_index_infos_.push_back(load_index_info);
-            auto field_id = FieldId(index_info.fieldid());
+            auto index_type_it =
+                load_index_info.index_params.find(milvus::index::INDEX_TYPE);
+            auto needs_file_context =
+                !IsVectorDataType(load_index_info.field_type) &&
+                index_type_it != load_index_info.index_params.end() &&
+                index_type_it->second == milvus::index::HYBRID_INDEX_TYPE;
+            if (!needs_file_context) {
+                load_index_info.load_resource_request =
+                    milvus::index::IndexFactory::GetInstance()
+                        .IndexLoadResource(load_index_info.field_type,
+                                           load_index_info.element_type,
+                                           load_index_info.index_engine_version,
+                                           load_index_info.index_size,
+                                           load_index_info.index_params,
+                                           load_index_info.enable_mmap,
+                                           load_index_info.num_rows,
+                                           load_index_info.dim);
+            }
             // Check if index has raw data before moving
             if (CheckIndexHasRawData(load_index_info)) {
                 field_index_has_raw_data_.insert(field_id);
+            }
+            if (load_index_info.field_type == DataType::JSON) {
+                auto path_it = load_index_info.index_params.find(JSON_PATH);
+                if (path_it != load_index_info.index_params.end()) {
+                    json_index_path_cache_[field_id][index_info.indexid()] =
+                        path_it->second;
+                }
             }
             converted_field_index_cache_[field_id].push_back(
                 std::move(load_index_info));
@@ -1017,15 +1281,30 @@ class SegmentLoadInfo {
     void
     ComputeDiffTextIndexes(LoadDiff& diff, SegmentLoadInfo& new_info);
 
+    void
+    ComputeDiffJsonKeyStats(LoadDiff& diff, SegmentLoadInfo& new_info);
+
+    [[nodiscard]] std::set<FieldId>
+    CollectDataFields() const;
+
     ProtoType info_;
 
     SchemaPtr schema_;
 
-    std::vector<LoadIndexInfo> converted_index_infos_;
-
     // Cache for quick field -> converted LoadIndexInfo lookup
     std::unordered_map<FieldId, std::vector<LoadIndexInfo>>
         converted_field_index_cache_;
+
+    // Lightweight runtime identity for current loaded indexes. Manifest mode
+    // can drop converted_field_index_cache_ after load, but reopen diff still
+    // needs to know which index ids are already present per field.
+    std::unordered_map<FieldId, std::vector<int64_t>> field_index_id_cache_;
+
+    // Lightweight JSON index identity retained after manifest load-info
+    // compaction so reopen can drop one nested path without affecting sibling
+    // indexes on the same JSON field.
+    std::unordered_map<FieldId, std::unordered_map<int64_t, std::string>>
+        json_index_path_cache_;
 
     // set of field ids that corresponding index has raw data
     std::set<FieldId> field_index_has_raw_data_;
@@ -1036,8 +1315,10 @@ class SegmentLoadInfo {
     // Cache for quick field -> binlog lookup
     std::map<FieldId, const proto::segcore::FieldBinlog*> field_binlog_cache_;
 
-    // Cache for column groups metadata (used with manifest mode)
-    std::shared_ptr<milvus_storage::api::ColumnGroups> column_groups_;
+    // Cache for column groups metadata (used with manifest mode). Mutable so
+    // GetColumnGroups() can be const — the cache is a memoization of an
+    // immutable manifest path.
+    mutable std::shared_ptr<milvus_storage::api::ColumnGroups> column_groups_;
 
     // Field IDs where text indexes were created from raw data (not loaded from files)
     // These should NOT be re-loaded in diff computation

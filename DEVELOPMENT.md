@@ -89,7 +89,7 @@ The following specification (either physical or virtual machine resources) is re
 | Go | 1.21 | Required. Install from https://go.dev/dl/ |
 | CMake | 3.26 | Auto-installed by install_deps.sh |
 | Conan | 2.25.1 | Auto-installed by install_deps.sh |
-| Rust | 1.89 | Auto-installed by install_deps.sh |
+| Rust | 1.92 | Auto-installed by install_deps.sh |
 
 ### Compiler Setup
 
@@ -288,6 +288,10 @@ docker compose -f docker-compose-apple-silicon.yml up -d
 cd ../../../
 make unittest
 ```
+
+The Apple Silicon compose file uses the Milvus Harbor Docker Hub proxy for
+Pulsar by default. To pull Pulsar directly from Docker Hub instead, set
+`PULSAR_IMAGE=milvusdb/pulsar:v2.8.2-m1`.
 
 For others:
 

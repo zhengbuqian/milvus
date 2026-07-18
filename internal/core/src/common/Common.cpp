@@ -22,6 +22,7 @@
 #include "gflags/gflags.h"
 #include "glog/logging.h"
 #include "log/Log.h"
+#include "storage/EntryStreamUtils.h"
 #include "tantivy-binding.h"
 
 namespace milvus {
@@ -33,6 +34,9 @@ std::atomic<int64_t> DELETE_DUMP_BATCH_SIZE(DEFAULT_DELETE_DUMP_BATCH_SIZE);
 std::atomic<bool> ENABLE_LATEST_DELETE_SNAPSHOT_OPTIMIZATION(
     DEFAULT_ENABLE_LATEST_DELETE_SNAPSHOT_OPTIMIZATION);
 std::atomic<bool> OPTIMIZE_EXPR_ENABLED(DEFAULT_OPTIMIZE_EXPR_ENABLED);
+std::atomic<bool> ENABLE_DRIVER_PREFETCH(DEFAULT_ENABLE_DRIVER_PREFETCH);
+
+std::atomic<bool> JSON_KEY_STATS_ENABLED(DEFAULT_JSON_KEY_STATS_ENABLED);
 
 std::atomic<bool> GROWING_JSON_KEY_STATS_ENABLED(
     DEFAULT_GROWING_JSON_KEY_STATS_ENABLED);
@@ -45,6 +49,17 @@ void
 SetIndexSliceSize(const int64_t size) {
     FILE_SLICE_SIZE.store(size << 20);
     LOG_INFO("set config index slice size (byte): {}", FILE_SLICE_SIZE.load());
+}
+
+void
+SetLoadTransientBudgetBytes(int64_t bytes) {
+    if (bytes < 0) {
+        LOG_WARN("ignore invalid load transient budget bytes: {}", bytes);
+        return;
+    }
+    storage::TransientMemoryBudget::SetLoadTransientBudgetBytes(
+        static_cast<size_t>(bytes));
+    LOG_INFO("set load transient budget bytes: {}", bytes);
 }
 
 void
@@ -66,6 +81,20 @@ SetDefaultOptimizeExprEnable(bool val) {
     OPTIMIZE_EXPR_ENABLED.store(val);
     LOG_INFO("set default optimize expr enabled: {}",
              OPTIMIZE_EXPR_ENABLED.load());
+}
+
+void
+SetDefaultDriverPrefetchEnable(bool val) {
+    ENABLE_DRIVER_PREFETCH.store(val);
+    LOG_INFO("set default driver prefetch enabled: {}",
+             ENABLE_DRIVER_PREFETCH.load());
+}
+
+void
+SetDefaultJSONKeyStatsEnable(bool val) {
+    JSON_KEY_STATS_ENABLED.store(val);
+    LOG_INFO("set default json key stats enabled: {}",
+             JSON_KEY_STATS_ENABLED.load());
 }
 
 void

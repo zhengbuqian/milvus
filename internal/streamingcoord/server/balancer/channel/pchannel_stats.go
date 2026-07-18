@@ -3,9 +3,9 @@ package channel
 import (
 	"sync"
 
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/syncutil"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/types"
+	"github.com/milvus-io/milvus/pkg/v3/util/funcutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/syncutil"
 )
 
 var StaticPChannelStatsManager = syncutil.NewFuture[*PchannelStatsManager]()
@@ -33,6 +33,21 @@ type PchannelStatsManager struct {
 // WatchAtChannelCountChanged returns a channel that will be notified when the channel count changed.
 func (pm *PchannelStatsManager) WatchAtChannelCountChanged() *syncutil.VersionedListener {
 	return pm.n.Listen(syncutil.VersionedListenAtEarliest)
+}
+
+// PChannels returns pchannels that currently have vchannels.
+func (pm *PchannelStatsManager) PChannels() []string {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	pchannels := make([]string, 0, len(pm.stats))
+	for id, stat := range pm.stats {
+		if stat.VChannelCount() == 0 {
+			continue
+		}
+		pchannels = append(pchannels, id.Name)
+	}
+	return pchannels
 }
 
 // GetPChannelStats returns the stats of the pchannel.

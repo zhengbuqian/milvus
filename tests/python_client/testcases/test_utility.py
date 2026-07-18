@@ -543,8 +543,8 @@ class TestUtilityParams(TestcaseBase):
         self.utility_wrap.create_alias(old_collection_name, alias)
         self.utility_wrap.rename_collection(old_collection_name, alias,
                                             check_task=CheckTasks.err_res,
-                                            check_items={"err_code": 65535,
-                                                         "err_msg": f"cannot rename collection to an existing alias: {alias}"})
+                                            check_items={"err_code": 1601,
+                                                         "err_msg": f"alias and collection name conflict[database=default][alias={alias}]"})
 
     @pytest.mark.tags(CaseLabel.L1)
     def test_rename_collection_using_alias(self):
@@ -1142,7 +1142,7 @@ class TestUtilityBase(TestcaseBase):
         assert collection_w_2.aliases[0] == alias_1
 
     @pytest.mark.tags(CaseLabel.L2)
-    @pytest.mark.skip("move to test_milvus_client_v2_rename_back_old_collection")
+    @pytest.mark.skip("move to test_milvus_client_rename_back_old_collection")
     def test_rename_back_old_collection(self):
         """
         target: test rename collection function to single collection
@@ -1173,7 +1173,7 @@ class TestUtilityBase(TestcaseBase):
         assert collection_alias == collection_w.aliases
 
     @pytest.mark.tags(CaseLabel.L2)
-    @pytest.mark.skip("move to test_milvus_client_v2_rename_back_old_alias")
+    @pytest.mark.skip("move to test_milvus_client_rename_back_old_alias")
     def test_rename_back_old_alias(self):
         """
         target: test rename collection function to single collection
@@ -2077,5 +2077,4 @@ class TestUtilityFlushAll(TestcaseBase):
 
             res, _ = cw.query(f'{ct.default_int64_field_name} not in {delete_ids}')
             assert len(res) == ct.default_nb * 2 - delete_num
-
 

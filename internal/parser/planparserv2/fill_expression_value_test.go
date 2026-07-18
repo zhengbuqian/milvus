@@ -5,9 +5,9 @@ import (
 
 	"github.com/stretchr/testify/suite"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/planpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/planpb"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 type FillExpressionValueSuite struct {
@@ -186,6 +186,112 @@ func (s *FillExpressionValueSuite) TestUnaryRange() {
 	})
 }
 
+func (s *FillExpressionValueSuite) TestSpecialStringTemplate() {
+	schema := newTestSchema(true)
+	enableMatch(schema)
+	schemaH, err := typeutil.CreateSchemaHelper(schema)
+	s.NoError(err)
+
+	s.Run("like pattern", func() {
+		expr, err := ParseExpr(schemaH, `VarCharField like {pattern}`, map[string]*schemapb.TemplateValue{
+			"pattern": generateTemplateValue(schemapb.DataType_VarChar, "prefix%"),
+		})
+		s.NoError(err)
+		rangeExpr := expr.GetUnaryRangeExpr()
+		s.NotNil(rangeExpr)
+		s.Equal(planpb.OpType_PrefixMatch, rangeExpr.GetOp())
+		s.Equal("prefix", rangeExpr.GetValue().GetStringVal())
+	})
+
+	s.Run("regex pattern", func() {
+		expr, err := ParseExpr(schemaH, `VarCharField =~ {pattern}`, map[string]*schemapb.TemplateValue{
+			"pattern": generateTemplateValue(schemapb.DataType_VarChar, `prefix\d+`),
+		})
+		s.NoError(err)
+		rangeExpr := expr.GetUnaryRangeExpr()
+		s.NotNil(rangeExpr)
+		s.Equal(planpb.OpType_RegexMatch, rangeExpr.GetOp())
+		s.Equal(`prefix\d+`, rangeExpr.GetValue().GetStringVal())
+	})
+
+	s.Run("regex not match pattern", func() {
+		expr, err := ParseExpr(schemaH, `VarCharField !~ {pattern}`, map[string]*schemapb.TemplateValue{
+			"pattern": generateTemplateValue(schemapb.DataType_VarChar, `^prefix`),
+		})
+		s.NoError(err)
+		notExpr := expr.GetUnaryExpr()
+		s.NotNil(notExpr)
+		rangeExpr := notExpr.GetChild().GetUnaryRangeExpr()
+		s.NotNil(rangeExpr)
+		s.Equal(planpb.OpType_PrefixMatch, rangeExpr.GetOp())
+		s.Equal("prefix", rangeExpr.GetValue().GetStringVal())
+	})
+
+	s.Run("text match query", func() {
+		expr, err := ParseExpr(schemaH, `text_match(VarCharField, {query})`, map[string]*schemapb.TemplateValue{
+			"query": generateTemplateValue(schemapb.DataType_VarChar, "vector database"),
+		})
+		s.NoError(err)
+		rangeExpr := expr.GetUnaryRangeExpr()
+		s.NotNil(rangeExpr)
+		s.Equal(planpb.OpType_TextMatch, rangeExpr.GetOp())
+		s.Equal("vector database", rangeExpr.GetValue().GetStringVal())
+	})
+
+	s.Run("phrase match query", func() {
+		expr, err := ParseExpr(schemaH, `phrase_match(VarCharField, {query}, 1)`, map[string]*schemapb.TemplateValue{
+			"query": generateTemplateValue(schemapb.DataType_VarChar, "vector database"),
+		})
+		s.NoError(err)
+		rangeExpr := expr.GetUnaryRangeExpr()
+		s.NotNil(rangeExpr)
+		s.Equal(planpb.OpType_PhraseMatch, rangeExpr.GetOp())
+		s.Equal("vector database", rangeExpr.GetValue().GetStringVal())
+		s.Equal(int64(1), rangeExpr.GetExtraValues()[0].GetInt64Val())
+	})
+
+	s.Run("GIS WKT", func() {
+		expr, err := ParseExpr(schemaH, `st_contains(GeometryField, {wkt})`, map[string]*schemapb.TemplateValue{
+			"wkt": generateTemplateValue(schemapb.DataType_VarChar, "POINT(0 0)"),
+		})
+		s.NoError(err)
+		gisExpr := expr.GetGisfunctionFilterExpr()
+		s.NotNil(gisExpr)
+		s.Equal(planpb.GISFunctionFilterExpr_Contains, gisExpr.GetOp())
+		s.Equal("POINT(0 0)", gisExpr.GetWktString())
+	})
+
+	s.Run("ST_DWithin WKT", func() {
+		expr, err := ParseExpr(schemaH, `st_dwithin(GeometryField, {wkt}, 1.5)`, map[string]*schemapb.TemplateValue{
+			"wkt": generateTemplateValue(schemapb.DataType_VarChar, "POINT(0 0)"),
+		})
+		s.NoError(err)
+		gisExpr := expr.GetGisfunctionFilterExpr()
+		s.NotNil(gisExpr)
+		s.Equal(planpb.GISFunctionFilterExpr_DWithin, gisExpr.GetOp())
+		s.Equal("POINT(0 0)", gisExpr.GetWktString())
+		s.Equal(float64(1.5), gisExpr.GetDistance())
+	})
+
+	s.Run("extra parameters are still constants", func() {
+		s.assertInvalidExpr(schemaH, `VarCharField =~ {pattern}`, map[string]*schemapb.TemplateValue{
+			"pattern": generateTemplateValue(schemapb.DataType_Int64, int64(1)),
+		})
+		s.assertInvalidExpr(schemaH, `text_match(VarCharField, "vector database", minimum_should_match={n})`, map[string]*schemapb.TemplateValue{
+			"n": generateTemplateValue(schemapb.DataType_Int64, int64(1)),
+		})
+		s.assertInvalidExpr(schemaH, `phrase_match(VarCharField, "vector database", {slop})`, map[string]*schemapb.TemplateValue{
+			"slop": generateTemplateValue(schemapb.DataType_Int64, int64(1)),
+		})
+		s.assertInvalidExpr(schemaH, `st_dwithin(GeometryField, "POINT(0 0)", {distance})`, map[string]*schemapb.TemplateValue{
+			"distance": generateTemplateValue(schemapb.DataType_Double, float64(1.5)),
+		})
+		s.assertInvalidExpr(schemaH, `random_sample({ratio})`, map[string]*schemapb.TemplateValue{
+			"ratio": generateTemplateValue(schemapb.DataType_Double, float64(0.1)),
+		})
+	})
+}
+
 func (s *FillExpressionValueSuite) TestBinaryRange() {
 	s.Run("normal case", func() {
 		testcases := []testcase{
@@ -289,6 +395,21 @@ func (s *FillExpressionValueSuite) TestBinaryArithOpEvalRange() {
 			{`array_length(ArrayField) > {length}`, map[string]*schemapb.TemplateValue{
 				"length": generateTemplateValue(schemapb.DataType_Int64, int64(3)),
 			}},
+			// bitwise operators with placeholder operand / value
+			{`(Int64Field & {mask}) == {target}`, map[string]*schemapb.TemplateValue{
+				"mask":   generateTemplateValue(schemapb.DataType_Int64, int64(12)),
+				"target": generateTemplateValue(schemapb.DataType_Int64, int64(4)),
+			}},
+			{`(Int64Field | {mask}) != 0`, map[string]*schemapb.TemplateValue{
+				"mask": generateTemplateValue(schemapb.DataType_Int64, int64(2)),
+			}},
+			{`(Int64Field ^ {mask}) < {target}`, map[string]*schemapb.TemplateValue{
+				"mask":   generateTemplateValue(schemapb.DataType_Int64, int64(7)),
+				"target": generateTemplateValue(schemapb.DataType_Int64, int64(1000)),
+			}},
+			{`(Int64Field & 4) == {target}`, map[string]*schemapb.TemplateValue{
+				"target": generateTemplateValue(schemapb.DataType_Int64, int64(4)),
+			}},
 		}
 
 		schemaH := newTestSchemaHelper(s.T())
@@ -335,6 +456,21 @@ func (s *FillExpressionValueSuite) TestBinaryArithOpEvalRange() {
 			}},
 			{`array_length(ArrayField) == {length}`, map[string]*schemapb.TemplateValue{
 				"length": generateTemplateValue(schemapb.DataType_String, "abc"),
+			}},
+			// bitwise operators reject non-integer placeholder operand / value
+			{`(Int64Field & {mask}) == {target}`, map[string]*schemapb.TemplateValue{
+				"mask":   generateTemplateValue(schemapb.DataType_String, "abc"),
+				"target": generateTemplateValue(schemapb.DataType_Int64, int64(4)),
+			}},
+			{`(Int64Field & {mask}) == {target}`, map[string]*schemapb.TemplateValue{
+				"mask":   generateTemplateValue(schemapb.DataType_Int64, int64(4)),
+				"target": generateTemplateValue(schemapb.DataType_String, "abc"),
+			}},
+			// a float field must NOT become bitwise-able by hiding the operand
+			// behind a placeholder (the integer-only check still applies).
+			{`(FloatField & {mask}) == {target}`, map[string]*schemapb.TemplateValue{
+				"mask":   generateTemplateValue(schemapb.DataType_Int64, int64(4)),
+				"target": generateTemplateValue(schemapb.DataType_Int64, int64(0)),
 			}},
 		}
 
@@ -803,7 +939,107 @@ func (s *FillExpressionValueSuite) assertNoUnfilledPlaceholder(e *planpb.Expr) {
 	case *planpb.Expr_BinaryArithExpr:
 		s.assertNoUnfilledPlaceholder(x.BinaryArithExpr.GetLeft())
 		s.assertNoUnfilledPlaceholder(x.BinaryArithExpr.GetRight())
+	case *planpb.Expr_RandomSampleExpr:
+		s.assertNoUnfilledPlaceholder(x.RandomSampleExpr.GetPredicate())
+	case *planpb.Expr_ElementFilterExpr:
+		s.assertNoUnfilledPlaceholder(x.ElementFilterExpr.GetElementExpr())
+		s.assertNoUnfilledPlaceholder(x.ElementFilterExpr.GetPredicate())
+	case *planpb.Expr_MatchExpr:
+		s.assertNoUnfilledPlaceholder(x.MatchExpr.GetPredicate())
 	}
+}
+
+// TestStructFilterWithTemplate regression-tests issue #51416. Struct filter
+// wrappers must propagate template metadata so their nested predicates are
+// filled before the plan reaches segcore.
+func (s *FillExpressionValueSuite) TestStructFilterWithTemplate() {
+	schemaH := newTestSchemaHelper(s.T())
+
+	cases := []struct {
+		name      string
+		templExpr string
+		values    map[string]*schemapb.TemplateValue
+	}{
+		{
+			"element filter integer template",
+			`element_filter(struct_array, $[sub_int] >= {min_score})`,
+			map[string]*schemapb.TemplateValue{
+				"min_score": generateTemplateValue(schemapb.DataType_Int64, int64(10)),
+			},
+		},
+		{
+			"element filter string template",
+			`element_filter(struct_array, $[sub_str] == {tag})`,
+			map[string]*schemapb.TemplateValue{
+				"tag": generateTemplateValue(schemapb.DataType_String, "blue"),
+			},
+		},
+		{
+			"element filter term template",
+			`element_filter(struct_array, $[sub_int] in {scores})`,
+			map[string]*schemapb.TemplateValue{
+				"scores": generateTemplateValue(schemapb.DataType_Array,
+					generateTemplateArrayValue(schemapb.DataType_Int64, []int64{10, 20})),
+			},
+		},
+		{
+			"row template and inline element filter",
+			`Int64Field > {row_min} && element_filter(struct_array, $[sub_str] == "blue")`,
+			map[string]*schemapb.TemplateValue{
+				"row_min": generateTemplateValue(schemapb.DataType_Int64, int64(1)),
+			},
+		},
+		{
+			"inline row predicate and element filter template",
+			`Int64Field > 1 && element_filter(struct_array, $[sub_str] == {tag})`,
+			map[string]*schemapb.TemplateValue{
+				"tag": generateTemplateValue(schemapb.DataType_String, "blue"),
+			},
+		},
+		{
+			"match least integer template",
+			`MATCH_LEAST(struct_array, $[sub_int] >= {min_score}, threshold=1)`,
+			map[string]*schemapb.TemplateValue{
+				"min_score": generateTemplateValue(schemapb.DataType_Int64, int64(10)),
+			},
+		},
+		{
+			"match any string template",
+			`MATCH_ANY(struct_array, $[sub_str] == {tag})`,
+			map[string]*schemapb.TemplateValue{
+				"tag": generateTemplateValue(schemapb.DataType_String, "blue"),
+			},
+		},
+		{
+			"match compound template",
+			`MATCH_ALL(struct_array, $[sub_int] >= {min_score} && $[sub_str] == {tag})`,
+			map[string]*schemapb.TemplateValue{
+				"min_score": generateTemplateValue(schemapb.DataType_Int64, int64(10)),
+				"tag":       generateTemplateValue(schemapb.DataType_String, "blue"),
+			},
+		},
+	}
+
+	for _, c := range cases {
+		s.Run(c.name, func() {
+			expr, err := ParseExpr(schemaH, c.templExpr, c.values)
+			s.NoError(err, c.templExpr)
+			s.NotNil(expr)
+			s.assertNoUnfilledPlaceholder(expr)
+		})
+	}
+
+	s.Run("missing element filter template", func() {
+		expr, err := ParseExpr(schemaH, `element_filter(struct_array, $[sub_int] >= {min_score})`, nil)
+		s.Error(err)
+		s.Nil(expr)
+	})
+
+	s.Run("missing match template", func() {
+		expr, err := ParseExpr(schemaH, `MATCH_ANY(struct_array, $[sub_str] == {tag})`, nil)
+		s.Error(err)
+		s.Nil(expr)
+	})
 }
 
 // TestUnaryNotWithTemplate regression-tests issue #49141: templated

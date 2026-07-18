@@ -388,7 +388,8 @@ GenerateRandomSparseFloatVector(size_t rows,
     return tensor;
 }
 
-inline SchemaPtr CreateTestSchema() {
+inline SchemaPtr
+CreateTestSchema() {
     auto schema = std::make_shared<milvus::Schema>();
     schema->AddDebugField("bool", milvus::DataType::BOOL, true);
     schema->AddDebugField("int8", milvus::DataType::INT8, true);
@@ -1395,16 +1396,22 @@ SearchResultToVector(const SearchResult& sr) {
 }
 
 inline nlohmann::json
-SearchResultToJson(const SearchResult& sr) {
+SearchResultToJson(const SearchResult& sr, int64_t round_decimal = -1) {
     int64_t num_queries = sr.total_nq_;
     int64_t topk = sr.unity_topK_;
     std::vector<std::vector<std::string>> results;
+    const float multiplier =
+        round_decimal >= 0 ? std::pow(10.0, round_decimal) : 1.0f;
     for (int q = 0; q < num_queries; ++q) {
         std::vector<std::string> result;
         for (int k = 0; k < topk; ++k) {
             int index = q * topk + k;
+            auto distance = sr.distances_[index];
+            if (round_decimal >= 0) {
+                distance = std::round(distance * multiplier) / multiplier;
+            }
             result.emplace_back(std::to_string(sr.seg_offsets_[index]) + "->" +
-                                std::to_string(sr.distances_[index]));
+                                std::to_string(distance));
         }
         results.emplace_back(std::move(result));
     }

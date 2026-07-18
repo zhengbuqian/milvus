@@ -5,12 +5,11 @@ import (
 	"fmt"
 
 	"github.com/confluentinc/confluent-kafka-go/kafka"
-	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls/helper"
-	"github.com/milvus-io/milvus/pkg/v2/util/syncutil"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/walimpls"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/walimpls/helper"
+	"github.com/milvus-io/milvus/pkg/v3/util/syncutil"
 )
 
 var _ walimpls.OpenerImpls = (*openerImpl)(nil)
@@ -57,13 +56,13 @@ func (o *openerImpl) execute() {
 			}
 			switch ev := ev.(type) {
 			case kafka.Error:
-				log.Error("kafka producer error", zap.Error(ev))
+				mlog.Error(context.TODO(), "kafka producer error", mlog.Err(ev))
 				if ev.IsFatal() {
 					panic(fmt.Sprintf("kafka producer error is fatal, %s", ev.Error()))
 				}
 			default:
 				// ignore other events
-				log.Debug("kafka producer incoming non-message, non-error event", zap.String("event", ev.String()))
+				mlog.Debug(context.TODO(), "kafka producer incoming non-message, non-error event", mlog.String("event", ev.String()))
 			}
 		}
 	}

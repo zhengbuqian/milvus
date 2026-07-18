@@ -22,10 +22,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
-	"github.com/milvus-io/milvus/pkg/v2/common"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
+	"github.com/milvus-io/milvus/pkg/v3/common"
 )
 
 func arrayIntFieldSchema(name string, isPK bool, maxCap int) *schemapb.FieldSchema {
@@ -195,6 +195,34 @@ func TestValidateFieldPartialUpdateOps_RejectsNonArrayField(t *testing.T) {
 	_, err := validateFieldPartialUpdateOps(req, schema)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Array field")
+}
+
+func TestValidateFieldPartialUpdateOps_RejectsStructOps(t *testing.T) {
+	schema := &schemapb.CollectionSchema{
+		StructArrayFields: []*schemapb.StructArrayFieldSchema{
+			{
+				Name: "profile",
+				Fields: []*schemapb.FieldSchema{
+					{Name: "profile[age]", DataType: schemapb.DataType_Array, ElementType: schemapb.DataType_Int64},
+				},
+			},
+		},
+	}
+
+	req := &milvuspb.UpsertRequest{
+		FieldsData: []*schemapb.FieldData{{FieldName: "profile", Type: schemapb.DataType_ArrayOfStruct}},
+		FieldOps:   []*schemapb.FieldPartialUpdateOp{op("profile", schemapb.FieldPartialUpdateOp_ARRAY_APPEND)},
+	}
+	_, err := validateFieldPartialUpdateOps(req, schema)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not supported for struct field")
+
+	req = &milvuspb.UpsertRequest{
+		FieldOps: []*schemapb.FieldPartialUpdateOp{op("profile[age]", schemapb.FieldPartialUpdateOp_REPLACE)},
+	}
+	_, err = validateFieldPartialUpdateOps(req, schema)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "partial struct update is not supported")
 }
 
 func TestValidateFieldPartialUpdateOps_RejectsElementTypeMismatch(t *testing.T) {

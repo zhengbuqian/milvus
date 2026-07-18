@@ -30,16 +30,17 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	milvuspb "github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	milvuspb "github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
 	"github.com/milvus-io/milvus/internal/cdc/cluster"
 	"github.com/milvus-io/milvus/internal/cdc/meta"
 	"github.com/milvus-io/milvus/internal/distributed/streaming"
 	"github.com/milvus-io/milvus/internal/mocks/distributed/mock_streaming"
-	mock_message "github.com/milvus-io/milvus/pkg/v2/mocks/streaming/util/mock_message"
-	streamingpb "github.com/milvus-io/milvus/pkg/v2/proto/streamingpb"
-	message "github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls/impls/walimplstest"
+	mock_message "github.com/milvus-io/milvus/pkg/v3/mocks/streaming/util/mock_message"
+	streamingpb "github.com/milvus-io/milvus/pkg/v3/proto/streamingpb"
+	message "github.com/milvus-io/milvus/pkg/v3/streaming/util/message"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/walimpls/impls/walimplstest"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
 )
 
 func TestReplicateStreamClient_Replicate(t *testing.T) {
@@ -76,7 +77,7 @@ func TestReplicateStreamClient_Replicate(t *testing.T) {
 	defer replicateClient.Close()
 
 	// Test Replicate method
-	const msgCount = pendingMessageQueueLength * 10
+	msgCount := paramtable.Get().StreamingCfg.ReplicationPendingMessagesQueueLength.GetAsInt() * 10
 	go func() {
 		for i := 0; i < msgCount; i++ {
 			mockMsg := mock_message.NewMockImmutableMessage(t)
@@ -85,6 +86,7 @@ func TestReplicateStreamClient_Replicate(t *testing.T) {
 			mockMsg.EXPECT().TimeTick().Return(tt)
 			mockMsg.EXPECT().EstimateSize().Return(1024)
 			mockMsg.EXPECT().MessageType().Return(message.MessageTypeInsert)
+			mockMsg.EXPECT().IsUnreplicable().Return(false)
 			mockMsg.EXPECT().MessageID().Return(messageID)
 			mockMsg.EXPECT().IntoImmutableMessageProto().Return(&commonpb.ImmutableMessage{
 				Id:         messageID.IntoProto(),
@@ -152,6 +154,31 @@ func TestReplicateStreamClient_Replicate_ContextCanceled(t *testing.T) {
 	mockStreamClient.Close()
 }
 
+func TestReplicateStreamClient_Replicate_UnreplicableMessageIgnored(t *testing.T) {
+	ctx := context.Background()
+	repMeta := &streamingpb.ReplicatePChannelMeta{
+		SourceChannelName: "test-source-channel",
+		TargetChannelName: "test-target-channel",
+		TargetCluster: &commonpb.MilvusCluster{
+			ClusterId: "test-cluster",
+		},
+	}
+	client := &replicateStreamClient{
+		ctx:             ctx,
+		pendingMessages: NewMsgQueue(MsgQueueOptions{Capacity: 16, MaxSize: 1024}),
+		metrics:         NewReplicateMetrics(repMeta),
+	}
+
+	mockMsg := mock_message.NewMockImmutableMessage(t)
+	mockMsg.EXPECT().MessageType().Return(message.MessageTypeCreateSnapshot)
+	mockMsg.EXPECT().IsUnreplicable().Return(true)
+	mockMsg.EXPECT().TimeTick().Return(uint64(100)).Maybe()
+
+	err := client.Replicate(mockMsg)
+	assert.ErrorIs(t, err, ErrReplicateIgnored)
+	assert.Equal(t, 0, client.pendingMessages.Len())
+}
+
 func TestReplicateStreamClient_Reconnect(t *testing.T) {
 	ctx := context.Background()
 	targetCluster := &commonpb.MilvusCluster{
@@ -204,6 +231,7 @@ func TestReplicateStreamClient_Reconnect(t *testing.T) {
 			mockMsg.EXPECT().MessageID().Return(messageID)
 			mockMsg.EXPECT().EstimateSize().Return(1024)
 			mockMsg.EXPECT().MessageType().Return(message.MessageTypeInsert)
+			mockMsg.EXPECT().IsUnreplicable().Return(false)
 			mockMsg.EXPECT().IntoImmutableMessageProto().Return(&commonpb.ImmutableMessage{
 				Id:         messageID.IntoProto(),
 				Payload:    []byte("test-payload"),

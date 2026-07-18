@@ -84,6 +84,13 @@ class VectorMemIndex : public VectorIndex {
 
     int64_t
     Count() override {
+        const auto& offset_mapping = GetOffsetMapping();
+        if (offset_mapping.IsEnabled() && offset_mapping.GetValidCount() == 0) {
+            return 0;
+        }
+        if (IsEmptyEmbListIndex()) {
+            return 0;
+        }
         return index_.Count();
     }
 
@@ -116,7 +123,8 @@ class VectorMemIndex : public VectorIndex {
     knowhere::expected<std::vector<knowhere::IndexNode::IteratorPtr>>
     VectorIterators(const DatasetPtr dataset,
                     const knowhere::Json& json,
-                    const BitsetView& bitset) const override;
+                    const BitsetView& bitset,
+                    milvus::OpContext* op_context = nullptr) const override;
 
     knowhere::expected<knowhere::DataSetPtr>
     CalcDistByIDs(const knowhere::DataSetPtr query_dataset,
@@ -134,6 +142,11 @@ class VectorMemIndex : public VectorIndex {
     void
     LoadFromFile(const Config& config);
 
+    bool
+    IsEmptyEmbListIndex() const {
+        return elem_type_ != DataType::NONE && !empty_emb_list_offsets_.empty();
+    }
+
  protected:
     Config config_;
     knowhere::Index<knowhere::IndexNode> index_;
@@ -143,6 +156,7 @@ class VectorMemIndex : public VectorIndex {
 
     CreateIndexInfo create_index_info_;
     bool use_knowhere_build_pool_;
+    std::vector<size_t> empty_emb_list_offsets_;
 };
 
 template <typename T>

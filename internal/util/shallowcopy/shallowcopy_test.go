@@ -5,8 +5,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/internalpb"
 )
 
 func TestShallowCopySearchRequest(t *testing.T) {
@@ -34,6 +34,7 @@ func TestShallowCopySearchRequest(t *testing.T) {
 			IsAdvanced:              true,
 			Offset:                  5,
 			GroupByFieldId:          7,
+			GroupByFieldIds:         []int64{7, 9},
 			GroupSize:               3,
 			FieldId:                 8,
 			IsTopkReduce:            true,
@@ -64,6 +65,7 @@ func TestShallowCopySearchRequest(t *testing.T) {
 		assert.Equal(t, src.PartitionIDs, dst.PartitionIDs)
 		assert.Equal(t, src.PlaceholderGroup, dst.PlaceholderGroup)
 		assert.Equal(t, src.SerializedExprPlan, dst.SerializedExprPlan)
+		assert.Equal(t, src.GroupByFieldIds, dst.GroupByFieldIds)
 	})
 }
 

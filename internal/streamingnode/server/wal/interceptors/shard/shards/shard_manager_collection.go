@@ -1,15 +1,23 @@
 package shards
 
 import (
-	"github.com/cockroachdb/errors"
-	"go.uber.org/zap"
+	"context"
 
+	"google.golang.org/protobuf/proto"
+
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/interceptors/shard/policy"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/streamingpb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message/messageutil"
+	"github.com/milvus-io/milvus/internal/util/streamingutil/status"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/streamingpb"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/message"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/message/messageutil"
 )
+
+type CollectionSchemaInfo struct {
+	VChannel string
+	Schema   *schemapb.CollectionSchema
+}
 
 // CheckIfCollectionCanBeCreated checks if a collection can be created.
 // It returns false if the collection cannot be created.
@@ -52,13 +60,13 @@ func (m *shardManagerImpl) CreateCollection(msg message.ImmutableCreateCollectio
 	vchannel := msg.VChannel()
 	timetick := msg.TimeTick()
 	schema := msg.MustBody().GetCollectionSchema()
-	logger := m.Logger().With(log.FieldMessage(msg))
+	logger := m.Logger().With(mlog.FieldMessage(msg))
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if err := m.checkIfCollectionCanBeCreated(collectionID); err != nil {
-		logger.Warn("collection already exists")
+		logger.Warn(context.TODO(), "collection already exists")
 		return
 	}
 
@@ -76,7 +84,7 @@ func (m *shardManagerImpl) CreateCollection(msg message.ImmutableCreateCollectio
 	for partitionID := range collectionInfo.PartitionIDs {
 		uniqueKey := PartitionUniqueKey{CollectionID: collectionID, PartitionID: partitionID}
 		if _, ok := m.partitionManagers[uniqueKey]; ok {
-			logger.Warn("partition already exists", zap.Int64("partitionID", partitionID))
+			logger.Warn(context.TODO(), "partition already exists", mlog.Int64("partitionID", partitionID))
 			continue
 		}
 		m.partitionManagers[uniqueKey] = newPartitionSegmentManager(
@@ -93,7 +101,7 @@ func (m *shardManagerImpl) CreateCollection(msg message.ImmutableCreateCollectio
 			m.metrics,
 		)
 	}
-	logger.Info("collection created in segment assignment service", zap.Int64s("partitionIDs", partitionIDs))
+	logger.Info(context.TODO(), "collection created in segment assignment service", mlog.Int64s("partitionIDs", partitionIDs))
 	m.updateMetrics()
 }
 
@@ -102,13 +110,13 @@ func (m *shardManagerImpl) CreateCollection(msg message.ImmutableCreateCollectio
 // Any dml and ddl for the collection will be rejected.
 func (m *shardManagerImpl) DropCollection(msg message.ImmutableDropCollectionMessageV1) {
 	collectionID := msg.Header().CollectionId
-	logger := m.Logger().With(log.FieldMessage(msg))
+	logger := m.Logger().With(mlog.FieldMessage(msg))
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if err := m.checkIfCollectionExists(collectionID); err != nil {
-		logger.Warn("collection not exists")
+		logger.Warn(context.TODO(), "collection not exists")
 		return
 	}
 
@@ -121,7 +129,7 @@ func (m *shardManagerImpl) DropCollection(msg message.ImmutableDropCollectionMes
 		uniqueKey := PartitionUniqueKey{CollectionID: collectionID, PartitionID: partitionID}
 		pm, ok := m.partitionManagers[uniqueKey]
 		if !ok {
-			logger.Warn("partition not exists", zap.Int64("partitionID", partitionID))
+			logger.Warn(context.TODO(), "partition not exists", mlog.Int64("partitionID", partitionID))
 			continue
 		}
 		// Flush all segments and fence assign to the partition manager.
@@ -130,7 +138,7 @@ func (m *shardManagerImpl) DropCollection(msg message.ImmutableDropCollectionMes
 		segmentIDs = append(segmentIDs, segments...)
 		delete(m.partitionManagers, uniqueKey)
 	}
-	logger.Info("collection removed", zap.Int64s("partitionIDs", partitionIDs), zap.Int64s("segmentIDs", segmentIDs))
+	logger.Info(context.TODO(), "collection removed", mlog.Int64s("partitionIDs", partitionIDs), mlog.Int64s("segmentIDs", segmentIDs))
 	m.updateMetrics()
 }
 
@@ -140,13 +148,13 @@ func (m *shardManagerImpl) AlterCollection(msg message.MutableAlterCollectionMes
 	header := msg.Header()
 	collectionID := header.CollectionId
 	timetick := msg.TimeTick()
-	logger := m.Logger().With(log.FieldMessage(msg))
+	logger := m.Logger().With(mlog.FieldMessage(msg))
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if err := m.checkIfCollectionExists(collectionID); err != nil {
-		logger.Warn("collection not found when altering collection", zap.Int64("collectionID", collectionID))
+		logger.Warn(context.TODO(), "collection not found when altering collection", mlog.Int64("collectionID", collectionID))
 		return nil, err
 	}
 
@@ -160,16 +168,16 @@ func (m *shardManagerImpl) AlterCollection(msg message.MutableAlterCollectionMes
 		if err != nil {
 			return nil, err
 		}
-		logger.Info("flushed segments on schema change", zap.Int64s("segmentIDs", segmentIDs))
+		logger.Info(context.TODO(), "flushed segments on schema change", mlog.Int64s("segmentIDs", segmentIDs))
 
 		schema := msg.MustBody().Updates.Schema
 		if schema == nil {
 			// UpdateMask says schema changed but the body carries no schema —
 			// malformed message; fail fast to avoid nil-pointer dereferences
 			// in downstream GetSchema paths.
-			logger.Error("schema change indicated by UpdateMask but schema body is nil",
-				zap.Int64("collectionID", collectionID))
-			return nil, errors.New("schema change message has nil schema body")
+			logger.Error(context.TODO(), "schema change indicated by UpdateMask but schema body is nil",
+				mlog.Int64("collectionID", collectionID))
+			return nil, status.NewInvalidArgument("schema change message has nil schema body")
 		}
 		collectionInfo := m.collections[collectionID]
 		collectionInfo.Schema = &streamingpb.CollectionSchemaOfVChannel{
@@ -177,44 +185,85 @@ func (m *shardManagerImpl) AlterCollection(msg message.MutableAlterCollectionMes
 			CheckpointTimeTick: timetick,
 			State:              streamingpb.VChannelSchemaState_VCHANNEL_SCHEMA_STATE_NORMAL,
 		}
-		logger.Info("updated collection schema in shard manager",
-			zap.Int64("collectionID", collectionID),
-			zap.Int32("schemaVersion", schema.GetVersion()),
-			zap.Uint64("checkpointTimeTick", timetick))
+		logger.Info(context.TODO(), "updated collection schema in shard manager",
+			mlog.Int64("collectionID", collectionID),
+			mlog.Int32("schemaVersion", schema.GetVersion()),
+			mlog.Uint64("checkpointTimeTick", timetick))
 	}
 
 	return segmentIDs, nil
 }
 
-func (m *shardManagerImpl) CheckIfCollectionSchemaVersionMatch(collectionID int64, schemaVersion int32) (int32, error) {
+func (m *shardManagerImpl) CheckIfCollectionSchemaVersionMatch(header *message.InsertMessageHeader) (int32, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	return m.checkIfCollectionSchemaVersionMatch(collectionID, schemaVersion)
+	return m.checkIfCollectionSchemaVersionMatch(header)
 }
 
-func (m *shardManagerImpl) checkIfCollectionSchemaVersionMatch(collectionID int64, schemaVersion int32) (int32, error) {
+func (m *shardManagerImpl) checkIfCollectionSchemaVersionMatch(header *message.InsertMessageHeader) (int32, error) {
+	collectionID := header.GetCollectionId()
 	collectionInfo, ok := m.collections[collectionID]
 	if !ok {
-		m.Logger().Warn("collection not found", zap.Int64("collectionID", collectionID))
+		m.Logger().Warn(context.TODO(), "collection not found", mlog.Int64("collectionID", collectionID))
 		return -1, ErrCollectionNotFound
 	}
-	// Input schemaVersion 0 means the proxy did not set it (old proxy or old SDK).
-	// Skip the schema presence and version checks for backward compatibility during rolling
-	// upgrades, where a legacy collection may still have Schema == nil when an old proxy writes.
-	if schemaVersion == 0 {
+	// Missing schemaVersion means the proxy did not set it (old proxy or old SDK).
+	// Skip the schema presence and version checks for backward compatibility during
+	// rolling upgrades, where a legacy collection may still have Schema == nil when
+	// an old proxy writes.
+	if header.SchemaVersion == nil {
 		return collectionInfo.SchemaVersion(), nil
 	}
+
 	if collectionInfo.Schema == nil || collectionInfo.Schema.GetSchema() == nil {
-		m.Logger().Warn("collection schema not found", zap.Int64("collectionID", collectionID))
+		m.Logger().Warn(context.TODO(), "collection schema not found", mlog.Int64("collectionID", collectionID))
 		return -1, ErrCollectionSchemaNotFound
 	}
+
 	collectionSchemaVersion := collectionInfo.SchemaVersion()
-	if collectionSchemaVersion != schemaVersion {
-		m.Logger().Warn("collection schema version not match", zap.Int64("collectionID", collectionID),
-			zap.Int32("schemaVersion", schemaVersion),
-			zap.Int32("collectionSchemaVersion", collectionSchemaVersion))
+	if collectionSchemaVersion != header.GetSchemaVersion() {
+		m.Logger().Warn(context.TODO(), "collection schema version not match", mlog.Int64("collectionID", collectionID),
+			mlog.Int32("schemaVersion", header.GetSchemaVersion()),
+			mlog.Int32("collectionSchemaVersion", collectionSchemaVersion))
 		return collectionSchemaVersion, ErrCollectionSchemaVersionNotMatch
 	}
+
 	return collectionSchemaVersion, nil
+}
+
+func (m *shardManagerImpl) GetCollectionSchema(collectionID int64, schemaVersion int32) (*schemapb.CollectionSchema, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	collectionInfo, ok := m.collections[collectionID]
+	if !ok {
+		return nil, ErrCollectionNotFound
+	}
+	if collectionInfo.Schema == nil || collectionInfo.Schema.GetSchema() == nil {
+		return nil, ErrCollectionSchemaNotFound
+	}
+	collectionSchemaVersion := collectionInfo.SchemaVersion()
+	if schemaVersion != latestCollectionSchemaVersion && collectionSchemaVersion != schemaVersion {
+		return nil, ErrCollectionSchemaVersionNotMatch
+	}
+
+	return proto.Clone(collectionInfo.Schema.GetSchema()).(*schemapb.CollectionSchema), nil
+}
+
+func (m *shardManagerImpl) GetAllCollectionSchemaInfos() map[int64]CollectionSchemaInfo {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	infos := make(map[int64]CollectionSchemaInfo)
+	for collectionID, collectionInfo := range m.collections {
+		if collectionInfo.Schema == nil || collectionInfo.Schema.GetSchema() == nil {
+			continue
+		}
+		infos[collectionID] = CollectionSchemaInfo{
+			VChannel: collectionInfo.VChannel,
+			Schema:   proto.Clone(collectionInfo.Schema.GetSchema()).(*schemapb.CollectionSchema),
+		}
+	}
+	return infos
 }

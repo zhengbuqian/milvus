@@ -19,7 +19,7 @@ package tsoutil
 import (
 	"time"
 
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 const (
@@ -27,19 +27,22 @@ const (
 	logicalBitsMask = (1 << logicalBits) - 1
 )
 
-// ComposeTS returns a timestamp composed of physical part and logical part
+// ComposeTS returns a timestamp composed of physical part and logical part.
+// The logical part is a low-level hybrid logical clock detail. Only the TSO
+// allocator or equivalent timestamp sources should set it non-zero.
 func ComposeTS(physical, logical int64) uint64 {
 	return uint64((physical << logicalBits) + logical)
 }
 
-// ComposeTSByTime returns a timestamp composed of physical time.Time and logical time
-func ComposeTSByTime(physical time.Time, logical int64) uint64 {
-	return ComposeTS(physical.UnixNano()/int64(time.Millisecond), logical)
+// ComposeTSByTime returns a timestamp composed of physical time.Time and logical zero.
+func ComposeTSByTime(physical time.Time) typeutil.Timestamp {
+	return ComposeTS(physical.UnixMilli(), 0)
 }
 
-// GetCurrentTime returns the current timestamp
-func GetCurrentTime() typeutil.Timestamp {
-	return ComposeTSByTime(time.Now(), 0)
+// ComposeTSByTimeWithLogical returns a timestamp composed of physical time.Time and logical time.
+// Use this only when a caller intentionally needs to compose a non-zero logical part.
+func ComposeTSByTimeWithLogical(physical time.Time, logical int64) typeutil.Timestamp {
+	return ComposeTS(physical.UnixMilli(), logical)
 }
 
 // ParseTS parses the ts to (physical,logical).
@@ -111,4 +114,14 @@ func IsValidPhysicalTs(t uint64) bool {
 
 func IsValidHybridTs(t uint64) bool {
 	return IsValidPhysicalTs(t >> logicalBits)
+}
+
+// EffectiveTimestamp returns max(rawTs, commitTs) when commitTs is non-zero.
+// For import/CDC segments, row timestamps may predate the actual commit time;
+// using the larger value prevents premature expiration.
+func EffectiveTimestamp(rawTs, commitTs uint64) uint64 {
+	if commitTs != 0 && commitTs > rawTs {
+		return commitTs
+	}
+	return rawTs
 }

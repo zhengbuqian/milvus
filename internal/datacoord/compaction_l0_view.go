@@ -4,11 +4,12 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"time"
 
 	"github.com/samber/lo"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"github.com/milvus-io/milvus-proto/go-api/v3/msgpb"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
 )
 
 // resolveLatestDeletePos returns the position used as the L0 trigger Pos.
@@ -44,10 +45,6 @@ type LevelZeroCompactionView struct {
 }
 
 var _ CompactionView = (*LevelZeroCompactionView)(nil)
-
-// IsInlineExecutable returns false: L0 compaction is real compaction work that must
-// be dispatched to the inspector.
-func (v *LevelZeroCompactionView) IsInlineExecutable() bool { return false }
 
 func (v *LevelZeroCompactionView) String() string {
 	l0strings := lo.Map(v.l0Segments, func(v *SegmentView, _ int) string {
@@ -87,6 +84,17 @@ func (v *LevelZeroCompactionView) GetSegmentsView() []*SegmentView {
 	}
 
 	return v.l0Segments
+}
+
+func (v *LevelZeroCompactionView) GetTotalSize() float64 {
+	if v == nil {
+		return 0
+	}
+	return sumSegmentSize(v.l0Segments)
+}
+
+func (v *LevelZeroCompactionView) GetCollectionTTL() time.Duration {
+	return 0
 }
 
 // ForceTrigger triggers all qualified LevelZeroSegments according to views

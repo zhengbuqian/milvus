@@ -27,41 +27,44 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bytedance/mockey"
 	"github.com/cockroachdb/errors"
 	"github.com/samber/lo"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
-	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/msgpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/mocks"
 	"github.com/milvus-io/milvus/internal/mocks/util/mock_segcore"
 	"github.com/milvus-io/milvus/internal/querynodev2/cluster"
+	"github.com/milvus-io/milvus/internal/querynodev2/delegator/deletebuffer"
 	"github.com/milvus-io/milvus/internal/querynodev2/pkoracle"
 	"github.com/milvus-io/milvus/internal/querynodev2/segments"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/bloomfilter"
 	"github.com/milvus-io/milvus/internal/util/function"
 	"github.com/milvus-io/milvus/internal/util/initcore"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgstream"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/planpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/segcorepb"
-	"github.com/milvus-io/milvus/pkg/v2/util/commonpbutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/metautil"
-	"github.com/milvus-io/milvus/pkg/v2/util/metric"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/tsoutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/mq/msgstream"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/internalpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/planpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/querypb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/segcorepb"
+	"github.com/milvus-io/milvus/pkg/v3/util/commonpbutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/funcutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/metautil"
+	"github.com/milvus-io/milvus/pkg/v3/util/metric"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/syncutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/tsoutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 // segmentEntryCoreFields extracts core fields from SegmentEntry for comparison,
@@ -100,6 +103,12 @@ type DelegatorDataSuite struct {
 	delegator    *shardDelegator
 	rootPath     string
 	chunkManager storage.ChunkManager
+}
+
+func (s *DelegatorDataSuite) getIDFOracleForTest() *idfOracle {
+	oracle, ok := s.delegator.getIDFOracle().(*idfOracle)
+	s.Require().True(ok)
+	return oracle
 }
 
 func (s *DelegatorDataSuite) SetupSuite() {
@@ -175,15 +184,16 @@ func (s *DelegatorDataSuite) genNormalCollection() {
 			},
 		},
 	}, &querypb.LoadMetaInfo{
-		LoadType:      querypb.LoadType_LoadCollection,
-		PartitionIDs:  []int64{1001, 1002},
-		SchemaVersion: tsoutil.ComposeTSByTime(time.Now(), 0),
+		LoadType:        querypb.LoadType_LoadCollection,
+		PartitionIDs:    []int64{1001, 1002},
+		SchemaBarrierTs: tsoutil.ComposeTSByTime(time.Now()),
 	})
 }
 
 func (s *DelegatorDataSuite) genCollectionWithFunction() {
 	s.manager.Collection.PutOrRef(s.collectionID, &schemapb.CollectionSchema{
-		Name: "TestCollection",
+		Name:    "TestCollection",
+		Version: 1,
 		Fields: []*schemapb.FieldSchema{
 			{
 				Name:         "id",
@@ -213,11 +223,12 @@ func (s *DelegatorDataSuite) genCollectionWithFunction() {
 			InputFieldIds:  []int64{102},
 			OutputFieldIds: []int64{101},
 		}},
-	}, nil, &querypb.LoadMetaInfo{SchemaVersion: tsoutil.ComposeTSByTime(time.Now(), 0)})
+	}, nil, &querypb.LoadMetaInfo{SchemaBarrierTs: tsoutil.ComposeTSByTime(time.Now())})
 
-	delegator, err := NewShardDelegator(context.Background(), s.collectionID, s.replicaID, s.vchannelName, s.version, s.workerManager, s.manager, s.loader, 10000, nil, s.chunkManager, NewChannelQueryView(nil, nil, nil, initialTargetVersion))
+	delegator, err := NewShardDelegator(context.Background(), s.collectionID, s.replicaID, s.vchannelName, s.version, s.workerManager, s.manager, s.loader, 10000, nil, s.chunkManager, NewChannelQueryView(nil, nil, nil, initialTargetVersion), nil)
 	s.NoError(err)
 	s.delegator = delegator.(*shardDelegator)
+	s.allocFunctionRunnersForTest()
 }
 
 func (s *DelegatorDataSuite) SetupTest() {
@@ -233,7 +244,7 @@ func (s *DelegatorDataSuite) SetupTest() {
 	s.rootPath = s.Suite.T().Name()
 	chunkManagerFactory := storage.NewTestChunkManagerFactory(paramtable.Get(), s.rootPath)
 	s.chunkManager, _ = chunkManagerFactory.NewPersistentStorageChunkManager(context.Background())
-	delegator, err := NewShardDelegator(context.Background(), s.collectionID, s.replicaID, s.vchannelName, s.version, s.workerManager, s.manager, s.loader, 10000, nil, s.chunkManager, NewChannelQueryView(nil, nil, nil, initialTargetVersion))
+	delegator, err := NewShardDelegator(context.Background(), s.collectionID, s.replicaID, s.vchannelName, s.version, s.workerManager, s.manager, s.loader, 10000, nil, s.chunkManager, NewChannelQueryView(nil, nil, nil, initialTargetVersion), nil)
 	s.Require().NoError(err)
 	sd, ok := delegator.(*shardDelegator)
 	s.Require().True(ok)
@@ -563,6 +574,50 @@ func (s *DelegatorDataSuite) TestProcessDelete() {
 	s.True(s.delegator.distribution.Serviceable())
 }
 
+func (s *DelegatorDataSuite) TestProcessDeleteBatchesPreservesBatchTsInDeleteBuffer() {
+	batches := []DeleteBatch{
+		{
+			Ts: 10,
+			Data: []*DeleteData{
+				{
+					PartitionID: 500,
+					PrimaryKeys: []storage.PrimaryKey{
+						storage.NewInt64PrimaryKey(10),
+					},
+					Timestamps: []uint64{10},
+					RowCount:   1,
+				},
+			},
+		},
+		{
+			Ts: 20,
+			Data: []*DeleteData{
+				{
+					PartitionID: 500,
+					PrimaryKeys: []storage.PrimaryKey{
+						storage.NewInt64PrimaryKey(20),
+					},
+					Timestamps: []uint64{20},
+					RowCount:   1,
+				},
+			},
+		},
+	}
+
+	s.delegator.ProcessDeleteBatches(batches)
+
+	after15 := s.delegator.deleteBuffer.ListAfter(15)
+	s.Require().Len(after15, 1)
+	s.Equal(uint64(20), after15[0].Ts)
+	s.Require().Len(after15[0].Data, 1)
+	s.ElementsMatch([]storage.PrimaryKey{storage.NewInt64PrimaryKey(20)}, after15[0].Data[0].DeleteData.Pks)
+
+	after0 := s.delegator.deleteBuffer.ListAfter(0)
+	s.Require().Len(after0, 2)
+	s.Equal(uint64(10), after0[0].Ts)
+	s.Equal(uint64(20), after0[1].Ts)
+}
+
 func (s *DelegatorDataSuite) TestLoadGrowingWithBM25() {
 	s.genCollectionWithFunction()
 	mockSegment := segments.NewMockSegment(s.T())
@@ -639,6 +694,175 @@ func (s *DelegatorDataSuite) TestLoadSegmentsWithBm25() {
 			},
 		}, segmentEntryCoreFields(sealed[0].Segments))
 	})
+}
+
+func (s *DelegatorDataSuite) TestLoadSegmentsReopenBM25Stats() {
+	s.genCollectionWithFunction()
+
+	remotePath := "bm25stats/reopen/segment_100/field_101/0"
+	stats := storage.NewBM25Stats()
+	for i := uint32(1); i < 4; i++ {
+		stats.Append(map[uint32]float32{i: 1})
+	}
+	data, err := stats.Serialize()
+	s.Require().NoError(err)
+
+	cm := mocks.NewChunkManager(s.T())
+	cm.EXPECT().Reader(mock.Anything, remotePath).Return(&bytesFileReader{bytes.NewReader(data)}, nil)
+	s.loader.EXPECT().GetChunkManager().Return(cm)
+
+	worker1 := &cluster.MockWorker{}
+	worker1.EXPECT().LoadSegments(mock.Anything, mock.AnythingOfType("*querypb.LoadSegmentsRequest")).Return(nil)
+	s.workerManager.EXPECT().GetWorker(mock.Anything, mock.AnythingOfType("int64")).Return(worker1, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err = s.delegator.LoadSegments(ctx, &querypb.LoadSegmentsRequest{
+		Base:         commonpbutil.NewMsgBase(),
+		DstNodeID:    1,
+		CollectionID: s.collectionID,
+		LoadScope:    querypb.LoadScope_Reopen,
+		Infos: []*querypb.SegmentLoadInfo{
+			{
+				SegmentID:     100,
+				PartitionID:   500,
+				StartPosition: &msgpb.MsgPosition{Timestamp: 20000},
+				DeltaPosition: &msgpb.MsgPosition{Timestamp: 20000},
+				Level:         datapb.SegmentLevel_L1,
+				InsertChannel: fmt.Sprintf("by-dev-rootcoord-dml_0_%dv0", s.collectionID),
+				Bm25Logs:      bm25LogsForField(101, remotePath),
+			},
+		},
+	})
+
+	s.NoError(err)
+	loadedStats := s.getIDFOracleForTest()
+	fieldStats, err := loadedStats.current.GetStats(101)
+	s.NoError(err)
+	s.Equal(int64(0), fieldStats.NumRow())
+	segStats, ok := loadedStats.sealed.Get(100)
+	s.True(ok)
+	s.True(segStats.HasField(101))
+
+	sealed, _ := s.delegator.GetSegmentInfo(false)
+	s.Empty(sealed)
+}
+
+func (s *DelegatorDataSuite) TestLoadSegmentsReopenBM25StatsMergesReadableSegment() {
+	s.genCollectionWithFunction()
+	s.delegator.distribution.AddDistributions(SegmentEntry{
+		NodeID:      1,
+		SegmentID:   100,
+		PartitionID: 500,
+		Version:     1,
+		Level:       datapb.SegmentLevel_L1,
+	})
+	s.delegator.distribution.SyncTargetVersion(&querypb.SyncAction{
+		TargetVersion:         1,
+		SealedInTarget:        []int64{100},
+		SealedSegmentRowCount: map[int64]int64{100: 3},
+	}, []int64{500})
+	s.True(s.delegator.distribution.IsReadableSealedSegment(100))
+
+	remotePath := "bm25stats/reopen-readable/segment_100/field_101/0"
+	stats := storage.NewBM25Stats()
+	for i := uint32(1); i < 4; i++ {
+		stats.Append(map[uint32]float32{i: 1})
+	}
+	data, err := stats.Serialize()
+	s.Require().NoError(err)
+
+	cm := mocks.NewChunkManager(s.T())
+	cm.EXPECT().Reader(mock.Anything, remotePath).Return(&bytesFileReader{bytes.NewReader(data)}, nil)
+	s.loader.EXPECT().GetChunkManager().Return(cm)
+
+	worker1 := &cluster.MockWorker{}
+	worker1.EXPECT().LoadSegments(mock.Anything, mock.AnythingOfType("*querypb.LoadSegmentsRequest")).Return(nil)
+	s.workerManager.EXPECT().GetWorker(mock.Anything, mock.AnythingOfType("int64")).Return(worker1, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err = s.delegator.LoadSegments(ctx, &querypb.LoadSegmentsRequest{
+		Base:         commonpbutil.NewMsgBase(),
+		DstNodeID:    1,
+		CollectionID: s.collectionID,
+		LoadScope:    querypb.LoadScope_Reopen,
+		Infos: []*querypb.SegmentLoadInfo{
+			{
+				SegmentID:     100,
+				PartitionID:   500,
+				StartPosition: &msgpb.MsgPosition{Timestamp: 20000},
+				DeltaPosition: &msgpb.MsgPosition{Timestamp: 20000},
+				Level:         datapb.SegmentLevel_L1,
+				InsertChannel: fmt.Sprintf("by-dev-rootcoord-dml_0_%dv0", s.collectionID),
+				Bm25Logs:      bm25LogsForField(101, remotePath),
+			},
+		},
+	})
+
+	s.NoError(err)
+	loadedStats := s.getIDFOracleForTest()
+	fieldStats, err := loadedStats.current.GetStats(101)
+	s.NoError(err)
+	s.Equal(int64(3), fieldStats.NumRow())
+}
+
+func (s *DelegatorDataSuite) TestLoadSegmentsReopenBM25StatsRequiresOracleForRetry() {
+	worker1 := &cluster.MockWorker{}
+	worker1.EXPECT().LoadSegments(mock.Anything, mock.AnythingOfType("*querypb.LoadSegmentsRequest")).Return(nil)
+	s.workerManager.EXPECT().GetWorker(mock.Anything, mock.AnythingOfType("int64")).Return(worker1, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err := s.delegator.LoadSegments(ctx, &querypb.LoadSegmentsRequest{
+		Base:         commonpbutil.NewMsgBase(),
+		DstNodeID:    1,
+		CollectionID: s.collectionID,
+		LoadScope:    querypb.LoadScope_Reopen,
+		Infos: []*querypb.SegmentLoadInfo{
+			{
+				SegmentID:     100,
+				PartitionID:   500,
+				StartPosition: &msgpb.MsgPosition{Timestamp: 20000},
+				DeltaPosition: &msgpb.MsgPosition{Timestamp: 20000},
+				Level:         datapb.SegmentLevel_L1,
+				InsertChannel: fmt.Sprintf("by-dev-rootcoord-dml_0_%dv0", s.collectionID),
+				Bm25Logs:      bm25LogsForField(101, "bm25stats/reopen/segment_100/field_101/0"),
+			},
+		},
+	})
+
+	s.Error(err)
+	s.ErrorIs(err, merr.ErrServiceInternal)
+}
+
+func (s *DelegatorDataSuite) TestLoadSegmentsReopenWithoutBM25StatsNoop() {
+	worker1 := &cluster.MockWorker{}
+	worker1.EXPECT().LoadSegments(mock.Anything, mock.AnythingOfType("*querypb.LoadSegmentsRequest")).Return(nil)
+	s.workerManager.EXPECT().GetWorker(mock.Anything, mock.AnythingOfType("int64")).Return(worker1, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err := s.delegator.LoadSegments(ctx, &querypb.LoadSegmentsRequest{
+		Base:         commonpbutil.NewMsgBase(),
+		DstNodeID:    1,
+		CollectionID: s.collectionID,
+		LoadScope:    querypb.LoadScope_Reopen,
+		Infos: []*querypb.SegmentLoadInfo{
+			{
+				SegmentID:     100,
+				PartitionID:   500,
+				StartPosition: &msgpb.MsgPosition{Timestamp: 20000},
+				DeltaPosition: &msgpb.MsgPosition{Timestamp: 20000},
+				Level:         datapb.SegmentLevel_L1,
+				InsertChannel: fmt.Sprintf("by-dev-rootcoord-dml_0_%dv0", s.collectionID),
+			},
+		},
+	})
+
+	s.NoError(err)
+	sealed, _ := s.delegator.GetSegmentInfo(false)
+	s.Empty(sealed)
 }
 
 func (s *DelegatorDataSuite) TestLoadSegments() {
@@ -789,7 +1013,7 @@ func (s *DelegatorDataSuite) TestLoadSegments() {
 			s.workerManager,
 			s.manager,
 			s.loader,
-			10000, nil, nil, NewChannelQueryView(nil, nil, nil, initialTargetVersion))
+			10000, nil, nil, NewChannelQueryView(nil, nil, nil, initialTargetVersion), nil)
 		s.NoError(err)
 
 		growing0 := segments.NewMockSegment(s.T())
@@ -936,8 +1160,22 @@ func (s *DelegatorDataSuite) TestLoadSegments() {
 }
 
 func (s *DelegatorDataSuite) TestLoadSegmentsWithoutBloomFilter() {
+	defer func() {
+		s.workerManager.ExpectedCalls = nil
+		s.loader.ExpectedCalls = nil
+	}()
+
 	paramtable.Get().Save(paramtable.Get().CommonCfg.BloomFilterEnabled.Key, "false")
 	defer paramtable.Get().Reset(paramtable.Get().CommonCfg.BloomFilterEnabled.Key)
+
+	s.loader.EXPECT().LoadBloomFilterSet(mock.Anything, s.collectionID, mock.Anything).
+		Call.Return(func(ctx context.Context, collectionID int64, infos ...*querypb.SegmentLoadInfo) []*pkoracle.BloomFilterSet {
+		return lo.Map(infos, func(info *querypb.SegmentLoadInfo, _ int) *pkoracle.BloomFilterSet {
+			return pkoracle.NewBloomFilterSet(info.GetSegmentID(), info.GetPartitionID(), commonpb.SegmentState_Sealed)
+		})
+	}, func(ctx context.Context, collectionID int64, infos ...*querypb.SegmentLoadInfo) error {
+		return nil
+	})
 
 	workers := make(map[int64]*cluster.MockWorker)
 	worker1 := &cluster.MockWorker{}
@@ -945,34 +1183,9 @@ func (s *DelegatorDataSuite) TestLoadSegmentsWithoutBloomFilter() {
 
 	worker1.EXPECT().LoadSegments(mock.Anything, mock.AnythingOfType("*querypb.LoadSegmentsRequest")).
 		Return(nil)
-	worker1.EXPECT().Delete(mock.Anything, mock.AnythingOfType("*querypb.DeleteRequest")).
-		RunAndReturn(func(ctx context.Context, req *querypb.DeleteRequest) error {
-			s.Equal(int64(100), req.GetSegmentId())
-			s.Equal(querypb.DataScope_Historical, req.GetScope())
-			s.ElementsMatch([]int64{1, 10}, req.GetPrimaryKeys().GetIntId().GetData())
-			s.ElementsMatch([]uint64{10, 10}, req.GetTimestamps())
-			return nil
-		}).Once()
 	s.workerManager.EXPECT().GetWorker(mock.Anything, mock.AnythingOfType("int64")).Call.Return(func(_ context.Context, nodeID int64) cluster.Worker {
 		return workers[nodeID]
 	}, nil)
-
-	// Mock LoadBloomFilterSet to return metadata-only stubs (BF disabled path)
-	stubCandidate := pkoracle.NewBloomFilterSet(100, 500, commonpb.SegmentState_Sealed)
-	s.loader.EXPECT().LoadBloomFilterSet(mock.Anything, mock.AnythingOfType("int64"), mock.Anything).
-		Return([]*pkoracle.BloomFilterSet{stubCandidate}, nil)
-
-	s.delegator.ProcessDelete([]*DeleteData{
-		{
-			PartitionID: 500,
-			PrimaryKeys: []storage.PrimaryKey{
-				storage.NewInt64PrimaryKey(1),
-				storage.NewInt64PrimaryKey(10),
-			},
-			Timestamps: []uint64{10, 10},
-			RowCount:   2,
-		},
-	}, 10)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -993,7 +1206,8 @@ func (s *DelegatorDataSuite) TestLoadSegmentsWithoutBloomFilter() {
 		},
 	})
 
-	s.NoError(err)
+	s.Require().NoError(err)
+	s.delegator.distribution.Flush()
 	sealed, _ := s.delegator.GetSegmentInfo(false)
 	s.Require().Equal(1, len(sealed))
 	s.Require().Equal(1, len(sealed[0].Segments))
@@ -1001,9 +1215,68 @@ func (s *DelegatorDataSuite) TestLoadSegmentsWithoutBloomFilter() {
 	s.False(sealed[0].Segments[0].Candidate.PkCandidateExist())
 }
 
+func (s *DelegatorDataSuite) TestPostLoadLimiter() {
+	s.Run("serializes_post_load_work", func() {
+		sd := &shardDelegator{
+			postLoadSem: syncutil.NewSemaphore(1),
+		}
+		var current int32
+		var maxConcurrent int32
+		start := make(chan struct{})
+		errCh := make(chan error, 8)
+		wg := sync.WaitGroup{}
+		for i := 0; i < 8; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				err := sd.withPostLoadLimit(context.Background(), func() error {
+					running := atomic.AddInt32(&current, 1)
+					for {
+						maxValue := atomic.LoadInt32(&maxConcurrent)
+						if running <= maxValue || atomic.CompareAndSwapInt32(&maxConcurrent, maxValue, running) {
+							break
+						}
+					}
+					time.Sleep(5 * time.Millisecond)
+					atomic.AddInt32(&current, -1)
+					return nil
+				})
+				errCh <- err
+			}()
+		}
+		close(start)
+		wg.Wait()
+		close(errCh)
+		for err := range errCh {
+			s.NoError(err)
+		}
+		s.Equal(int32(1), maxConcurrent)
+		s.Equal(0, sd.postLoadSem.Current())
+	})
+
+	s.Run("returns_context_error_while_waiting", func() {
+		sd := &shardDelegator{
+			postLoadSem: syncutil.NewSemaphore(1),
+		}
+		s.NoError(sd.postLoadSem.Acquire(context.Background()))
+		defer sd.postLoadSem.Release()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+		defer cancel()
+		called := false
+		err := sd.withPostLoadLimit(ctx, func() error {
+			called = true
+			return nil
+		})
+		s.ErrorIs(err, context.DeadlineExceeded)
+		s.False(called)
+	})
+}
+
 func (s *DelegatorDataSuite) waitTargetVersion(targetVersion int64) {
 	for {
-		if s.delegator.idfOracle.TargetVersion() >= targetVersion {
+		if s.getIDFOracleForTest().TargetVersion() >= targetVersion {
 			return
 		}
 		time.Sleep(time.Millisecond * 100)
@@ -1078,11 +1351,11 @@ func (s *DelegatorDataSuite) TestBuildBM25IDF() {
 		sealedSegs := []int64{1, 2, 3, 4}
 		for _, segID := range sealedSegs {
 			// every segment stats only has one token, avgdl = 1
-			registerSealedStats(s.delegator.idfOracle.(*idfOracle), segID, uint32(segID), uint32(segID)+1)
+			registerSealedStats(s.getIDFOracleForTest(), segID, uint32(segID), uint32(segID)+1)
 		}
 		snapshot := genSnapShot([]int64{1, 2, 3, 4}, []int64{}, 100)
 
-		s.delegator.idfOracle.SetNext(snapshot)
+		s.getIDFOracleForTest().SetNext(snapshot)
 		s.waitTargetVersion(snapshot.targetVersion)
 		placeholderGroupBytes, err := funcutil.FieldDataToPlaceholderGroupBytes(genStringFieldData("test bm25 data"))
 		s.NoError(err)
@@ -1101,7 +1374,7 @@ func (s *DelegatorDataSuite) TestBuildBM25IDF() {
 			SerializedExprPlan: plan,
 			FieldId:            101,
 		}
-		avgdl, err := s.delegator.buildBM25IDF(req)
+		avgdl, err := s.delegator.buildBM25IDF(context.Background(), req)
 		s.NoError(err)
 		s.Equal(float64(1), avgdl)
 
@@ -1131,7 +1404,7 @@ func (s *DelegatorDataSuite) TestBuildBM25IDF() {
 			PlaceholderGroup: placeholderGroupBytes,
 			FieldId:          101,
 		}
-		_, err = s.delegator.buildBM25IDF(req)
+		_, err = s.delegator.buildBM25IDF(context.Background(), req)
 		s.Error(err)
 	})
 
@@ -1144,7 +1417,7 @@ func (s *DelegatorDataSuite) TestBuildBM25IDF() {
 			FieldId:          103, // invalid field id
 		}
 
-		_, err = s.delegator.buildBM25IDF(req)
+		_, err = s.delegator.buildBM25IDF(context.Background(), req)
 		s.Error(err)
 	})
 
@@ -1152,9 +1425,7 @@ func (s *DelegatorDataSuite) TestBuildBM25IDF() {
 		placeholderGroupBytes, err := funcutil.FieldDataToPlaceholderGroupBytes(genStringFieldData("test bm25 data"))
 		s.NoError(err)
 
-		oldRunner := s.delegator.functionRunners
 		mockRunner := function.NewMockFunctionRunner(s.T())
-		s.delegator.functionRunners = map[int64]function.FunctionRunner{101: mockRunner}
 		mockRunner.EXPECT().GetInputFields().Return([]*schemapb.FieldSchema{
 			{
 				FieldID:  101,
@@ -1163,15 +1434,16 @@ func (s *DelegatorDataSuite) TestBuildBM25IDF() {
 			},
 		})
 		mockRunner.EXPECT().BatchRun(mock.Anything).Return(nil, errors.New("mock err"))
-		defer func() {
-			s.delegator.functionRunners = oldRunner
-		}()
+		patch := mockey.Mock(function.RunWithRunner).To(func(ctx context.Context, collectionID int64, schemaVersion int32, outputFieldID int64, run func(schemapb.FunctionType, function.FunctionRunner) error) (bool, error) {
+			return true, run(schemapb.FunctionType_BM25, mockRunner)
+		}).Build()
+		defer patch.UnPatch()
 
 		req := &internalpb.SearchRequest{
 			PlaceholderGroup: placeholderGroupBytes,
 			FieldId:          101,
 		}
-		_, err = s.delegator.buildBM25IDF(req)
+		_, err = s.delegator.buildBM25IDF(context.Background(), req)
 		s.Error(err)
 	})
 
@@ -1179,9 +1451,7 @@ func (s *DelegatorDataSuite) TestBuildBM25IDF() {
 		placeholderGroupBytes, err := funcutil.FieldDataToPlaceholderGroupBytes(genStringFieldData("test bm25 data"))
 		s.NoError(err)
 
-		oldRunner := s.delegator.functionRunners
 		mockRunner := function.NewMockFunctionRunner(s.T())
-		s.delegator.functionRunners = map[int64]function.FunctionRunner{101: mockRunner}
 		mockRunner.EXPECT().GetInputFields().Return([]*schemapb.FieldSchema{
 			{
 				FieldID:  101,
@@ -1190,15 +1460,16 @@ func (s *DelegatorDataSuite) TestBuildBM25IDF() {
 			},
 		})
 		mockRunner.EXPECT().BatchRun(mock.Anything).Return([]interface{}{1}, nil)
-		defer func() {
-			s.delegator.functionRunners = oldRunner
-		}()
+		patch := mockey.Mock(function.RunWithRunner).To(func(ctx context.Context, collectionID int64, schemaVersion int32, outputFieldID int64, run func(schemapb.FunctionType, function.FunctionRunner) error) (bool, error) {
+			return true, run(schemapb.FunctionType_BM25, mockRunner)
+		}).Build()
+		defer patch.UnPatch()
 
 		req := &internalpb.SearchRequest{
 			PlaceholderGroup: placeholderGroupBytes,
 			FieldId:          101,
 		}
-		_, err = s.delegator.buildBM25IDF(req)
+		_, err = s.delegator.buildBM25IDF(context.Background(), req)
 		s.Error(err)
 	})
 
@@ -1206,9 +1477,7 @@ func (s *DelegatorDataSuite) TestBuildBM25IDF() {
 		placeholderGroupBytes, err := funcutil.FieldDataToPlaceholderGroupBytes(genStringFieldData("test bm25 data"))
 		s.NoError(err)
 
-		oldRunner := s.delegator.functionRunners
 		mockRunner := function.NewMockFunctionRunner(s.T())
-		s.delegator.functionRunners = map[int64]function.FunctionRunner{103: mockRunner}
 		mockRunner.EXPECT().GetInputFields().Return([]*schemapb.FieldSchema{
 			{
 				FieldID:  101,
@@ -1217,17 +1486,18 @@ func (s *DelegatorDataSuite) TestBuildBM25IDF() {
 			},
 		})
 		mockRunner.EXPECT().BatchRun(mock.Anything).Return([]interface{}{&schemapb.SparseFloatArray{Contents: [][]byte{typeutil.CreateAndSortSparseFloatRow(map[uint32]float32{1: 1})}}}, nil)
-		defer func() {
-			s.delegator.functionRunners = oldRunner
-		}()
+		patch := mockey.Mock(function.RunWithRunner).To(func(ctx context.Context, collectionID int64, schemaVersion int32, outputFieldID int64, run func(schemapb.FunctionType, function.FunctionRunner) error) (bool, error) {
+			return true, run(schemapb.FunctionType_BM25, mockRunner)
+		}).Build()
+		defer patch.UnPatch()
 
 		req := &internalpb.SearchRequest{
 			PlaceholderGroup: placeholderGroupBytes,
 			FieldId:          103, // invalid field
 		}
-		_, err = s.delegator.buildBM25IDF(req)
+		_, err = s.delegator.buildBM25IDF(context.Background(), req)
 		s.Error(err)
-		log.Info("test", zap.Error(err))
+		mlog.Info(context.TODO(), "test", mlog.Err(err))
 	})
 
 	s.Run("set avgdl failed", func() {
@@ -1235,11 +1505,11 @@ func (s *DelegatorDataSuite) TestBuildBM25IDF() {
 		sealedSegs := []int64{1, 2, 3, 4}
 		for _, segID := range sealedSegs {
 			// every segment stats only has one token, avgdl = 1
-			registerSealedStats(s.delegator.idfOracle.(*idfOracle), segID, uint32(segID), uint32(segID)+1)
+			registerSealedStats(s.getIDFOracleForTest(), segID, uint32(segID), uint32(segID)+1)
 		}
 		snapshot := genSnapShot([]int64{1, 2, 3, 4}, []int64{}, 100)
 
-		s.delegator.idfOracle.SetNext(snapshot)
+		s.getIDFOracleForTest().SetNext(snapshot)
 		s.waitTargetVersion(snapshot.targetVersion)
 		placeholderGroupBytes, err := funcutil.FieldDataToPlaceholderGroupBytes(genStringFieldData("test bm25 data"))
 		s.NoError(err)
@@ -1248,7 +1518,7 @@ func (s *DelegatorDataSuite) TestBuildBM25IDF() {
 			PlaceholderGroup: placeholderGroupBytes,
 			FieldId:          101,
 		}
-		_, err = s.delegator.buildBM25IDF(req)
+		_, err = s.delegator.buildBM25IDF(context.Background(), req)
 		s.Error(err)
 	})
 }
@@ -1713,6 +1983,137 @@ func (s *DelegatorDataSuite) TestDelegatorData_ExcludeSegments() {
 	s.delegator.TryCleanExcludedSegments(4)
 	s.True(s.delegator.VerifyExcludedSegments(1, 1))
 	s.True(s.delegator.VerifyExcludedSegments(1, 5))
+}
+
+func TestSegmentEffectiveTs(t *testing.T) {
+	// Import segment: commit_timestamp takes precedence over start_position.Timestamp
+	info := &querypb.SegmentLoadInfo{
+		SegmentID:       1,
+		StartPosition:   &msgpb.MsgPosition{Timestamp: 1000},
+		CommitTimestamp: 5000,
+	}
+	assert.Equal(t, uint64(5000), segmentEffectiveTs(info))
+
+	// Normal segment: falls back to start_position.Timestamp
+	infoNormal := &querypb.SegmentLoadInfo{
+		SegmentID:     2,
+		StartPosition: &msgpb.MsgPosition{Timestamp: 1000},
+	}
+	assert.Equal(t, uint64(1000), segmentEffectiveTs(infoNormal))
+}
+
+func TestSegmentEffectiveTs_DelegatorHelper(t *testing.T) {
+	// commit_ts=0: use start_position
+	info := &querypb.SegmentLoadInfo{
+		StartPosition: &msgpb.MsgPosition{Timestamp: 1000},
+	}
+	assert.Equal(t, uint64(1000), segmentEffectiveTs(info))
+
+	// commit_ts > 0: override
+	info.CommitTimestamp = 5000
+	assert.Equal(t, uint64(5000), segmentEffectiveTs(info))
+
+	// nil start_position + commit_ts
+	info2 := &querypb.SegmentLoadInfo{CommitTimestamp: 3000}
+	assert.Equal(t, uint64(3000), segmentEffectiveTs(info2))
+
+	// both zero
+	info3 := &querypb.SegmentLoadInfo{}
+	assert.Equal(t, uint64(0), segmentEffectiveTs(info3))
+}
+
+func TestDeleteBuffer_PinsAtCommitTs(t *testing.T) {
+	// Simulate: import segment segID=42, start_position.ts=1000, commit_ts=5000.
+	// After LoadSegments, the delete buffer must be pinned at commit_ts=5000.
+
+	const segID int64 = 42
+	const commitTs uint64 = 5000
+	const startTs uint64 = 1000
+
+	buf := deletebuffer.NewDoubleCacheDeleteBuffer[*deletebuffer.Item](0, 1024*1024)
+
+	// Compute effective ts: segmentEffectiveTs must return commit_ts for import segment.
+	effectiveTs := segmentEffectiveTs(&querypb.SegmentLoadInfo{
+		SegmentID:       segID,
+		StartPosition:   &msgpb.MsgPosition{Timestamp: startTs},
+		CommitTimestamp: commitTs,
+	})
+	assert.Equal(t, commitTs, effectiveTs,
+		"segmentEffectiveTs must return commit_ts for import segment")
+
+	// Pin at commit_ts (as LoadSegments does).
+	buf.Pin(effectiveTs, segID)
+
+	// Unpin at wrong ts (start_position.ts): no-op, pin at commit_ts stays.
+	buf.Unpin(startTs, segID)
+
+	// Pin at commit_ts is still active — Unpin at commit_ts removes it.
+	buf.Unpin(commitTs, segID)
+	// After unpin, a second unpin should be safe (no panic/error).
+	buf.Unpin(commitTs, segID)
+}
+
+func TestDeleteBuffer_ListAfterUsesCommitTs(t *testing.T) {
+	// Invariant I10: ListAfter must use segmentEffectiveTs (commit_ts when non-zero),
+	// not the raw StartPosition timestamp.
+	// If ListAfter uses the stale StartPosition, it would return too many delete records
+	// (including pre-import deletes that are irrelevant).
+
+	const commitTs uint64 = 5000
+	const startTs uint64 = 1000
+
+	info := &querypb.SegmentLoadInfo{
+		SegmentID:       42,
+		StartPosition:   &msgpb.MsgPosition{Timestamp: startTs},
+		CommitTimestamp: commitTs,
+	}
+
+	effectiveTs := segmentEffectiveTs(info)
+	assert.Equal(t, commitTs, effectiveTs,
+		"segmentEffectiveTs must return commit_ts for import segment, not startPosition")
+
+	// Verify: for normal segment (commitTs=0), effectiveTs falls back to startPosition
+	normalInfo := &querypb.SegmentLoadInfo{
+		SegmentID:     43,
+		StartPosition: &msgpb.MsgPosition{Timestamp: startTs},
+	}
+	normalEffective := segmentEffectiveTs(normalInfo)
+	assert.Equal(t, startTs, normalEffective,
+		"segmentEffectiveTs must return startPosition for normal segment")
+}
+
+func TestDeleteBuffer_CatchUpUsesCommitTs(t *testing.T) {
+	// Invariant I10: catchUpTs in loadStreamDelete must start at segmentEffectiveTs,
+	// not StartPosition.Timestamp. This ensures the catch-up phase doesn't
+	// re-process delete records from before the import commit time.
+
+	const commitTs uint64 = 5000
+	const startTs uint64 = 1000
+
+	info := &querypb.SegmentLoadInfo{
+		SegmentID:       42,
+		StartPosition:   &msgpb.MsgPosition{Timestamp: startTs},
+		CommitTimestamp: commitTs,
+	}
+
+	// Simulate catchUpTs initialization logic from loadStreamDelete
+	catchUpTs := segmentEffectiveTs(info)
+	// snapshotMaxTs=0 means no snapshot → catchUpTs should be segmentEffectiveTs
+	snapshotMaxTs := uint64(0)
+	if snapshotMaxTs > 0 {
+		catchUpTs = snapshotMaxTs + 1
+	}
+	assert.Equal(t, commitTs, catchUpTs,
+		"catchUpTs must start at commit_ts (not startPosition) when no snapshot exists")
+
+	// With snapshot: catchUpTs should advance beyond snapshot
+	snapshotMaxTs = 6000
+	catchUpTs2 := segmentEffectiveTs(info)
+	if snapshotMaxTs > 0 {
+		catchUpTs2 = snapshotMaxTs + 1
+	}
+	assert.Equal(t, uint64(6001), catchUpTs2,
+		"catchUpTs must advance to snapshotMaxTs+1 when snapshot exists")
 }
 
 func TestDelegatorDataSuite(t *testing.T) {

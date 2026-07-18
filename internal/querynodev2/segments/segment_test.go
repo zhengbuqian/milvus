@@ -7,18 +7,24 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
 	"go.uber.org/atomic"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/msgpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/mocks/util/mock_segcore"
 	"github.com/milvus-io/milvus/internal/querynodev2/pkoracle"
+	"github.com/milvus-io/milvus/internal/querynodev2/segments/state"
 	storage "github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/initcore"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/internal/util/segcore"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/querypb"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 type SegmentSuite struct {
@@ -133,7 +139,7 @@ func (suite *SegmentSuite) SetupTest() {
 
 	insertMsg, err := mock_segcore.GenInsertMsg(suite.collection.GetCCollection(), suite.partitionID, suite.growing.ID(), msgLength)
 	suite.Require().NoError(err)
-	insertRecord, err := storage.TransferInsertMsgToInsertRecord(suite.collection.Schema(), insertMsg)
+	insertRecord, _, err := storage.TransferInsertMsgToInsertRecord(suite.collection.Schema(), insertMsg)
 	suite.Require().NoError(err)
 	err = suite.growing.Insert(ctx, insertMsg.RowIDs, insertMsg.Timestamps, insertRecord)
 	suite.Require().NoError(err)
@@ -155,6 +161,189 @@ func (suite *SegmentSuite) TestLoadInfo() {
 	suite.NotNil(suite.sealed.LoadInfo())
 	// growing segment has no load info
 	suite.NotNil(suite.growing.LoadInfo())
+}
+
+func TestCompactSegmentLoadInfoForRuntime(t *testing.T) {
+	loadInfo := &querypb.SegmentLoadInfo{
+		SegmentID:    11,
+		PartitionID:  22,
+		CollectionID: 33,
+		DbID:         44,
+		BinlogPaths: []*datapb.FieldBinlog{{
+			FieldID:     101,
+			ChildFields: []int64{101, 102},
+			Binlogs: []*datapb.Binlog{{
+				EntriesNum:    10,
+				TimestampFrom: 1000,
+				TimestampTo:   2000,
+				LogPath:       "files/binlog/101",
+				LogSize:       4096,
+				LogID:         55,
+				MemorySize:    8192,
+			}},
+		}},
+		Statslogs: []*datapb.FieldBinlog{{
+			FieldID: 101,
+			Binlogs: []*datapb.Binlog{{
+				LogPath:    "files/stats/101",
+				LogSize:    128,
+				MemorySize: 128,
+			}},
+		}},
+		Deltalogs: []*datapb.FieldBinlog{{
+			FieldID: 101,
+			Binlogs: []*datapb.Binlog{{
+				LogPath: "files/delta/101",
+			}},
+		}},
+		IndexInfos: []*querypb.FieldIndexInfo{{
+			FieldID:        101,
+			IndexID:        66,
+			IndexFilePaths: []string{"files/index/101"},
+		}},
+		InsertChannel:        "by-dev-rootcoord-dml_0_33v0",
+		StartPosition:        &msgpb.MsgPosition{ChannelName: "ch", MsgID: []byte("start")},
+		DeltaPosition:        &msgpb.MsgPosition{ChannelName: "ch", MsgID: []byte("delta")},
+		Level:                datapb.SegmentLevel_L1,
+		StorageVersion:       2,
+		IsSorted:             true,
+		TextStatsLogs:        map[int64]*datapb.TextIndexStats{101: {FieldID: 101}},
+		Bm25Logs:             []*datapb.FieldBinlog{{FieldID: 102}},
+		JsonKeyStatsLogs:     map[int64]*datapb.JsonKeyStats{101: {FieldID: 101}},
+		Priority:             commonpb.LoadPriority_HIGH,
+		ManifestPath:         "files/manifest",
+		DataVersion:          7,
+		UseTakeForOutput:     true,
+		EstimatedBytesPerRow: 64,
+		CommitTimestamp:      12345,
+	}
+
+	compact := compactSegmentLoadInfoForRuntime(loadInfo)
+	assert.Equal(t, loadInfo.GetSegmentID(), compact.GetSegmentID())
+	assert.Equal(t, loadInfo.GetManifestPath(), compact.GetManifestPath())
+	assert.Equal(t, loadInfo.GetDataVersion(), compact.GetDataVersion())
+	assert.Equal(t, loadInfo.GetStorageVersion(), compact.GetStorageVersion())
+	assert.Equal(t, loadInfo.GetDeltalogs(), compact.GetDeltalogs())
+	assert.Empty(t, compact.GetIndexInfos())
+	assert.Empty(t, compact.GetTextStatsLogs())
+	assert.Empty(t, compact.GetBm25Logs())
+	assert.Empty(t, compact.GetJsonKeyStatsLogs())
+	assert.Empty(t, compact.GetBinlogPaths())
+	assert.Empty(t, compact.GetStatslogs())
+
+	loadInfo.StartPosition.ChannelName = "mutated"
+	assert.Equal(t, "ch", compact.GetStartPosition().GetChannelName())
+}
+
+func TestCompactLoadInfoForRuntimeCachesResourceUsage(t *testing.T) {
+	paramtable.Init()
+	paramtable.Get().Save(paramtable.Get().QueryNodeCfg.MmapScalarField.Key, "false")
+	defer paramtable.Get().Reset(paramtable.Get().QueryNodeCfg.MmapScalarField.Key)
+	paramtable.Get().Save(paramtable.Get().QueryNodeCfg.TieredEvictableMemoryCacheRatio.Key, "1.0")
+	defer paramtable.Get().Reset(paramtable.Get().QueryNodeCfg.TieredEvictableMemoryCacheRatio.Key)
+
+	schema := &schemapb.CollectionSchema{
+		Name: "test",
+		Fields: []*schemapb.FieldSchema{{
+			FieldID:  101,
+			Name:     "field_101",
+			DataType: schemapb.DataType_Int64,
+		}},
+	}
+	loadInfo := &querypb.SegmentLoadInfo{
+		SegmentID:    11,
+		PartitionID:  22,
+		CollectionID: 33,
+		Level:        datapb.SegmentLevel_L1,
+		BinlogPaths: []*datapb.FieldBinlog{{
+			FieldID: 101,
+			Binlogs: []*datapb.Binlog{{
+				MemorySize: 4096,
+				LogSize:    2048,
+			}},
+		}},
+	}
+	segment := &baseSegment{
+		collection:         NewTestCollection(loadInfo.GetCollectionID(), querypb.LoadType_LoadCollection, schema),
+		segmentType:        SegmentTypeSealed,
+		loadInfo:           atomic.NewPointer(loadInfo),
+		resourceUsageCache: atomic.NewPointer[ResourceUsage](nil),
+	}
+
+	segment.compactLoadInfoForRuntime()
+
+	assert.Empty(t, segment.LoadInfo().GetBinlogPaths())
+	cached := segment.resourceUsageCache.Load()
+	if assert.NotNil(t, cached) {
+		assert.EqualValues(t, 4096, cached.MemorySize)
+	}
+	assert.EqualValues(t, 4096, segment.ResourceUsageEstimate().MemorySize)
+}
+
+func (suite *SegmentSuite) TestSyncFieldJSONStatsFromLoadInfo() {
+	paramtable.Get().Save(paramtable.Get().CommonCfg.EnabledJSONKeyStats.Key, "true")
+	defer paramtable.Get().Reset(paramtable.Get().CommonCfg.EnabledJSONKeyStats.Key)
+
+	segment := suite.sealed.(*LocalSegment)
+	loadInfo := &querypb.SegmentLoadInfo{
+		SegmentID:    suite.segmentID,
+		CollectionID: suite.collectionID,
+		PartitionID:  suite.partitionID,
+		JsonKeyStatsLogs: map[int64]*datapb.JsonKeyStats{
+			102: {
+				FieldID:                102,
+				BuildID:                5001,
+				Version:                3,
+				JsonKeyStatsDataFormat: common.JSONStatsDataFormatVersion,
+			},
+		},
+	}
+	segment.syncFieldJSONStatsFromLoadInfo(context.Background(), loadInfo)
+
+	stats := segment.GetFieldJSONIndexStats()
+	suite.Require().Len(stats, 1)
+	suite.EqualValues(102, stats[102].GetFieldID())
+	suite.EqualValues(5001, stats[102].GetBuildID())
+	suite.EqualValues(3, stats[102].GetVersionID())
+	suite.EqualValues(common.JSONStatsDataFormatVersion, stats[102].GetDataFormatVersion())
+
+	stats[102].BuildID = 9999
+	suite.EqualValues(5001, segment.GetFieldJSONIndexStats()[102].GetBuildID())
+
+	invalidLoadInfo := &querypb.SegmentLoadInfo{
+		SegmentID:    suite.segmentID,
+		CollectionID: suite.collectionID,
+		PartitionID:  suite.partitionID,
+		JsonKeyStatsLogs: map[int64]*datapb.JsonKeyStats{
+			102: {
+				FieldID:                102,
+				BuildID:                5002,
+				Version:                4,
+				JsonKeyStatsDataFormat: common.JSONStatsDataFormatVersion - 1,
+			},
+		},
+	}
+	segment.syncFieldJSONStatsFromLoadInfo(context.Background(), invalidLoadInfo)
+	suite.Empty(segment.GetFieldJSONIndexStats())
+
+	replacementLoadInfo := &querypb.SegmentLoadInfo{
+		SegmentID:    suite.segmentID,
+		CollectionID: suite.collectionID,
+		PartitionID:  suite.partitionID,
+		JsonKeyStatsLogs: map[int64]*datapb.JsonKeyStats{
+			103: {
+				FieldID:                103,
+				BuildID:                6001,
+				Version:                1,
+				JsonKeyStatsDataFormat: common.JSONStatsDataFormatVersion,
+			},
+		},
+	}
+	segment.syncFieldJSONStatsFromLoadInfo(context.Background(), replacementLoadInfo)
+	stats = segment.GetFieldJSONIndexStats()
+	suite.Require().Len(stats, 1)
+	suite.Nil(stats[102])
+	suite.EqualValues(6001, stats[103].GetBuildID())
 }
 
 func (suite *SegmentSuite) TestResourceUsageEstimate() {
@@ -210,9 +399,6 @@ func (suite *SegmentSuite) TestCASVersion() {
 
 	suite.True(segment.CASVersion(curVersion, curVersion+1))
 	suite.Equal(curVersion+1, segment.Version())
-}
-
-func (suite *SegmentSuite) TestSegmentRemoveUnusedFieldFiles() {
 }
 
 // TestDeleteSameTimestampAcrossBatches reproduces the DumpSnapshot Assert failure
@@ -369,7 +555,6 @@ func newTestBaseSegment(segmentID, partitionID int64) baseSegment {
 			PartitionID: partitionID,
 		}),
 		version:            atomic.NewInt64(0),
-		bm25Stats:          make(map[int64]*storage.BM25Stats),
 		resourceUsageCache: atomic.NewPointer[ResourceUsage](nil),
 		needUpdatedVersion: atomic.NewInt64(0),
 	}
@@ -484,6 +669,69 @@ func TestBaseSegment_PkCandidateNil(t *testing.T) {
 	blc := storage.NewBatchLocationsCache(pks)
 	results := bs.BatchPkExist(blc)
 	assert.Equal(t, []bool{true, true}, results)
+}
+
+func TestLocalSegmentBM25StatsAreCloned(t *testing.T) {
+	segment := &LocalSegment{
+		baseSegment:     newTestBaseSegment(1, 0),
+		bm25StatsHolder: newBM25StatsHolder(),
+	}
+
+	stats := storage.NewBM25Stats()
+	stats.Append(map[uint32]float32{1: 1})
+	input := map[int64]*storage.BM25Stats{102: stats}
+
+	segment.UpdateBM25Stats(input)
+	stats.Append(map[uint32]float32{2: 1})
+
+	got := segment.GetBM25Stats()
+	assert.Equal(t, int64(1), got[102].NumRow())
+
+	got[102].Append(map[uint32]float32{3: 1})
+	got[103] = storage.NewBM25Stats()
+
+	gotAgain := segment.GetBM25Stats()
+	assert.Equal(t, int64(1), gotAgain[102].NumRow())
+	assert.NotContains(t, gotAgain, int64(103))
+}
+
+func TestLocalSegmentReopenUsesSegcoreSchemaVersion(t *testing.T) {
+	paramtable.Init()
+
+	schema := mock_segcore.GenTestCollectionSchema("collection_v1", schemapb.DataType_Int64, false)
+	schema.Version = 1
+
+	collection := &Collection{}
+	collection.setSchema(schema, 1, 100, 101)
+
+	csegment := mock_segcore.NewMockCSegment(t)
+	csegment.EXPECT().
+		Reopen(mock.Anything, mock.MatchedBy(func(request *segcore.ReopenRequest) bool {
+			return request.Schema == schema && request.SchemaVersion == 101
+		})).
+		Return(nil)
+
+	loadInfo := &querypb.SegmentLoadInfo{
+		CollectionID:  10,
+		SegmentID:     20,
+		PartitionID:   30,
+		InsertChannel: "by-dev-rootcoord-dml_0_10v0",
+	}
+	segment := &LocalSegment{
+		baseSegment: baseSegment{
+			collection:         collection,
+			loadInfo:           atomic.NewPointer(loadInfo),
+			version:            atomic.NewInt64(0),
+			resourceUsageCache: atomic.NewPointer[ResourceUsage](nil),
+			needUpdatedVersion: atomic.NewInt64(0),
+		},
+		ptrLock:        state.NewLoadStateLock(state.LoadStateDataLoaded),
+		csegment:       csegment,
+		fieldIndexes:   typeutil.NewConcurrentMap[int64, *IndexedFieldInfo](),
+		fieldJSONStats: make(map[int64]*querypb.JsonStatsInfo),
+	}
+
+	assert.NoError(t, segment.Reopen(context.Background(), loadInfo))
 }
 
 // TestBaseSegment_SkipGrowingBF tests that skipGrowingBF bypasses PK candidate checks.

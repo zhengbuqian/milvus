@@ -1,9 +1,9 @@
 package registry
 
 import (
-	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/util/syncutil"
+	"github.com/milvus-io/milvus-proto/go-api/v3/msgpb"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/message"
+	"github.com/milvus-io/milvus/pkg/v3/util/syncutil"
 )
 
 // init the message ack callbacks
@@ -74,6 +74,10 @@ var (
 
 	// External Collection
 	RegisterRefreshExternalCollectionV2AckCallback = registerMessageAckCallback[*message.RefreshExternalCollectionMessageHeader, *message.RefreshExternalCollectionMessageBody]
+
+	// Import 2PC
+	RegisterCommitImportV2AckCallback   = registerMessageAckCallback[*message.CommitImportMessageHeader, *message.CommitImportMessageBody]
+	RegisterRollbackImportV2AckCallback = registerMessageAckCallback[*message.RollbackImportMessageHeader, *message.RollbackImportMessageBody]
 )
 
 // resetMessageAckCallbacks resets the message ack callbacks.
@@ -140,5 +144,9 @@ func resetMessageAckCallbacks() {
 
 		// External Collection
 		message.MessageTypeRefreshExternalCollectionV2: syncutil.NewFuture[messageInnerAckCallback](),
+
+		// Import 2PC
+		message.MessageTypeCommitImportV2:   syncutil.NewFuture[messageInnerAckCallback](),
+		message.MessageTypeRollbackImportV2: syncutil.NewFuture[messageInnerAckCallback](),
 	}
 }

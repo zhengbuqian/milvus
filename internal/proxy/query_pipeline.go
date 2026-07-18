@@ -18,23 +18,22 @@ package proxy
 
 import (
 	"context"
-	"fmt"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/agg"
 	"github.com/milvus-io/milvus/internal/util/queryutil"
 	"github.com/milvus-io/milvus/internal/util/reduce"
 	"github.com/milvus-io/milvus/internal/util/reduce/orderby"
 	typeutil2 "github.com/milvus-io/milvus/internal/util/typeutil"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/planpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/proto/internalpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/planpb"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 // Channel names for query pipeline data flow
@@ -282,7 +281,7 @@ func newReduceByGroupsOperator(
 		for i := 0; i < fieldCount; i++ {
 			indices := outputMap.IndexesAt(i)
 			if len(indices) == 0 {
-				return nil, fmt.Errorf("no indices found for output field '%s'", outputMap.NameAt(i))
+				return nil, merr.WrapErrParameterInvalidMsg("no indices found for output field '%s'", outputMap.NameAt(i))
 			} else if len(indices) == 1 {
 				reOrganizedFieldDatas[i] = reducedFieldDatas[indices[0]]
 				reOrganizedFieldDatas[i].FieldName = outputMap.NameAt(i)
@@ -345,7 +344,7 @@ func newAggRemapOperator(outputMap *agg.AggregationFieldMap) queryutil.Operator 
 		for i := 0; i < fieldCount; i++ {
 			indices := outputMap.IndexesAt(i)
 			if len(indices) == 0 {
-				return nil, fmt.Errorf("no indices found for output field '%s'", outputMap.NameAt(i))
+				return nil, merr.WrapErrParameterInvalidMsg("no indices found for output field '%s'", outputMap.NameAt(i))
 			} else if len(indices) == 1 {
 				remapped[i] = rawFields[indices[0]]
 				remapped[i].FieldName = outputMap.NameAt(i)

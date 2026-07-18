@@ -9,16 +9,15 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/klauspost/compress/zstd"
 	"github.com/samber/lo"
-	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"github.com/milvus-io/milvus/pkg/v2/kv"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/util/compressor"
-	"github.com/milvus-io/milvus/pkg/v2/util/conc"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
+	"github.com/milvus-io/milvus/pkg/v3/kv"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/querypb"
+	"github.com/milvus-io/milvus/pkg/v3/util/compressor"
+	"github.com/milvus-io/milvus/pkg/v3/util/conc"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
 )
 
 var ErrInvalidKey = errors.New("invalid load info key")
@@ -65,16 +64,24 @@ func (s Catalog) SaveCollection(ctx context.Context, collection *querypb.Collect
 }
 
 func (s Catalog) SavePartition(ctx context.Context, info ...*querypb.PartitionLoadInfo) error {
+	kvs := make(map[string]string)
 	for _, partition := range info {
 		k := EncodePartitionLoadInfoKey(partition.GetCollectionID(), partition.GetPartitionID())
 		v, err := proto.Marshal(partition)
 		if err != nil {
 			return err
 		}
-		err = s.cli.Save(ctx, k, string(v))
-		if err != nil {
-			return err
+		kvs[k] = string(v)
+		if len(kvs) >= MetaOpsBatchSize {
+			err := s.cli.MultiSave(ctx, kvs)
+			if err != nil {
+				return err
+			}
+			kvs = make(map[string]string)
 		}
+	}
+	if len(kvs) > 0 {
+		return s.cli.MultiSave(ctx, kvs)
 	}
 	return nil
 }
@@ -338,7 +345,7 @@ func (s Catalog) GetCollectionTargets(ctx context.Context) (map[int64]*querypb.C
 		target := &querypb.CollectionTarget{}
 		if err := proto.Unmarshal(decompressed.Bytes(), target); err != nil {
 			// recover target from meta is a optimize policy, skip when failure happens
-			log.Warn("failed to unmarshal collection target", zap.String("key", string(key)), zap.Error(err))
+			mlog.Warn(ctx, "failed to unmarshal collection target", mlog.String("key", string(key)), mlog.Err(err))
 			return nil
 		}
 		ret[target.GetCollectionID()] = target

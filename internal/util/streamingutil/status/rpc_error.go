@@ -9,7 +9,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/milvus-io/milvus/pkg/v2/proto/streamingpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/streamingpb"
 )
 
 var streamingErrorToGRPCStatus = map[streamingpb.StreamingCode]codes.Code{
@@ -24,6 +24,12 @@ var streamingErrorToGRPCStatus = map[streamingpb.StreamingCode]codes.Code{
 	streamingpb.StreamingCode_STREAMING_CODE_INVAILD_ARGUMENT:          codes.InvalidArgument,
 	streamingpb.StreamingCode_STREAMING_CODE_TRANSACTION_EXPIRED:       codes.FailedPrecondition,
 	streamingpb.StreamingCode_STREAMING_CODE_INVALID_TRANSACTION_STATE: codes.FailedPrecondition,
+	streamingpb.StreamingCode_STREAMING_CODE_UNRECOVERABLE:             codes.FailedPrecondition,
+	streamingpb.StreamingCode_STREAMING_CODE_RESOURCE_ACQUIRED:         codes.FailedPrecondition,
+	streamingpb.StreamingCode_STREAMING_CODE_REPLICATE_VIOLATION:       codes.FailedPrecondition,
+	streamingpb.StreamingCode_STREAMING_CODE_WALNAME_MISMATCH:          codes.FailedPrecondition,
+	streamingpb.StreamingCode_STREAMING_CODE_SCHEMA_VERSION_MISMATCH:   codes.FailedPrecondition,
+	streamingpb.StreamingCode_STREAMING_CODE_RATE_LIMIT_REJECTED:       codes.ResourceExhausted,
 	streamingpb.StreamingCode_STREAMING_CODE_UNKNOWN:                   codes.Unknown,
 }
 

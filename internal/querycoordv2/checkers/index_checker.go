@@ -21,21 +21,20 @@ import (
 	"time"
 
 	"github.com/samber/lo"
-	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
 	"github.com/milvus-io/milvus/internal/querycoordv2/params"
 	"github.com/milvus-io/milvus/internal/querycoordv2/session"
 	"github.com/milvus-io/milvus/internal/querycoordv2/task"
 	"github.com/milvus-io/milvus/internal/querycoordv2/utils"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/indexpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/querypb"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 const MaxSegmentNumPerGetIndexInfoRPC = 1024
@@ -88,14 +87,14 @@ func (c *IndexChecker) Check(ctx context.Context) []task.Task {
 	for _, collectionID := range collectionIDs {
 		indexInfos, err := c.broker.ListIndexes(ctx, collectionID)
 		if err != nil {
-			log.Warn("failed to list indexes", zap.Int64("collection", collectionID), zap.Error(err))
+			mlog.Warn(ctx, "failed to list indexes", mlog.Int64("collection", collectionID), mlog.Err(err))
 			continue
 		}
 
 		collection := c.meta.GetCollection(ctx, collectionID)
 		schema := c.meta.GetCollectionSchema(ctx, collectionID)
 		if collection == nil {
-			log.Warn("collection released during check index", zap.Int64("collection", collectionID))
+			mlog.Warn(ctx, "collection released during check index", mlog.Int64("collection", collectionID))
 			continue
 		}
 		if schema == nil && paramtable.Get().CommonCfg.EnabledJSONKeyStats.GetAsBool() {
@@ -115,8 +114,8 @@ func (c *IndexChecker) Check(ctx context.Context) []task.Task {
 }
 
 func (c *IndexChecker) checkReplica(ctx context.Context, collection *meta.Collection, replica *meta.Replica, indexInfos []*indexpb.IndexInfo, schema *schemapb.CollectionSchema) []task.Task {
-	log := log.Ctx(ctx).With(
-		zap.Int64("collectionID", collection.GetCollectionID()),
+	log := mlog.With(
+		mlog.FieldCollectionID(collection.GetCollectionID()),
 	)
 	var tasks []task.Task
 
@@ -128,7 +127,7 @@ func (c *IndexChecker) checkReplica(ctx context.Context, collection *meta.Collec
 
 	idSegmentsStats := make(map[int64]*meta.Segment)
 	targetsStats := make(map[int64][]int64) // segmentID => FieldID
-	segmentsToUpdate := typeutil.NewSet[int64]()
+	segmentsToUpdate := make(map[int64]*meta.Segment)
 	for _, segment := range segments {
 		// skip update index in read only node
 		if roNodeSet.Contain(segment.Node) {
@@ -146,14 +145,14 @@ func (c *IndexChecker) checkReplica(ctx context.Context, collection *meta.Collec
 
 		redundantIndices := c.checkRedundantIndices(segment, indexInfos)
 		if len(redundantIndices) > 0 {
-			segmentsToUpdate.Insert(segment.GetID())
+			segmentsToUpdate[segment.GetID()] = segment
 		}
 	}
 
 	for _, segmentIDs := range lo.Chunk(lo.Keys(idSegments), MaxSegmentNumPerGetIndexInfoRPC) {
 		segmentIndexInfos, err := c.broker.GetIndexInfo(ctx, collection.GetCollectionID(), segmentIDs...)
 		if err != nil {
-			log.Warn("failed to get indexInfo for segments", zap.Int64s("segmentIDs", segmentIDs), zap.Error(err))
+			log.Warn(ctx, "failed to get indexInfo for segments", mlog.Int64s("segmentIDs", segmentIDs), mlog.Err(err))
 			continue
 		}
 		for segmentID, segmentIndexInfo := range segmentIndexInfos {
@@ -163,21 +162,21 @@ func (c *IndexChecker) checkReplica(ctx context.Context, collection *meta.Collec
 				if missingFields.Contain(fieldIndexInfo.GetFieldID()) &&
 					fieldIndexInfo.GetEnableIndex() &&
 					len(fieldIndexInfo.GetIndexFilePaths()) > 0 {
-					segmentsToUpdate.Insert(segmentID)
+					segmentsToUpdate[segmentID] = idSegments[segmentID]
 				}
 			}
 		}
 	}
 
-	tasks = lo.FilterMap(segmentsToUpdate.Collect(), func(segmentID int64, _ int) (task.Task, bool) {
-		return c.createSegmentUpdateTask(ctx, idSegments[segmentID], replica)
+	tasks = lo.FilterMap(lo.Values(segmentsToUpdate), func(segment *meta.Segment, _ int) (task.Task, bool) {
+		return c.createSegmentUpdateTask(ctx, segment, replica)
 	})
 
 	segmentsStatsToUpdate := typeutil.NewSet[int64]()
 	for _, segmentIDs := range lo.Chunk(lo.Keys(idSegmentsStats), MaxSegmentNumPerGetIndexInfoRPC) {
 		segmentInfos, err := c.broker.GetSegmentInfo(ctx, segmentIDs...)
 		if err != nil {
-			log.Warn("failed to get SegmentInfo for segments", zap.Int64s("segmentIDs", segmentIDs), zap.Error(err))
+			log.Warn(ctx, "failed to get SegmentInfo for segments", mlog.Int64s("segmentIDs", segmentIDs), mlog.Err(err))
 			continue
 		}
 		for _, segmentInfo := range segmentInfos {
@@ -245,11 +244,11 @@ func (c *IndexChecker) createSegmentUpdateTask(ctx context.Context, segment *met
 		action,
 	)
 	if err != nil {
-		log.Warn("create segment update task failed",
-			zap.Int64("collection", segment.GetCollectionID()),
-			zap.String("channel", segment.GetInsertChannel()),
-			zap.Int64("node", segment.Node),
-			zap.Error(err),
+		mlog.Warn(ctx, "create segment update task failed",
+			mlog.Int64("collection", segment.GetCollectionID()),
+			mlog.String("channel", segment.GetInsertChannel()),
+			mlog.Int64("node", segment.Node),
+			mlog.Err(err),
 		)
 		return nil, false
 	}
@@ -264,7 +263,7 @@ func (c *IndexChecker) checkSegmentStats(segment *meta.Segment, schema *schemapb
 
 	if paramtable.Get().CommonCfg.EnabledJSONKeyStats.GetAsBool() {
 		if schema == nil {
-			log.Warn("schema released during check index", zap.Int64("collection", segment.GetCollectionID()))
+			mlog.Warn(context.TODO(), "schema released during check index", mlog.Int64("collection", segment.GetCollectionID()))
 			return result
 		}
 		loadFieldMap := make(map[int64]struct{})
@@ -289,7 +288,7 @@ func (c *IndexChecker) checkSegmentStats(segment *meta.Segment, schema *schemapb
 }
 
 func (c *IndexChecker) createSegmentStatsUpdateTask(ctx context.Context, segment *meta.Segment, replica *meta.Replica) (task.Task, bool) {
-	action := task.NewSegmentActionWithScope(segment.Node, task.ActionTypeStatsUpdate, segment.GetInsertChannel(), segment.GetID(), querypb.DataScope_Historical, int(segment.GetNumOfRows()))
+	action := task.NewSegmentActionWithScope(segment.Node, task.ActionTypeReopen, segment.GetInsertChannel(), segment.GetID(), querypb.DataScope_Historical, int(segment.GetNumOfRows()))
 	t, err := task.NewSegmentTask(
 		ctx,
 		params.Params.QueryCoordCfg.SegmentTaskTimeout.GetAsDuration(time.Millisecond),
@@ -300,11 +299,11 @@ func (c *IndexChecker) createSegmentStatsUpdateTask(ctx context.Context, segment
 		action,
 	)
 	if err != nil {
-		log.Warn("create segment stats update task failed",
-			zap.Int64("collection", segment.GetCollectionID()),
-			zap.String("channel", segment.GetInsertChannel()),
-			zap.Int64("node", segment.Node),
-			zap.Error(err),
+		mlog.Warn(ctx, "create segment stats update task failed",
+			mlog.Int64("collection", segment.GetCollectionID()),
+			mlog.String("channel", segment.GetInsertChannel()),
+			mlog.Int64("node", segment.Node),
+			mlog.Err(err),
 		)
 		return nil, false
 	}

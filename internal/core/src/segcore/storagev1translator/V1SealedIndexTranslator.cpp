@@ -1,4 +1,5 @@
 #include "segcore/storagev1translator/V1SealedIndexTranslator.h"
+#include "segcore/default_fs.h"
 
 #include <exception>
 #include <optional>
@@ -13,6 +14,7 @@
 #include "index/Utils.h"
 #include "milvus-storage/filesystem/fs.h"
 #include "nlohmann/json.hpp"
+#include "segcore/CacheMetricAttribution.h"
 #include "segcore/Types.h"
 #include "segcore/Utils.h"
 #include "storage/FileManager.h"
@@ -44,18 +46,21 @@ V1SealedIndexTranslator::V1SealedIndexTranslator(
       key_(fmt::format("seg_{}_si_{}",
                        load_index_info->segment_id,
                        load_index_info->field_id)),
-      meta_(load_index_info->enable_mmap
-                ? milvus::cachinglayer::StorageType::DISK
-                : milvus::cachinglayer::StorageType::MEMORY,
-            milvus::cachinglayer::CellIdMappingMode::ALWAYS_ZERO,
-            milvus::segcore::getCellDataType(
-                /* is_vector */ IsVectorDataType(load_index_info->field_type),
-                /* is_index */ true),
-            milvus::segcore::getCacheWarmupPolicy(
-                load_index_info->warmup_policy,
-                /* is_vector */ IsVectorDataType(load_index_info->field_type),
-                /* is_index */ true),
-            /* support_eviction */ false) {
+      meta_(
+          load_index_info->enable_mmap
+              ? milvus::cachinglayer::StorageType::DISK
+              : milvus::cachinglayer::StorageType::MEMORY,
+          milvus::cachinglayer::CellIdMappingMode::ALWAYS_ZERO,
+          milvus::segcore::getCellDataType(
+              /* is_vector */ IsVectorDataType(load_index_info->field_type),
+              /* is_index */ true),
+          milvus::segcore::getCacheWarmupPolicy(
+              load_index_info->warmup_policy,
+              /* is_vector */ IsVectorDataType(load_index_info->field_type),
+              /* is_index */ true),
+          /* support_eviction */ false,
+          std::nullopt,
+          milvus::segcore::MetricAttributionFromShard(load_index_info->shard)) {
 }
 
 size_t
@@ -137,8 +142,7 @@ V1SealedIndexTranslator::LoadVecIndex() {
         auto remote_chunk_manager =
             milvus::storage::RemoteChunkManagerSingleton::GetInstance()
                 .GetRemoteChunkManager();
-        auto fs = milvus_storage::ArrowFileSystemSingleton::GetInstance()
-                      .GetArrowFileSystem();
+        auto fs = milvus::segcore::GetDefaultArrowFileSystem();
 
         auto config = milvus::index::ParseConfigFromIndexParams(
             index_load_info_.index_params);

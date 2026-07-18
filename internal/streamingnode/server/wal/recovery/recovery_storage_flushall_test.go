@@ -1,15 +1,16 @@
 package recovery
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/pkg/v2/proto/streamingpb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls/impls/rmq"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
+	"github.com/milvus-io/milvus/pkg/v3/proto/streamingpb"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/message"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/types"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/walimpls/impls/rmq"
+	"github.com/milvus-io/milvus/pkg/v3/util/funcutil"
 )
 
 // buildFlushAllOnControlChannel builds a FlushAll ImmutableMessage for the control channel
@@ -85,7 +86,7 @@ func TestFlushAllOnControlChannel(t *testing.T) {
 		// Create FlushAll message on control channel via broadcast split
 		flushAllMsg := buildFlushAllOnControlChannel(pchannel, controlChannel, 1, 10, 5, 10)
 
-		rs.observeMessage(flushAllMsg)
+		rs.observeMessage(context.Background(), flushAllMsg)
 
 		// All segments should be FLUSHED
 		for segID, seg := range rs.segments {
@@ -112,7 +113,7 @@ func TestFlushAllOnControlChannel(t *testing.T) {
 			WithLastConfirmed(rmq.NewRmqID(5)).
 			IntoImmutableMessage(rmq.NewRmqID(10))
 
-		rs.observeMessage(flushAllMsg)
+		rs.observeMessage(context.Background(), flushAllMsg)
 
 		// All segments should be FLUSHED
 		for segID, seg := range rs.segments {
@@ -131,7 +132,7 @@ func TestFlushAllOnControlChannel(t *testing.T) {
 		// First FlushAll
 		flushAllMsg1 := buildFlushAllOnControlChannel(pchannel, controlChannel, 1, 10, 5, 10)
 
-		rs.observeMessage(flushAllMsg1)
+		rs.observeMessage(context.Background(), flushAllMsg1)
 
 		for _, seg := range rs.segments {
 			assert.Equal(t, streamingpb.SegmentAssignmentState_SEGMENT_ASSIGNMENT_STATE_FLUSHED, seg.meta.State)
@@ -140,7 +141,7 @@ func TestFlushAllOnControlChannel(t *testing.T) {
 		// Second FlushAll with higher timetick - should be idempotent
 		flushAllMsg2 := buildFlushAllOnControlChannel(pchannel, controlChannel, 2, 20, 15, 20)
 
-		rs.observeMessage(flushAllMsg2)
+		rs.observeMessage(context.Background(), flushAllMsg2)
 
 		// Segments should remain FLUSHED
 		for segID, seg := range rs.segments {

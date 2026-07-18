@@ -22,9 +22,8 @@ import (
 	"time"
 
 	"github.com/samber/lo"
-	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
 	"github.com/milvus-io/milvus/internal/querycoordv2/assign"
 	"github.com/milvus-io/milvus/internal/querycoordv2/balance"
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
@@ -33,10 +32,10 @@ import (
 	"github.com/milvus-io/milvus/internal/querycoordv2/task"
 	"github.com/milvus-io/milvus/internal/querycoordv2/utils"
 	"github.com/milvus-io/milvus/internal/util/streamingutil"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/querypb"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
 )
 
 // balanceConfig holds all configuration parameters for balance operations.
@@ -254,7 +253,7 @@ func (b *BalanceChecker) constructNormalBalanceQueue(ctx context.Context) *assig
 	// cause segment_checker and channel checker use different assign policy
 	filterServiceableCollections := func(ctx context.Context, cid int64) bool {
 		// Get all channels for this collection from distribution
-		channels := b.dist.ChannelDistManager.GetByCollectionAndFilter(cid)
+		channels := b.dist.ChannelDistManager.GetByFilter(meta.WithCollectionID2Channel(cid))
 		if len(channels) == 0 {
 			// No channels in distribution means collection is not ready
 			return false
@@ -448,7 +447,7 @@ func (b *BalanceChecker) processBalanceQueue(
 		pq.Len() > 0 {
 		// Break if balanceOnMultipleCollections is disabled and we already have tasks
 		if !config.balanceOnMultipleCollections && (generatedSegmentTaskNum > 0 || generatedChannelTaskNum > 0) {
-			log.Debug("Balance on multiple collections disabled, stopping after first collection")
+			mlog.Debug(ctx, "Balance on multiple collections disabled, stopping after first collection")
 			break
 		}
 
@@ -517,7 +516,7 @@ func (b *BalanceChecker) Check(ctx context.Context) []task.Task {
 	defer func() {
 		duration := time.Since(start)
 		if duration > 100*time.Millisecond {
-			log.Info("Balance check too slow", zap.Duration("duration", duration))
+			mlog.Info(ctx, "Balance check too slow", mlog.Duration("duration", duration))
 		}
 	}()
 

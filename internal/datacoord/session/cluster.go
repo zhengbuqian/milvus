@@ -21,17 +21,15 @@ import (
 	"sync"
 	"time"
 
-	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus/internal/metastore/kv/binlog"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/workerpb"
-	"github.com/milvus-io/milvus/pkg/v2/taskcommon"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/workerpb"
+	"github.com/milvus-io/milvus/pkg/v3/taskcommon"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
 )
 
 // WorkerSlots represents the slot information for a worker node
@@ -46,7 +44,7 @@ type Cluster interface {
 	QuerySlot() map[int64]*WorkerSlots
 
 	// CreateCompaction creates a new compaction task on the specified node
-	CreateCompaction(nodeID int64, in *datapb.CompactionPlan) error
+	CreateCompaction(nodeID int64, in *datapb.CompactionPlan, collectionID int64) error
 	// QueryCompaction queries the status of a compaction task
 	QueryCompaction(nodeID int64, in *datapb.CompactionStateRequest) (*datapb.CompactionPlanResult, error)
 	// DropCompaction drops a compaction task
@@ -92,7 +90,7 @@ type Cluster interface {
 	DropRefreshExternalCollectionTask(nodeID int64, taskID int64) error
 
 	// CreateCopySegment creates a copy segment task
-	CreateCopySegment(nodeID int64, in *datapb.CopySegmentRequest) error
+	CreateCopySegment(nodeID int64, in *datapb.CopySegmentRequest, collectionID int64) error
 	// QueryCopySegment queries the status of a copy segment task
 	QueryCopySegment(nodeID int64, in *datapb.QueryCopySegmentRequest) (*datapb.QueryCopySegmentResponse, error)
 	// DropCopySegment drops a copy segment task
@@ -120,13 +118,13 @@ func (c *cluster) createTask(nodeID int64, in proto.Message, properties taskcomm
 	defer cancel()
 	cli, err := c.nm.GetClient(nodeID)
 	if err != nil {
-		log.Ctx(ctx).Warn("failed to get client", zap.Error(err))
+		mlog.Warn(ctx, "failed to get client", mlog.Err(err))
 		return err
 	}
 
 	payload, err := proto.Marshal(in)
 	if err != nil {
-		log.Ctx(ctx).Warn("marshal request failed", zap.Error(err))
+		mlog.Warn(ctx, "marshal request failed", mlog.Err(err))
 		return err
 	}
 
@@ -143,7 +141,7 @@ func (c *cluster) queryTask(nodeID int64, properties taskcommon.Properties) (*wo
 	defer cancel()
 	cli, err := c.nm.GetClient(nodeID)
 	if err != nil {
-		log.Ctx(ctx).Warn("failed to get client", zap.Error(err))
+		mlog.Warn(ctx, "failed to get client", mlog.Err(err))
 		return nil, err
 	}
 
@@ -162,7 +160,7 @@ func (c *cluster) dropTask(nodeID int64, properties taskcommon.Properties) error
 	defer cancel()
 	cli, err := c.nm.GetClient(nodeID)
 	if err != nil {
-		log.Ctx(ctx).Warn("failed to get client", zap.Error(err))
+		mlog.Warn(ctx, "failed to get client", mlog.Err(err))
 		return err
 	}
 
@@ -188,12 +186,12 @@ func (c *cluster) QuerySlot() map[int64]*WorkerSlots {
 			defer cancel()
 			cli, err := c.nm.GetClient(nodeID)
 			if err != nil {
-				log.Ctx(ctx).Warn("failed to get client", zap.Error(err))
+				mlog.Warn(ctx, "failed to get client", mlog.Err(err))
 				return
 			}
 			resp, err := cli.QuerySlot(ctx, &datapb.QuerySlotRequest{})
 			if err = merr.CheckRPCCall(resp.GetStatus(), err); err != nil {
-				log.Ctx(ctx).Warn("failed to get node slot", zap.Int64("nodeID", nodeID), zap.Error(err))
+				mlog.Warn(ctx, "failed to get node slot", mlog.FieldNodeID(nodeID), mlog.Err(err))
 				return
 			}
 			mu.Lock()
@@ -205,16 +203,17 @@ func (c *cluster) QuerySlot() map[int64]*WorkerSlots {
 		}()
 	}
 	wg.Wait()
-	log.Ctx(context.TODO()).Debug("query slot done", zap.Any("nodeSlots", availableNodeSlots))
+	mlog.Debug(context.TODO(), "query slot done", mlog.Any("nodeSlots", availableNodeSlots))
 	return availableNodeSlots
 }
 
-func (c *cluster) CreateCompaction(nodeID int64, in *datapb.CompactionPlan) error {
+func (c *cluster) CreateCompaction(nodeID int64, in *datapb.CompactionPlan, collectionID int64) error {
 	properties := taskcommon.NewProperties(nil)
 	properties.AppendClusterID(paramtable.Get().CommonCfg.ClusterPrefix.GetValue())
 	properties.AppendTaskID(in.GetPlanID())
 	properties.AppendType(taskcommon.Compaction)
 	properties.AppendTaskSlot(in.GetSlotUsage())
+	properties.AppendCollectionID(collectionID)
 	return c.createTask(nodeID, in, properties)
 }
 
@@ -245,10 +244,6 @@ func (c *cluster) QueryCompaction(nodeID int64, in *datapb.CompactionStateReques
 		for _, rst := range result.GetResults() {
 			if rst.GetPlanID() != in.GetPlanID() {
 				continue
-			}
-			err = binlog.CompressCompactionBinlogs(rst.GetSegments())
-			if err != nil {
-				return nil, err
 			}
 			ret = rst
 			break
@@ -283,12 +278,12 @@ func (c *cluster) DropCompaction(nodeID int64, planID int64) error {
 }
 
 func (c *cluster) CreatePreImport(nodeID int64, in *datapb.PreImportRequest, taskSlot int64) error {
-	// TODO: sheep, use taskSlot in request
 	properties := taskcommon.NewProperties(nil)
 	properties.AppendClusterID(paramtable.Get().CommonCfg.ClusterPrefix.GetValue())
 	properties.AppendTaskID(in.GetTaskID())
 	properties.AppendType(taskcommon.PreImport)
 	properties.AppendTaskSlot(taskSlot)
+	properties.AppendCollectionID(in.GetCollectionID())
 	return c.createTask(nodeID, in, properties)
 }
 
@@ -298,6 +293,7 @@ func (c *cluster) CreateImport(nodeID int64, in *datapb.ImportRequest, taskSlot 
 	properties.AppendTaskID(in.GetTaskID())
 	properties.AppendType(taskcommon.Import)
 	properties.AppendTaskSlot(taskSlot)
+	properties.AppendCollectionID(in.GetCollectionID())
 	return c.createTask(nodeID, in, properties)
 }
 
@@ -340,8 +336,8 @@ func (c *cluster) QueryPreImport(nodeID int64, in *datapb.QueryPreImportRequest)
 		if resp.GetPayload() != nil {
 			return payloadResultF()
 		}
-		log.Warn("the preImport result payload must not be empty",
-			zap.Int64("taskID", in.GetTaskID()), zap.String("state", state.String()))
+		mlog.Warn(context.TODO(), "the preImport result payload must not be empty",
+			mlog.FieldTaskID(in.GetTaskID()), mlog.String("state", state.String()))
 		panic("the preImport result payload must not be empty with Finished/Failed state")
 	default:
 		panic("should not happen")
@@ -387,8 +383,8 @@ func (c *cluster) QueryImport(nodeID int64, in *datapb.QueryImportRequest) (*dat
 		if resp.GetPayload() != nil {
 			return payloadResultF()
 		}
-		log.Warn("the import result payload must not be empty",
-			zap.Int64("taskID", in.GetTaskID()), zap.String("state", state.String()))
+		mlog.Warn(context.TODO(), "the import result payload must not be empty",
+			mlog.FieldTaskID(in.GetTaskID()), mlog.String("state", state.String()))
 		panic("the import result payload must not be empty with Finished/Failed state")
 	default:
 		panic("should not happen")
@@ -411,6 +407,7 @@ func (c *cluster) CreateIndex(nodeID int64, in *workerpb.CreateJobRequest) error
 	properties.AppendTaskSlot(in.GetTaskSlot())
 	properties.AppendNumRows(in.GetNumRows())
 	properties.AppendTaskVersion(in.GetIndexVersion())
+	properties.AppendCollectionID(in.GetCollectionID())
 	return c.createTask(nodeID, in, properties)
 }
 
@@ -462,8 +459,8 @@ func (c *cluster) QueryIndex(nodeID int64, in *workerpb.QueryJobsRequest) (*work
 		if resp.GetPayload() != nil {
 			return payloadResultF()
 		}
-		log.Warn("the index result payload must not be empty",
-			zap.Int64("taskID", in.GetTaskIDs()[0]), zap.String("state", state.String()))
+		mlog.Warn(context.TODO(), "the index result payload must not be empty",
+			mlog.FieldTaskID(in.GetTaskIDs()[0]), mlog.String("state", state.String()))
 		panic("the index result payload must not be empty with Finished/Failed state")
 	default:
 		panic("should not happen")
@@ -487,6 +484,7 @@ func (c *cluster) CreateStats(nodeID int64, in *workerpb.CreateStatsRequest) err
 	properties.AppendTaskSlot(in.GetTaskSlot())
 	properties.AppendNumRows(in.GetNumRows())
 	properties.AppendTaskVersion(in.GetTaskVersion())
+	properties.AppendCollectionID(in.GetCollectionID())
 	return c.createTask(nodeID, in, properties)
 }
 
@@ -538,8 +536,8 @@ func (c *cluster) QueryStats(nodeID int64, in *workerpb.QueryJobsRequest) (*work
 		if resp.GetPayload() != nil {
 			return payloadResultF()
 		}
-		log.Warn("the stats result payload must not be empty",
-			zap.Int64("taskID", in.GetTaskIDs()[0]), zap.String("state", state.String()))
+		mlog.Warn(context.TODO(), "the stats result payload must not be empty",
+			mlog.FieldTaskID(in.GetTaskIDs()[0]), mlog.String("state", state.String()))
 		panic("the stats result payload must not be empty with Finished/Failed state")
 	default:
 		panic("should not happen")
@@ -561,6 +559,7 @@ func (c *cluster) CreateAnalyze(nodeID int64, in *workerpb.AnalyzeRequest) error
 	properties.AppendType(taskcommon.Analyze)
 	properties.AppendTaskSlot(in.GetTaskSlot())
 	properties.AppendTaskVersion(in.GetVersion())
+	properties.AppendCollectionID(in.GetCollectionID())
 	return c.createTask(nodeID, in, properties)
 }
 
@@ -611,8 +610,8 @@ func (c *cluster) QueryAnalyze(nodeID int64, in *workerpb.QueryJobsRequest) (*wo
 		if resp.GetPayload() != nil {
 			return payloadResultF()
 		}
-		log.Warn("the analyze result payload must not be empty",
-			zap.Int64("taskID", in.GetTaskIDs()[0]), zap.String("state", state.String()))
+		mlog.Warn(context.TODO(), "the analyze result payload must not be empty",
+			mlog.FieldTaskID(in.GetTaskIDs()[0]), mlog.String("state", state.String()))
 		panic("the analyze result payload must not be empty with Finished/Failed state")
 	default:
 		panic("should not happen")
@@ -634,7 +633,7 @@ func (c *cluster) CreateRefreshExternalCollectionTask(nodeID int64, req *datapb.
 
 	cli, err := c.nm.GetClient(nodeID)
 	if err != nil {
-		log.Ctx(ctx).Warn("failed to get client", zap.Error(err))
+		mlog.Warn(ctx, "failed to get client", mlog.Err(err))
 		return err
 	}
 
@@ -643,10 +642,11 @@ func (c *cluster) CreateRefreshExternalCollectionTask(nodeID int64, req *datapb.
 	properties.AppendTaskID(req.GetTaskID())
 	properties.AppendType(taskcommon.RefreshExternalCollection)
 	properties.AppendTaskSlot(1)
+	properties.AppendCollectionID(req.GetCollectionID())
 
 	payload, err := proto.Marshal(req)
 	if err != nil {
-		log.Ctx(ctx).Warn("marshal request failed", zap.Error(err))
+		mlog.Warn(ctx, "marshal request failed", mlog.Err(err))
 		return err
 	}
 
@@ -656,12 +656,12 @@ func (c *cluster) CreateRefreshExternalCollectionTask(nodeID int64, req *datapb.
 		Properties: properties,
 	})
 	if err != nil {
-		log.Ctx(ctx).Warn("create refresh-external-collection task failed", zap.Error(err))
+		mlog.Warn(ctx, "create refresh-external-collection task failed", mlog.Err(err))
 		return err
 	}
 
 	if err := merr.Error(status); err != nil {
-		log.Ctx(ctx).Warn("create refresh-external-collection task returned error", zap.Error(err))
+		mlog.Warn(ctx, "create refresh-external-collection task returned error", mlog.Err(err))
 		return err
 	}
 
@@ -696,12 +696,13 @@ func (c *cluster) DropRefreshExternalCollectionTask(nodeID int64, taskID int64) 
 	return c.dropTask(nodeID, properties)
 }
 
-func (c *cluster) CreateCopySegment(nodeID int64, in *datapb.CopySegmentRequest) error {
+func (c *cluster) CreateCopySegment(nodeID int64, in *datapb.CopySegmentRequest, collectionID int64) error {
 	properties := taskcommon.NewProperties(nil)
 	properties.AppendClusterID(paramtable.Get().CommonCfg.ClusterPrefix.GetValue())
 	properties.AppendTaskID(in.GetTaskID())
 	properties.AppendType(taskcommon.CopySegment)
 	properties.AppendTaskSlot(in.GetTaskSlot())
+	properties.AppendCollectionID(collectionID)
 	return c.createTask(nodeID, in, properties)
 }
 
@@ -747,8 +748,8 @@ func (c *cluster) QueryCopySegment(nodeID int64, in *datapb.QueryCopySegmentRequ
 		if resp.GetPayload() != nil {
 			return payloadResultF()
 		}
-		log.Warn("the copy segment result payload must not be empty",
-			zap.Int64("taskID", in.GetTaskID()), zap.String("state", state.String()))
+		mlog.Warn(context.TODO(), "the copy segment result payload must not be empty",
+			mlog.FieldTaskID(in.GetTaskID()), mlog.String("state", state.String()))
 		panic("the copy segment result payload must not be empty with Finished/Failed state")
 	default:
 		panic("should not happen")

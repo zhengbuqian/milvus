@@ -21,11 +21,10 @@ import (
 	"io"
 
 	"github.com/minio/minio-go/v7"
-	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/objectstorage"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/objectstorage"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
 )
 
 var _ ObjectStorage = (*MinioObjectStorage)(nil)
@@ -57,9 +56,13 @@ func newMinioObjectStorageWithConfig(ctx context.Context, c *objectstorage.Confi
 func (minioObjectStorage *MinioObjectStorage) GetObject(ctx context.Context, bucketName, objectName string, offset int64, size int64) (FileReader, error) {
 	opts := minio.GetObjectOptions{}
 	if offset > 0 {
-		err := opts.SetRange(offset, offset+size-1)
+		end := int64(0)
+		if size > 0 {
+			end = offset + size - 1
+		}
+		err := opts.SetRange(offset, end)
 		if err != nil {
-			log.Warn("failed to set range", zap.String("bucket", bucketName), zap.String("path", objectName), zap.Error(err))
+			mlog.Warn(ctx, "failed to set range", mlog.String("bucket", bucketName), mlog.String("path", objectName), mlog.Err(err))
 			return nil, mapObjectStorageError(objectName, err)
 		}
 	}
@@ -73,8 +76,17 @@ func (minioObjectStorage *MinioObjectStorage) GetObject(ctx context.Context, buc
 }
 
 func (minioObjectStorage *MinioObjectStorage) PutObject(ctx context.Context, bucketName, objectName string, reader io.Reader, objectSize int64) error {
-	_, err := minioObjectStorage.Client.PutObject(ctx, bucketName, objectName, reader, objectSize, minio.PutObjectOptions{})
+	_, err := minioObjectStorage.Client.PutObject(ctx, bucketName, objectName, reader, objectSize, minioObjectStorage.putObjectOptions())
 	return mapObjectStorageError(objectName, err)
+}
+
+func (minioObjectStorage *MinioObjectStorage) putObjectOptions() minio.PutObjectOptions {
+	if !paramtable.Get().MinioCfg.DisableAWSChunkedEncoding.GetAsBool() {
+		return minio.PutObjectOptions{}
+	}
+	return minio.PutObjectOptions{
+		DisableContentSha256: true,
+	}
 }
 
 func (minioObjectStorage *MinioObjectStorage) StatObject(ctx context.Context, bucketName, objectName string) (int64, error) {

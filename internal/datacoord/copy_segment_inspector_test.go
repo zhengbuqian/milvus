@@ -23,13 +23,13 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
 	"github.com/milvus-io/milvus/internal/datacoord/broker"
 	task2 "github.com/milvus-io/milvus/internal/datacoord/task"
 	"github.com/milvus-io/milvus/internal/metastore/mocks"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/taskcommon"
-	"github.com/milvus-io/milvus/pkg/v2/util/timerecord"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/taskcommon"
+	"github.com/milvus-io/milvus/pkg/v3/util/timerecord"
 )
 
 type CopySegmentInspectorSuite struct {
@@ -245,6 +245,16 @@ func (s *CopySegmentInspectorSuite) TestProcessFailed_DropTargetSegments() {
 	err := s.meta.AddSegment(context.TODO(), seg1)
 	s.NoError(err)
 
+	seg2 := NewSegmentInfo(&datapb.SegmentInfo{
+		ID:            102,
+		CollectionID:  s.collectionID,
+		PartitionID:   10,
+		State:         commonpb.SegmentState_Dropped,
+		NumOfRows:     100,
+		InsertChannel: "ch1",
+	})
+	s.meta.segments.SetSegment(seg2.GetID(), seg2)
+
 	// Create a job
 	job := &copySegmentJob{
 		CopySegmentJob: &datapb.CopySegmentJob{
@@ -260,6 +270,7 @@ func (s *CopySegmentInspectorSuite) TestProcessFailed_DropTargetSegments() {
 	// Create a failed task with target segment
 	idMappings := []*datapb.CopySegmentIDMapping{
 		{SourceSegmentId: 1, TargetSegmentId: 101, PartitionId: 10},
+		{SourceSegmentId: 2, TargetSegmentId: 102, PartitionId: 10},
 	}
 
 	task := &copySegmentTask{
@@ -284,6 +295,9 @@ func (s *CopySegmentInspectorSuite) TestProcessFailed_DropTargetSegments() {
 	// Target segment should be marked as Dropped
 	segment := s.meta.GetSegment(context.TODO(), 101)
 	s.Equal(commonpb.SegmentState_Dropped, segment.GetState())
+
+	droppedSegment := s.meta.GetSegment(context.TODO(), 102)
+	s.Equal(commonpb.SegmentState_Dropped, droppedSegment.GetState())
 }
 
 func (s *CopySegmentInspectorSuite) TestProcessFailed_NoTargetSegment() {

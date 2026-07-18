@@ -18,16 +18,15 @@ package balance
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/samber/lo"
-	"go.uber.org/zap"
+	"golang.org/x/time/rate"
 
 	"github.com/milvus-io/milvus/internal/querycoordv2/assign"
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
 	"github.com/milvus-io/milvus/internal/querycoordv2/session"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
 )
 
 // StoppingBalancer is responsible for balancing segments and channels from stopping nodes (RO nodes)
@@ -63,25 +62,25 @@ func (b *StoppingBalancer) GetAssignPolicy() assign.AssignPolicy {
 // BalanceReplica generates balance plans for segments and channels on stopping nodes (RO nodes)
 // and reassigns them to active nodes (RW nodes).
 func (b *StoppingBalancer) BalanceReplica(ctx context.Context, replica *meta.Replica) (segmentPlans []assign.SegmentAssignPlan, channelPlans []assign.ChannelAssignPlan) {
-	log := log.Ctx(ctx).WithRateGroup("qcv2.StoppingBalancer", 1, 60).With(
-		zap.Int64("collectionID", replica.GetCollectionID()),
-		zap.Int64("replicaID", replica.GetID()),
-		zap.String("resourceGroup", replica.GetResourceGroup()),
+	log := mlog.With(
+		mlog.FieldCollectionID(replica.GetCollectionID()),
+		mlog.Int64("replicaID", replica.GetID()),
+		mlog.String("resourceGroup", replica.GetResourceGroup()),
 	)
 
 	br := NewBalanceReport()
 	defer func() {
 		if len(segmentPlans) == 0 && len(channelPlans) == 0 {
-			log.WithRateGroup(fmt.Sprintf("stoppingbalance-noplan-%d", replica.GetID()), 1, 60).
-				RatedDebug(60, "no stopping balance plan generated", zap.Stringers("records", br.detailRecords))
+			log.
+				RatedDebug(ctx, rate.Limit(60), "no stopping balance plan generated", mlog.Stringers("records", br.detailRecords))
 		} else {
-			log.Info("stopping balance plan generated", zap.Stringers("report details", br.records))
+			log.Info(ctx, "stopping balance plan generated", mlog.Stringers("report details", br.records))
 		}
 	}()
 
 	if !paramtable.Get().QueryCoordCfg.EnableStoppingBalance.GetAsBool() {
 		br.AddRecord(StrRecord("stopping balance is disabled"))
-		log.RatedInfo(10, "stopping balance is disabled")
+		log.RatedInfo(ctx, rate.Limit(10), "stopping balance is disabled")
 		return nil, nil
 	}
 
@@ -90,7 +89,7 @@ func (b *StoppingBalancer) BalanceReplica(ctx context.Context, replica *meta.Rep
 	if len(channelPlans) == 0 {
 		segmentPlans = b.balanceSegments(ctx, br, replica)
 	}
-	return
+	return segmentPlans, channelPlans
 }
 
 func (b *StoppingBalancer) balanceChannels(ctx context.Context, br *balanceReport, replica *meta.Replica) []assign.ChannelAssignPlan {
@@ -122,8 +121,8 @@ func (b *StoppingBalancer) genChannelPlan(ctx context.Context, br *balanceReport
 
 	for _, nodeID := range roNodes {
 		// Get all channels on this stopping node
-		dmChannels := b.dist.ChannelDistManager.GetByCollectionAndFilter(
-			replica.GetCollectionID(),
+		dmChannels := b.dist.ChannelDistManager.GetByFilter(
+			meta.WithCollectionID2Channel(replica.GetCollectionID()),
 			meta.WithNodeID2Channel(nodeID),
 		)
 

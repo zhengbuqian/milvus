@@ -19,22 +19,23 @@ package proxy
 import (
 	"container/list"
 	"context"
+	"fmt"
 	"math"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/cockroachdb/errors"
 	"go.opentelemetry.io/otel"
-	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/util/conc"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/metricsinfo"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/tsoutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/metrics"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/util/conc"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/metricsinfo"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/tsoutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 type taskQueue interface {
@@ -128,13 +129,30 @@ func (queue *baseTaskQueue) PopUnissuedTask() task {
 	return ft.Value.(task)
 }
 
+func (queue *baseTaskQueue) popUnissuedTasks(filter func(task) bool) []task {
+	queue.utLock.Lock()
+	defer queue.utLock.Unlock()
+
+	removed := make([]task, 0)
+	for e := queue.unissuedTasks.Front(); e != nil; {
+		next := e.Next()
+		t := e.Value.(task)
+		if filter == nil || filter(t) {
+			queue.unissuedTasks.Remove(e)
+			removed = append(removed, t)
+		}
+		e = next
+	}
+	return removed
+}
+
 func (queue *baseTaskQueue) AddActiveTask(t task) {
 	queue.atLock.Lock()
 	defer queue.atLock.Unlock()
 	tID := t.ID()
 	_, ok := queue.activeTasks[tID]
 	if ok {
-		log.Ctx(t.TraceCtx()).Warn("Proxy task with tID already in active task list!", zap.Int64("ID", tID))
+		mlog.Warn(t.TraceCtx(), "Proxy task with tID already in active task list!", mlog.Int64("ID", tID))
 	}
 
 	queue.activeTasks[tID] = t
@@ -149,8 +167,7 @@ func (queue *baseTaskQueue) PopActiveTask(taskID UniqueID) task {
 		delete(queue.activeTasks, taskID)
 		return t
 	}
-
-	log.Ctx(context.TODO()).Warn("Proxy task not in active task list! ts", zap.Int64("taskID", taskID))
+	mlog.Warn(context.TODO(), "Proxy task not in active task list! ts", mlog.FieldTaskID(taskID))
 	return t
 }
 
@@ -291,7 +308,7 @@ func (queue *dmTaskQueue) Enqueue(t task) error {
 	dmt := t.(dmlTask)
 	err := dmt.setChannels()
 	if err != nil {
-		log.Ctx(t.TraceCtx()).Warn("setChannels failed when Enqueue", zap.Int64("taskID", t.ID()), zap.Error(err))
+		mlog.Warn(t.TraceCtx(), "setChannels failed when Enqueue", mlog.FieldTaskID(t.ID()), mlog.Err(err))
 		return err
 	}
 
@@ -320,10 +337,10 @@ func (queue *dmTaskQueue) PopActiveTask(taskID UniqueID) task {
 		defer queue.statsLock.Unlock()
 
 		delete(queue.activeTasks, taskID)
-		log.Ctx(t.TraceCtx()).Debug("Proxy dmTaskQueue popPChanStats", zap.Int64("taskID", t.ID()))
+		mlog.Debug(t.TraceCtx(), "Proxy dmTaskQueue popPChanStats", mlog.FieldTaskID(t.ID()))
 		queue.popPChanStats(t)
 	} else {
-		log.Ctx(context.TODO()).Warn("Proxy task not in active task list!", zap.Int64("taskID", taskID))
+		mlog.Warn(context.TODO(), "Proxy task not in active task list!", mlog.FieldTaskID(taskID))
 	}
 	return t
 }
@@ -400,6 +417,47 @@ func (queue *dmTaskQueue) getPChanStatsInfo() (map[pChan]*pChanStatistics, error
 // dqTaskQueue represents queue for DQL task such as search/query
 type dqTaskQueue struct {
 	*baseTaskQueue
+}
+
+type clearTaskQueueResult struct {
+	queuedCleared int64
+}
+
+func isDQLTaskMatched(t task, taskType string) bool {
+	switch taskType {
+	case "", "all":
+		return true
+	case "search":
+		return t.Name() == SearchTaskName
+	case "query":
+		return t.Name() == QueryTaskName
+	default:
+		return false
+	}
+}
+
+func clearTaskQueueError(reason string) error {
+	if reason == "" {
+		return errors.Wrap(context.Canceled, "read task queue cleared by admin")
+	}
+	return errors.Wrap(context.Canceled, fmt.Sprintf("read task queue cleared by admin: %s", reason))
+}
+
+func (queue *dqTaskQueue) clearQueuedTasks(taskType string, reason string) clearTaskQueueResult {
+	removed := queue.popUnissuedTasks(func(t task) bool {
+		return isDQLTaskMatched(t, taskType)
+	})
+	if len(removed) == 0 {
+		queue.updateMetrics()
+		return clearTaskQueueResult{}
+	}
+
+	clearErr := clearTaskQueueError(reason)
+	for _, task := range removed {
+		task.Notify(clearErr)
+	}
+	queue.updateMetrics()
+	return clearTaskQueueResult{queuedCleared: int64(len(removed))}
 }
 
 func (queue *dqTaskQueue) updateMetrics() {
@@ -493,6 +551,10 @@ func (sched *taskScheduler) scheduleDqTask() task {
 	return sched.dqQueue.PopUnissuedTask()
 }
 
+func (sched *taskScheduler) clearDQLQueue(taskType string, reason string) clearTaskQueueResult {
+	return sched.dqQueue.clearQueuedTasks(taskType, reason)
+}
+
 func (sched *taskScheduler) processTask(t task, q taskQueue) {
 	ctx, span := otel.Tracer(typeutil.ProxyRole).Start(t.TraceCtx(), t.Name())
 	defer span.End()
@@ -518,7 +580,7 @@ func (sched *taskScheduler) processTask(t task, q taskQueue) {
 	}()
 	if err != nil {
 		span.RecordError(err)
-		log.Ctx(ctx).Warn("Failed to pre-execute task: " + err.Error())
+		mlog.Warn(ctx, "Failed to pre-execute task: "+err.Error())
 		return
 	}
 
@@ -526,7 +588,7 @@ func (sched *taskScheduler) processTask(t task, q taskQueue) {
 	err = t.Execute(ctx)
 	if err != nil {
 		span.RecordError(err)
-		log.Ctx(ctx).Warn("Failed to execute task: ", zap.Error(err))
+		mlog.Warn(ctx, "Failed to execute task: ", mlog.Err(err))
 		return
 	}
 
@@ -534,7 +596,7 @@ func (sched *taskScheduler) processTask(t task, q taskQueue) {
 	err = t.PostExecute(ctx)
 	if err != nil {
 		span.RecordError(err)
-		log.Ctx(ctx).Warn("Failed to post-execute task: ", zap.Error(err))
+		mlog.Warn(ctx, "Failed to post-execute task: ", mlog.Err(err))
 		return
 	}
 }

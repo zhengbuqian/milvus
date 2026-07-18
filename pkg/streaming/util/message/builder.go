@@ -9,11 +9,12 @@ import (
 	"github.com/samber/lo"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/messagespb"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/tsoutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/messagespb"
+	"github.com/milvus-io/milvus/pkg/v3/util/funcutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/tsoutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 // NewMutableMessageBeforeAppend creates a new mutable message.
@@ -69,7 +70,7 @@ func NewReplicateMessage(clustrID string, im *commonpb.ImmutableMessage) (Replic
 	messageID := MustUnmarshalMessageID(im.GetId())
 	msg := NewImmutableMesasge(messageID, im.GetPayload(), im.GetProperties()).(*immutableMessageImpl)
 	if msg.ReplicateHeader() != nil {
-		return nil, errors.New("message is already a replicate message")
+		return nil, merr.WrapErrParameterInvalidMsg("message is already a replicate message")
 	}
 
 	m := &messageImpl{
@@ -145,6 +146,12 @@ func (b *mutableMesasgeBuilder[H, B]) WithNotPersisted() *mutableMesasgeBuilder[
 		panic("only time tick message can be not persisted")
 	}
 	b.WithProperty(messageNotPersisteted, "")
+	return b
+}
+
+// WithUnreplicable marks this concrete message as unsafe for cross-cluster replication.
+func (b *mutableMesasgeBuilder[H, B]) WithUnreplicable() *mutableMesasgeBuilder[H, B] {
+	b.WithProperty(messageUnreplicable, "")
 	return b
 }
 
@@ -463,6 +470,10 @@ func newImmutableTxnMesasgeFromWAL(
 		WithTxnContext(*commit.TxnContext()).
 		WithReplicateHeader(commit.ReplicateHeader()).
 		IntoImmutableMessage(commit.MessageID())
+	// The assembled txn message uses CommitTxn's trace as the txn-level trace.
+	if traceContext, ok := commit.Properties().Get(messageTraceContext); ok {
+		immutableMessage.(*immutableMessageImpl).properties.Set(messageTraceContext, traceContext)
+	}
 	return &immutableTxnMessageImpl{
 		immutableMessageImpl: *immutableMessage.(*immutableMessageImpl),
 		begin:                MustAsImmutableBeginTxnMessageV2(beginImmutable),

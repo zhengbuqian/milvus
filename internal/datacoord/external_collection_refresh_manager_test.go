@@ -27,12 +27,13 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/storagev2/packed"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/indexpb"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 // ==================== Helper Functions for Manager Tests ====================
@@ -62,6 +63,409 @@ func testCollectionGetter(mt *meta) func(ctx context.Context, collectionID int64
 		}
 		return coll, nil
 	}
+}
+
+func testMilvusTableRefreshSchema(externalSource bool) *schemapb.CollectionSchema {
+	field := &schemapb.FieldSchema{
+		FieldID:      100,
+		Name:         "pk",
+		IsPrimaryKey: true,
+		DataType:     schemapb.DataType_Int64,
+	}
+	if externalSource {
+		field.ExternalField = "pk"
+	}
+	return &schemapb.CollectionSchema{
+		Name:   "test_collection",
+		Fields: []*schemapb.FieldSchema{field},
+	}
+}
+
+func testMilvusTableTargetRefreshSchema() *schemapb.CollectionSchema {
+	schema := testMilvusTableRefreshSchema(true)
+	schema.ExternalSource = "s3://bucket/snapshots/1/metadata/10.json"
+	schema.ExternalSpec = `{"format":"milvus-table","extfs":{"cloud_provider":"aws","region":"us-west-2","access_key_id":"ak","access_key_value":"sk"}}`
+	return schema
+}
+
+func TestSubmitRefreshJobWithIDStoresJobMetadata(t *testing.T) {
+	ctx := context.Background()
+	collectionID := int64(100)
+	schema := &schemapb.CollectionSchema{
+		Name:           "ext",
+		ExternalSource: "s3://bucket/path",
+		ExternalSpec:   `{"format":"parquet"}`,
+		Version:        7,
+		Fields: []*schemapb.FieldSchema{
+			{FieldID: 100, Name: "id", ExternalField: "id"},
+		},
+	}
+	mt := &meta{
+		collections: typeutil.NewConcurrentMap[UniqueID, *collectionInfo](),
+	}
+	mt.collections.Insert(collectionID, &collectionInfo{
+		ID:            collectionID,
+		Schema:        schema,
+		VChannelNames: []string{"by-dev-rootcoord-dml_0_v1"},
+		Partitions:    []int64{1},
+	})
+	refreshMeta := createTestRefreshMetaWithJobs(t, nil, nil)
+	mgr := NewExternalCollectionRefreshManager(
+		ctx, mt, newStubScheduler(), &stubAllocator{nextID: 2000},
+		refreshMeta, nil, testCollectionGetter(mt), nil, nil)
+
+	mockExplore := mockey.Mock((*externalCollectionRefreshManager).exploreExternalFiles).
+		Return([]*datapb.ExternalFileInfo{{FilePath: "s3://bucket/path/a.parquet", NumRows: 10}}, "manifest-path", nil).
+		Build()
+	defer mockExplore.UnPatch()
+
+	jobID, err := mgr.SubmitRefreshJobWithID(
+		ctx, 1001, collectionID, "ext", "", "")
+	assert.NoError(t, err)
+	assert.Equal(t, int64(1001), jobID)
+
+	job := refreshMeta.GetJob(1001)
+	assert.NotNil(t, job)
+	assert.Equal(t, collectionID, job.GetCollectionId())
+	assert.Equal(t, "ext", job.GetCollectionName())
+	assert.Equal(t, "s3://bucket/path", job.GetExternalSource())
+	assert.Equal(t, `{"format":"parquet"}`, job.GetExternalSpec())
+
+	mgr.Stop()
+}
+
+func TestCreateTasksForJobCopiesJobMetadata(t *testing.T) {
+	ctx := context.Background()
+	collectionID := int64(100)
+	schema := &schemapb.CollectionSchema{
+		Name:           "ext",
+		ExternalSource: "s3://bucket/path",
+		ExternalSpec:   `{"format":"parquet"}`,
+		Version:        9,
+		Fields: []*schemapb.FieldSchema{
+			{FieldID: 100, Name: "id", ExternalField: "id"},
+		},
+	}
+	mt := &meta{
+		collections: typeutil.NewConcurrentMap[UniqueID, *collectionInfo](),
+	}
+	mt.collections.Insert(collectionID, &collectionInfo{
+		ID:            collectionID,
+		Schema:        schema,
+		VChannelNames: []string{"by-dev-rootcoord-dml_0_v1"},
+		Partitions:    []int64{1},
+	})
+	refreshMeta := createTestRefreshMetaWithJobs(t, nil, nil)
+	mgr := NewExternalCollectionRefreshManager(
+		ctx, mt, newStubScheduler(), &stubAllocator{nextID: 2000},
+		refreshMeta, nil, testCollectionGetter(mt), nil, nil).(*externalCollectionRefreshManager)
+
+	mockExplore := mockey.Mock((*externalCollectionRefreshManager).exploreExternalFiles).
+		Return([]*datapb.ExternalFileInfo{{FilePath: "s3://bucket/path/a.parquet", NumRows: 10}}, "manifest-path", nil).
+		Build()
+	defer mockExplore.UnPatch()
+
+	job := &datapb.ExternalCollectionRefreshJob{
+		JobId:          1001,
+		CollectionId:   collectionID,
+		CollectionName: "ext",
+		ExternalSource: "s3://bucket/path",
+		ExternalSpec:   `{"format":"parquet"}`,
+		State:          indexpb.JobState_JobStateInit,
+	}
+	assert.NoError(t, refreshMeta.AddJob(job))
+
+	tasks, err := mgr.createTasksForJob(ctx, job)
+	assert.NoError(t, err)
+	assert.Len(t, tasks, 1)
+	assert.Equal(t, collectionID, tasks[0].GetCollectionId())
+	assert.Equal(t, "s3://bucket/path", tasks[0].GetExternalSource())
+	assert.Equal(t, `{"format":"parquet"}`, tasks[0].GetExternalSpec())
+}
+
+func TestExternalCollectionRefreshManager_ApplyFinishedJobSegmentsMergesTaskResults(t *testing.T) {
+	ctx := context.Background()
+	catalog := &stubCatalog{}
+	refreshMeta, err := newExternalCollectionRefreshMeta(ctx, catalog)
+	assert.NoError(t, err)
+
+	assert.NoError(t, refreshMeta.AddTask(&datapb.ExternalCollectionRefreshTask{
+		TaskId:          1001,
+		JobId:           1,
+		CollectionId:    100,
+		State:           indexpb.JobState_JobStateFinished,
+		ResultReady:     true,
+		KeptSegments:    []int64{1},
+		UpdatedSegments: []*datapb.SegmentInfo{newTestExternalRefreshSegment(10, 100, 7)},
+	}))
+	assert.NoError(t, refreshMeta.AddTask(&datapb.ExternalCollectionRefreshTask{
+		TaskId:          1002,
+		JobId:           1,
+		CollectionId:    100,
+		State:           indexpb.JobState_JobStateFinished,
+		ResultReady:     true,
+		KeptSegments:    []int64{1},
+		UpdatedSegments: []*datapb.SegmentInfo{newTestExternalRefreshSegment(20, 100, 7)},
+	}))
+
+	segments := NewSegmentsInfo()
+	segments.SetSegment(1, &SegmentInfo{SegmentInfo: &datapb.SegmentInfo{
+		ID:           1,
+		CollectionID: 100,
+		State:        commonpb.SegmentState_Flushed,
+		NumOfRows:    5,
+	}})
+	segments.SetSegment(2, &SegmentInfo{SegmentInfo: &datapb.SegmentInfo{
+		ID:           2,
+		CollectionID: 100,
+		State:        commonpb.SegmentState_Flushed,
+		NumOfRows:    6,
+	}})
+	mt := &meta{
+		catalog:     catalog,
+		segments:    segments,
+		collections: newTestCollections(100),
+	}
+	mgr := &externalCollectionRefreshManager{
+		mt:          mt,
+		refreshMeta: refreshMeta,
+	}
+
+	err = mgr.applyFinishedJobSegments(ctx, &datapb.ExternalCollectionRefreshJob{
+		JobId:        1,
+		CollectionId: 100,
+	})
+	assert.NoError(t, err)
+
+	assert.Equal(t, commonpb.SegmentState_Flushed, mt.segments.GetSegment(1).GetState())
+	assert.Equal(t, commonpb.SegmentState_Dropped, mt.segments.GetSegment(2).GetState())
+	assert.Equal(t, commonpb.SegmentState_Flushed, mt.segments.GetSegment(10).GetState())
+	assert.Equal(t, commonpb.SegmentState_Flushed, mt.segments.GetSegment(20).GetState())
+	assert.Equal(t, int64(7), mt.segments.GetSegment(10).GetNumOfRows())
+	assert.Equal(t, int64(7), mt.segments.GetSegment(20).GetNumOfRows())
+}
+
+func TestExternalCollectionRefreshManager_ApplyFinishedJobSegmentsRejectsNonFinishedTask(t *testing.T) {
+	ctx := context.Background()
+	catalog := &stubCatalog{}
+	refreshMeta, err := newExternalCollectionRefreshMeta(ctx, catalog)
+	assert.NoError(t, err)
+
+	assert.NoError(t, refreshMeta.AddTask(&datapb.ExternalCollectionRefreshTask{
+		TaskId:          1001,
+		JobId:           1,
+		CollectionId:    100,
+		State:           indexpb.JobState_JobStateFinished,
+		ResultReady:     true,
+		UpdatedSegments: []*datapb.SegmentInfo{{ID: 10, CollectionID: 100, NumOfRows: 7}},
+	}))
+	assert.NoError(t, refreshMeta.AddTask(&datapb.ExternalCollectionRefreshTask{
+		TaskId:       1002,
+		JobId:        1,
+		CollectionId: 100,
+		State:        indexpb.JobState_JobStateInProgress,
+	}))
+
+	mt := &meta{
+		catalog:     catalog,
+		segments:    NewSegmentsInfo(),
+		collections: newTestCollections(100),
+	}
+	updateCalls := 0
+	mockUpdate := mockey.Mock((*meta).UpdateSegmentsInfo).To(func(_ *meta, _ context.Context, _ ...UpdateOperator) error {
+		updateCalls++
+		return nil
+	}).Build()
+	defer mockUpdate.UnPatch()
+
+	mgr := &externalCollectionRefreshManager{
+		mt:          mt,
+		refreshMeta: refreshMeta,
+	}
+
+	err = mgr.applyFinishedJobSegments(ctx, &datapb.ExternalCollectionRefreshJob{
+		JobId:        1,
+		CollectionId: 100,
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "non-finished task")
+	assert.Equal(t, 0, updateCalls)
+}
+
+func TestExternalCollectionRefreshManager_ApplyFinishedJobSegmentsRejectsDuplicateUpdatedSegment(t *testing.T) {
+	ctx := context.Background()
+	catalog := &stubCatalog{}
+	refreshMeta, err := newExternalCollectionRefreshMeta(ctx, catalog)
+	assert.NoError(t, err)
+
+	assert.NoError(t, refreshMeta.AddTask(&datapb.ExternalCollectionRefreshTask{
+		TaskId:          1001,
+		JobId:           1,
+		CollectionId:    100,
+		State:           indexpb.JobState_JobStateFinished,
+		ResultReady:     true,
+		UpdatedSegments: []*datapb.SegmentInfo{{ID: 10, CollectionID: 100, NumOfRows: 7}},
+	}))
+	assert.NoError(t, refreshMeta.AddTask(&datapb.ExternalCollectionRefreshTask{
+		TaskId:          1002,
+		JobId:           1,
+		CollectionId:    100,
+		State:           indexpb.JobState_JobStateFinished,
+		ResultReady:     true,
+		UpdatedSegments: []*datapb.SegmentInfo{{ID: 10, CollectionID: 100, NumOfRows: 8}},
+	}))
+
+	mt := &meta{
+		catalog:     catalog,
+		segments:    NewSegmentsInfo(),
+		collections: newTestCollections(100),
+	}
+	updateCalls := 0
+	mockUpdate := mockey.Mock((*meta).UpdateSegmentsInfo).To(func(_ *meta, _ context.Context, _ ...UpdateOperator) error {
+		updateCalls++
+		return nil
+	}).Build()
+	defer mockUpdate.UnPatch()
+
+	mgr := &externalCollectionRefreshManager{
+		mt:          mt,
+		refreshMeta: refreshMeta,
+	}
+
+	err = mgr.applyFinishedJobSegments(ctx, &datapb.ExternalCollectionRefreshJob{
+		JobId:        1,
+		CollectionId: 100,
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate updated segment")
+	assert.Equal(t, 0, updateCalls)
+}
+
+func TestExternalCollectionRefreshManager_ApplyFinishedJobSegmentsRejectsMissingTaskResult(t *testing.T) {
+	ctx := context.Background()
+	catalog := &stubCatalog{}
+	refreshMeta, err := newExternalCollectionRefreshMeta(ctx, catalog)
+	assert.NoError(t, err)
+
+	assert.NoError(t, refreshMeta.AddTask(&datapb.ExternalCollectionRefreshTask{
+		TaskId:       1001,
+		JobId:        1,
+		CollectionId: 100,
+		State:        indexpb.JobState_JobStateFinished,
+	}))
+	assert.NoError(t, refreshMeta.AddTask(&datapb.ExternalCollectionRefreshTask{
+		TaskId:          1002,
+		JobId:           1,
+		CollectionId:    100,
+		State:           indexpb.JobState_JobStateFinished,
+		ResultReady:     true,
+		KeptSegments:    []int64{1},
+		UpdatedSegments: []*datapb.SegmentInfo{{ID: 20, CollectionID: 100, NumOfRows: 7}},
+	}))
+
+	mt := &meta{
+		catalog:     catalog,
+		segments:    NewSegmentsInfo(),
+		collections: newTestCollections(100),
+	}
+	updateCalls := 0
+	mockUpdate := mockey.Mock((*meta).UpdateSegmentsInfo).To(func(_ *meta, _ context.Context, _ ...UpdateOperator) error {
+		updateCalls++
+		return nil
+	}).Build()
+	defer mockUpdate.UnPatch()
+
+	mgr := &externalCollectionRefreshManager{
+		mt:          mt,
+		refreshMeta: refreshMeta,
+	}
+
+	err = mgr.applyFinishedJobSegments(ctx, &datapb.ExternalCollectionRefreshJob{
+		JobId:        1,
+		CollectionId: 100,
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "without persisted refresh result")
+	assert.Equal(t, 0, updateCalls)
+}
+
+func TestValidateMilvusTableRefreshSchemaErrorClass(t *testing.T) {
+	job := &datapb.ExternalCollectionRefreshJob{
+		JobId:          1,
+		CollectionId:   100,
+		ExternalSource: "s3://bucket/snapshots/1/metadata/10.json",
+		ExternalSpec:   testMilvusTableTargetRefreshSchema().GetExternalSpec(),
+	}
+
+	t.Run("metadata_read_error_is_retryable", func(t *testing.T) {
+		readErr := errors.New("temporary metadata read failure")
+		mockRead := mockey.Mock(packed.ReadMilvusTableSnapshotMetadata).
+			Return(nil, readErr).Build()
+		defer mockRead.UnPatch()
+
+		err := validateMilvusTableRefreshSchema(job, testMilvusTableTargetRefreshSchema())
+		assert.Error(t, err)
+		assert.False(t, errors.Is(err, errMilvusTableRefreshSchemaInvalid))
+		assert.ErrorIs(t, err, readErr)
+	})
+
+	t.Run("missing_source_schema_is_non_retriable", func(t *testing.T) {
+		mockRead := mockey.Mock(packed.ReadMilvusTableSnapshotMetadata).
+			Return(&datapb.SnapshotMetadata{
+				Collection: &datapb.CollectionDescription{},
+			}, nil).Build()
+		defer mockRead.UnPatch()
+
+		err := validateMilvusTableRefreshSchema(job, testMilvusTableTargetRefreshSchema())
+		assert.Error(t, err)
+		assert.ErrorIs(t, err, errMilvusTableRefreshSchemaInvalid)
+		assert.Contains(t, err.Error(), "missing collection schema")
+	})
+
+	t.Run("external_source_schema_is_non_retriable", func(t *testing.T) {
+		mockRead := mockey.Mock(packed.ReadMilvusTableSnapshotMetadata).
+			Return(&datapb.SnapshotMetadata{
+				Collection: &datapb.CollectionDescription{
+					Schema: testMilvusTableRefreshSchema(true),
+				},
+			}, nil).Build()
+		defer mockRead.UnPatch()
+
+		err := validateMilvusTableRefreshSchema(job, testMilvusTableTargetRefreshSchema())
+		assert.Error(t, err)
+		assert.ErrorIs(t, err, errMilvusTableRefreshSchemaInvalid)
+		assert.Contains(t, err.Error(), "source snapshot is an external collection")
+	})
+
+	t.Run("schema_mismatch_is_non_retriable", func(t *testing.T) {
+		sourceSchema := testMilvusTableRefreshSchema(false)
+		sourceSchema.Fields[0].FieldID = 101
+		mockRead := mockey.Mock(packed.ReadMilvusTableSnapshotMetadata).
+			Return(&datapb.SnapshotMetadata{
+				Collection: &datapb.CollectionDescription{
+					Schema: sourceSchema,
+				},
+			}, nil).Build()
+		defer mockRead.UnPatch()
+
+		err := validateMilvusTableRefreshSchema(job, testMilvusTableTargetRefreshSchema())
+		assert.Error(t, err)
+		assert.ErrorIs(t, err, errMilvusTableRefreshSchemaInvalid)
+		assert.Contains(t, err.Error(), "source schema does not match target collection schema")
+	})
+
+	t.Run("matching_schema_passes", func(t *testing.T) {
+		mockRead := mockey.Mock(packed.ReadMilvusTableSnapshotMetadata).
+			Return(&datapb.SnapshotMetadata{
+				Collection: &datapb.CollectionDescription{
+					Schema: testMilvusTableRefreshSchema(false),
+				},
+			}, nil).Build()
+		defer mockRead.UnPatch()
+
+		err := validateMilvusTableRefreshSchema(job, testMilvusTableTargetRefreshSchema())
+		assert.NoError(t, err)
+	})
 }
 
 // ==================== Test Functions ====================
@@ -216,7 +620,7 @@ func TestExternalCollectionRefreshManager_SubmitRefreshJobWithID(t *testing.T) {
 
 		// Mock AllocID to return error — triggers createTasksForJob failure
 		// in the async Phase B goroutine.
-		mockAllocID := mockey.Mock(mockey.GetMethod(alloc, "AllocID")).Return(int64(0), errors.New("alloc failed")).Build()
+		mockAllocID := mockey.Mock((*stubAllocator).AllocID).Return(int64(0), errors.New("alloc failed")).Build()
 		defer mockAllocID.UnPatch()
 
 		scheduler := newStubScheduler()
@@ -254,53 +658,6 @@ func TestExternalCollectionRefreshManager_SubmitRefreshJobWithID(t *testing.T) {
 		assert.NotNil(t, job, "job should remain in Init state for retry")
 		assert.Equal(t, indexpb.JobState_JobStateInit, job.GetState())
 		assert.Empty(t, job.GetTaskIds(), "no tasks should be persisted after async failure")
-	})
-
-	t.Run("zero_total_rows_marks_job_failed_non_retriable", func(t *testing.T) {
-		// Regression for #49225: a non-empty file list whose row counts sum
-		// to zero (e.g. user-supplied empty parquet) used to make datanode
-		// crash with "integer divide by zero". Now createTasksForJob must
-		// reject this case as a non-retriable error and Phase B must
-		// transition the job to JobStateFailed instead of leaving it in
-		// Init for the checker tick to retry forever.
-		refreshMeta := createTestRefreshMeta(t)
-		alloc := &stubAllocator{nextID: 1000}
-		scheduler := newStubScheduler()
-
-		collections := typeutil.NewConcurrentMap[UniqueID, *collectionInfo]()
-		collections.Insert(100, &collectionInfo{
-			ID: 100,
-			Schema: &schemapb.CollectionSchema{
-				Name:           "test_collection",
-				ExternalSource: "s3://bucket/empty",
-				ExternalSpec:   `{"format":"parquet"}`,
-			},
-		})
-		mt := &meta{collections: collections}
-
-		mockIsExternal := mockey.Mock(typeutil.IsExternalCollection).Return(true).Build()
-		defer mockIsExternal.UnPatch()
-
-		// One file, zero rows — passes the existing len()==0 check but
-		// must trip the new totalRows==0 guard.
-		mockExplore := mockey.Mock((*externalCollectionRefreshManager).exploreExternalFiles).
-			Return([]*datapb.ExternalFileInfo{{FilePath: "s3://bucket/empty/empty.parquet", NumRows: 0}}, "s3://bucket/empty/manifest", nil).Build()
-		defer mockExplore.UnPatch()
-
-		manager := NewExternalCollectionRefreshManager(ctx, mt, scheduler, alloc, refreshMeta, nil, testCollectionGetter(mt), nil, nil)
-
-		_, err := manager.SubmitRefreshJobWithID(ctx, 1, 100, "test_collection", "", "")
-		assert.NoError(t, err)
-
-		// Wait for Phase B to finish.
-		manager.Stop()
-
-		job := refreshMeta.GetJob(1)
-		assert.NotNil(t, job)
-		assert.Equal(t, indexpb.JobState_JobStateFailed, job.GetState(),
-			"non-retriable error must transition job to Failed, not leave in Init")
-		assert.Contains(t, job.GetFailReason(), "zero total rows",
-			"reason must explain why so operators can act")
 	})
 
 	t.Run("ffi_explore_error_marks_job_failed_non_retriable", func(t *testing.T) {
@@ -347,6 +704,39 @@ func TestExternalCollectionRefreshManager_SubmitRefreshJobWithID(t *testing.T) {
 		assert.Contains(t, job.GetFailReason(), "explore external files failed")
 		assert.Contains(t, job.GetFailReason(), "NO_SUCH_BUCKET",
 			"underlying error must be surfaced to operators")
+	})
+
+	t.Run("milvus_table_schema_error_marks_job_failed_non_retriable", func(t *testing.T) {
+		refreshMeta := createTestRefreshMeta(t)
+		alloc := &stubAllocator{nextID: 1000}
+		scheduler := newStubScheduler()
+
+		collections := typeutil.NewConcurrentMap[UniqueID, *collectionInfo]()
+		collections.Insert(100, &collectionInfo{
+			ID:     100,
+			Schema: testMilvusTableTargetRefreshSchema(),
+		})
+		mt := &meta{collections: collections}
+
+		mockRead := mockey.Mock(packed.ReadMilvusTableSnapshotMetadata).
+			Return(&datapb.SnapshotMetadata{
+				Collection: &datapb.CollectionDescription{},
+			}, nil).Build()
+		defer mockRead.UnPatch()
+
+		manager := NewExternalCollectionRefreshManager(ctx, mt, scheduler, alloc, refreshMeta, nil, testCollectionGetter(mt), nil, nil)
+
+		_, err := manager.SubmitRefreshJobWithID(ctx, 1, 100, "test_collection", "", "")
+		assert.NoError(t, err)
+
+		manager.Stop()
+
+		job := refreshMeta.GetJob(1)
+		assert.NotNil(t, job)
+		assert.Equal(t, indexpb.JobState_JobStateFailed, job.GetState(),
+			"schema validation failure must transition job to Failed, not loop in Init")
+		assert.Contains(t, job.GetFailReason(), "explore external files failed")
+		assert.Contains(t, job.GetFailReason(), "milvus-table refresh schema invalid")
 	})
 
 	t.Run("reject_when_active_job_exists", func(t *testing.T) {
@@ -448,6 +838,50 @@ func TestExternalCollectionRefreshManager_GetJobProgress(t *testing.T) {
 		assert.Equal(t, indexpb.JobState_JobStateInit, job.GetState())
 	})
 
+	t.Run("finished_tasks_do_not_expose_finished_before_job_persisted", func(t *testing.T) {
+		existingJob := &datapb.ExternalCollectionRefreshJob{
+			JobId:        1,
+			CollectionId: 100,
+			State:        indexpb.JobState_JobStateInProgress,
+			Progress:     80,
+		}
+		tasks := []*datapb.ExternalCollectionRefreshTask{
+			{TaskId: 1001, JobId: 1, State: indexpb.JobState_JobStateFinished, Progress: 100},
+			{TaskId: 1002, JobId: 1, State: indexpb.JobState_JobStateFinished, Progress: 100},
+		}
+		refreshMeta := createTestRefreshMetaWithJobs(t, []*datapb.ExternalCollectionRefreshJob{existingJob}, tasks)
+
+		manager := NewExternalCollectionRefreshManager(ctx, nil, newStubScheduler(), &stubAllocator{}, refreshMeta, nil, nil, nil, nil)
+
+		job, err := manager.GetJobProgress(ctx, 1)
+		assert.NoError(t, err)
+		assert.Equal(t, indexpb.JobState_JobStateInProgress, job.GetState())
+		assert.Equal(t, int64(99), job.GetProgress())
+	})
+
+	t.Run("persisted_failed_job_not_overwritten_by_finished_tasks", func(t *testing.T) {
+		existingJob := &datapb.ExternalCollectionRefreshJob{
+			JobId:        1,
+			CollectionId: 100,
+			State:        indexpb.JobState_JobStateFailed,
+			Progress:     80,
+			FailReason:   "apply failed",
+		}
+		tasks := []*datapb.ExternalCollectionRefreshTask{
+			{TaskId: 1001, JobId: 1, State: indexpb.JobState_JobStateFinished, Progress: 100},
+			{TaskId: 1002, JobId: 1, State: indexpb.JobState_JobStateFinished, Progress: 100},
+		}
+		refreshMeta := createTestRefreshMetaWithJobs(t, []*datapb.ExternalCollectionRefreshJob{existingJob}, tasks)
+
+		manager := NewExternalCollectionRefreshManager(ctx, nil, newStubScheduler(), &stubAllocator{}, refreshMeta, nil, nil, nil, nil)
+
+		job, err := manager.GetJobProgress(ctx, 1)
+		assert.NoError(t, err)
+		assert.Equal(t, indexpb.JobState_JobStateFailed, job.GetState())
+		assert.Equal(t, int64(80), job.GetProgress())
+		assert.Equal(t, "apply failed", job.GetFailReason())
+	})
+
 	t.Run("job_not_found", func(t *testing.T) {
 		refreshMeta := createTestRefreshMeta(t)
 		alloc := &stubAllocator{}
@@ -510,6 +944,26 @@ func TestExternalCollectionRefreshManager_ListJobs(t *testing.T) {
 		assert.Len(t, result, 1)
 		// When no tasks exist, should keep the persisted state (Init), not overwrite to None
 		assert.Equal(t, indexpb.JobState_JobStateInit, result[0].GetState())
+	})
+
+	t.Run("finished_tasks_do_not_expose_finished_before_job_persisted", func(t *testing.T) {
+		now := time.Now().UnixMilli()
+		jobs := []*datapb.ExternalCollectionRefreshJob{
+			{JobId: 1, CollectionId: 100, State: indexpb.JobState_JobStateInProgress, Progress: 80, StartTime: now},
+		}
+		tasks := []*datapb.ExternalCollectionRefreshTask{
+			{TaskId: 1001, JobId: 1, State: indexpb.JobState_JobStateFinished, Progress: 100},
+			{TaskId: 1002, JobId: 1, State: indexpb.JobState_JobStateFinished, Progress: 100},
+		}
+		refreshMeta := createTestRefreshMetaWithJobs(t, jobs, tasks)
+
+		manager := NewExternalCollectionRefreshManager(ctx, nil, newStubScheduler(), &stubAllocator{}, refreshMeta, nil, nil, nil, nil)
+
+		result, err := manager.ListJobs(ctx, 100)
+		assert.NoError(t, err)
+		assert.Len(t, result, 1)
+		assert.Equal(t, indexpb.JobState_JobStateInProgress, result[0].GetState())
+		assert.Equal(t, int64(99), result[0].GetProgress())
 	})
 
 	t.Run("empty_list", func(t *testing.T) {

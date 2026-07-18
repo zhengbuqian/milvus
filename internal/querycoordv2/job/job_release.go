@@ -19,18 +19,16 @@ package job
 import (
 	"context"
 
-	"github.com/cockroachdb/errors"
-	"go.uber.org/zap"
-
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
 	"github.com/milvus-io/milvus/internal/querycoordv2/checkers"
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
 	"github.com/milvus-io/milvus/internal/querycoordv2/observers"
 	"github.com/milvus-io/milvus/internal/querycoordv2/session"
 	"github.com/milvus-io/milvus/internal/util/proxyutil"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/proxypb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/proto/proxypb"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/message"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
 )
 
 type ReleaseCollectionJob struct {
@@ -71,46 +69,51 @@ func NewReleaseCollectionJob(ctx context.Context,
 
 func (job *ReleaseCollectionJob) Execute() error {
 	collectionID := job.result.Message.Header().GetCollectionId()
-	log := log.Ctx(job.ctx).With(zap.Int64("collectionID", collectionID))
+	replicas := job.meta.GetByCollection(job.ctx, collectionID)
 
-	if !job.meta.Exist(job.ctx, collectionID) {
-		log.Info("release collection end, the collection has not been loaded into QueryNode")
+	if !job.meta.Exist(job.ctx, collectionID) && len(replicas) == 0 {
+		mlog.Info(context.TODO(), "release collection end, the collection has not been loaded into QueryNode")
 		return nil
 	}
 
-	err := job.meta.CollectionManager.RemoveCollection(job.ctx, collectionID)
-	if err != nil {
-		msg := "failed to remove collection"
-		log.Warn(msg, zap.Error(err))
-		return errors.Wrap(err, msg)
+	if job.meta.Exist(job.ctx, collectionID) {
+		err := job.meta.CollectionManager.RemoveCollection(job.ctx, collectionID)
+		if err != nil {
+			msg := "failed to remove collection"
+			mlog.Warn(job.ctx, msg, mlog.Err(err))
+			return merr.Wrapf(err, "%s", msg)
+		}
+
+		job.targetObserver.ReleaseCollection(collectionID)
+
+		// try best discard cache
+		// shall not affect releasing if failed
+		if err := job.proxyManager.InvalidateCollectionMetaCache(job.ctx,
+			&proxypb.InvalidateCollMetaCacheRequest{
+				CollectionID: collectionID,
+			},
+			proxyutil.SetMsgType(commonpb.MsgType_ReleaseCollection)); err != nil {
+			mlog.Warn(context.TODO(), "failed to invalidate collection meta cache", mlog.Err(err))
+		}
+
+		// try best clean shard leader cache
+		if err := job.proxyManager.InvalidateShardLeaderCache(job.ctx, &proxypb.InvalidateShardLeaderCacheRequest{
+			CollectionIDs: []int64{collectionID},
+		}); err != nil {
+			mlog.Warn(context.TODO(), "failed to invalidate shard leader cache", mlog.Err(err))
+		}
 	}
 
-	err = job.meta.ReplicaManager.RemoveCollection(job.ctx, collectionID)
-	if err != nil {
+	if err := WaitCollectionReleased(job.ctx, job.dist, job.checkerController, collectionID); err != nil {
+		mlog.Warn(context.TODO(), "failed to wait collection released", mlog.Err(err))
+		return merr.Wrap(err, "failed to wait collection released")
+	}
+
+	if err := job.meta.ReplicaManager.RemoveCollection(job.ctx, collectionID); err != nil {
 		msg := "failed to remove replicas"
-		log.Warn(msg, zap.Error(err))
+		mlog.Warn(job.ctx, msg, mlog.Err(err))
+		return merr.Wrapf(err, "%s", msg)
 	}
-
-	job.targetObserver.ReleaseCollection(collectionID)
-
-	// try best discard cache
-	// shall not affect releasing if failed
-	job.proxyManager.InvalidateCollectionMetaCache(job.ctx,
-		&proxypb.InvalidateCollMetaCacheRequest{
-			CollectionID: collectionID,
-		},
-		proxyutil.SetMsgType(commonpb.MsgType_ReleaseCollection))
-
-	// try best clean shard leader cache
-	job.proxyManager.InvalidateShardLeaderCache(job.ctx, &proxypb.InvalidateShardLeaderCacheRequest{
-		CollectionIDs: []int64{collectionID},
-	})
-
-	if err = WaitCollectionReleased(job.ctx, job.dist, job.checkerController, collectionID); err != nil {
-		log.Warn("failed to wait collection released", zap.Error(err))
-		// return nil to avoid infinite retry on DDL callback
-		return nil
-	}
-	log.Info("release collection job done", zap.Int64("collectionID", collectionID))
+	mlog.Info(context.TODO(), "release collection job done", mlog.Int64("collectionID", collectionID))
 	return nil
 }

@@ -27,12 +27,12 @@ import (
 	"github.com/samber/lo"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
-	"github.com/milvus-io/milvus/client/v2/column"
-	"github.com/milvus-io/milvus/client/v2/entity"
-	"github.com/milvus-io/milvus/client/v2/index"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
+	"github.com/milvus-io/milvus/client/v3/column"
+	"github.com/milvus-io/milvus/client/v3/entity"
+	"github.com/milvus-io/milvus/client/v3/index"
 )
 
 const (
@@ -47,6 +47,7 @@ const (
 	spGroupBy         = `group_by_field`
 	spGroupSize       = `group_size`
 	spStrictGroupSize = `strict_group_size`
+	spOrderByFields   = `order_by_fields`
 )
 
 type SearchOption interface {
@@ -59,7 +60,9 @@ type searchOption struct {
 	annRequest                 *AnnRequest
 	collectionName             string
 	partitionNames             []string
+	namespace                  *string
 	outputFields               []string
+	searchAggregation          *SearchAggregation
 	consistencyLevel           entity.ConsistencyLevel
 	useDefaultConsistencyLevel bool
 }
@@ -332,15 +335,43 @@ func (opt *searchOption) Request() (*milvuspb.SearchRequest, error) {
 
 	request.CollectionName = opt.collectionName
 	request.PartitionNames = opt.partitionNames
+	request.Namespace = opt.namespace
 	request.ConsistencyLevel = commonpb.ConsistencyLevel(opt.consistencyLevel)
 	request.UseDefaultConsistency = opt.useDefaultConsistencyLevel
 	request.OutputFields = opt.outputFields
+	if opt.searchAggregation != nil {
+		if opt.annRequest.groupByField != "" || opt.annRequest.groupSize != 0 || opt.annRequest.strictGroupSize {
+			return nil, errors.New("search_aggregation and group_by_field/group_size are mutually exclusive")
+		}
+		if opt.annRequest.offset > 0 {
+			return nil, errors.New("offset is not supported with search_aggregation")
+		}
+		if rawOffset := strings.TrimSpace(opt.annRequest.searchParam[spOffset]); rawOffset != "" && rawOffset != "0" {
+			return nil, errors.New("offset is not supported with search_aggregation")
+		}
+		if strings.TrimSpace(opt.annRequest.searchParam[spGroupBy]) != "" {
+			return nil, errors.New("group_by_field and search_aggregation cannot be used simultaneously")
+		}
+		if strings.TrimSpace(opt.annRequest.searchParam["group_by_fields"]) != "" {
+			return nil, errors.New("group_by_fields and search_aggregation cannot be used simultaneously")
+		}
+		searchAggregation, err := opt.searchAggregation.protoMessage()
+		if err != nil {
+			return nil, err
+		}
+		request.SearchAggregation = searchAggregation
+	}
 
 	return request, nil
 }
 
 func (opt *searchOption) WithPartitions(partitionNames ...string) *searchOption {
 	opt.partitionNames = partitionNames
+	return opt
+}
+
+func (opt *searchOption) WithNamespace(namespace string) *searchOption {
+	opt.namespace = &namespace
 	return opt
 }
 
@@ -402,6 +433,11 @@ func (opt *searchOption) WithAnnParam(ap index.AnnParam) *searchOption {
 
 func (opt *searchOption) WithSearchParam(key, value string) *searchOption {
 	opt.annRequest.WithSearchParam(key, value)
+	return opt
+}
+
+func (opt *searchOption) WithSearchAggregation(agg *SearchAggregation) *searchOption {
+	opt.searchAggregation = agg
 	return opt
 }
 
@@ -497,6 +533,7 @@ type HybridSearchOption interface {
 type hybridSearchOption struct {
 	collectionName string
 	partitionNames []string
+	namespace      *string
 
 	reqs []*AnnRequest
 
@@ -523,6 +560,11 @@ func (opt *hybridSearchOption) WithPartitons(partitions ...string) *hybridSearch
 
 func (opt *hybridSearchOption) WithPartitions(partitions ...string) *hybridSearchOption {
 	opt.partitionNames = partitions
+	return opt
+}
+
+func (opt *hybridSearchOption) WithNamespace(namespace string) *hybridSearchOption {
+	opt.namespace = &namespace
 	return opt
 }
 
@@ -568,6 +610,7 @@ func (opt *hybridSearchOption) HybridRequest() (*milvuspb.HybridSearchRequest, e
 	r := &milvuspb.HybridSearchRequest{
 		CollectionName:        opt.collectionName,
 		PartitionNames:        opt.partitionNames,
+		Namespace:             opt.namespace,
 		Requests:              requests,
 		UseDefaultConsistency: opt.useDefaultConsistency,
 		ConsistencyLevel:      commonpb.ConsistencyLevel(opt.consistencyLevel),
@@ -601,6 +644,7 @@ type QueryOption interface {
 type queryOption struct {
 	collectionName             string
 	partitionNames             []string
+	namespace                  *string
 	queryParams                map[string]string
 	outputFields               []string
 	consistencyLevel           entity.ConsistencyLevel
@@ -613,6 +657,7 @@ func (opt *queryOption) Request() (*milvuspb.QueryRequest, error) {
 	req := &milvuspb.QueryRequest{
 		CollectionName: opt.collectionName,
 		PartitionNames: opt.partitionNames,
+		Namespace:      opt.namespace,
 		OutputFields:   opt.outputFields,
 
 		Expr:                  opt.expr,
@@ -659,6 +704,17 @@ func (opt *queryOption) WithLimit(limit int) *queryOption {
 	return opt
 }
 
+// WithOrderByFields sorts query results by the given scalar fields.
+// Each spec is "fieldName" or "fieldName:asc" / "fieldName:desc" (default asc).
+// The server requires an explicit limit when order-by fields are set.
+func (opt *queryOption) WithOrderByFields(fields ...string) *queryOption {
+	if opt.queryParams == nil {
+		opt.queryParams = make(map[string]string)
+	}
+	opt.queryParams[spOrderByFields] = strings.Join(fields, ",")
+	return opt
+}
+
 func (opt *queryOption) WithOutputFields(fieldNames ...string) *queryOption {
 	opt.outputFields = fieldNames
 	return opt
@@ -672,6 +728,11 @@ func (opt *queryOption) WithConsistencyLevel(consistencyLevel entity.Consistency
 
 func (opt *queryOption) WithPartitions(partitionNames ...string) *queryOption {
 	opt.partitionNames = partitionNames
+	return opt
+}
+
+func (opt *queryOption) WithNamespace(namespace string) *queryOption {
+	opt.namespace = &namespace
 	return opt
 }
 

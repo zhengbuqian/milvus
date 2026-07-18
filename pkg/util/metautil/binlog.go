@@ -6,9 +6,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/common"
+	"github.com/milvus-io/milvus/pkg/v3/proto/datapb"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 const pathSep = "/"
@@ -129,6 +129,27 @@ func BuildTextIndexPrefix(rootPath string, buildID, version, collectionID, parti
 		strconv.FormatInt(buildID, 10), strconv.FormatInt(version, 10),
 		strconv.FormatInt(collectionID, 10), strconv.FormatInt(partitionID, 10),
 		strconv.FormatInt(segmentID, 10), strconv.FormatInt(fieldID, 10))
+}
+
+// BuildStatsFilePaths normalizes stats files to full object keys.
+// TextMatch stats upload returns relative filenames; this helper also tolerates
+// already-full paths for compatibility with older/intermediate producers.
+func BuildStatsFilePaths(basePath string, files []string) []string {
+	result := make([]string, 0, len(files))
+	if basePath == "" {
+		return append(result, files...)
+	}
+
+	basePath = strings.TrimSuffix(basePath, pathSep)
+	prefix := basePath + pathSep
+	for _, file := range files {
+		if strings.HasPrefix(file, prefix) {
+			result = append(result, file)
+			continue
+		}
+		result = append(result, path.Join(basePath, strings.TrimPrefix(file, pathSep)))
+	}
+	return result
 }
 
 // BuildJSONKeyStatsPrefix returns the remote base path for JSON key stats files.

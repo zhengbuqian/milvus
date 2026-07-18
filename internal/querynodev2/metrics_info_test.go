@@ -24,20 +24,20 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/distributed/streaming"
 	"github.com/milvus-io/milvus/internal/json"
 	"github.com/milvus-io/milvus/internal/mocks/distributed/mock_streaming"
 	"github.com/milvus-io/milvus/internal/querynodev2/delegator"
 	"github.com/milvus-io/milvus/internal/querynodev2/pipeline"
 	"github.com/milvus-io/milvus/internal/querynodev2/segments"
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgdispatcher"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/util/metricsinfo"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/tsoutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/mq/msgdispatcher"
+	"github.com/milvus-io/milvus/pkg/v3/proto/querypb"
+	"github.com/milvus-io/milvus/pkg/v3/streaming/util/types"
+	"github.com/milvus-io/milvus/pkg/v3/util/metricsinfo"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/tsoutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 func TestGetPipelineJSON(t *testing.T) {
@@ -147,8 +147,8 @@ func TestStreamingQuotaMetrics(t *testing.T) {
 				ChannelInfo: types.PChannelInfo{
 					Name: "ch1",
 				},
-				MVCCTimeTick:     tsoutil.ComposeTSByTime(now, 0),
-				RecoveryTimeTick: tsoutil.ComposeTSByTime(now.Add(-time.Second), 0),
+				MVCCTimeTick:     tsoutil.ComposeTSByTime(now),
+				RecoveryTimeTick: tsoutil.ComposeTSByTime(now.Add(-time.Second)),
 			},
 			{Name: "ch2"}: types.ROWALMetrics{},
 		},
@@ -160,7 +160,7 @@ func TestStreamingQuotaMetrics(t *testing.T) {
 	m := getStreamingQuotaMetrics()
 	assert.Len(t, m.WALs, 1)
 	assert.Equal(t, "ch1", m.WALs[0].Channel.Name)
-	assert.Equal(t, tsoutil.ComposeTSByTime(now.Add(-time.Second), 0), m.WALs[0].RecoveryTimeTick)
+	assert.Equal(t, tsoutil.ComposeTSByTime(now.Add(-time.Second)), m.WALs[0].RecoveryTimeTick)
 
 	local.EXPECT().GetMetricsIfLocal(mock.Anything).Unset()
 	local.EXPECT().GetMetricsIfLocal(mock.Anything).Return(nil, errors.New("test"))

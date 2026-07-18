@@ -25,26 +25,25 @@ import (
 	"time"
 
 	"github.com/cockroachdb/errors"
-	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
 	"github.com/milvus-io/milvus/internal/streamingcoord/client"
 	kvfactory "github.com/milvus-io/milvus/internal/util/dependency/kv"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
 	"github.com/milvus-io/milvus/internal/util/streamingutil/service/discoverer"
 	"github.com/milvus-io/milvus/internal/util/streamingutil/service/lazygrpc"
 	"github.com/milvus-io/milvus/internal/util/streamingutil/service/resolver"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/util"
-	"github.com/milvus-io/milvus/pkg/v2/util/contextutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/crypto"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/util"
+	"github.com/milvus-io/milvus/pkg/v3/util/contextutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/crypto"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 var ErrForwardDisabled = errors.New("forward disabled")
@@ -58,7 +57,7 @@ func newForwardService(streamingCoordClient client.Client) *forwardServiceImpl {
 		isForwardDisabled: false,
 		legacyProxy:       nil,
 	}
-	fs.SetLogger(log.With(log.FieldComponent("forward-service")))
+	fs.SetLogger(mlog.With(mlog.FieldComponent("forward-service")))
 	return fs
 }
 
@@ -83,7 +82,7 @@ type forwardOption struct {
 
 // forwardServiceImpl is the implementation of FallbackService.
 type forwardServiceImpl struct {
-	log.Binder
+	mlog.Binder
 
 	streamingCoordClient client.Client
 	mu                   sync.Mutex
@@ -210,7 +209,7 @@ func (fs *forwardServiceImpl) initLegacyProxy() {
 	})
 	fs.legacyProxy = lazygrpc.WithServiceCreator(conn, milvuspb.NewMilvusServiceClient)
 	fs.rb = rb
-	fs.Logger().Info("streaming service is not ready, legacy proxy is initiated to forward request", zap.Int("proxyPort", port))
+	fs.Logger().Info(context.TODO(), "streaming service is not ready, legacy proxy is initiated to forward request", mlog.Int("proxyPort", port))
 }
 
 // getDialOptions returns the dial options for the legacy proxy.
@@ -235,8 +234,8 @@ func getDialOptions(rb resolver.Builder) []grpc.DialOption {
 	}
 	opts = append(opts, grpc.WithDefaultServiceConfig(string(defaultServiceConfigJSON)))
 
-	// Add a unary interceptor to carry incoming metadata to outgoing calls.
-	opts = append(opts, grpc.WithUnaryInterceptor(
+	// Add unary interceptors to carry incoming metadata and mlog fields to outgoing calls.
+	opts = append(opts, grpc.WithChainUnaryInterceptor(
 		func(ctx context.Context, method string, req interface{}, reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 			// carry incoming metadata into outgoing
 			newCtx := ctx
@@ -246,6 +245,7 @@ func getDialOptions(rb resolver.Builder) []grpc.DialOption {
 			}
 			return invoker(newCtx, method, req, reply, cc, opts...)
 		},
+		mlog.UnaryClientInterceptor(),
 	))
 	return opts
 }
@@ -253,7 +253,7 @@ func getDialOptions(rb resolver.Builder) []grpc.DialOption {
 // markForwardDisabled marks the forward disabled.
 func (fs *forwardServiceImpl) markForwardDisabled() {
 	fs.isForwardDisabled = true
-	fs.Logger().Info("streaming service is ready, forward is disabled")
+	fs.Logger().Info(context.TODO(), "streaming service is ready, forward is disabled")
 	if fs.legacyProxy != nil {
 		legacyProxy := fs.legacyProxy
 		fs.legacyProxy = nil
@@ -261,9 +261,9 @@ func (fs *forwardServiceImpl) markForwardDisabled() {
 		fs.rb = nil
 		go func() {
 			legacyProxy.Close()
-			fs.Logger().Info("legacy proxy closed")
+			fs.Logger().Info(context.TODO(), "legacy proxy closed")
 			rb.Close()
-			fs.Logger().Info("resolver builder closed")
+			fs.Logger().Info(context.TODO(), "resolver builder closed")
 		}()
 	}
 }

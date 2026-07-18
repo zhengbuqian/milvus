@@ -18,21 +18,18 @@ package proxy
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 	"sync"
 
-	"go.uber.org/zap"
-
-	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
 	"github.com/milvus-io/milvus/internal/types"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgstream"
-	"github.com/milvus-io/milvus/pkg/v2/util/commonpbutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/metrics"
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
+	"github.com/milvus-io/milvus/pkg/v3/mq/msgstream"
+	"github.com/milvus-io/milvus/pkg/v3/util/commonpbutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
 )
 
 // channelsMgr manages the pchans, vchans and related message stream of collections.
@@ -66,8 +63,10 @@ func removeDuplicate(ss []string) []string {
 
 func newChannels(vchans []vChan, pchans []pChan) (channelInfos, error) {
 	if len(vchans) != len(pchans) {
-		log.Error("physical channels mismatch virtual channels", zap.Int("len(VirtualChannelNames)", len(vchans)), zap.Int("len(PhysicalChannelNames)", len(pchans)))
-		return channelInfos{}, fmt.Errorf("physical channels mismatch virtual channels, len(VirtualChannelNames): %v, len(PhysicalChannelNames): %v", len(vchans), len(pchans))
+		mlog.Error(context.TODO(), "physical channels mismatch virtual channels", mlog.Int("len(VirtualChannelNames)", len(vchans)), mlog.Int("len(PhysicalChannelNames)", len(pchans)))
+		// Channel lists come from DescribeCollection (coordinator-allocated
+		// metadata), never from the caller: a mismatch is a server-side bug.
+		return channelInfos{}, merr.WrapErrServiceInternalMsg("physical channels mismatch virtual channels, len(VirtualChannelNames): %v, len(PhysicalChannelNames): %v", len(vchans), len(pchans))
 	}
 	/*
 		// remove duplicate physical channels.
@@ -92,14 +91,14 @@ func getDmlChannelsFunc(ctx context.Context, mixc types.MixCoordClient) getChann
 
 		resp, err := mixc.DescribeCollection(ctx, req)
 		if err != nil {
-			log.Error("failed to describe collection", zap.Error(err), zap.Int64("collection", collectionID))
+			mlog.Error(context.TODO(), "failed to describe collection", mlog.Err(err), mlog.Int64("collection", collectionID))
 			return channelInfos{}, err
 		}
 
 		if resp.GetStatus().GetErrorCode() != commonpb.ErrorCode_Success {
-			log.Error("failed to describe collection",
-				zap.String("error_code", resp.GetStatus().GetErrorCode().String()),
-				zap.String("reason", resp.GetStatus().GetReason()))
+			mlog.Error(context.TODO(), "failed to describe collection",
+				mlog.String("error_code", resp.GetStatus().GetErrorCode().String()),
+				mlog.String("reason", resp.GetStatus().GetReason()))
 			return channelInfos{}, merr.Error(resp.GetStatus())
 		}
 
@@ -124,7 +123,7 @@ func (mgr *singleTypeChannelsMgr) getAllChannels(collectionID UniqueID) (channel
 		return infos.channelInfos, nil
 	}
 
-	return channelInfos{}, fmt.Errorf("collection not found in channels manager: %d", collectionID)
+	return channelInfos{}, merr.WrapErrParameterInvalidMsg("collection not found in channels manager: %d", collectionID)
 }
 
 func (mgr *singleTypeChannelsMgr) ensureChannels(collectionID UniqueID) (channelInfos, error) {
@@ -186,7 +185,7 @@ func (mgr *singleTypeChannelsMgr) removeStream(collectionID UniqueID) {
 		decPChanMetrics(info.channelInfos.pchans)
 		delete(mgr.infos, collectionID)
 	}
-	log.Info("dml stream removed", zap.Int64("collection_id", collectionID))
+	mlog.Info(context.TODO(), "dml stream removed", mlog.Int64("collection_id", collectionID))
 }
 
 func newSingleTypeChannelsMgr(

@@ -13,15 +13,21 @@
 #include <string.h>
 #include <string>
 
+#include "cachinglayer/Metrics.h"
+#include "common/FastMem.h"
+#include "common/init_c.h"
 #include "common/PrometheusClient.h"
 #include "monitor_c.h"
 
 char*
 GetCoreMetrics() {
+    UpdateArrowIOThreadPoolMetrics();
+    static_cast<void>(
+        milvus::cachinglayer::monitor::collect_cache_shard_disk_usage_stats());
     auto str = milvus::monitor::getPrometheusClient().GetMetrics();
     auto len = str.length();
     char* res = static_cast<char*>(malloc(len + 1));
-    memcpy(res, str.data(), len);
+    milvus::fastmem::FastMemcpy(res, str.data(), len);
     res[len] = '\0';
     return res;
 }

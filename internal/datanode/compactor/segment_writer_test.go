@@ -22,8 +22,8 @@ import (
 	"github.com/stretchr/testify/suite"
 
 	"github.com/milvus-io/milvus/internal/storage"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/tsoutil"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/tsoutil"
 )
 
 func TestSegmentWriterSuite(t *testing.T) {
@@ -51,7 +51,7 @@ func (s *SegmentWriteSuite) TestWriteFailed() {
 
 		v := storage.Value{
 			PK:        storage.NewInt64PrimaryKey(int64(0)),
-			Timestamp: int64(tsoutil.ComposeTSByTime(getMilvusBirthday(), 0)),
+			Timestamp: int64(tsoutil.ComposeTSByTime(getMilvusBirthday())),
 			Value:     genRowWithBM25(int64(0)),
 		}
 		err = writer.Write(&v)
@@ -66,7 +66,7 @@ func (s *SegmentWriteSuite) TestWriteFailed() {
 
 		v := storage.Value{
 			PK:        storage.NewInt64PrimaryKey(int64(0)),
-			Timestamp: int64(tsoutil.ComposeTSByTime(getMilvusBirthday(), 0)),
+			Timestamp: int64(tsoutil.ComposeTSByTime(getMilvusBirthday())),
 			Value:     genRowWithBM25(int64(0)),
 		}
 		err = writer.Write(&v)
