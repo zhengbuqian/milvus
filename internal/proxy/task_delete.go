@@ -316,6 +316,9 @@ func (dr *deleteRunner) Init(ctx context.Context) error {
 	if err != nil {
 		return ErrWithLog(log, "Failed to get collection schema", err)
 	}
+	if err := validateTextStorageV3Enabled(dr.schema.CollectionSchema); err != nil {
+		return ErrWithLog(log, "TEXT field requires StorageV3", err)
+	}
 	partitionName, namespaceAsPartition, err := resolveNamespacePartitionName(dr.schema.CollectionSchema, dr.req.Namespace, dr.req.GetPartitionName())
 	if err != nil {
 		return err

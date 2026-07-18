@@ -203,6 +203,15 @@ type dmlTask interface {
 	getChannels() []pChan
 }
 
+type BaseInsertTask = msgstream.InsertMsg
+
+func validateTextStorageV3Enabled(schema *schemapb.CollectionSchema) error {
+	if err := typeutil.ValidateTextRequiresStorageV3(schema, Params.CommonCfg.UseLoonFFI.GetAsBool()); err != nil {
+		return merr.WrapErrParameterInvalidMsg("%s", err.Error())
+	}
+	return nil
+}
+
 // validateAddFunctionRequiresStorageV3 rejects adding a function to an existing collection
 // unless the compaction infrastructure that backfills its output field into pre-existing
 // sealed segments is enabled. The new function-output field is materialized only by
@@ -260,8 +269,6 @@ func validateAddFunctionInputNotText(schema *schemapb.CollectionSchema, function
 	}
 	return nil
 }
-
-type BaseInsertTask = msgstream.InsertMsg
 
 type createCollectionTask struct {
 	baseTask
@@ -506,6 +513,9 @@ func (t *createCollectionTask) PreExecute(ctx context.Context) error {
 			t.schema.GetName())
 	}
 	if err := typeutil.NormalizeAndValidateExternalCollectionSchema(t.schema); err != nil {
+		return err
+	}
+	if err := validateTextStorageV3Enabled(t.schema); err != nil {
 		return err
 	}
 
@@ -1008,6 +1018,11 @@ func validateAddFieldRequest(schema *schemapb.CollectionSchema, newFieldSchema *
 		if err := typeutil.ValidateExternalCollectionResolvedSchema(schemaWithNewField); err != nil {
 			return merr.WrapErrParameterInvalidMsg("%s", err.Error())
 		}
+	}
+	schemaWithNewField := proto.Clone(schema).(*schemapb.CollectionSchema)
+	schemaWithNewField.Fields = append(schemaWithNewField.GetFields(), proto.Clone(newFieldSchema).(*schemapb.FieldSchema))
+	if err := validateTextStorageV3Enabled(schemaWithNewField); err != nil {
+		return err
 	}
 	if newFieldSchema.GetDataType() == schemapb.DataType_Text && newFieldSchema.GetDefaultValue() != nil {
 		return merr.WrapErrParameterInvalidMsg("default value is not supported when adding TEXT field, field name = %s", newFieldSchema.GetName())
@@ -3238,6 +3253,9 @@ func (t *loadCollectionTask) Execute(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
+	if err := validateTextStorageV3Enabled(collSchema.CollectionSchema); err != nil {
+		return err
+	}
 	// prepare load field list
 	loadFields, err := collSchema.GetLoadFieldIDs(t.GetLoadFields(), t.GetSkipLoadDynamicField())
 	if err != nil {
@@ -3494,6 +3512,9 @@ func (t *loadPartitionsTask) Execute(ctx context.Context) error {
 	t.collectionID = collID
 	collSchema, err := globalMetaCache.GetCollectionSchema(ctx, t.GetDbName(), t.CollectionName)
 	if err != nil {
+		return err
+	}
+	if err := validateTextStorageV3Enabled(collSchema.CollectionSchema); err != nil {
 		return err
 	}
 	// prepare load field list

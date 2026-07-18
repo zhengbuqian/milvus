@@ -8,6 +8,7 @@ import (
 	consumer "github.com/milvus-io/milvus/internal/streamingnode/client/handler/consumer"
 
 	handler "github.com/milvus-io/milvus/internal/streamingnode/client/handler"
+
 	mock "github.com/stretchr/testify/mock"
 
 	producer "github.com/milvus-io/milvus/internal/streamingnode/client/handler/producer"
@@ -409,6 +410,65 @@ func (_c *MockHandlerClient_GetWALMetricsIfLocal_Call) Return(_a0 *types.Streami
 }
 
 func (_c *MockHandlerClient_GetWALMetricsIfLocal_Call) RunAndReturn(run func(context.Context) (*types.StreamingNodeMetrics, error)) *MockHandlerClient_GetWALMetricsIfLocal_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// PrepareReleaseManualFlushIfLocal provides a mock function with given fields: ctx, collectionID, vchannel, releaseSegmentIDs
+func (_m *MockHandlerClient) PrepareReleaseManualFlushIfLocal(ctx context.Context, collectionID int64, vchannel string, releaseSegmentIDs []int64) (bool, error) {
+	ret := _m.Called(ctx, collectionID, vchannel, releaseSegmentIDs)
+
+	if len(ret) == 0 {
+		panic("no return value specified for PrepareReleaseManualFlushIfLocal")
+	}
+
+	var r0 bool
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, int64, string, []int64) (bool, error)); ok {
+		return rf(ctx, collectionID, vchannel, releaseSegmentIDs)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, int64, string, []int64) bool); ok {
+		r0 = rf(ctx, collectionID, vchannel, releaseSegmentIDs)
+	} else {
+		r0 = ret.Get(0).(bool)
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, int64, string, []int64) error); ok {
+		r1 = rf(ctx, collectionID, vchannel, releaseSegmentIDs)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// MockHandlerClient_PrepareReleaseManualFlushIfLocal_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'PrepareReleaseManualFlushIfLocal'
+type MockHandlerClient_PrepareReleaseManualFlushIfLocal_Call struct {
+	*mock.Call
+}
+
+// PrepareReleaseManualFlushIfLocal is a helper method to define mock.On call
+//   - ctx context.Context
+//   - collectionID int64
+//   - vchannel string
+//   - releaseSegmentIDs []int64
+func (_e *MockHandlerClient_Expecter) PrepareReleaseManualFlushIfLocal(ctx interface{}, collectionID interface{}, vchannel interface{}, releaseSegmentIDs interface{}) *MockHandlerClient_PrepareReleaseManualFlushIfLocal_Call {
+	return &MockHandlerClient_PrepareReleaseManualFlushIfLocal_Call{Call: _e.mock.On("PrepareReleaseManualFlushIfLocal", ctx, collectionID, vchannel, releaseSegmentIDs)}
+}
+
+func (_c *MockHandlerClient_PrepareReleaseManualFlushIfLocal_Call) Run(run func(ctx context.Context, collectionID int64, vchannel string, releaseSegmentIDs []int64)) *MockHandlerClient_PrepareReleaseManualFlushIfLocal_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context), args[1].(int64), args[2].(string), args[3].([]int64))
+	})
+	return _c
+}
+
+func (_c *MockHandlerClient_PrepareReleaseManualFlushIfLocal_Call) Return(_a0 bool, _a1 error) *MockHandlerClient_PrepareReleaseManualFlushIfLocal_Call {
+	_c.Call.Return(_a0, _a1)
+	return _c
+}
+
+func (_c *MockHandlerClient_PrepareReleaseManualFlushIfLocal_Call) RunAndReturn(run func(context.Context, int64, string, []int64) (bool, error)) *MockHandlerClient_PrepareReleaseManualFlushIfLocal_Call {
 	_c.Call.Return(run)
 	return _c
 }

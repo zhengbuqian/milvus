@@ -658,9 +658,13 @@ func (s *Server) SaveBinlogPaths(ctx context.Context, req *datapb.SaveBinlogPath
 			mlog.Warn(context.TODO(), "failed to get segment, the segment not healthy", mlog.Err(err))
 			return merr.Status(err), nil
 		}
+		incomingStorageVersion := req.GetStorageVersion()
+		if err := s.validateTextSegmentStorage(req, incomingStorageVersion); err != nil {
+			mlog.Warn(context.TODO(), "invalid TEXT segment storage format", mlog.Err(err))
+			return merr.Status(err), nil
+		}
 
-		// Set storage version
-		operators = append(operators, SetStorageVersion(req.GetSegmentID(), req.GetStorageVersion()))
+		operators = append(operators, ValidateSaveBinlogStorageVersion(req.GetSegmentID(), incomingStorageVersion))
 
 		// Set segment state
 		if req.GetDropped() {
@@ -747,6 +751,27 @@ func (s *Server) SaveBinlogPaths(ctx context.Context, req *datapb.SaveBinlogPath
 	}
 
 	return merr.Success(), nil
+}
+
+func (s *Server) validateTextSegmentStorage(req *datapb.SaveBinlogPathsRequest, storageVersion int64) error {
+	if req.GetSegLevel() == datapb.SegmentLevel_L0 || req.GetDropped() {
+		return nil
+	}
+	if !s.meta.collectionHasTextFields(req.GetCollectionID()) {
+		return nil
+	}
+	if storageVersion < storage.StorageV3 {
+		return merr.WrapErrParameterInvalidMsg(
+			"TEXT segment %d must be saved with StorageV3 manifest, got storage version %d",
+			req.GetSegmentID(),
+			storageVersion)
+	}
+	if req.GetManifestPath() == "" {
+		return merr.WrapErrParameterInvalidMsg(
+			"TEXT segment %d requires non-empty StorageV3 manifest path",
+			req.GetSegmentID())
+	}
+	return nil
 }
 
 // DropVirtualChannel notifies vchannel dropped
@@ -1476,12 +1501,16 @@ func (s *Server) GetFlushState(ctx context.Context, req *datapb.GetFlushStateReq
 
 	for _, channel := range channels {
 		cp := s.meta.GetChannelCheckpoint(channel.GetName())
-		if cp == nil || cp.GetTimestamp() < req.GetFlushTs() {
+		cpTs := uint64(0)
+		if cp != nil {
+			cpTs = cp.GetTimestamp()
+		}
+		if cp == nil || cpTs < req.GetFlushTs() {
 			resp.Flushed = false
 
 			log.RatedInfo(ctx, rate.Limit(10), "GetFlushState failed, channel unflushed", mlog.String("channel", channel.GetName()),
-				mlog.Time("CP", tsoutil.PhysicalTime(cp.GetTimestamp())),
-				mlog.Duration("lag", tsoutil.PhysicalTime(req.GetFlushTs()).Sub(tsoutil.PhysicalTime(cp.GetTimestamp()))))
+				mlog.Time("CP", tsoutil.PhysicalTime(cpTs)),
+				mlog.Duration("lag", tsoutil.PhysicalTime(req.GetFlushTs()).Sub(tsoutil.PhysicalTime(cpTs))))
 			return resp, nil
 		}
 	}

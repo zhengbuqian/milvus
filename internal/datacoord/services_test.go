@@ -148,6 +148,21 @@ func (s *ServerSuite) TestGetFlushState_ByFlushTs() {
 	}, resp)
 }
 
+func (s *ServerSuite) TestGetFlushState_ByFlushTsMissingCheckpoint() {
+	s.mockMixCoord.EXPECT().DescribeCollectionInternal(mock.Anything, mock.Anything).Return(&milvuspb.DescribeCollectionResponse{
+		Status:              merr.Success(),
+		CollectionID:        0,
+		VirtualChannelNames: []string{"missing-cp-channel"},
+	}, nil)
+
+	resp, err := s.testServer.GetFlushState(context.TODO(), &datapb.GetFlushStateRequest{FlushTs: 13})
+	s.NoError(err)
+	s.EqualValues(&milvuspb.GetFlushStateResponse{
+		Status:  merr.Success(),
+		Flushed: false,
+	}, resp)
+}
+
 func (s *ServerSuite) TestGetFlushState_BySegment() {
 	s.mockMixCoord.EXPECT().DescribeCollectionInternal(mock.Anything, mock.Anything).RunAndReturn(func(ctx context.Context, req *milvuspb.DescribeCollectionRequest) (*milvuspb.DescribeCollectionResponse, error) {
 		return &milvuspb.DescribeCollectionResponse{
@@ -260,6 +275,65 @@ func (s *ServerSuite) TestSaveBinlogPath_SaveUnhealthySegment() {
 	}
 }
 
+func (s *ServerSuite) TestSaveBinlogPath_StorageVersionImmutable() {
+	s.testServer.meta.AddCollection(&collectionInfo{ID: 0})
+	info := &datapb.SegmentInfo{
+		ID:             10,
+		InsertChannel:  "ch1",
+		State:          commonpb.SegmentState_Growing,
+		Level:          datapb.SegmentLevel_L1,
+		StorageVersion: storage.StorageV2,
+	}
+	err := s.testServer.meta.AddSegment(context.TODO(), NewSegmentInfo(info))
+	s.Require().NoError(err)
+
+	resp, err := s.testServer.SaveBinlogPaths(context.Background(), &datapb.SaveBinlogPathsRequest{
+		Base: &commonpb.MsgBase{
+			Timestamp: uint64(time.Now().Unix()),
+		},
+		SegmentID:      10,
+		Channel:        "ch1",
+		StorageVersion: storage.StorageV3,
+	})
+	s.NoError(err)
+	s.ErrorIs(merr.Error(resp), merr.ErrDataIntegrity)
+
+	resp, err = s.testServer.SaveBinlogPaths(context.Background(), &datapb.SaveBinlogPathsRequest{
+		Base: &commonpb.MsgBase{
+			Timestamp: uint64(time.Now().Unix()),
+		},
+		SegmentID: 10,
+		Channel:   "ch1",
+	})
+	s.NoError(err)
+	s.ErrorIs(merr.Error(resp), merr.ErrDataIntegrity)
+	segment := s.testServer.meta.GetSegment(context.TODO(), 10)
+	s.EqualValues(storage.StorageV2, segment.GetStorageVersion())
+
+	info = &datapb.SegmentInfo{
+		ID:             11,
+		InsertChannel:  "ch1",
+		State:          commonpb.SegmentState_Growing,
+		Level:          datapb.SegmentLevel_L1,
+		StorageVersion: storage.StorageV1,
+	}
+	err = s.testServer.meta.AddSegment(context.TODO(), NewSegmentInfo(info))
+	s.Require().NoError(err)
+
+	resp, err = s.testServer.SaveBinlogPaths(context.Background(), &datapb.SaveBinlogPathsRequest{
+		Base: &commonpb.MsgBase{
+			Timestamp: uint64(time.Now().Unix()),
+		},
+		SegmentID:      11,
+		Channel:        "ch1",
+		StorageVersion: storage.StorageV2,
+	})
+	s.NoError(err)
+	s.ErrorIs(merr.Error(resp), merr.ErrDataIntegrity)
+	segment = s.testServer.meta.GetSegment(context.TODO(), 11)
+	s.EqualValues(storage.StorageV1, segment.GetStorageVersion())
+}
+
 func (s *ServerSuite) TestSaveBinlogPath_SaveDroppedSegment() {
 	s.testServer.meta.AddCollection(&collectionInfo{ID: 0})
 
@@ -324,6 +398,91 @@ func (s *ServerSuite) TestSaveBinlogPath_SaveDroppedSegment() {
 			s.Equal(test.expectedState, segment.GetState())
 		})
 	}
+}
+
+func (s *ServerSuite) TestSaveBinlogPath_TextRequiresStorageV3Manifest() {
+	s.testServer.meta.AddCollection(&collectionInfo{
+		ID: 0,
+		Schema: &schemapb.CollectionSchema{
+			Fields: []*schemapb.FieldSchema{
+				{FieldID: 100, DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+				{FieldID: 101, DataType: schemapb.DataType_Text},
+			},
+		},
+	})
+	err := s.testServer.meta.AddSegment(context.TODO(), NewSegmentInfo(&datapb.SegmentInfo{
+		ID:            10,
+		CollectionID:  0,
+		PartitionID:   1,
+		InsertChannel: "ch1",
+		State:         commonpb.SegmentState_Sealed,
+		Level:         datapb.SegmentLevel_L1,
+		NumOfRows:     1,
+	}))
+	s.Require().NoError(err)
+
+	resp, err := s.testServer.SaveBinlogPaths(context.Background(), &datapb.SaveBinlogPathsRequest{
+		Base:           &commonpb.MsgBase{Timestamp: uint64(time.Now().Unix())},
+		SegmentID:      10,
+		CollectionID:   0,
+		PartitionID:    1,
+		Channel:        "ch1",
+		SegLevel:       datapb.SegmentLevel_L1,
+		Flushed:        true,
+		StorageVersion: storage.StorageV2,
+	})
+	s.NoError(err)
+	s.ErrorIs(merr.Error(resp), merr.ErrParameterInvalid)
+
+	resp, err = s.testServer.SaveBinlogPaths(context.Background(), &datapb.SaveBinlogPathsRequest{
+		Base:           &commonpb.MsgBase{Timestamp: uint64(time.Now().Unix())},
+		SegmentID:      10,
+		CollectionID:   0,
+		PartitionID:    1,
+		Channel:        "ch1",
+		SegLevel:       datapb.SegmentLevel_L1,
+		Flushed:        true,
+		StorageVersion: storage.StorageV3,
+	})
+	s.NoError(err)
+	s.ErrorIs(merr.Error(resp), merr.ErrParameterInvalid)
+
+	resp, err = s.testServer.SaveBinlogPaths(context.Background(), &datapb.SaveBinlogPathsRequest{
+		Base:           &commonpb.MsgBase{Timestamp: uint64(time.Now().Unix())},
+		SegmentID:      10,
+		CollectionID:   0,
+		PartitionID:    1,
+		Channel:        "ch1",
+		SegLevel:       datapb.SegmentLevel_L1,
+		Flushed:        false,
+		StorageVersion: storage.StorageV3,
+	})
+	s.NoError(err)
+	s.ErrorIs(merr.Error(resp), merr.ErrParameterInvalid)
+
+	err = s.testServer.meta.AddSegment(context.TODO(), NewSegmentInfo(&datapb.SegmentInfo{
+		ID:            11,
+		CollectionID:  0,
+		PartitionID:   1,
+		InsertChannel: "ch1",
+		State:         commonpb.SegmentState_Dropped,
+		Level:         datapb.SegmentLevel_L1,
+		NumOfRows:     1,
+	}))
+	s.Require().NoError(err)
+
+	resp, err = s.testServer.SaveBinlogPaths(context.Background(), &datapb.SaveBinlogPathsRequest{
+		Base:           &commonpb.MsgBase{Timestamp: uint64(time.Now().Unix())},
+		SegmentID:      11,
+		CollectionID:   0,
+		PartitionID:    1,
+		Channel:        "ch1",
+		SegLevel:       datapb.SegmentLevel_L1,
+		Flushed:        true,
+		StorageVersion: storage.StorageV2,
+	})
+	s.NoError(err)
+	s.True(merr.Ok(resp))
 }
 
 func (s *ServerSuite) TestSaveBinlogPath_L0Segment() {

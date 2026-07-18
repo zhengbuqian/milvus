@@ -304,6 +304,63 @@ func TestSchema(t *testing.T) {
 	})
 }
 
+func TestHasTextField(t *testing.T) {
+	assert.False(t, HasTextField(nil))
+	assert.False(t, HasTextField(&schemapb.CollectionSchema{}))
+
+	schema := &schemapb.CollectionSchema{
+		Fields: []*schemapb.FieldSchema{
+			{FieldID: 100, DataType: schemapb.DataType_Int64},
+			{FieldID: 101, DataType: schemapb.DataType_Text},
+		},
+	}
+	assert.True(t, HasTextField(schema))
+}
+
+func TestValidateTextRequiresStorageV3(t *testing.T) {
+	textSchema := &schemapb.CollectionSchema{
+		Fields: []*schemapb.FieldSchema{
+			{FieldID: 100, DataType: schemapb.DataType_Int64},
+			{FieldID: 101, DataType: schemapb.DataType_Text},
+		},
+	}
+	ordinarySchema := &schemapb.CollectionSchema{
+		Fields: []*schemapb.FieldSchema{
+			{FieldID: 100, DataType: schemapb.DataType_Int64},
+		},
+	}
+
+	assert.NoError(t, ValidateTextRequiresStorageV3(nil, false))
+	assert.NoError(t, ValidateTextRequiresStorageV3(ordinarySchema, false))
+	assert.Error(t, ValidateTextRequiresStorageV3(textSchema, false))
+	assert.NoError(t, ValidateTextRequiresStorageV3(textSchema, true))
+}
+
+func TestAllowGrowingSourceFlush(t *testing.T) {
+	ordinarySchema := &schemapb.CollectionSchema{
+		Fields: []*schemapb.FieldSchema{
+			{FieldID: 100, DataType: schemapb.DataType_Int64},
+		},
+	}
+	textSchema := &schemapb.CollectionSchema{
+		Fields: []*schemapb.FieldSchema{
+			{FieldID: 100, DataType: schemapb.DataType_Int64},
+			{FieldID: 101, DataType: schemapb.DataType_Text},
+		},
+	}
+
+	assert.False(t, AllowGrowingSourceFlush(ordinarySchema, false, true))
+	assert.False(t, AllowGrowingSourceFlush(textSchema, false, true))
+	assert.False(t, AllowGrowingSourceFlush(ordinarySchema, true, false))
+	assert.True(t, AllowGrowingSourceFlush(ordinarySchema, true, true))
+	assert.True(t, AllowGrowingSourceFlush(textSchema, true, false))
+	assert.False(t, AllowGrowingSourceFlush(nil, true, false))
+	assert.True(t, AllowGrowingSourceFlush(nil, true, true))
+	assert.Equal(t,
+		AllowGrowingSourceFlush(textSchema, true, false),
+		UseGrowingSourceFlush(textSchema, true, false))
+}
+
 func TestSchema_GetVectorFieldSchemas(t *testing.T) {
 	schemaNormal := &schemapb.CollectionSchema{
 		Name:        "testColl",

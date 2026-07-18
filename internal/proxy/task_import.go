@@ -103,6 +103,9 @@ func (it *importTask) PreExecute(ctx context.Context) error {
 	if schema.CollectionSchema == nil || len(schema.GetFields()) == 0 {
 		return merr.WrapErrImportSysFailed("collection schema has no fields")
 	}
+	if err := validateTextStorageV3Enabled(schema.CollectionSchema); err != nil {
+		return err
+	}
 	it.schema = schema
 
 	channels, err := node.chMgr.getVChannels(collectionID)
