@@ -1058,6 +1058,25 @@ func SetStorageVersion(segmentID int64, version int64) UpdateOperator {
 	}
 }
 
+func ValidateSaveBinlogStorageVersion(segmentID int64, incoming int64) UpdateOperator {
+	return func(modPack *updateSegmentPack) bool {
+		segment := modPack.Get(segmentID)
+		if segment == nil {
+			modPack.err = merr.WrapErrSegmentNotFound(segmentID)
+			return false
+		}
+
+		current := segment.GetStorageVersion()
+		if incoming != current {
+			modPack.err = merr.WrapErrDataIntegrityMsg(
+				"segment %d storage version mismatch, current=%d incoming=%d",
+				segmentID, current, incoming)
+			return false
+		}
+		return true
+	}
+}
+
 func UpdateCompactedOperator(segmentID int64) UpdateOperator {
 	return func(modPack *updateSegmentPack) bool {
 		segment := modPack.Get(segmentID)
@@ -1577,7 +1596,7 @@ func UpdateCheckPointOperator(segmentID int64, checkpoints []*datapb.CheckPoint,
 					mlog.Int64("segment binlog row count (correct)", count))
 			}
 			segment.NumOfRows = count
-		} else if cpNumRows > 0 {
+		} else if cpNumRows > 0 && segment.GetStorageVersion() == storage.StorageV3 {
 			// V3 storage: binlogs are empty, use checkpoint's NumOfRows
 			segment.NumOfRows = cpNumRows
 		}
@@ -2638,10 +2657,91 @@ func (m *meta) GetCompactionTo(segmentID int64) ([]*SegmentInfo, bool) {
 	return m.segments.GetCompactionTo(segmentID)
 }
 
+// GetMinGrowingSegmentCheckpoint returns the minimum DmlPosition of all growing
+// segments on the given channel that belong to TEXT collections.
+// This is used to prevent the channel checkpoint from advancing beyond unflushed
+// growing segment data (critical for TEXT collections where QueryNode manages
+// insert flush independently).
+//
+// Only TEXT collections need clamping because their growing segment data is
+// flushed by QueryNode (not StreamNode/DataNode). For normal collections,
+// StreamNode owns both the data flush and checkpoint, so clamping would
+// incorrectly slow down checkpoint advancement.
+//
+// Returns nil if no TEXT collection growing segments exist on the channel.
+func (m *meta) GetMinGrowingSegmentCheckpoint(channel string) *msgpb.MsgPosition {
+	segments := m.SelectSegments(context.TODO(), WithChannel(channel))
+
+	// Cache collection TEXT field check results to avoid repeated schema scans
+	// within the same call (many segments may belong to the same collection).
+	textCollectionCache := make(map[int64]bool)
+
+	var minPos *msgpb.MsgPosition
+	for _, s := range segments {
+		// Only consider growing (unflushed) segments at L1 level
+		if s.GetState() != commonpb.SegmentState_Growing {
+			continue
+		}
+		if s.GetLevel() == datapb.SegmentLevel_L0 {
+			continue
+		}
+
+		// Only clamp for TEXT collections — normal collections don't need it.
+		collID := s.GetCollectionID()
+		isText, cached := textCollectionCache[collID]
+		if !cached {
+			isText = m.collectionHasTextFields(collID)
+			textCollectionCache[collID] = isText
+		}
+		if !isText {
+			continue
+		}
+
+		pos := s.GetDmlPosition()
+		if pos == nil {
+			pos = s.GetStartPosition()
+		}
+		if pos == nil {
+			continue
+		}
+
+		if minPos == nil || pos.GetTimestamp() < minPos.GetTimestamp() {
+			minPos = pos
+		}
+	}
+	return minPos
+}
+
+// collectionHasTextFields returns true if the collection has any TEXT type fields.
+func (m *meta) collectionHasTextFields(collectionID int64) bool {
+	coll := m.GetCollection(collectionID)
+	if coll == nil || coll.Schema == nil {
+		return false
+	}
+	for _, field := range coll.Schema.GetFields() {
+		if field.GetDataType() == schemapb.DataType_Text {
+			return true
+		}
+	}
+	return false
+}
+
 // UpdateChannelCheckpoint updates and saves channel checkpoint.
 func (m *meta) UpdateChannelCheckpoint(ctx context.Context, vChannel string, pos *msgpb.MsgPosition) error {
 	if pos == nil || pos.GetMsgID() == nil {
 		return merr.WrapErrServiceInternalMsg("channelCP is nil, vChannel=%s", vChannel)
+	}
+
+	// Clamp checkpoint to not advance beyond min growing segment checkpoint.
+	// This prevents TEXT collection data loss where StreamNode (L0 delete) checkpoint
+	// may advance beyond QueryNode's (L1 insert) unflushed data.
+	minGrowingCP := m.GetMinGrowingSegmentCheckpoint(vChannel)
+	if minGrowingCP != nil && pos.GetTimestamp() > minGrowingCP.GetTimestamp() {
+		mlog.Info(context.TODO(), "clamping channel checkpoint to min growing segment checkpoint",
+			mlog.String("vChannel", vChannel),
+			mlog.Uint64("requestedTs", pos.GetTimestamp()),
+			mlog.Uint64("clampedTs", minGrowingCP.GetTimestamp()))
+		pos = minGrowingCP
 	}
 
 	m.channelCPs.channelLocks.Lock(vChannel)
@@ -2699,6 +2799,21 @@ func (m *meta) MarkChannelCheckpointDropped(ctx context.Context, channel string)
 
 // UpdateChannelCheckpoints updates and saves channel checkpoints.
 func (m *meta) UpdateChannelCheckpoints(ctx context.Context, positions []*msgpb.MsgPosition) error {
+	// Clamp each position to not advance beyond min growing segment checkpoint.
+	for i, pos := range positions {
+		if pos == nil || pos.GetChannelName() == "" {
+			continue
+		}
+		minGrowingCP := m.GetMinGrowingSegmentCheckpoint(pos.GetChannelName())
+		if minGrowingCP != nil && pos.GetTimestamp() > minGrowingCP.GetTimestamp() {
+			mlog.Info(context.TODO(), "clamping channel checkpoint to min growing segment checkpoint",
+				mlog.String("vChannel", pos.GetChannelName()),
+				mlog.Uint64("requestedTs", pos.GetTimestamp()),
+				mlog.Uint64("clampedTs", minGrowingCP.GetTimestamp()))
+			positions[i] = minGrowingCP
+		}
+	}
+
 	validPositions := lo.Filter(positions, func(pos *msgpb.MsgPosition, _ int) bool {
 		if pos == nil || (pos.GetMsgID() == nil && pos.GetWALName() != commonpb.WALName_WoodPecker) || pos.GetChannelName() == "" {
 			mlog.Warn(context.TODO(), "illegal channel cp", mlog.Any("pos", pos))

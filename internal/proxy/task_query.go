@@ -698,6 +698,9 @@ func (t *queryTask) PreExecute(ctx context.Context) error {
 		return err
 	}
 	t.schema = schema
+	if err := validateTextStorageV3Enabled(t.schema.CollectionSchema); err != nil {
+		return err
+	}
 	partitionNames, namespaceAsPartition, err := resolveNamespacePartitionNames(t.schema.CollectionSchema, t.request.Namespace, t.request.GetPartitionNames())
 	if err != nil {
 		return err

@@ -27,7 +27,7 @@ type BufferManager interface {
 	// Register adds a WriteBuffer with provided schema & options.
 	Register(channel string, metacache metacache.MetaCache, opts ...WriteBufferOption) error
 	// CreateNewGrowingSegment notifies writeBuffer to create a new growing segment.
-	CreateNewGrowingSegment(ctx context.Context, channel string, partition int64, segmentID int64, schemaVersion int32) error
+	CreateNewGrowingSegment(ctx context.Context, channel string, info CreateGrowingSegmentInfo) error
 	// SealSegments notifies writeBuffer corresponding to provided channel to seal segments.
 	// which will cause segment start flush procedure.
 	SealSegments(ctx context.Context, channel string, segmentIDs []int64) error
@@ -47,10 +47,22 @@ type BufferManager interface {
 	// NotifyCheckpointUpdated notify write buffer checkpoint updated to reset flushTs.
 	NotifyCheckpointUpdated(channel string, ts uint64)
 
+	// AllowGrowingSourceFlush returns true if this channel may try growing-source flush.
+	AllowGrowingSourceFlush(channel string) bool
+	// GetGrowingFlushProgress returns growing-source progress for the given channel.
+	// If segmentIDs is empty, all tracked growing-source segments are returned.
+	// Otherwise, the requested segmentIDs are returned together with all tracked
+	// growing-source segments so release handoff cannot miss existing source progress.
+	GetGrowingFlushProgress(ctx context.Context, channel string, segmentIDs []int64, fenceTs uint64) ([]GrowingFlushSegmentProgress, error)
+
 	// Start makes the background check start to work.
 	Start()
 	// Stop the background checker and wait for worker goroutine quit.
 	Stop()
+}
+
+type ReleaseManualFlushNeedChecker interface {
+	CheckReleaseManualFlushNeed(ctx context.Context, channel string, segmentIDs []int64) (bool, error)
 }
 
 // NewManager returns initialized manager as `Manager`
@@ -175,17 +187,16 @@ func (m *bufferManager) Register(channel string, metacache metacache.MetaCache, 
 }
 
 // CreateNewGrowingSegment notifies writeBuffer to create a new growing segment.
-func (m *bufferManager) CreateNewGrowingSegment(ctx context.Context, channel string, partitionID int64, segmentID int64, schemaVersion int32) error {
+func (m *bufferManager) CreateNewGrowingSegment(ctx context.Context, channel string, info CreateGrowingSegmentInfo) error {
 	buf, loaded := m.buffers.Get(channel)
 	if !loaded {
 		mlog.Warn(ctx, "write buffer not found when create new growing segment",
 			mlog.String("channel", channel),
-			mlog.FieldPartitionID(partitionID),
-			mlog.FieldSegmentID(segmentID))
+			mlog.FieldPartitionID(info.PartitionID),
+			mlog.FieldSegmentID(info.SegmentID))
 		return merr.WrapErrChannelNotFound(channel)
 	}
-	buf.CreateNewGrowingSegment(partitionID, segmentID, nil, schemaVersion)
-	return nil
+	return buf.CreateNewGrowingSegment(info)
 }
 
 // SealSegments call sync segment and change segments state to Flushed.
@@ -236,6 +247,43 @@ func (m *bufferManager) BufferData(channel string, insertData []*InsertData, del
 	}
 
 	return buf.BufferData(insertData, deleteMsgs, startPos, endPos, schemaVersion)
+}
+
+func (m *bufferManager) AllowGrowingSourceFlush(channel string) bool {
+	buf, loaded := m.buffers.Get(channel)
+	if !loaded {
+		return false
+	}
+	return buf.AllowGrowingSourceFlush()
+}
+
+func (m *bufferManager) CheckReleaseManualFlushNeed(ctx context.Context, channel string, segmentIDs []int64) (bool, error) {
+	buf, loaded := m.buffers.Get(channel)
+	if !loaded {
+		mlog.Warn(ctx, "write buffer not found when checking release manual flush",
+			mlog.String("channel", channel),
+			mlog.Int64s("segmentIDs", segmentIDs))
+		return true, merr.WrapErrChannelNotFound(channel)
+	}
+	checker, ok := buf.(interface {
+		CheckReleaseManualFlushNeed(segmentIDs []int64) bool
+	})
+	if !ok {
+		return true, nil
+	}
+	return checker.CheckReleaseManualFlushNeed(segmentIDs), nil
+}
+
+func (m *bufferManager) GetGrowingFlushProgress(ctx context.Context, channel string, segmentIDs []int64, fenceTs uint64) ([]GrowingFlushSegmentProgress, error) {
+	buf, loaded := m.buffers.Get(channel)
+	if !loaded {
+		mlog.Warn(ctx, "write buffer not found when get growing flush progress",
+			mlog.String("channel", channel),
+			mlog.Int64s("segmentIDs", segmentIDs),
+			mlog.Uint64("fenceTs", fenceTs))
+		return nil, merr.WrapErrChannelNotFound(channel)
+	}
+	return buf.GetGrowingFlushProgress(ctx, segmentIDs, fenceTs)
 }
 
 // GetCheckpoint returns checkpoint for provided channel.

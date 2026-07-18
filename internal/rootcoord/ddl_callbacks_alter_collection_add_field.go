@@ -80,6 +80,9 @@ func (c *Core) broadcastAlterCollectionForAddField(ctx context.Context, req *mil
 	if err := typeutil.ValidateExternalCollectionResolvedSchema(schema); err != nil {
 		return err
 	}
+	if err := typeutil.ValidateTextRequiresStorageV3(schema, Params.CommonCfg.UseLoonFFI.GetAsBool()); err != nil {
+		return merr.WrapErrParameterInvalidMsg("%s", err.Error())
+	}
 	if err := validateSchemaEvolution(coll, schema); err != nil {
 		return err
 	}

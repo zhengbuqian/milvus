@@ -46,6 +46,7 @@ import (
 	"github.com/milvus-io/milvus/pkg/v3/util/merr"
 	"github.com/milvus-io/milvus/pkg/v3/util/metric"
 	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 type SegmentLoaderSuite struct {
@@ -1569,28 +1570,17 @@ func (suite *SegmentLoaderDetailSuite) SetupTest() {
 
 func (suite *SegmentLoaderDetailSuite) TestWaitSegmentLoadDone() {
 	suite.Run("wait_success", func() {
-		idx := 0
-
-		var infos []*querypb.SegmentLoadInfo
-		suite.segmentManager.EXPECT().Exist(mock.Anything, mock.Anything).Return(false)
-		suite.segmentManager.EXPECT().GetWithType(suite.segmentID, SegmentTypeSealed).RunAndReturn(func(segmentID int64, segmentType commonpb.SegmentState) Segment {
-			defer func() { idx++ }()
-			if idx == 0 {
-				go func() {
-					<-time.After(time.Second)
-					suite.loader.notifyLoadFinish(infos...)
-				}()
-			}
-			return nil
-		})
-		suite.segmentManager.EXPECT().UpdateBy(mock.Anything, mock.Anything, mock.Anything).Return(0)
-		infos = suite.loader.prepare(context.Background(), SegmentTypeSealed, &querypb.SegmentLoadInfo{
+		infos := suite.loader.prepare(context.Background(), SegmentTypeSealed, &querypb.SegmentLoadInfo{
 			SegmentID:     suite.segmentID,
 			PartitionID:   suite.partitionID,
 			CollectionID:  suite.collectionID,
 			NumOfRows:     100,
 			InsertChannel: fmt.Sprintf("by-dev-rootcoord-dml_0_%dv0", suite.collectionID),
 		})
+		go func() {
+			<-time.After(time.Second)
+			suite.loader.notifyLoadFinish(infos...)
+		}()
 
 		err := suite.loader.waitSegmentLoadDone(context.Background(), SegmentTypeSealed, []int64{suite.segmentID}, 0)
 		suite.NoError(err)
@@ -1599,27 +1589,17 @@ func (suite *SegmentLoaderDetailSuite) TestWaitSegmentLoadDone() {
 	suite.Run("wait_failure", func() {
 		suite.SetupTest()
 
-		var idx int
-		var infos []*querypb.SegmentLoadInfo
-		suite.segmentManager.EXPECT().Exist(mock.Anything, mock.Anything).Return(false)
-		suite.segmentManager.EXPECT().GetWithType(suite.segmentID, SegmentTypeSealed).RunAndReturn(func(segmentID int64, segmentType commonpb.SegmentState) Segment {
-			defer func() { idx++ }()
-			if idx == 0 {
-				go func() {
-					<-time.After(time.Second)
-					suite.loader.unregister(infos...)
-				}()
-			}
-
-			return nil
-		})
-		infos = suite.loader.prepare(context.Background(), SegmentTypeSealed, &querypb.SegmentLoadInfo{
+		infos := suite.loader.prepare(context.Background(), SegmentTypeSealed, &querypb.SegmentLoadInfo{
 			SegmentID:     suite.segmentID,
 			PartitionID:   suite.partitionID,
 			CollectionID:  suite.collectionID,
 			NumOfRows:     100,
 			InsertChannel: fmt.Sprintf("by-dev-rootcoord-dml_0_%dv0", suite.collectionID),
 		})
+		go func() {
+			<-time.After(time.Second)
+			suite.loader.unregister(infos...)
+		}()
 
 		err := suite.loader.waitSegmentLoadDone(context.Background(), SegmentTypeSealed, []int64{suite.segmentID}, 0)
 		suite.Error(err)
@@ -1628,10 +1608,6 @@ func (suite *SegmentLoaderDetailSuite) TestWaitSegmentLoadDone() {
 	suite.Run("wait_timeout", func() {
 		suite.SetupTest()
 
-		suite.segmentManager.EXPECT().Exist(mock.Anything, mock.Anything).Return(false)
-		suite.segmentManager.EXPECT().GetWithType(suite.segmentID, SegmentTypeSealed).RunAndReturn(func(segmentID int64, segmentType commonpb.SegmentState) Segment {
-			return nil
-		})
 		suite.loader.prepare(context.Background(), SegmentTypeSealed, &querypb.SegmentLoadInfo{
 			SegmentID:     suite.segmentID,
 			PartitionID:   suite.partitionID,
@@ -1647,6 +1623,42 @@ func (suite *SegmentLoaderDetailSuite) TestWaitSegmentLoadDone() {
 		suite.Error(err)
 		suite.True(merr.IsCanceledOrTimeout(err))
 	})
+}
+
+func TestSegmentLoaderPrepareLoadsWhenSegmentIsNotActive(t *testing.T) {
+	segmentID := rand.Int63()
+	loadInfo := &querypb.SegmentLoadInfo{
+		SegmentID:     segmentID,
+		PartitionID:   rand.Int63(),
+		CollectionID:  rand.Int63(),
+		NumOfRows:     100,
+		InsertChannel: "by-dev-rootcoord-dml_0_1v0",
+	}
+	segMgr := &segmentManager{}
+	getWithTypeCalled := atomic.NewInt32(0)
+	patchGetWithType := mockey.Mock(mockey.GetMethod(segMgr, "GetWithType")).
+		To(func(segmentID typeutil.UniqueID, typ SegmentType) Segment {
+			getWithTypeCalled.Inc()
+			assert.EqualValues(t, loadInfo.GetSegmentID(), segmentID)
+			assert.Equal(t, SegmentTypeGrowing, typ)
+			return nil
+		}).
+		Build()
+	defer patchGetWithType.UnPatch()
+
+	loader := &segmentLoader{
+		manager: &Manager{
+			Segment: segMgr,
+		},
+		loadingSegments: typeutil.NewConcurrentMap[int64, *loadResult](),
+	}
+
+	infos := loader.prepare(context.Background(), SegmentTypeGrowing, loadInfo)
+
+	assert.Len(t, infos, 1)
+	assert.Equal(t, segmentID, infos[0].GetSegmentID())
+	assert.True(t, loader.loadingSegments.Contain(segmentID))
+	assert.EqualValues(t, 1, getWithTypeCalled.Load())
 }
 
 func TestConfigureUseTakeForOutput(t *testing.T) {

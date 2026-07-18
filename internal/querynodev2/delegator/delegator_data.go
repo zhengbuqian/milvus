@@ -1155,6 +1155,7 @@ func (sd *shardDelegator) ReleaseSegments(ctx context.Context, req *querypb.Rele
 	case querypb.DataScope_Historical:
 		sealed = lo.Map(req.GetSegmentIDs(), convertSealed)
 	}
+
 	signal := sd.distribution.RemoveDistributions(sealed, growing)
 	// wait cleared signal
 	<-signal
@@ -1193,6 +1194,11 @@ func (sd *shardDelegator) ReleaseSegments(ctx context.Context, req *querypb.Rele
 
 	if releaseErr != nil {
 		return releaseErr
+	}
+	if len(growing) > 0 && sd.growingSourceProvider != nil {
+		for _, entry := range growing {
+			sd.growingSourceProvider.ClearReleasePrepared(entry.SegmentID)
+		}
 	}
 	return nil
 }

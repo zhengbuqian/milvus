@@ -145,6 +145,9 @@ type QueryNode struct {
 	lastModifyTs   int64
 
 	metricsRequest *metricsinfo.MetricsRequest
+
+	// binlogSaver for growing-source segment flush
+	binlogSaver segments.BinlogSaver
 }
 
 // NewQueryNode will return a QueryNode with abnormal state.
@@ -564,6 +567,11 @@ func (node *QueryNode) UpdateStateCode(code commonpb.StateCode) {
 // SetEtcdClient assigns parameter client to its member etcdCli
 func (node *QueryNode) SetEtcdClient(client *clientv3.Client) {
 	node.etcdCli = client
+}
+
+// SetBinlogSaver sets the BinlogSaver for growing-source segment flush.
+func (node *QueryNode) SetBinlogSaver(saver segments.BinlogSaver) {
+	node.binlogSaver = saver
 }
 
 func (node *QueryNode) GetAddress() string {

@@ -37,6 +37,7 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
 	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/distributed/streaming"
+	"github.com/milvus-io/milvus/internal/flushcommon/syncmgr"
 	"github.com/milvus-io/milvus/internal/querynodev2/cluster"
 	"github.com/milvus-io/milvus/internal/querynodev2/delegator/deletebuffer"
 	"github.com/milvus-io/milvus/internal/querynodev2/segments"
@@ -186,6 +187,11 @@ type shardDelegator struct {
 	// latest required mvcc timestamp for the delegator
 	// for slow down the delegator consumption and reduce the timetick dispatch frequency.
 	latestRequiredMVCCTimeTick *atomic.Uint64
+
+	// growingSourceRegistration is the process-local registry lease for this
+	// delegator's optional growing-source source.
+	growingSourceRegistration *syncmgr.GrowingSourceRegistration
+	growingSourceProvider     *delegatorGrowingSourceProvider
 }
 
 // getLogger returns the logger with pre-defined shard attributes.
@@ -1369,6 +1375,10 @@ func (sd *shardDelegator) Close() {
 	sd.tsCond.L.Unlock()
 	sd.lifetime.Wait()
 
+	if sd.growingSourceProvider != nil {
+		sd.growingSourceProvider.Deactivate()
+	}
+
 	// Stop background snapshot loop before refunding candidates
 	sd.distribution.Close()
 
@@ -1478,6 +1488,7 @@ func (sd *shardDelegator) loadPartitionStats(ctx context.Context, partStatsVersi
 func NewShardDelegator(ctx context.Context, collectionID UniqueID, replicaID UniqueID, channel string, version int64,
 	workerManager cluster.Manager, manager *segments.Manager, loader segments.Loader, startTs uint64, queryHook optimizers.QueryHook, chunkManager storage.ChunkManager,
 	queryView *channelQueryView,
+	binlogSaver segments.BinlogSaver,
 ) (ShardDelegator, error) {
 	log := mlog.With(mlog.Int64("collectionID", collectionID),
 		mlog.Int64("replicaID", replicaID),
@@ -1559,10 +1570,33 @@ func NewShardDelegator(ctx context.Context, collectionID UniqueID, replicaID Uni
 		sd.publishIDFOracle(idfOracle)
 	}
 
+	// Register growing-source segments as optional local flush sources. Metadata
+	// commit is still owned by WAL flusher / WriteBuffer.
+	if sd.allowGrowingSourceFlush() {
+		sd.growingSourceProvider = newDelegatorGrowingSourceProvider(manager.Segment, func(ctx context.Context, fenceTs uint64) error {
+			_, err := sd.waitTSafe(ctx, fenceTs)
+			return err
+		}, sd.GetTSafe)
+		sd.growingSourceProvider.SetChannelName(sd.vchannelName)
+		sd.growingSourceRegistration = syncmgr.DefaultGrowingSourceRegistry().Register(sd.vchannelName, sd.growingSourceProvider)
+		sd.growingSourceProvider.SetRegistration(sd.growingSourceRegistration)
+		log.Info(ctx, "registered growing-source source support")
+	}
+
 	sd.tsCond = syncutil.NewContextCond(&sync.Mutex{})
 	paramtable.Get().Watch(paramtable.Get().QueryNodeCfg.DelegatorPostLoadConcurrencyFactor.Key, postLoadConfigHandler)
 	log.Info(ctx, "finish build new shardDelegator")
 	return sd, nil
+}
+
+// allowGrowingSourceFlush returns true when the collection may expose growing segments as a flush source.
+func (sd *shardDelegator) allowGrowingSourceFlush() bool {
+	if sd == nil || sd.collection == nil {
+		return false
+	}
+	return typeutil.AllowGrowingSourceFlush(sd.collection.Schema(),
+		paramtable.Get().CommonCfg.UseLoonFFI.GetAsBool(),
+		paramtable.Get().CommonCfg.EnableGrowingSourceFlush.GetAsBool())
 }
 
 func (sd *shardDelegator) runWithAnalyzer(ctx context.Context, fieldID int64, run func(function.Analyzer) error) (bool, error) {

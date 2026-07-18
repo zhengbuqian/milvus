@@ -147,6 +147,15 @@ func (fNode *filterNode) filtrate(c *Collection, msg msgstream.TsMsg) error {
 			return merr.WrapErrCollectionNotFound(header.GetCollectionId())
 		}
 		return nil
+	case commonpb.MsgType_ManualFlush:
+		// ManualFlush is handled by StreamingNode WAL flusher (fence + persist).
+		// QueryNode only consumes the barrier so the pipeline advances.
+		manualFlushMsg := msg.(*adaptor.ManualFlushMessageBody)
+		header := manualFlushMsg.ManualFlushMessage.Header()
+		if header.GetCollectionId() != fNode.collectionID {
+			return merr.WrapErrCollectionNotFound(header.GetCollectionId())
+		}
+		return nil
 	default:
 		return merr.WrapErrParameterInvalid("msgType is Insert or Delete", "not")
 	}

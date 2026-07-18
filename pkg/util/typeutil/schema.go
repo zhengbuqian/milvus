@@ -94,6 +94,42 @@ func getVarFieldLength(fieldSchema *schemapb.FieldSchema, policy getVariableFiel
 	}
 }
 
+// HasTextField returns whether schema contains a TEXT field.
+func HasTextField(schema *schemapb.CollectionSchema) bool {
+	if schema == nil {
+		return false
+	}
+	for _, field := range schema.GetFields() {
+		if field.GetDataType() == schemapb.DataType_Text {
+			return true
+		}
+	}
+	return false
+}
+
+func ValidateTextRequiresStorageV3(schema *schemapb.CollectionSchema, storageV3Enabled bool) error {
+	if HasTextField(schema) && !storageV3Enabled {
+		return merr.WrapErrParameterInvalidMsg("TEXT field requires StorageV3; enable common.storage.useLoonFFI")
+	}
+	return nil
+}
+
+// AllowGrowingSourceFlush returns whether insert payload for the schema may try
+// flushing from QueryNode growing source when available.
+func AllowGrowingSourceFlush(schema *schemapb.CollectionSchema, storageV3Enabled bool, enableGrowingSourceFlush bool) bool {
+	if !storageV3Enabled {
+		return false
+	}
+	return HasTextField(schema) || enableGrowingSourceFlush
+}
+
+// UseGrowingSourceFlush is kept for compatibility. Prefer
+// AllowGrowingSourceFlush for new code to avoid implying the source choice is
+// mandatory.
+func UseGrowingSourceFlush(schema *schemapb.CollectionSchema, storageV3Enabled bool, enableGrowingSourceFlush bool) bool {
+	return AllowGrowingSourceFlush(schema, storageV3Enabled, enableGrowingSourceFlush)
+}
+
 // EstimateSizePerRecord returns the estimate size of a record in a collection
 func EstimateSizePerRecord(schema *schemapb.CollectionSchema) (int, error) {
 	return estimateSizeBy(schema, custom)

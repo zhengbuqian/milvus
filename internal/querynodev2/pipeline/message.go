@@ -68,6 +68,8 @@ func (msg *insertNodeMsg) append(taskMsg msgstream.TsMsg) error {
 			msg.schema = body.GetUpdates().GetSchema()
 			msg.schemaBarrierTs = taskMsg.BeginTs()
 		}
+	case commonpb.MsgType_ManualFlush:
+		// ManualFlush is consumed in filterNode.filtrate(); no insert/delete payload here.
 	default:
 		return merr.WrapErrParameterInvalid("msgType is Insert or Delete", "not")
 	}
