@@ -1,20 +1,19 @@
 use std::sync::Arc;
 
+use log::info;
 use tantivy::schema::{Field, IndexRecordOption, Schema, TextFieldIndexing, TextOptions};
 use tantivy::tokenizer::{NgramTokenizer, TextAnalyzer};
-use tantivy::{Index, IndexWriter};
+use tantivy::{Index, IndexSettings, SingleSegmentIndexWriter};
 
 use crate::error::{Result, TantivyBindingError};
 use crate::index_ngram_document::{NgramBatchData, NgramDocument};
-use crate::index_reader::IndexReaderWrapper;
-use crate::index_reader_c::SetBitsetFn;
 use crate::index_writer::IndexWriterWrapper;
-use crate::index_writer_v7::index_writer::finish_index_writer;
 
 const NGRAM_TOKENIZER: &str = "ngram";
-// Tantivy's regular writer bounds the channel by messages, so keep each
-// submission small enough to preserve pipeline backpressure.
-pub(crate) const NGRAM_DOCUMENT_BATCH_SIZE: usize = 16;
+// Reference-only batch size used to compare the direct writer with the old
+// regular-writer pipeline in tests.
+#[cfg(test)]
+const REFERENCE_NGRAM_DOCUMENT_BATCH_SIZE: usize = 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NgramRow<'a> {
@@ -24,39 +23,20 @@ pub(crate) struct NgramRow<'a> {
 
 pub(crate) struct NgramIndexWriterWrapperImpl {
     pub(crate) field: Field,
-    pub(crate) index_writer: IndexWriter<NgramDocument>,
-    pub(crate) index: Arc<Index>,
+    pub(crate) index_writer: SingleSegmentIndexWriter<NgramDocument>,
 }
 
 impl NgramIndexWriterWrapperImpl {
-    pub(crate) fn create_reader(&self, set_bitset: SetBitsetFn) -> Result<IndexReaderWrapper> {
-        IndexReaderWrapper::from_index(self.index.clone(), set_bitset)
-    }
-
-    pub(crate) fn add_documents_with_doc_id<I>(
-        &mut self,
-        doc_id_begin: u32,
-        documents: I,
-    ) -> Result<()>
-    where
-        I: IntoIterator<Item = NgramDocument>,
-        I::IntoIter: ExactSizeIterator,
-    {
-        self.index_writer
-            .add_documents_with_doc_id(doc_id_begin, documents)?;
-        Ok(())
-    }
-
-    pub(crate) fn commit(&mut self) -> Result<()> {
-        self.index_writer.commit()?;
-        Ok(())
-    }
-
     pub(crate) fn finish(self) -> Result<()> {
-        finish_index_writer(self.index_writer, self.index, false)
+        let index = self.index_writer.finalize()?;
+        let metas = index.searchable_segment_metas()?;
+        let segment_ids: Vec<_> = metas.iter().map(|meta| meta.id().uuid_string()).collect();
+        info!("tantivy index_writer finish, segments: {:?}", segment_ids);
+        Ok(())
     }
 }
 
+#[cfg(test)]
 fn for_each_contiguous_ngram_batch<'rows, 'value, E>(
     rows: &'rows [NgramRow<'value>],
     batch_size: usize,
@@ -103,7 +83,7 @@ impl IndexWriterWrapper {
         path: &str,
         min_gram: usize,
         max_gram: usize,
-        num_threads: usize,
+        _num_threads: usize,
         overall_memory_budget_in_bytes: usize,
     ) -> Result<IndexWriterWrapper> {
         let tokenizer = TextAnalyzer::builder(NgramTokenizer::new(
@@ -116,19 +96,20 @@ impl IndexWriterWrapper {
 
         let (schema, field) = build_ngram_schema(field_name);
 
-        let index = Index::create_in_dir(path, schema)?;
+        let settings = IndexSettings {
+            docstore_compress_dedicated_thread: false,
+            ..Default::default()
+        };
+        let index = Index::builder()
+            .schema(schema)
+            .settings(settings)
+            .create_in_dir(path)?;
         index.tokenizers().register(NGRAM_TOKENIZER, tokenizer);
-        let index_writer: IndexWriter<NgramDocument> =
-            index.writer_with_num_threads(num_threads, overall_memory_budget_in_bytes)?;
-        // Ngram writers are only used for sealed index builds, which end with
-        // an explicit merge-all in finish(); background merges would only
-        // waste IO and race with it.
-        index_writer.set_merge_policy(Box::new(tantivy::merge_policy::NoMergePolicy));
+        let index_writer = SingleSegmentIndexWriter::new(index, overall_memory_budget_in_bytes)?;
 
         Ok(IndexWriterWrapper::NgramV7(NgramIndexWriterWrapperImpl {
             field,
             index_writer,
-            index: Arc::new(index),
         }))
     }
 
@@ -140,49 +121,49 @@ impl IndexWriterWrapper {
         };
         let field = writer.field;
 
-        for_each_contiguous_ngram_batch(rows, NGRAM_DOCUMENT_BATCH_SIZE, |first_doc_id, batch| {
-            let total_bytes = batch.iter().try_fold(0usize, |total, row| {
-                let value_len = row.value.map_or(0, str::len);
-                total.checked_add(value_len).ok_or_else(|| {
-                    TantivyBindingError::InvalidArgument(
-                        "ngram batch text byte count overflows usize".to_string(),
-                    )
-                })
-            })?;
-            u32::try_from(total_bytes).map_err(|_| {
+        let total_bytes = rows.iter().try_fold(0usize, |total, row| {
+            let value_len = row.value.map_or(0, str::len);
+            total.checked_add(value_len).ok_or_else(|| {
                 TantivyBindingError::InvalidArgument(
-                    "ngram batch text exceeds the u32 document range".to_string(),
+                    "ngram batch text byte count overflows usize".to_string(),
                 )
-            })?;
-            let mut validated_start = 0u32;
-            for row in batch {
-                if let Some(value) = row.value {
-                    if validated_start == u32::MAX {
-                        return Err(TantivyBindingError::InvalidArgument(
-                            "ngram present value starts at the reserved absent offset".to_string(),
-                        ));
-                    }
-                    validated_start =
-                        validated_start
-                            .checked_add(value.len() as u32)
-                            .ok_or_else(|| {
-                                TantivyBindingError::InvalidArgument(
-                                    "ngram document range overflows u32".to_string(),
-                                )
-                            })?;
+            })
+        })?;
+        u32::try_from(total_bytes).map_err(|_| {
+            TantivyBindingError::InvalidArgument(
+                "ngram batch text exceeds the u32 document range".to_string(),
+            )
+        })?;
+        let mut validated_start = 0u32;
+        for row in rows {
+            if let Some(value) = row.value {
+                if validated_start == u32::MAX {
+                    return Err(TantivyBindingError::InvalidArgument(
+                        "ngram present value starts at the reserved absent offset".to_string(),
+                    ));
                 }
+                validated_start =
+                    validated_start
+                        .checked_add(value.len() as u32)
+                        .ok_or_else(|| {
+                            TantivyBindingError::InvalidArgument(
+                                "ngram document range overflows u32".to_string(),
+                            )
+                        })?;
             }
+        }
 
-            let mut text = String::with_capacity(total_bytes);
-            for row in batch {
-                if let Some(value) = row.value {
-                    text.push_str(value);
-                }
+        let mut text = String::with_capacity(total_bytes);
+        for row in rows {
+            if let Some(value) = row.value {
+                text.push_str(value);
             }
-            let batch_data = Arc::new(NgramBatchData::new(field, text)?);
+        }
+        let batch_data = Arc::new(NgramBatchData::new(field, text)?);
 
-            let mut start = 0u32;
-            let documents = batch.iter().map(move |row| match row.value {
+        let mut start = 0u32;
+        let documents = rows.iter().map(move |row| {
+            let document = match row.value {
                 Some(value) => {
                     let len = value.len() as u32;
                     let document =
@@ -191,10 +172,10 @@ impl IndexWriterWrapper {
                     document
                 }
                 None => NgramDocument::absent(batch_data.clone()),
-            });
-            writer.add_documents_with_doc_id(first_doc_id, documents)?;
-            Ok(())
-        })?;
+            };
+            (row.doc_id, document)
+        });
+        writer.index_writer.add_documents_with_doc_ids(documents)?;
 
         Ok(())
     }
@@ -216,12 +197,13 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        build_ngram_schema, for_each_contiguous_ngram_batch, NgramRow, NGRAM_DOCUMENT_BATCH_SIZE,
-        NGRAM_TOKENIZER,
+        build_ngram_schema, for_each_contiguous_ngram_batch, NgramRow, NGRAM_TOKENIZER,
+        REFERENCE_NGRAM_DOCUMENT_BATCH_SIZE,
     };
     use crate::{
         error::{Result, TantivyBindingError},
         index_ngram_document::{NgramBatchData, NgramDocument},
+        index_reader::IndexReaderWrapper,
         index_writer::IndexWriterWrapper,
         util::set_bitset,
     };
@@ -231,6 +213,11 @@ mod tests {
             panic!("{operation} must return a typed internal binding error");
         };
         assert!(message.contains("NGRAM-specific"), "{message}");
+    }
+
+    fn open_finished_ngram_reader(path: &Path) -> IndexReaderWrapper {
+        let index = Index::open_in_dir(path).unwrap();
+        IndexReaderWrapper::from_index(Arc::new(index), set_bitset).unwrap()
     }
 
     #[test]
@@ -247,6 +234,61 @@ mod tests {
         .unwrap();
 
         assert!(matches!(writer, IndexWriterWrapper::NgramV7(_)));
+    }
+
+    #[test]
+    fn direct_ngram_writer_rejects_commit_while_active() {
+        let dir = TempDir::new().unwrap();
+        let mut writer = IndexWriterWrapper::create_ngram_writer(
+            "test",
+            dir.path().to_str().unwrap(),
+            2,
+            3,
+            1,
+            15_000_000,
+        )
+        .unwrap();
+
+        assert_ngram_operation_is_typed_error(writer.commit(), "commit before finish");
+    }
+
+    #[test]
+    fn direct_ngram_writer_rejects_reader_while_active() {
+        let dir = TempDir::new().unwrap();
+        let writer = IndexWriterWrapper::create_ngram_writer(
+            "test",
+            dir.path().to_str().unwrap(),
+            2,
+            3,
+            1,
+            15_000_000,
+        )
+        .unwrap();
+
+        let Err(TantivyBindingError::InternalError(message)) = writer.create_reader(set_bitset)
+        else {
+            panic!("create reader before finish must return a typed internal binding error");
+        };
+        assert!(message.contains("finish"), "{message}");
+    }
+
+    #[test]
+    fn direct_ngram_finish_disables_dedicated_docstore_compression() {
+        let dir = TempDir::new().unwrap();
+        let writer = IndexWriterWrapper::create_ngram_writer(
+            "test",
+            dir.path().to_str().unwrap(),
+            2,
+            3,
+            1,
+            15_000_000,
+        )
+        .unwrap();
+
+        writer.finish().unwrap();
+
+        let index = Index::open_in_dir(dir.path()).unwrap();
+        assert!(!index.settings().docstore_compress_dedicated_thread);
     }
 
     #[test]
@@ -306,17 +348,21 @@ mod tests {
 
     fn grouped_batches(rows: &[NgramRow<'_>]) -> Vec<(u32, usize)> {
         let mut batches = Vec::new();
-        for_each_contiguous_ngram_batch(rows, NGRAM_DOCUMENT_BATCH_SIZE, |first_doc_id, batch| {
-            batches.push((first_doc_id, batch.len()));
-            Ok::<_, ()>(())
-        })
+        for_each_contiguous_ngram_batch(
+            rows,
+            REFERENCE_NGRAM_DOCUMENT_BATCH_SIZE,
+            |first_doc_id, batch| {
+                batches.push((first_doc_id, batch.len()));
+                Ok::<_, ()>(())
+            },
+        )
         .unwrap();
         batches
     }
 
     #[test]
     fn ngram_batch_grouping_handles_boundaries() {
-        let batch_size = NGRAM_DOCUMENT_BATCH_SIZE;
+        let batch_size = REFERENCE_NGRAM_DOCUMENT_BATCH_SIZE;
         let next_batch_doc_id = 100 + batch_size as u32;
 
         assert_eq!(grouped_batches(&rows(0, 100)), Vec::new());
@@ -362,11 +408,15 @@ mod tests {
         let mut seen_values = Vec::new();
         let mut batches = Vec::new();
 
-        for_each_contiguous_ngram_batch(&rows, NGRAM_DOCUMENT_BATCH_SIZE, |first_doc_id, batch| {
-            batches.push((first_doc_id, batch.len()));
-            seen_values.extend(batch.iter().map(|row| row.value));
-            Ok::<_, ()>(())
-        })
+        for_each_contiguous_ngram_batch(
+            &rows,
+            REFERENCE_NGRAM_DOCUMENT_BATCH_SIZE,
+            |first_doc_id, batch| {
+                batches.push((first_doc_id, batch.len()));
+                seen_values.extend(batch.iter().map(|row| row.value));
+                Ok::<_, ()>(())
+            },
+        )
         .unwrap();
 
         assert_eq!(batches, vec![(7, 3), (15, 2)]);
@@ -374,6 +424,37 @@ mod tests {
             seen_values,
             vec![Some("first"), None, Some(""), Some("after-gap"), None]
         );
+    }
+
+    #[test]
+    fn direct_ngram_add_rows_validates_the_whole_slice_before_writing() {
+        let dir = TempDir::new().unwrap();
+        let mut writer = IndexWriterWrapper::create_ngram_writer(
+            "test",
+            dir.path().to_str().unwrap(),
+            2,
+            3,
+            1,
+            15_000_000,
+        )
+        .unwrap();
+        let mut invalid_rows = rows(REFERENCE_NGRAM_DOCUMENT_BATCH_SIZE + 1, 0);
+        invalid_rows[REFERENCE_NGRAM_DOCUMENT_BATCH_SIZE].doc_id = 0;
+
+        assert!(writer.add_ngram_rows(&invalid_rows).is_err());
+
+        writer
+            .add_ngram_rows(&[NgramRow {
+                doc_id: 0,
+                value: Some("recovered"),
+            }])
+            .unwrap();
+        writer.finish().unwrap();
+
+        let snapshot = index_snapshot(dir.path());
+        assert_eq!(snapshot.segment_count, 1);
+        assert_eq!(snapshot.max_docs, vec![1]);
+        assert_eq!(snapshot.postings.get(b"re".as_slice()), Some(&vec![0]));
     }
 
     #[test]
@@ -399,10 +480,13 @@ mod tests {
             .into_iter()
             .map(|(start, len)| NgramDocument::present(batch.clone(), start, len).unwrap());
 
-        writer.add_documents_with_doc_id(4, documents).unwrap();
-        writer.commit().unwrap();
+        writer
+            .index_writer
+            .add_documents_with_doc_ids([4, 5, 6].into_iter().zip(documents))
+            .unwrap();
+        writer.finish().unwrap();
 
-        let reader = writer.create_reader(set_bitset).unwrap();
+        let reader = open_finished_ngram_reader(dir.path());
         assert_eq!(reader.count().unwrap(), 7);
     }
 
@@ -460,20 +544,110 @@ mod tests {
             index.writer_with_num_threads(1, 15_000_000).unwrap();
         writer.set_merge_policy(Box::new(tantivy::merge_policy::NoMergePolicy));
 
-        for_each_contiguous_ngram_batch(rows, NGRAM_DOCUMENT_BATCH_SIZE, |first_doc_id, batch| {
-            let documents = batch.iter().map(|row| {
-                let mut document = TantivyDocument::default();
-                if let Some(value) = row.value {
-                    document.add_text(field, value);
-                }
-                document
-            });
-            writer
-                .add_documents_with_doc_id(first_doc_id, documents)
-                .map(|_| ())
-        })
+        for_each_contiguous_ngram_batch(
+            rows,
+            REFERENCE_NGRAM_DOCUMENT_BATCH_SIZE,
+            |first_doc_id, batch| {
+                let documents = batch.iter().map(|row| {
+                    let mut document = TantivyDocument::default();
+                    if let Some(value) = row.value {
+                        document.add_text(field, value);
+                    }
+                    document
+                });
+                writer
+                    .add_documents_with_doc_id(first_doc_id, documents)
+                    .map(|_| ())
+            },
+        )
         .unwrap();
         writer.commit().unwrap();
+    }
+
+    fn build_regular_lightweight_document_index(path: &Path, rows: &[NgramRow<'_>]) {
+        let tokenizer = TextAnalyzer::builder(NgramTokenizer::new(2, 3, false).unwrap())
+            .dynamic()
+            .build();
+        let (schema, field) = build_ngram_schema("test");
+        let index = Index::create_in_dir(path, schema).unwrap();
+        index.tokenizers().register(NGRAM_TOKENIZER, tokenizer);
+        let mut writer: IndexWriter<NgramDocument> =
+            index.writer_with_num_threads(1, 15_000_000).unwrap();
+        writer.set_merge_policy(Box::new(tantivy::merge_policy::NoMergePolicy));
+
+        for_each_contiguous_ngram_batch(
+            rows,
+            REFERENCE_NGRAM_DOCUMENT_BATCH_SIZE,
+            |first_doc_id, batch| {
+                let total_bytes = batch.iter().map(|row| row.value.map_or(0, str::len)).sum();
+                let mut text = String::with_capacity(total_bytes);
+                for row in batch {
+                    if let Some(value) = row.value {
+                        text.push_str(value);
+                    }
+                }
+                let batch_data = Arc::new(NgramBatchData::new(field, text).unwrap());
+                let mut start = 0u32;
+                let documents = batch.iter().map(move |row| match row.value {
+                    Some(value) => {
+                        let len = value.len() as u32;
+                        let document =
+                            NgramDocument::from_validated_range(batch_data.clone(), start, len);
+                        start += len;
+                        document
+                    }
+                    None => NgramDocument::absent(batch_data.clone()),
+                });
+                writer
+                    .add_documents_with_doc_id(first_doc_id, documents)
+                    .map(|_| ())
+            },
+        )
+        .unwrap();
+        writer.commit().unwrap();
+    }
+
+    fn build_finished_ngram_index(path: &Path, rows: &[NgramRow<'_>]) {
+        let mut writer = IndexWriterWrapper::create_ngram_writer(
+            "test",
+            path.to_str().unwrap(),
+            2,
+            3,
+            1,
+            15_000_000,
+        )
+        .unwrap();
+        writer.add_ngram_rows(rows).unwrap();
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    fn direct_and_regular_lightweight_writers_match_postings_and_max_doc() {
+        let values = [
+            Some("alpha"),
+            None,
+            Some(""),
+            Some("nul\0byte"),
+            Some("ngram测试"),
+            None,
+        ];
+        let doc_ids = [40, 41, 42, 100, 101, 109];
+        let rows: Vec<_> = doc_ids
+            .into_iter()
+            .zip(values)
+            .map(|(doc_id, value)| NgramRow { doc_id, value })
+            .collect();
+        let regular_dir = TempDir::new().unwrap();
+        let direct_dir = TempDir::new().unwrap();
+
+        build_regular_lightweight_document_index(regular_dir.path(), &rows);
+        build_finished_ngram_index(direct_dir.path(), &rows);
+
+        let regular = index_snapshot(regular_dir.path());
+        let direct = index_snapshot(direct_dir.path());
+        assert_eq!(direct, regular);
+        assert_eq!(direct.segment_count, 1);
+        assert_eq!(direct.max_docs, vec![110]);
     }
 
     fn build_lightweight_document_index(path: &Path, rows: &[NgramRow<'_>]) {
@@ -487,7 +661,7 @@ mod tests {
         )
         .unwrap();
         writer.add_ngram_rows(rows).unwrap();
-        writer.commit().unwrap();
+        writer.finish().unwrap();
     }
 
     fn assert_default_and_lightweight_equivalent(rows: &[NgramRow<'_>]) -> IndexSnapshot {
@@ -505,9 +679,9 @@ mod tests {
     #[test]
     fn lightweight_documents_match_default_documents_around_batch_boundaries() {
         for count in [
-            NGRAM_DOCUMENT_BATCH_SIZE - 1,
-            NGRAM_DOCUMENT_BATCH_SIZE,
-            NGRAM_DOCUMENT_BATCH_SIZE + 1,
+            REFERENCE_NGRAM_DOCUMENT_BATCH_SIZE - 1,
+            REFERENCE_NGRAM_DOCUMENT_BATCH_SIZE,
+            REFERENCE_NGRAM_DOCUMENT_BATCH_SIZE + 1,
         ] {
             let values: Vec<_> = (0..count)
                 .map(|index| format!("row-{index:02}-测试"))
@@ -575,7 +749,7 @@ mod tests {
             ];
             writer.add_ngram_rows(&rows).unwrap();
         }
-        writer.commit().unwrap();
+        writer.finish().unwrap();
 
         let snapshot = index_snapshot(dir.path());
         assert_eq!(snapshot.max_docs, vec![5]);
@@ -619,7 +793,7 @@ mod tests {
         batched.add_ngram_rows(&rows[..33]).unwrap();
         batched.add_ngram_rows(&rows[33..65]).unwrap();
         batched.add_ngram_rows(&rows[65..]).unwrap();
-        batched.commit().unwrap();
+        batched.finish().unwrap();
 
         assert_eq!(
             index_snapshot(reference_dir.path()),
@@ -673,9 +847,9 @@ mod tests {
             .collect();
         writer.add_ngram_rows(&rows).unwrap();
 
-        writer.commit().unwrap();
+        writer.finish().unwrap();
 
-        let reader = writer.create_reader(set_bitset).unwrap();
+        let reader = open_finished_ngram_reader(dir.path());
         let mut res: HashSet<u32> = HashSet::new();
         reader
             .ngram_match_query("ic", 2, 3, &mut res as *mut _ as *mut c_void)
@@ -713,9 +887,9 @@ mod tests {
             .collect();
         writer.add_ngram_rows(&rows).unwrap();
 
-        writer.commit().unwrap();
+        writer.finish().unwrap();
 
-        let reader = writer.create_reader(set_bitset).unwrap();
+        let reader = open_finished_ngram_reader(dir.path());
         let mut res: HashSet<u32> = HashSet::new();
         reader
             .ngram_match_query("测试", 2, 3, &mut res as *mut _ as *mut c_void)

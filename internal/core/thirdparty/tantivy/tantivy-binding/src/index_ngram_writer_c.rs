@@ -22,19 +22,20 @@ unsafe fn validate_ngram_rows<'a>(
 ) -> Result<Vec<NgramRow<'a>>> {
     let mut rows = Vec::with_capacity(ptrs.len());
     let mut previous_doc_id = None;
+    let max_exclusive_doc_id = tantivy::indexer::merger::MAX_DOC_LIMIT - 1;
 
     for row_index in 0..ptrs.len() {
         let raw_doc_id = doc_ids[row_index];
         let doc_id = u32::try_from(raw_doc_id).map_err(|_| {
             invalid_argument(format!(
                 "ngram batch document ID {raw_doc_id} at row {row_index} is outside [0, {})",
-                tantivy::TERMINATED
+                max_exclusive_doc_id
             ))
         })?;
-        if doc_id >= tantivy::TERMINATED {
+        if doc_id >= max_exclusive_doc_id {
             return Err(invalid_argument(format!(
                 "ngram batch document ID {raw_doc_id} at row {row_index} is outside [0, {})",
-                tantivy::TERMINATED
+                max_exclusive_doc_id
             )));
         }
         if let Some(previous) = previous_doc_id {
@@ -163,11 +164,13 @@ mod tests {
     use std::collections::HashSet;
     use std::ffi::{c_void, CStr};
     use std::ptr;
+    use std::sync::Arc;
 
     use tempfile::TempDir;
 
     use super::*;
     use crate::array::free_rust_result;
+    use crate::index_reader::IndexReaderWrapper;
     use crate::util::set_bitset;
 
     struct BatchInput {
@@ -258,9 +261,13 @@ mod tests {
         );
     }
 
-    fn query(writer: &mut IndexWriterWrapper, literal: &str) -> HashSet<u32> {
-        writer.commit().unwrap();
-        let reader = writer.create_reader(set_bitset).unwrap();
+    fn finish_reader(dir: &TempDir, writer: IndexWriterWrapper) -> IndexReaderWrapper {
+        writer.finish().unwrap();
+        let index = tantivy::Index::open_in_dir(dir.path()).unwrap();
+        IndexReaderWrapper::from_index(Arc::new(index), set_bitset).unwrap()
+    }
+
+    fn query(reader: &IndexReaderWrapper, literal: &str) -> HashSet<u32> {
         let mut result = HashSet::new();
         reader
             .ngram_match_query(
@@ -288,7 +295,7 @@ mod tests {
 
     #[test]
     fn ngram_batch_preserves_nonzero_sparse_ids_nulls_and_text_bytes() {
-        let (_dir, mut writer) = create_writer();
+        let (dir, mut writer) = create_writer();
         let batch = BatchInput::new(vec![
             (3, Some(b"alpha".to_vec())),
             (7, None),
@@ -298,16 +305,16 @@ mod tests {
         ]);
         assert_success(batch.call(&mut writer));
 
-        assert_eq!(query(&mut writer, "al"), HashSet::from([3]));
-        assert_eq!(query(&mut writer, "l\0"), HashSet::from([11]));
-        assert_eq!(query(&mut writer, "测试"), HashSet::from([23]));
-        let reader = writer.create_reader(set_bitset).unwrap();
+        let reader = finish_reader(&dir, writer);
+        assert_eq!(query(&reader, "al"), HashSet::from([3]));
+        assert_eq!(query(&reader, "l\0"), HashSet::from([11]));
+        assert_eq!(query(&reader, "测试"), HashSet::from([23]));
         assert_eq!(reader.count().unwrap(), 24);
     }
 
     #[test]
     fn ngram_batch_accepts_valid_empty_with_null_data_pointer() {
-        let (_dir, mut writer) = create_writer();
+        let (dir, mut writer) = create_writer();
         let ptrs = [ptr::null()];
         let lens = [0];
         let doc_ids = [2];
@@ -320,8 +327,7 @@ mod tests {
             has_values.as_ptr(),
             1,
         ));
-        writer.commit().unwrap();
-        let reader = writer.create_reader(set_bitset).unwrap();
+        let reader = finish_reader(&dir, writer);
         assert_eq!(reader.count().unwrap(), 3);
     }
 
@@ -347,12 +353,18 @@ mod tests {
         let negative = BatchInput::new(vec![(-1, Some(b"bad".to_vec()))]);
         assert_error_contains(negative.call(&mut negative_writer), "document ID -1");
 
+        let max_doc_limit = tantivy::indexer::merger::MAX_DOC_LIMIT;
         let (_dir, mut max_writer) = create_writer();
-        let max_valid = BatchInput::new(vec![(
-            i64::from(tantivy::TERMINATED - 1),
-            Some(b"last".to_vec()),
-        )]);
+        let max_valid =
+            BatchInput::new(vec![(i64::from(max_doc_limit - 2), Some(b"last".to_vec()))]);
         assert_success(max_valid.call(&mut max_writer));
+
+        let (_dir, mut max_doc_writer) = create_writer();
+        let max_doc = BatchInput::new(vec![(i64::from(max_doc_limit - 1), Some(b"bad".to_vec()))]);
+        assert_error_contains(
+            max_doc.call(&mut max_doc_writer),
+            &format!("document ID {}", max_doc_limit - 1),
+        );
 
         let (_dir, mut terminated_writer) = create_writer();
         let terminated = BatchInput::new(vec![(
@@ -483,7 +495,7 @@ mod tests {
 
     #[test]
     fn ngram_batch_late_validation_error_does_not_partially_write() {
-        let (_dir, mut writer) = create_writer();
+        let (dir, mut writer) = create_writer();
         let invalid = BatchInput::new(vec![
             (4, Some(b"first".to_vec())),
             (8, Some(vec![0xff, 0xfe])),
@@ -492,14 +504,14 @@ mod tests {
 
         let valid = BatchInput::new(vec![(0, Some(b"only".to_vec()))]);
         assert_success(valid.call(&mut writer));
-        assert_eq!(query(&mut writer, "on"), HashSet::from([0]));
-        let reader = writer.create_reader(set_bitset).unwrap();
+        let reader = finish_reader(&dir, writer);
+        assert_eq!(query(&reader, "on"), HashSet::from([0]));
         assert_eq!(reader.count().unwrap(), 1);
     }
 
     #[test]
     fn ngram_batch_copies_input_before_ffi_returns() {
-        let (_dir, mut writer) = create_writer();
+        let (dir, mut writer) = create_writer();
         {
             let input = BatchInput::new(vec![
                 (1, Some(b"borrowed-alpha".to_vec())),
@@ -510,7 +522,8 @@ mod tests {
         let overwrite = vec![b'x'; 1024 * 1024];
         std::hint::black_box(overwrite);
 
-        assert_eq!(query(&mut writer, "alp"), HashSet::from([1]));
+        let reader = finish_reader(&dir, writer);
+        assert_eq!(query(&reader, "alp"), HashSet::from([1]));
     }
 
     #[test]

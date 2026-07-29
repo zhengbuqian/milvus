@@ -91,7 +91,9 @@ impl IndexWriterWrapper {
                 ));
             }
             IndexWriterWrapper::V7(writer) => writer.create_reader(set_bitset),
-            IndexWriterWrapper::NgramV7(writer) => writer.create_reader(set_bitset),
+            IndexWriterWrapper::NgramV7(_) => {
+                Err(unsupported_ngram_operation("create reader before finish"))
+            }
         }
     }
 
@@ -232,7 +234,9 @@ impl IndexWriterWrapper {
         match self {
             IndexWriterWrapper::V5(writer) => writer.commit(),
             IndexWriterWrapper::V7(writer) => writer.commit(),
-            IndexWriterWrapper::NgramV7(writer) => writer.commit(),
+            IndexWriterWrapper::NgramV7(_) => {
+                Err(unsupported_ngram_operation("commit before finish"))
+            }
         }
     }
 
