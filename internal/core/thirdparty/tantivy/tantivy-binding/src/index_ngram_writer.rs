@@ -2,18 +2,45 @@ use std::sync::Arc;
 
 use tantivy::schema::{Field, IndexRecordOption, Schema, TextFieldIndexing, TextOptions};
 use tantivy::tokenizer::{NgramTokenizer, TextAnalyzer};
-use tantivy::Index;
+use tantivy::{Index, TantivyDocument};
 
-use crate::error::Result;
+use crate::error::{Result, TantivyBindingError};
 use crate::index_writer::IndexWriterWrapper;
 use crate::index_writer_v7::IndexWriterWrapperImpl;
 
 const NGRAM_TOKENIZER: &str = "ngram";
+// Tantivy's regular writer bounds the channel by messages, so keep each
+// submission small enough to preserve pipeline backpressure.
+pub(crate) const NGRAM_DOCUMENT_BATCH_SIZE: usize = 32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NgramRow<'a> {
     pub(crate) doc_id: u32,
     pub(crate) value: Option<&'a str>,
+}
+
+fn for_each_contiguous_ngram_batch<'rows, 'value, E>(
+    rows: &'rows [NgramRow<'value>],
+    batch_size: usize,
+    mut callback: impl FnMut(u32, &'rows [NgramRow<'value>]) -> std::result::Result<(), E>,
+) -> std::result::Result<(), E> {
+    let batch_size = batch_size.max(1);
+    let mut batch_begin = 0;
+
+    while batch_begin < rows.len() {
+        let mut batch_end = batch_begin + 1;
+        while batch_end < rows.len()
+            && batch_end - batch_begin < batch_size
+            && rows[batch_end - 1].doc_id.checked_add(1) == Some(rows[batch_end].doc_id)
+        {
+            batch_end += 1;
+        }
+
+        callback(rows[batch_begin].doc_id, &rows[batch_begin..batch_end])?;
+        batch_begin = batch_end;
+    }
+
+    Ok(())
 }
 
 fn build_ngram_schema(field_name: &str) -> (Schema, Field) {
@@ -72,24 +99,249 @@ impl IndexWriterWrapper {
     }
 
     pub(crate) fn add_ngram_rows(&mut self, rows: &[NgramRow<'_>]) -> Result<()> {
-        for row in rows {
-            let doc_id = Some(i64::from(row.doc_id));
-            match row.value {
-                Some(value) => self.add(value, doc_id)?,
-                None => self.add_array(std::iter::empty::<&str>(), doc_id)?,
-            }
-        }
+        let IndexWriterWrapper::V7(writer) = self else {
+            return Err(TantivyBindingError::InternalError(
+                "ngram batch submission requires a Tantivy V7 writer".to_string(),
+            ));
+        };
+        let field = writer.field;
+
+        for_each_contiguous_ngram_batch(rows, NGRAM_DOCUMENT_BATCH_SIZE, |first_doc_id, batch| {
+            let documents = batch.iter().map(|row| {
+                let mut document = TantivyDocument::default();
+                if let Some(value) = row.value {
+                    document.add_text(field, value);
+                }
+                document
+            });
+            writer.add_documents_with_doc_id(first_doc_id, documents)
+        })?;
+
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashSet, ffi::c_void};
+    use std::{
+        collections::{BTreeMap, HashSet},
+        ffi::c_void,
+        path::Path,
+    };
 
+    use tantivy::{schema::IndexRecordOption, DocSet, Index, TantivyDocument, TERMINATED};
     use tempfile::TempDir;
 
+    use super::{for_each_contiguous_ngram_batch, NgramRow, NGRAM_DOCUMENT_BATCH_SIZE};
     use crate::{index_writer::IndexWriterWrapper, util::set_bitset};
+
+    fn rows(count: usize, first_doc_id: u32) -> Vec<NgramRow<'static>> {
+        (0..count)
+            .map(|index| NgramRow {
+                doc_id: first_doc_id + index as u32,
+                value: Some("value"),
+            })
+            .collect()
+    }
+
+    fn grouped_batches(rows: &[NgramRow<'_>]) -> Vec<(u32, usize)> {
+        let mut batches = Vec::new();
+        for_each_contiguous_ngram_batch(rows, NGRAM_DOCUMENT_BATCH_SIZE, |first_doc_id, batch| {
+            batches.push((first_doc_id, batch.len()));
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+        batches
+    }
+
+    #[test]
+    fn ngram_batch_grouping_handles_boundaries() {
+        assert_eq!(grouped_batches(&rows(0, 100)), Vec::new());
+        assert_eq!(grouped_batches(&rows(1, 100)), vec![(100, 1)]);
+        assert_eq!(grouped_batches(&rows(31, 100)), vec![(100, 31)]);
+        assert_eq!(grouped_batches(&rows(32, 100)), vec![(100, 32)]);
+        assert_eq!(grouped_batches(&rows(33, 100)), vec![(100, 32), (132, 1)]);
+    }
+
+    #[test]
+    fn ngram_batch_grouping_splits_at_gaps_without_dropping_absent_rows() {
+        let rows = [
+            NgramRow {
+                doc_id: 7,
+                value: Some("first"),
+            },
+            NgramRow {
+                doc_id: 8,
+                value: None,
+            },
+            NgramRow {
+                doc_id: 9,
+                value: Some(""),
+            },
+            NgramRow {
+                doc_id: 15,
+                value: Some("after-gap"),
+            },
+            NgramRow {
+                doc_id: 16,
+                value: None,
+            },
+        ];
+        let mut seen_values = Vec::new();
+        let mut batches = Vec::new();
+
+        for_each_contiguous_ngram_batch(&rows, NGRAM_DOCUMENT_BATCH_SIZE, |first_doc_id, batch| {
+            batches.push((first_doc_id, batch.len()));
+            seen_values.extend(batch.iter().map(|row| row.value));
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+
+        assert_eq!(batches, vec![(7, 3), (15, 2)]);
+        assert_eq!(
+            seen_values,
+            vec![Some("first"), None, Some(""), Some("after-gap"), None]
+        );
+    }
+
+    #[test]
+    fn v7_batch_submission_accepts_an_exact_size_document_iterator() {
+        let dir = TempDir::new().unwrap();
+        let writer = IndexWriterWrapper::create_ngram_writer(
+            "test",
+            dir.path().to_str().unwrap(),
+            2,
+            3,
+            1,
+            15_000_000,
+        )
+        .unwrap();
+        let IndexWriterWrapper::V7(mut writer) = writer else {
+            panic!("ngram writer must use Tantivy V7");
+        };
+        let field = writer.field;
+        let documents = ["alpha", "", "ngram测试"].into_iter().map(|value| {
+            let mut document = TantivyDocument::default();
+            document.add_text(field, value);
+            document
+        });
+
+        writer.add_documents_with_doc_id(4, documents).unwrap();
+        writer.commit().unwrap();
+
+        let reader = writer.create_reader(set_bitset).unwrap();
+        assert_eq!(reader.count().unwrap(), 7);
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct IndexSnapshot {
+        segment_count: usize,
+        max_docs: Vec<u32>,
+        postings: BTreeMap<Vec<u8>, Vec<u32>>,
+    }
+
+    fn index_snapshot(path: &Path) -> IndexSnapshot {
+        let index = Index::open_in_dir(path).unwrap();
+        let reader = index.reader().unwrap();
+        let searcher = reader.searcher();
+        let field = index.schema().get_field("test").unwrap();
+        let mut max_docs = Vec::new();
+        let mut postings = BTreeMap::<Vec<u8>, Vec<u32>>::new();
+
+        for segment_reader in searcher.segment_readers() {
+            max_docs.push(segment_reader.max_doc());
+            let inverted_index = segment_reader.inverted_index(field).unwrap();
+            let mut terms = inverted_index.terms().stream().unwrap();
+            while terms.advance() {
+                let term = terms.key().to_vec();
+                let mut term_postings = inverted_index
+                    .read_postings_from_terminfo(terms.value(), IndexRecordOption::Basic)
+                    .unwrap();
+                let docs = postings.entry(term).or_default();
+                while term_postings.doc() != TERMINATED {
+                    docs.push(term_postings.doc());
+                    term_postings.advance();
+                }
+            }
+        }
+        max_docs.sort_unstable();
+        for docs in postings.values_mut() {
+            docs.sort_unstable();
+        }
+
+        IndexSnapshot {
+            segment_count: searcher.segment_readers().len(),
+            max_docs,
+            postings,
+        }
+    }
+
+    fn add_rows_one_at_a_time(writer: &mut IndexWriterWrapper, rows: &[NgramRow<'_>]) {
+        for row in rows {
+            let doc_id = Some(i64::from(row.doc_id));
+            match row.value {
+                Some(value) => writer.add(value, doc_id).unwrap(),
+                None => writer
+                    .add_array(std::iter::empty::<&str>(), doc_id)
+                    .unwrap(),
+            }
+        }
+    }
+
+    #[test]
+    fn batched_ngram_documents_match_per_row_postings_and_max_doc() {
+        let values: Vec<_> = (0..65)
+            .map(|index| (100 + index, Some(format!("row-{index:02}-alpha"))))
+            .chain([
+                (200, Some(String::new())),
+                (201, Some("nul\0byte".to_string())),
+                (205, Some("ngram测试".to_string())),
+                (209, None),
+            ])
+            .collect();
+        let mut rows: Vec<_> = values
+            .iter()
+            .map(|(doc_id, value)| NgramRow {
+                doc_id: *doc_id,
+                value: value.as_deref(),
+            })
+            .collect();
+        rows[1].value = None;
+        rows[31].value = Some("");
+
+        let reference_dir = TempDir::new().unwrap();
+        let batched_dir = TempDir::new().unwrap();
+        let mut reference = IndexWriterWrapper::create_ngram_writer(
+            "test",
+            reference_dir.path().to_str().unwrap(),
+            2,
+            3,
+            1,
+            15_000_000,
+        )
+        .unwrap();
+        let mut batched = IndexWriterWrapper::create_ngram_writer(
+            "test",
+            batched_dir.path().to_str().unwrap(),
+            2,
+            3,
+            1,
+            15_000_000,
+        )
+        .unwrap();
+
+        add_rows_one_at_a_time(&mut reference, &rows);
+        batched.add_ngram_rows(&rows[..33]).unwrap();
+        batched.add_ngram_rows(&rows[33..65]).unwrap();
+        batched.add_ngram_rows(&rows[65..]).unwrap();
+        reference.commit().unwrap();
+        batched.commit().unwrap();
+
+        assert_eq!(
+            index_snapshot(reference_dir.path()),
+            index_snapshot(batched_dir.path())
+        );
+    }
 
     #[test]
     fn test_create_ngram_writer() {

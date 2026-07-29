@@ -159,6 +159,20 @@ impl IndexWriterWrapperImpl {
         Ok(())
     }
 
+    pub(crate) fn add_documents_with_doc_id<I>(
+        &mut self,
+        doc_id_begin: u32,
+        documents: I,
+    ) -> Result<()>
+    where
+        I: IntoIterator<Item = TantivyDocument>,
+        I::IntoIter: ExactSizeIterator,
+    {
+        self.index_writer
+            .add_documents_with_doc_id(doc_id_begin, documents)?;
+        Ok(())
+    }
+
     pub fn add<T: TantivyValue<TantivyDocument>>(&mut self, data: T, offset: u32) -> Result<()> {
         let mut document = TantivyDocument::default();
         data.add_to_document(self.field.field_id(), &mut document);
