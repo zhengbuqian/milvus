@@ -5,6 +5,7 @@ use libc::c_char;
 use crate::data_type::TantivyDataType;
 
 use crate::error::{Result, TantivyBindingError};
+use crate::index_ngram_writer::NgramIndexWriterWrapperImpl;
 use crate::index_reader::IndexReaderWrapper;
 use crate::index_reader_c::SetBitsetFn;
 use crate::log::init_log;
@@ -17,6 +18,14 @@ pub trait TantivyValue<D> {
 pub enum IndexWriterWrapper {
     V5(index_writer_v5::IndexWriterWrapperImpl),
     V7(index_writer_v7::IndexWriterWrapperImpl),
+    NgramV7(NgramIndexWriterWrapperImpl),
+}
+
+fn unsupported_ngram_operation(operation: &str) -> TantivyBindingError {
+    TantivyBindingError::InternalError(format!(
+        "{} is not supported by the NGRAM-specific Tantivy writer",
+        operation
+    ))
 }
 
 impl IndexWriterWrapper {
@@ -82,6 +91,7 @@ impl IndexWriterWrapper {
                 ));
             }
             IndexWriterWrapper::V7(writer) => writer.create_reader(set_bitset),
+            IndexWriterWrapper::NgramV7(writer) => writer.create_reader(set_bitset),
         }
     }
 
@@ -92,6 +102,7 @@ impl IndexWriterWrapper {
         match self {
             IndexWriterWrapper::V5(writer) => writer.add(data, offset),
             IndexWriterWrapper::V7(writer) => writer.add(data, offset.unwrap() as u32),
+            IndexWriterWrapper::NgramV7(_) => Err(unsupported_ngram_operation("generic add")),
         }
     }
 
@@ -103,6 +114,7 @@ impl IndexWriterWrapper {
         match self {
             IndexWriterWrapper::V5(writer) => writer.add_array(data, offset),
             IndexWriterWrapper::V7(writer) => writer.add_array(data, offset.unwrap() as u32),
+            IndexWriterWrapper::NgramV7(_) => Err(unsupported_ngram_operation("generic array add")),
         }
     }
 
@@ -115,6 +127,7 @@ impl IndexWriterWrapper {
                 ));
             }
             IndexWriterWrapper::V7(writer) => writer.add_json(data, offset.unwrap() as u32),
+            IndexWriterWrapper::NgramV7(_) => Err(unsupported_ngram_operation("JSON add")),
         }
     }
 
@@ -126,6 +139,7 @@ impl IndexWriterWrapper {
                 ));
             }
             IndexWriterWrapper::V7(writer) => writer.add_json_batch(datas, offset_begin as u32),
+            IndexWriterWrapper::NgramV7(_) => Err(unsupported_ngram_operation("JSON batch add")),
         }
     }
 
@@ -138,6 +152,7 @@ impl IndexWriterWrapper {
                 ));
             }
             IndexWriterWrapper::V7(writer) => writer.add_array_json(datas, offset.unwrap() as u32),
+            IndexWriterWrapper::NgramV7(_) => Err(unsupported_ngram_operation("JSON array add")),
         }
     }
 
@@ -151,6 +166,7 @@ impl IndexWriterWrapper {
             IndexWriterWrapper::V7(writer) => {
                 writer.add_array_keywords(datas, offset.unwrap() as u32)
             }
+            IndexWriterWrapper::NgramV7(_) => Err(unsupported_ngram_operation("keyword array add")),
         }
     }
 
@@ -167,6 +183,9 @@ impl IndexWriterWrapper {
             IndexWriterWrapper::V7(writer) => {
                 writer.add_array_keywords_with_len(ptrs, lens, offset.unwrap() as u32)
             }
+            IndexWriterWrapper::NgramV7(_) => Err(unsupported_ngram_operation(
+                "length-delimited keyword array add",
+            )),
         }
     }
 
@@ -176,14 +195,25 @@ impl IndexWriterWrapper {
         json_offsets: &[*const i64],
         json_offsets_len: &[usize],
     ) -> Result<()> {
-        assert!(keys.len() == json_offsets.len());
-        assert!(keys.len() == json_offsets_len.len());
         match self {
             IndexWriterWrapper::V5(writer) => {
+                if keys.len() != json_offsets.len() || keys.len() != json_offsets_len.len() {
+                    return Err(TantivyBindingError::InvalidArgument(
+                        "JSON key stats arrays must have equal lengths".to_string(),
+                    ));
+                }
                 writer.add_json_key_stats(keys, json_offsets, json_offsets_len)
             }
             IndexWriterWrapper::V7(writer) => {
+                if keys.len() != json_offsets.len() || keys.len() != json_offsets_len.len() {
+                    return Err(TantivyBindingError::InvalidArgument(
+                        "JSON key stats arrays must have equal lengths".to_string(),
+                    ));
+                }
                 writer.add_json_key_stats(keys, json_offsets, json_offsets_len)
+            }
+            IndexWriterWrapper::NgramV7(_) => {
+                Err(unsupported_ngram_operation("JSON key stats add"))
             }
         }
     }
@@ -193,6 +223,7 @@ impl IndexWriterWrapper {
         match self {
             IndexWriterWrapper::V5(writer) => writer.manual_merge(),
             IndexWriterWrapper::V7(writer) => writer.manual_merge(),
+            IndexWriterWrapper::NgramV7(_) => Err(unsupported_ngram_operation("manual merge")),
         }
     }
 
@@ -201,6 +232,7 @@ impl IndexWriterWrapper {
         match self {
             IndexWriterWrapper::V5(writer) => writer.commit(),
             IndexWriterWrapper::V7(writer) => writer.commit(),
+            IndexWriterWrapper::NgramV7(writer) => writer.commit(),
         }
     }
 
@@ -209,6 +241,7 @@ impl IndexWriterWrapper {
         match self {
             IndexWriterWrapper::V5(writer) => writer.finish(),
             IndexWriterWrapper::V7(writer) => writer.finish(),
+            IndexWriterWrapper::NgramV7(writer) => writer.finish(),
         }
     }
 }

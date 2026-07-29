@@ -9,7 +9,7 @@ use tantivy::schema::{
     Field, IndexRecordOption, NumericOptions, Schema, SchemaBuilder, TextFieldIndexing,
     TextOptions, FAST, STRING,
 };
-use tantivy::{doc, Index, IndexWriter, TantivyDocument};
+use tantivy::{doc, Document, Index, IndexWriter, TantivyDocument};
 
 use crate::convert_to_rust_slice;
 use crate::data_type::TantivyDataType;
@@ -99,6 +99,33 @@ pub struct IndexWriterWrapperImpl {
     pub(crate) id_field: Option<Field>,
     pub(crate) enable_user_specified_doc_id: bool,
     pub(crate) enable_background_merge: bool,
+}
+
+pub(crate) fn finish_index_writer<D: Document>(
+    mut index_writer: IndexWriter<D>,
+    index: Arc<Index>,
+    enable_background_merge: bool,
+) -> Result<()> {
+    index_writer.commit()?;
+
+    if !enable_background_merge {
+        // Build-mode writers use NoMergePolicy, so no background merge can
+        // race this explicit merge-all. Collapse auto-flushed segments into
+        // one searchable segment before returning the sealed index.
+        let segment_ids = index.searchable_segment_ids()?;
+        if segment_ids.len() > 1 {
+            index_writer.merge(&segment_ids).wait()?;
+        }
+    }
+    block_on(index_writer.garbage_collect_files())?;
+    index_writer.wait_merging_threads()?;
+
+    // TODO: remove this log when #45590 is solved
+    let metas = index.searchable_segment_metas()?;
+    let segment_ids: Vec<_> = metas.iter().map(|m| m.id().uuid_string()).collect();
+    info!("tantivy index_writer finish, segments: {:?}", segment_ids);
+
+    Ok(())
 }
 
 impl IndexWriterWrapperImpl {
@@ -289,29 +316,8 @@ impl IndexWriterWrapperImpl {
         Ok(())
     }
 
-    pub fn finish(mut self) -> Result<()> {
-        self.index_writer.commit()?;
-
-        if !self.enable_background_merge {
-            // Build-mode writers use NoMergePolicy (set in new()), so no
-            // background merge can race this explicit merge-all. Collapse the
-            // auto-flushed segments into a single one. Background-merge writers
-            // (e.g. growing segments) are left to their own policy and are not
-            // forced to a single segment here.
-            let segment_ids = self.index.searchable_segment_ids()?;
-            if segment_ids.len() > 1 {
-                self.index_writer.merge(&segment_ids).wait()?;
-            }
-        }
-        block_on(self.index_writer.garbage_collect_files())?;
-        self.index_writer.wait_merging_threads()?;
-
-        // TODO: remove this log when #45590 is solved
-        let metas = self.index.searchable_segment_metas()?;
-        let segment_ids: Vec<_> = metas.iter().map(|m| m.id().uuid_string()).collect();
-        info!("tantivy index_writer finish, segments: {:?}", segment_ids);
-
-        Ok(())
+    pub fn finish(self) -> Result<()> {
+        finish_index_writer(self.index_writer, self.index, self.enable_background_merge)
     }
 
     pub(crate) fn commit(&mut self) -> Result<()> {
