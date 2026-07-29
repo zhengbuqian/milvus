@@ -10,6 +10,12 @@ use crate::index_writer_v7::IndexWriterWrapperImpl;
 
 const NGRAM_TOKENIZER: &str = "ngram";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct NgramRow<'a> {
+    pub(crate) doc_id: u32,
+    pub(crate) value: Option<&'a str>,
+}
+
 fn build_ngram_schema(field_name: &str) -> (Schema, Field) {
     let mut schema_builder = Schema::builder();
 
@@ -63,6 +69,17 @@ impl IndexWriterWrapper {
             // Sealed-build only; merge-all runs in finish().
             enable_background_merge: false,
         }))
+    }
+
+    pub(crate) fn add_ngram_rows(&mut self, rows: &[NgramRow<'_>]) -> Result<()> {
+        for row in rows {
+            let doc_id = Some(i64::from(row.doc_id));
+            match row.value {
+                Some(value) => self.add(value, doc_id)?,
+                None => self.add_array(std::iter::empty::<&str>(), doc_id)?,
+            }
+        }
+        Ok(())
     }
 }
 

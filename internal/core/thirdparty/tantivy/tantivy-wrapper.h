@@ -8,6 +8,7 @@
 #include <map>
 #include <vector>
 #include <type_traits>
+#include <utility>
 
 #include "common/EasyAssert.h"
 #include "common/Json.h"
@@ -51,6 +52,13 @@ struct TantivyIndexWrapper {
     using IndexWriter = void*;
     using IndexReader = void*;
 
+    struct NgramRowView {
+        const uint8_t* value;
+        uintptr_t value_len;
+        int64_t doc_id;
+        bool has_value;
+    };
+
     NO_COPY_OR_ASSIGN(TantivyIndexWrapper);
 
     TantivyIndexWrapper() = default;
@@ -60,6 +68,10 @@ struct TantivyIndexWrapper {
         reader_ = other.reader_;
         finished_ = other.finished_;
         path_ = other.path_;
+        ngram_ptrs_ = std::move(other.ngram_ptrs_);
+        ngram_lens_ = std::move(other.ngram_lens_);
+        ngram_doc_ids_ = std::move(other.ngram_doc_ids_);
+        ngram_has_values_ = std::move(other.ngram_has_values_);
         other.writer_ = nullptr;
         other.reader_ = nullptr;
         other.finished_ = false;
@@ -74,6 +86,10 @@ struct TantivyIndexWrapper {
             reader_ = other.reader_;
             path_ = other.path_;
             finished_ = other.finished_;
+            ngram_ptrs_ = std::move(other.ngram_ptrs_);
+            ngram_lens_ = std::move(other.ngram_lens_);
+            ngram_doc_ids_ = std::move(other.ngram_doc_ids_);
+            ngram_has_values_ = std::move(other.ngram_has_values_);
             other.writer_ = nullptr;
             other.reader_ = nullptr;
             other.finished_ = false;
@@ -116,6 +132,41 @@ struct TantivyIndexWrapper {
                    res.result_->error);
         writer_ = res.result_->value.ptr._0;
         path_ = std::string(path);
+    }
+
+    void
+    add_ngram_batch(const NgramRowView* rows, uintptr_t len) {
+        assert(!finished_);
+        if (len == 0) {
+            return;
+        }
+
+        ngram_ptrs_.clear();
+        ngram_lens_.clear();
+        ngram_doc_ids_.clear();
+        ngram_has_values_.clear();
+        ngram_ptrs_.reserve(len);
+        ngram_lens_.reserve(len);
+        ngram_doc_ids_.reserve(len);
+        ngram_has_values_.reserve(len);
+
+        for (uintptr_t i = 0; i < len; ++i) {
+            ngram_ptrs_.push_back(rows[i].value);
+            ngram_lens_.push_back(rows[i].value_len);
+            ngram_doc_ids_.push_back(rows[i].doc_id);
+            ngram_has_values_.push_back(rows[i].has_value ? 1 : 0);
+        }
+
+        auto res = RustResultWrapper(
+            tantivy_index_add_ngram_batch(writer_,
+                                          ngram_ptrs_.data(),
+                                          ngram_lens_.data(),
+                                          ngram_doc_ids_.data(),
+                                          ngram_has_values_.data(),
+                                          len));
+        AssertInfo(res.result_->success,
+                   "failed to add ngram batch: {}",
+                   res.result_->error);
     }
 
     // load index. create index reader.
@@ -1586,5 +1637,9 @@ struct TantivyIndexWrapper {
     std::string path_;
     bool load_in_mmap_ = true;
     std::string analyzer_extra_info_ = "";
+    std::vector<const uint8_t*> ngram_ptrs_;
+    std::vector<uintptr_t> ngram_lens_;
+    std::vector<int64_t> ngram_doc_ids_;
+    std::vector<uint8_t> ngram_has_values_;
 };
 }  // namespace milvus::tantivy

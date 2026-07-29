@@ -121,6 +121,206 @@ CreateNgramIndexForCanHandleLiteral(uintptr_t min_gram = 2,
     return std::make_unique<index::NgramInvertedIndex>(ctx, ngram_params);
 }
 
+FieldDataPtr
+MakeNullableStringFieldData(const std::vector<std::string>& values,
+                            const std::vector<bool>& valid) {
+    auto field_data = storage::CreateFieldData(
+        DataType::VARCHAR, DataType::NONE, true, 1, values.size());
+    std::vector<uint8_t> valid_bytes((values.size() + 7) / 8, 0);
+    for (size_t i = 0; i < valid.size(); ++i) {
+        if (valid[i]) {
+            valid_bytes[i / 8] |= 1U << (i % 8);
+        }
+    }
+    field_data->FillFieldData(
+        values.data(), valid_bytes.data(), values.size(), 0);
+    return field_data;
+}
+
+std::unique_ptr<index::NgramInvertedIndex>
+CreateNgramIndexForBatchBuild(DataType data_type,
+                              bool nullable,
+                              const std::string& nested_path = "") {
+    auto file_manager_ctx = storage::FileManagerContext();
+    file_manager_ctx.fieldDataMeta.field_schema.set_data_type(
+        static_cast<proto::schema::DataType>(data_type));
+    file_manager_ctx.fieldDataMeta.field_schema.set_fieldid(100);
+    file_manager_ctx.fieldDataMeta.field_schema.set_nullable(nullable);
+    file_manager_ctx.fieldDataMeta.field_id = 100;
+
+    auto ngram_params = index::NgramParams{false, 2, 3};
+    if (data_type == DataType::JSON) {
+        return std::make_unique<index::NgramInvertedIndex>(
+            file_manager_ctx, ngram_params, nested_path);
+    }
+    return std::make_unique<index::NgramInvertedIndex>(file_manager_ctx,
+                                                       ngram_params);
+}
+
+TargetBitmap
+QueryNgramPostings(index::NgramInvertedIndex& ngram_index,
+                   const std::string& literal) {
+    TargetBitmap candidates(ngram_index.Count(), true);
+    ngram_index.ExecutePhase1(
+        literal, proto::plan::OpType::InnerMatch, candidates);
+    return candidates;
+}
+
+TEST(NgramIndex, BatchBuildPreservesNullableStringRowsAcrossChunks) {
+    auto batch0 =
+        MakeNullableStringFieldData({"alpha", "", "beta"}, {true, false, true});
+    auto batch1 = MakeNullableStringFieldData({"", "gamma", "", ""},
+                                              {false, true, true, false});
+
+    auto ngram_index = CreateNgramIndexForBatchBuild(DataType::VARCHAR, true);
+    ngram_index->BuildWithFieldData({batch0, batch1});
+    ngram_index->finish();
+    ngram_index->create_reader(milvus::index::SetBitsetSealed);
+
+    ASSERT_EQ(ngram_index->Count(), 7);
+    auto nulls = ngram_index->IsNull();
+    ASSERT_EQ(nulls.size(), 7);
+    EXPECT_FALSE(nulls[0]);
+    EXPECT_TRUE(nulls[1]);
+    EXPECT_FALSE(nulls[2]);
+    EXPECT_TRUE(nulls[3]);
+    EXPECT_FALSE(nulls[4]);
+    EXPECT_FALSE(nulls[5]);
+    EXPECT_TRUE(nulls[6]);
+
+    auto alpha = QueryNgramPostings(*ngram_index, "al");
+    EXPECT_EQ(alpha.count(), 1);
+    EXPECT_TRUE(alpha[0]);
+    auto beta = QueryNgramPostings(*ngram_index, "be");
+    EXPECT_EQ(beta.count(), 1);
+    EXPECT_TRUE(beta[2]);
+    auto gamma = QueryNgramPostings(*ngram_index, "ga");
+    EXPECT_EQ(gamma.count(), 1);
+    EXPECT_TRUE(gamma[4]);
+}
+
+TEST(NgramIndex, BatchWrapperAddsMixedRowsWithExplicitIds) {
+    auto path = (boost::filesystem::path(TestLocalPath) /
+                 boost::filesystem::unique_path("ngram-batch-%%%%-%%%%"))
+                    .string();
+    boost::filesystem::create_directories(path);
+
+    {
+        milvus::tantivy::TantivyIndexWrapper wrapper(
+            "field",
+            path.c_str(),
+            uintptr_t{2},
+            uintptr_t{3},
+            uintptr_t{1},
+            uintptr_t{15 * 1024 * 1024});
+        const std::string alpha = "alpha";
+        const std::string omega = "omega";
+        std::vector<milvus::tantivy::TantivyIndexWrapper::NgramRowView> rows = {
+            {reinterpret_cast<const uint8_t*>(alpha.data()),
+             alpha.size(),
+             0,
+             true},
+            {nullptr, 0, 1, false},
+            {nullptr, 0, 2, true},
+            {reinterpret_cast<const uint8_t*>(omega.data()),
+             omega.size(),
+             3,
+             true},
+        };
+
+        wrapper.add_ngram_batch(rows.data(), rows.size());
+        wrapper.finish();
+        wrapper.create_reader(milvus::index::SetBitsetSealed);
+
+        ASSERT_EQ(wrapper.count(), rows.size());
+        TargetBitmap alpha_hits(rows.size());
+        wrapper.ngram_term_posting_list("al", &alpha_hits);
+        EXPECT_EQ(alpha_hits.count(), 1);
+        EXPECT_TRUE(alpha_hits[0]);
+        TargetBitmap omega_hits(rows.size());
+        wrapper.ngram_term_posting_list("om", &omega_hits);
+        EXPECT_EQ(omega_hits.count(), 1);
+        EXPECT_TRUE(omega_hits[3]);
+    }
+
+    boost::filesystem::remove_all(path);
+}
+
+TEST(NgramIndex, BatchBuildPreservesRowsAcrossBatchBoundary) {
+    constexpr size_t kRowCount = 513;
+    std::vector<std::string> values(kRowCount, "filler");
+    std::vector<bool> valid(kRowCount, true);
+    values[510] = "before-boundary";
+    valid[511] = false;
+    values[512] = "after-boundary";
+
+    auto field_data = MakeNullableStringFieldData(values, valid);
+    auto ngram_index = CreateNgramIndexForBatchBuild(DataType::VARCHAR, true);
+    ngram_index->BuildWithFieldData({field_data});
+    ngram_index->finish();
+    ngram_index->create_reader(milvus::index::SetBitsetSealed);
+
+    ASSERT_EQ(ngram_index->Count(), kRowCount);
+    auto nulls = ngram_index->IsNull();
+    ASSERT_EQ(nulls.size(), kRowCount);
+    EXPECT_TRUE(nulls[511]);
+
+    auto before = QueryNgramPostings(*ngram_index, "before");
+    EXPECT_EQ(before.count(), 1);
+    EXPECT_TRUE(before[510]);
+    auto after = QueryNgramPostings(*ngram_index, "after");
+    EXPECT_EQ(after.count(), 1);
+    EXPECT_TRUE(after[512]);
+}
+
+TEST(NgramIndex, BatchBuildPreservesEveryJsonRowId) {
+    const std::vector<std::optional<std::string>> json_rows = {
+        R"({"a":"alpha"})",
+        std::nullopt,
+        R"({"a":null})",
+        R"({"b":"missing"})",
+        R"({"a":123})",
+        R"({"a":""})",
+        R"({"a":"omega"})",
+        R"({"b":"trailing"})",
+    };
+    arrow::BinaryBuilder builder;
+    for (const auto& row : json_rows) {
+        if (!row.has_value()) {
+            ASSERT_TRUE(builder.AppendNull().ok());
+        } else {
+            ASSERT_TRUE(
+                builder.Append(row->data(), static_cast<int32_t>(row->size()))
+                    .ok());
+        }
+    }
+    std::shared_ptr<arrow::Array> json_array;
+    ASSERT_TRUE(builder.Finish(&json_array).ok());
+    auto json_field =
+        std::make_shared<FieldData<milvus::Json>>(DataType::JSON, true);
+    json_field->FillFieldData(json_array);
+
+    auto ngram_index =
+        CreateNgramIndexForBatchBuild(DataType::JSON, true, "/a");
+    ngram_index->BuildWithFieldData({json_field});
+    ngram_index->finish();
+    ngram_index->create_reader(milvus::index::SetBitsetSealed);
+
+    ASSERT_EQ(ngram_index->Count(), json_rows.size());
+    auto nulls = ngram_index->IsNull();
+    ASSERT_EQ(nulls.size(), json_rows.size());
+    for (size_t i = 0; i < json_rows.size(); ++i) {
+        EXPECT_EQ(nulls[i], i == 1) << "row " << i;
+    }
+
+    auto alpha = QueryNgramPostings(*ngram_index, "al");
+    EXPECT_EQ(alpha.count(), 1);
+    EXPECT_TRUE(alpha[0]);
+    auto omega = QueryNgramPostings(*ngram_index, "om");
+    EXPECT_EQ(omega.count(), 1);
+    EXPECT_TRUE(omega[6]);
+}
+
 void
 test_ngram_with_data(const boost::container::vector<std::string>& data,
                      const std::string& literal,
