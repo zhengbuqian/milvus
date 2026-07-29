@@ -11,7 +11,7 @@ use crate::index_writer_v7::IndexWriterWrapperImpl;
 const NGRAM_TOKENIZER: &str = "ngram";
 // Tantivy's regular writer bounds the channel by messages, so keep each
 // submission small enough to preserve pipeline backpressure.
-pub(crate) const NGRAM_DOCUMENT_BATCH_SIZE: usize = 32;
+pub(crate) const NGRAM_DOCUMENT_BATCH_SIZE: usize = 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NgramRow<'a> {
@@ -156,11 +156,23 @@ mod tests {
 
     #[test]
     fn ngram_batch_grouping_handles_boundaries() {
+        let batch_size = NGRAM_DOCUMENT_BATCH_SIZE;
+        let next_batch_doc_id = 100 + batch_size as u32;
+
         assert_eq!(grouped_batches(&rows(0, 100)), Vec::new());
         assert_eq!(grouped_batches(&rows(1, 100)), vec![(100, 1)]);
-        assert_eq!(grouped_batches(&rows(31, 100)), vec![(100, 31)]);
-        assert_eq!(grouped_batches(&rows(32, 100)), vec![(100, 32)]);
-        assert_eq!(grouped_batches(&rows(33, 100)), vec![(100, 32), (132, 1)]);
+        assert_eq!(
+            grouped_batches(&rows(batch_size - 1, 100)),
+            vec![(100, batch_size - 1)]
+        );
+        assert_eq!(
+            grouped_batches(&rows(batch_size, 100)),
+            vec![(100, batch_size)]
+        );
+        assert_eq!(
+            grouped_batches(&rows(batch_size + 1, 100)),
+            vec![(100, batch_size), (next_batch_doc_id, 1)]
+        );
     }
 
     #[test]
