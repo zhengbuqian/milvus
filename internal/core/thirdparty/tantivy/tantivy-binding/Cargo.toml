@@ -23,7 +23,7 @@ panic = "unwind"
 overflow-checks = false
 
 [dependencies]
-tantivy = { git = "https://github.com/zilliztech/tantivy.git", rev = "804b0b4fbc1a7abc2f20732edad7865c40f8e771" }
+tantivy = { git = "https://github.com/zilliztech/tantivy.git", rev = "16abc01f7f8d41745820f169908ad27b01d1ad22" }
 tantivy-5 = { package = "tantivy", git = "https://github.com/zilliztech/tantivy", tag = "0.21.1-fix4" }
 lindera = "0.42.4"
 fs2 = "0.4"

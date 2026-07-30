@@ -1,19 +1,21 @@
-use std::sync::Arc;
+use std::{mem::size_of, sync::Arc};
 
 use log::info;
 use tantivy::schema::{Field, IndexRecordOption, Schema, TextFieldIndexing, TextOptions};
 use tantivy::tokenizer::{NgramTokenizer, TextAnalyzer};
-use tantivy::{Index, IndexSettings, SingleSegmentIndexWriter};
+use tantivy::{Index, IndexSettings, IndexWriter, SingleSegmentIndexWriter};
 
 use crate::error::{Result, TantivyBindingError};
 use crate::index_ngram_document::{NgramBatchData, NgramDocument};
 use crate::index_writer::IndexWriterWrapper;
+use crate::index_writer_v7::index_writer::finish_index_writer;
 
 const NGRAM_TOKENIZER: &str = "ngram";
-// Reference-only batch size used to compare the direct writer with the old
-// regular-writer pipeline in tests.
+const REGULAR_NGRAM_DOCUMENT_BATCH_SIZE: usize = 16;
 #[cfg(test)]
-const REFERENCE_NGRAM_DOCUMENT_BATCH_SIZE: usize = 16;
+const REFERENCE_NGRAM_DOCUMENT_BATCH_SIZE: usize = REGULAR_NGRAM_DOCUMENT_BATCH_SIZE;
+const NGRAM_MEMORY_BASE_BYTES: u64 = 4 * 1024 * 1024;
+const NGRAM_MEMORY_MIN_RESERVE_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NgramRow<'a> {
@@ -21,22 +23,260 @@ pub(crate) struct NgramRow<'a> {
     pub(crate) value: Option<&'a str>,
 }
 
-pub(crate) struct NgramIndexWriterWrapperImpl {
-    pub(crate) field: Field,
-    pub(crate) index_writer: SingleSegmentIndexWriter<NgramDocument>,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub(crate) enum NgramWriteStatus {
+    Applied = 0,
+    ReplayRequiredBeforeBatch = 1,
+    ReplayRequiredAfterBatch = 2,
+    ReplayRequiredBeforeFinish = 3,
 }
 
-impl NgramIndexWriterWrapperImpl {
-    pub(crate) fn finish(self) -> Result<()> {
-        let index = self.index_writer.finalize()?;
-        let metas = index.searchable_segment_metas()?;
-        let segment_ids: Vec<_> = metas.iter().map(|meta| meta.id().uuid_string()).collect();
-        info!("tantivy index_writer finish, segments: {:?}", segment_ids);
-        Ok(())
+impl NgramWriteStatus {
+    pub(crate) fn requires_replay(self) -> bool {
+        self != Self::Applied
     }
 }
 
-#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NgramWriterMode {
+    Regular,
+    Direct { soft_limit_bytes: u64 },
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct NgramMemorySummary {
+    pub(crate) logical_rows: u64,
+    pub(crate) occurrence_upper_bound: u64,
+    pub(crate) term_bytes_upper_bound: u64,
+}
+
+fn saturating_u128_to_u64(value: u128) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
+}
+
+fn square_sum(value: u128) -> u128 {
+    value * (value + 1) * (2 * value + 1) / 6
+}
+
+fn ngram_value_memory_summary(value_len: usize, min_gram: usize, max_gram: usize) -> (u64, u64) {
+    let value_len = value_len as u128;
+    let min_gram = min_gram as u128;
+    let max_gram = (max_gram as u128).min(value_len);
+    if min_gram > max_gram {
+        return (0, 0);
+    }
+
+    let gram_width_count = max_gram - min_gram + 1;
+    let gram_width_sum = gram_width_count * (min_gram + max_gram) / 2;
+    let gram_width_square_sum = square_sum(max_gram) - square_sum(min_gram.saturating_sub(1));
+    let occurrence_upper_bound = gram_width_count * (value_len + 1) - gram_width_sum;
+    let term_bytes_upper_bound = (value_len + 1) * gram_width_sum - gram_width_square_sum;
+    (
+        saturating_u128_to_u64(occurrence_upper_bound),
+        saturating_u128_to_u64(term_bytes_upper_bound),
+    )
+}
+
+fn ngram_tokenizer_scratch_upper_bound(value_len: usize, max_gram: usize) -> u64 {
+    let value_len = value_len as u128;
+    let max_gram = max_gram as u128;
+    let frontier_count = (value_len + 1).min(max_gram + 1);
+    // CodepointFrontiers has no size hint, so Vec grows geometrically while
+    // collecting it. Two times the final length, with Vec's small-allocation
+    // floor, is a conservative bound for the live capacity used here.
+    let frontier_capacity = (frontier_count * 2).max(4);
+    let frontier_bytes = frontier_capacity * size_of::<usize>() as u128;
+    // Token::text retains the largest emitted token. A UTF-8 codepoint uses at
+    // most four bytes, and String growth can temporarily reserve up to roughly
+    // twice the requested token length.
+    let max_token_bytes = value_len.min(max_gram.saturating_mul(4));
+    let token_capacity = if max_token_bytes == 0 {
+        0
+    } else {
+        (max_token_bytes * 2).max(8)
+    };
+    saturating_u128_to_u64(frontier_bytes + token_capacity)
+}
+
+fn ngram_rows_tokenizer_scratch_upper_bound(rows: &[NgramRow<'_>], max_gram: usize) -> u64 {
+    rows.iter()
+        .filter_map(|row| row.value)
+        .map(|value| ngram_tokenizer_scratch_upper_bound(value.len(), max_gram))
+        .max()
+        .unwrap_or(0)
+}
+
+impl NgramMemorySummary {
+    pub(crate) fn from_rows(rows: &[NgramRow<'_>], min_gram: usize, max_gram: usize) -> Self {
+        let mut summary = Self::default();
+        summary.add_rows(rows, min_gram, max_gram);
+        summary
+    }
+
+    pub(crate) fn add_rows(&mut self, rows: &[NgramRow<'_>], min_gram: usize, max_gram: usize) {
+        self.logical_rows = self.logical_rows.saturating_add(rows.len() as u64);
+        for row in rows {
+            let Some(value) = row.value else {
+                continue;
+            };
+            let (occurrences, term_bytes) =
+                ngram_value_memory_summary(value.len(), min_gram, max_gram);
+            self.occurrence_upper_bound = self.occurrence_upper_bound.saturating_add(occurrences);
+            self.term_bytes_upper_bound = self.term_bytes_upper_bound.saturating_add(term_bytes);
+        }
+    }
+
+    pub(crate) fn estimated_working_memory_bytes(self) -> u64 {
+        let estimated = u128::from(NGRAM_MEMORY_BASE_BYTES)
+            + u128::from(self.logical_rows) * 16
+            + u128::from(self.term_bytes_upper_bound)
+            + u128::from(self.occurrence_upper_bound) * 128;
+        saturating_u128_to_u64(estimated)
+    }
+
+    pub(crate) fn required_memory_bytes(
+        self,
+        observed_peak_bytes: u64,
+        batch_owned_bytes: u64,
+        tokenizer_scratch_bytes: u64,
+        soft_limit_bytes: u64,
+    ) -> u64 {
+        let persistent = self
+            .estimated_working_memory_bytes()
+            .max(observed_peak_bytes);
+        let transient = batch_owned_bytes.saturating_add(tokenizer_scratch_bytes);
+        let reserve = NGRAM_MEMORY_MIN_RESERVE_BYTES.max(soft_limit_bytes / 4);
+        persistent.saturating_add(transient).saturating_add(reserve)
+    }
+}
+
+pub(crate) fn ngram_required_memory_bytes(
+    logical_rows: u64,
+    occurrence_upper_bound: u64,
+    term_bytes_upper_bound: u64,
+    tokenizer_scratch_bytes: u64,
+    observed_peak_bytes: u64,
+    soft_limit_bytes: u64,
+) -> u64 {
+    NgramMemorySummary {
+        logical_rows,
+        occurrence_upper_bound,
+        term_bytes_upper_bound,
+    }
+    .required_memory_bytes(
+        observed_peak_bytes,
+        0,
+        tokenizer_scratch_bytes,
+        soft_limit_bytes,
+    )
+}
+
+pub(crate) enum NgramWriterBackend {
+    Regular {
+        index_writer: IndexWriter<NgramDocument>,
+        index: Arc<Index>,
+    },
+    Direct {
+        index_writer: SingleSegmentIndexWriter<NgramDocument>,
+        soft_limit_bytes: u64,
+        memory_summary: NgramMemorySummary,
+        replay_required: bool,
+    },
+}
+
+pub(crate) struct NgramIndexWriterWrapperImpl {
+    pub(crate) field: Field,
+    pub(crate) backend: NgramWriterBackend,
+    min_gram: usize,
+    max_gram: usize,
+    last_doc_id: Option<u32>,
+}
+
+impl NgramIndexWriterWrapperImpl {
+    fn validate_doc_ids(&self, rows: &[NgramRow<'_>]) -> Result<()> {
+        let mut previous_doc_id = self.last_doc_id;
+        for row in rows {
+            if let Some(previous) = previous_doc_id {
+                if row.doc_id <= previous {
+                    return Err(TantivyBindingError::InvalidArgument(format!(
+                        "ngram document IDs must be strictly increasing across batches: {} after {}",
+                        row.doc_id, previous
+                    )));
+                }
+            }
+            previous_doc_id = Some(row.doc_id);
+        }
+        Ok(())
+    }
+
+    fn direct_memory_status(
+        &mut self,
+        projected_summary: NgramMemorySummary,
+        batch_owned_bytes: u64,
+        tokenizer_scratch_bytes: u64,
+        replay_status: NgramWriteStatus,
+    ) -> NgramWriteStatus {
+        let NgramWriterBackend::Direct {
+            index_writer,
+            soft_limit_bytes,
+            replay_required,
+            ..
+        } = &mut self.backend
+        else {
+            return NgramWriteStatus::Applied;
+        };
+        if *replay_required {
+            return replay_status;
+        }
+        let observed_peak =
+            u64::try_from(index_writer.estimated_finalize_base_mem_usage()).unwrap_or(u64::MAX);
+        let required = projected_summary.required_memory_bytes(
+            observed_peak,
+            batch_owned_bytes,
+            tokenizer_scratch_bytes,
+            *soft_limit_bytes,
+        );
+        if required > *soft_limit_bytes {
+            *replay_required = true;
+            replay_status
+        } else {
+            NgramWriteStatus::Applied
+        }
+    }
+
+    pub(crate) fn check_memory_before_finish(&mut self) -> Result<NgramWriteStatus> {
+        let summary = match &self.backend {
+            NgramWriterBackend::Regular { .. } => return Ok(NgramWriteStatus::Applied),
+            NgramWriterBackend::Direct { memory_summary, .. } => *memory_summary,
+        };
+        Ok(self.direct_memory_status(summary, 0, 0, NgramWriteStatus::ReplayRequiredBeforeFinish))
+    }
+
+    pub(crate) fn finish(mut self) -> Result<()> {
+        if self.check_memory_before_finish()?.requires_replay() {
+            return Err(TantivyBindingError::InternalError(
+                "NGRAM direct writer must be replayed with the regular writer before finish"
+                    .to_string(),
+            ));
+        }
+        match self.backend {
+            NgramWriterBackend::Regular {
+                index_writer,
+                index,
+            } => finish_index_writer(index_writer, index, false),
+            NgramWriterBackend::Direct { index_writer, .. } => {
+                let index = index_writer.finalize()?;
+                let metas = index.searchable_segment_metas()?;
+                let segment_ids: Vec<_> =
+                    metas.iter().map(|meta| meta.id().uuid_string()).collect();
+                info!("tantivy index_writer finish, segments: {:?}", segment_ids);
+                Ok(())
+            }
+        }
+    }
+}
+
 fn for_each_contiguous_ngram_batch<'rows, 'value, E>(
     rows: &'rows [NgramRow<'value>],
     batch_size: usize,
@@ -83,16 +323,34 @@ impl IndexWriterWrapper {
         path: &str,
         min_gram: usize,
         max_gram: usize,
-        _num_threads: usize,
+        num_threads: usize,
         overall_memory_budget_in_bytes: usize,
     ) -> Result<IndexWriterWrapper> {
-        let tokenizer = TextAnalyzer::builder(NgramTokenizer::new(
-            min_gram as usize,
-            max_gram as usize,
-            false,
-        )?)
-        .dynamic()
-        .build();
+        Self::create_ngram_writer_with_mode(
+            field_name,
+            path,
+            min_gram,
+            max_gram,
+            num_threads,
+            overall_memory_budget_in_bytes,
+            NgramWriterMode::Direct {
+                soft_limit_bytes: u64::MAX,
+            },
+        )
+    }
+
+    pub(crate) fn create_ngram_writer_with_mode(
+        field_name: &str,
+        path: &str,
+        min_gram: usize,
+        max_gram: usize,
+        num_threads: usize,
+        overall_memory_budget_in_bytes: usize,
+        mode: NgramWriterMode,
+    ) -> Result<IndexWriterWrapper> {
+        let tokenizer = TextAnalyzer::builder(NgramTokenizer::new(min_gram, max_gram, false)?)
+            .dynamic()
+            .build();
 
         let (schema, field) = build_ngram_schema(field_name);
 
@@ -105,20 +363,43 @@ impl IndexWriterWrapper {
             .settings(settings)
             .create_in_dir(path)?;
         index.tokenizers().register(NGRAM_TOKENIZER, tokenizer);
-        let index_writer = SingleSegmentIndexWriter::new(index, overall_memory_budget_in_bytes)?;
+        let backend = match mode {
+            NgramWriterMode::Regular => {
+                let index_writer: IndexWriter<NgramDocument> =
+                    index.writer_with_num_threads(num_threads, overall_memory_budget_in_bytes)?;
+                index_writer.set_merge_policy(Box::new(tantivy::merge_policy::NoMergePolicy));
+                NgramWriterBackend::Regular {
+                    index_writer,
+                    index: Arc::new(index),
+                }
+            }
+            NgramWriterMode::Direct { soft_limit_bytes } => NgramWriterBackend::Direct {
+                index_writer: SingleSegmentIndexWriter::new(index, overall_memory_budget_in_bytes)?,
+                soft_limit_bytes,
+                memory_summary: NgramMemorySummary::default(),
+                replay_required: false,
+            },
+        };
 
         Ok(IndexWriterWrapper::NgramV7(NgramIndexWriterWrapperImpl {
             field,
-            index_writer,
+            backend,
+            min_gram,
+            max_gram,
+            last_doc_id: None,
         }))
     }
 
-    pub(crate) fn add_ngram_rows(&mut self, rows: &[NgramRow<'_>]) -> Result<()> {
+    pub(crate) fn add_ngram_rows(&mut self, rows: &[NgramRow<'_>]) -> Result<NgramWriteStatus> {
         let IndexWriterWrapper::NgramV7(writer) = self else {
             return Err(TantivyBindingError::InternalError(
                 "ngram batch submission requires an NGRAM V7 writer".to_string(),
             ));
         };
+        if rows.is_empty() {
+            return Ok(NgramWriteStatus::Applied);
+        }
+        writer.validate_doc_ids(rows)?;
         let field = writer.field;
 
         let total_bytes = rows.iter().try_fold(0usize, |total, row| {
@@ -153,31 +434,110 @@ impl IndexWriterWrapper {
             }
         }
 
-        let mut text = String::with_capacity(total_bytes);
-        for row in rows {
-            if let Some(value) = row.value {
-                text.push_str(value);
+        if let NgramWriterBackend::Regular { index_writer, .. } = &mut writer.backend {
+            for_each_contiguous_ngram_batch(
+                rows,
+                REGULAR_NGRAM_DOCUMENT_BATCH_SIZE,
+                |first_doc_id, batch| {
+                    let batch_total_bytes =
+                        batch.iter().map(|row| row.value.map_or(0, str::len)).sum();
+                    let mut batch_text = String::with_capacity(batch_total_bytes);
+                    for row in batch {
+                        if let Some(value) = row.value {
+                            batch_text.push_str(value);
+                        }
+                    }
+                    let batch_data = Arc::new(NgramBatchData::new(field, batch_text)?);
+                    let mut start = 0u32;
+                    let documents = batch.iter().map(move |row| match row.value {
+                        Some(value) => {
+                            let len = value.len() as u32;
+                            let document =
+                                NgramDocument::from_validated_range(batch_data.clone(), start, len);
+                            start += len;
+                            document
+                        }
+                        None => NgramDocument::absent(batch_data.clone()),
+                    });
+                    index_writer
+                        .add_documents_with_doc_id(first_doc_id, documents)
+                        .map(|_| ())
+                        .map_err(TantivyBindingError::from)
+                },
+            )?;
+        } else {
+            let memory_summary = match &writer.backend {
+                NgramWriterBackend::Direct { memory_summary, .. } => *memory_summary,
+                NgramWriterBackend::Regular { .. } => unreachable!(),
+            };
+            let mut projected_summary = memory_summary;
+            projected_summary.add_rows(rows, writer.min_gram, writer.max_gram);
+            let tokenizer_scratch_bytes =
+                ngram_rows_tokenizer_scratch_upper_bound(rows, writer.max_gram);
+            let pre_status = writer.direct_memory_status(
+                projected_summary,
+                total_bytes as u64,
+                tokenizer_scratch_bytes,
+                NgramWriteStatus::ReplayRequiredBeforeBatch,
+            );
+            if pre_status.requires_replay() {
+                return Ok(pre_status);
+            }
+
+            let mut text = String::with_capacity(total_bytes);
+            for row in rows {
+                if let Some(value) = row.value {
+                    text.push_str(value);
+                }
+            }
+            let batch_data = Arc::new(NgramBatchData::new(field, text)?);
+            let mut start = 0u32;
+            let documents = rows.iter().map(move |row| {
+                let document = match row.value {
+                    Some(value) => {
+                        let len = value.len() as u32;
+                        let document =
+                            NgramDocument::from_validated_range(batch_data.clone(), start, len);
+                        start += len;
+                        document
+                    }
+                    None => NgramDocument::absent(batch_data.clone()),
+                };
+                (row.doc_id, document)
+            });
+            let NgramWriterBackend::Direct {
+                index_writer,
+                memory_summary,
+                ..
+            } = &mut writer.backend
+            else {
+                unreachable!();
+            };
+            index_writer.add_documents_with_doc_ids(documents)?;
+            *memory_summary = projected_summary;
+            let post_status = writer.direct_memory_status(
+                projected_summary,
+                0,
+                0,
+                NgramWriteStatus::ReplayRequiredAfterBatch,
+            );
+            if post_status.requires_replay() {
+                writer.last_doc_id = rows.last().map(|row| row.doc_id);
+                return Ok(post_status);
             }
         }
-        let batch_data = Arc::new(NgramBatchData::new(field, text)?);
 
-        let mut start = 0u32;
-        let documents = rows.iter().map(move |row| {
-            let document = match row.value {
-                Some(value) => {
-                    let len = value.len() as u32;
-                    let document =
-                        NgramDocument::from_validated_range(batch_data.clone(), start, len);
-                    start += len;
-                    document
-                }
-                None => NgramDocument::absent(batch_data.clone()),
-            };
-            (row.doc_id, document)
-        });
-        writer.index_writer.add_documents_with_doc_ids(documents)?;
+        writer.last_doc_id = rows.last().map(|row| row.doc_id);
+        Ok(NgramWriteStatus::Applied)
+    }
 
-        Ok(())
+    pub(crate) fn check_ngram_memory(&mut self) -> Result<NgramWriteStatus> {
+        let IndexWriterWrapper::NgramV7(writer) = self else {
+            return Err(TantivyBindingError::InternalError(
+                "ngram memory check requires an NGRAM V7 writer".to_string(),
+            ));
+        };
+        writer.check_memory_before_finish()
     }
 }
 
@@ -197,8 +557,9 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        build_ngram_schema, for_each_contiguous_ngram_batch, NgramRow, NGRAM_TOKENIZER,
-        REFERENCE_NGRAM_DOCUMENT_BATCH_SIZE,
+        build_ngram_schema, for_each_contiguous_ngram_batch, NgramMemorySummary, NgramRow,
+        NgramWriteStatus, NgramWriterBackend, NgramWriterMode, NGRAM_MEMORY_MIN_RESERVE_BYTES,
+        NGRAM_TOKENIZER, REFERENCE_NGRAM_DOCUMENT_BATCH_SIZE,
     };
     use crate::{
         error::{Result, TantivyBindingError},
@@ -218,6 +579,196 @@ mod tests {
     fn open_finished_ngram_reader(path: &Path) -> IndexReaderWrapper {
         let index = Index::open_in_dir(path).unwrap();
         IndexReaderWrapper::from_index(Arc::new(index), set_bitset).unwrap()
+    }
+
+    #[test]
+    fn ngram_memory_summary_counts_occurrences_and_term_bytes() {
+        let value = "x".repeat(64);
+        let rows = [
+            NgramRow {
+                doc_id: 0,
+                value: Some(value.as_str()),
+            },
+            NgramRow {
+                doc_id: 1,
+                value: None,
+            },
+        ];
+
+        let summary = NgramMemorySummary::from_rows(&rows, 3, 4);
+
+        assert_eq!(summary.logical_rows, 2);
+        assert_eq!(summary.occurrence_upper_bound, 62 + 61);
+        assert_eq!(summary.term_bytes_upper_bound, 62 * 3 + 61 * 4);
+    }
+
+    #[test]
+    fn direct_ngram_writer_requests_replay_before_exceeding_soft_limit() {
+        let dir = TempDir::new().unwrap();
+        let mut writer = IndexWriterWrapper::create_ngram_writer_with_mode(
+            "test",
+            dir.path().to_str().unwrap(),
+            3,
+            4,
+            1,
+            15_000_000,
+            NgramWriterMode::Direct {
+                soft_limit_bytes: 1,
+            },
+        )
+        .unwrap();
+        let value = "x".repeat(64);
+
+        let status = writer
+            .add_ngram_rows(&[NgramRow {
+                doc_id: 0,
+                value: Some(value.as_str()),
+            }])
+            .unwrap();
+
+        assert_eq!(status, NgramWriteStatus::ReplayRequiredBeforeBatch);
+        assert!(writer.finish().is_err());
+        let index = Index::open_in_dir(dir.path()).unwrap();
+        assert!(index.load_metas().unwrap().segments.is_empty());
+    }
+
+    #[test]
+    fn direct_ngram_writer_accounts_for_zero_token_tokenizer_scratch() {
+        let dir = TempDir::new().unwrap();
+        let mut writer = IndexWriterWrapper::create_ngram_writer_with_mode(
+            "test",
+            dir.path().to_str().unwrap(),
+            65_537,
+            65_537,
+            1,
+            15_000_000,
+            NgramWriterMode::Direct {
+                soft_limit_bytes: u64::MAX,
+            },
+        )
+        .unwrap();
+        let value = "x".repeat(65_536);
+        let rows = [NgramRow {
+            doc_id: 0,
+            value: Some(value.as_str()),
+        }];
+        let projected_summary = NgramMemorySummary::from_rows(&rows, 65_537, 65_537);
+        assert_eq!(projected_summary.occurrence_upper_bound, 0);
+        assert_eq!(projected_summary.term_bytes_upper_bound, 0);
+
+        let IndexWriterWrapper::NgramV7(ngram_writer) = &mut writer else {
+            panic!("NGRAM writer must use the V7 implementation");
+        };
+        let NgramWriterBackend::Direct {
+            index_writer,
+            soft_limit_bytes,
+            ..
+        } = &mut ngram_writer.backend
+        else {
+            panic!("explicit direct mode must use the direct backend");
+        };
+        let observed_peak =
+            u64::try_from(index_writer.estimated_finalize_base_mem_usage()).unwrap_or(u64::MAX);
+        let without_tokenizer_scratch = projected_summary
+            .estimated_working_memory_bytes()
+            .max(observed_peak.saturating_add(value.len() as u64));
+        let tokenizer_scratch = ((value.len() as u64 + 1)
+            .saturating_mul(2 * std::mem::size_of::<usize>() as u64))
+        .saturating_add(value.len() as u64);
+        *soft_limit_bytes = without_tokenizer_scratch
+            .saturating_add(NGRAM_MEMORY_MIN_RESERVE_BYTES)
+            .saturating_add(tokenizer_scratch / 2);
+        assert!(*soft_limit_bytes < 256 * 1024 * 1024);
+
+        let status = writer.add_ngram_rows(&rows).unwrap();
+
+        assert_eq!(status, NgramWriteStatus::ReplayRequiredBeforeBatch);
+    }
+
+    #[test]
+    fn direct_ngram_writer_requests_replay_before_finish_after_limit_is_lowered() {
+        let dir = TempDir::new().unwrap();
+        let mut writer = IndexWriterWrapper::create_ngram_writer_with_mode(
+            "test",
+            dir.path().to_str().unwrap(),
+            3,
+            4,
+            1,
+            15_000_000,
+            NgramWriterMode::Direct {
+                soft_limit_bytes: u64::MAX,
+            },
+        )
+        .unwrap();
+        let value = "unique-ngram-value".repeat(8);
+
+        let add_status = writer
+            .add_ngram_rows(&[NgramRow {
+                doc_id: 7,
+                value: Some(value.as_str()),
+            }])
+            .unwrap();
+        assert_eq!(add_status, NgramWriteStatus::Applied);
+
+        let IndexWriterWrapper::NgramV7(writer) = &mut writer else {
+            panic!("NGRAM writer must use the V7 implementation");
+        };
+        {
+            let NgramWriterBackend::Direct {
+                index_writer,
+                soft_limit_bytes,
+                replay_required,
+                ..
+            } = &mut writer.backend
+            else {
+                panic!("explicit direct mode must use the direct backend");
+            };
+            let finalize_estimate =
+                u64::try_from(index_writer.estimated_finalize_base_mem_usage()).unwrap_or(u64::MAX);
+            assert!(finalize_estimate > 1);
+            assert!(!*replay_required);
+            *soft_limit_bytes = finalize_estimate - 1;
+        }
+
+        let finish_status = writer.check_memory_before_finish().unwrap();
+
+        assert_eq!(finish_status, NgramWriteStatus::ReplayRequiredBeforeFinish);
+        let NgramWriterBackend::Direct {
+            replay_required, ..
+        } = &writer.backend
+        else {
+            panic!("explicit direct mode must use the direct backend");
+        };
+        assert!(*replay_required);
+    }
+
+    #[test]
+    fn regular_ngram_writer_ignores_direct_soft_limit() {
+        let dir = TempDir::new().unwrap();
+        let mut writer = IndexWriterWrapper::create_ngram_writer_with_mode(
+            "test",
+            dir.path().to_str().unwrap(),
+            3,
+            4,
+            1,
+            15_000_000,
+            NgramWriterMode::Regular,
+        )
+        .unwrap();
+        let value = "x".repeat(64);
+
+        let status = writer
+            .add_ngram_rows(&[NgramRow {
+                doc_id: 3,
+                value: Some(value.as_str()),
+            }])
+            .unwrap();
+
+        assert_eq!(status, NgramWriteStatus::Applied);
+        writer.finish().unwrap();
+        let snapshot = index_snapshot(dir.path());
+        assert_eq!(snapshot.segment_count, 1);
+        assert_eq!(snapshot.max_docs, vec![4]);
     }
 
     #[test]
@@ -480,8 +1031,10 @@ mod tests {
             .into_iter()
             .map(|(start, len)| NgramDocument::present(batch.clone(), start, len).unwrap());
 
-        writer
-            .index_writer
+        let NgramWriterBackend::Direct { index_writer, .. } = &mut writer.backend else {
+            panic!("default NGRAM writer must use the direct backend");
+        };
+        index_writer
             .add_documents_with_doc_ids([4, 5, 6].into_iter().zip(documents))
             .unwrap();
         writer.finish().unwrap();

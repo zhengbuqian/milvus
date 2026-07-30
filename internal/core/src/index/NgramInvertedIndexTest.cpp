@@ -23,7 +23,9 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -140,7 +142,9 @@ MakeNullableStringFieldData(const std::vector<std::string>& values,
 std::unique_ptr<index::NgramInvertedIndex>
 CreateNgramIndexForBatchBuild(DataType data_type,
                               bool nullable,
-                              const std::string& nested_path = "") {
+                              const std::string& nested_path = "",
+                              std::optional<index::NgramParams> params =
+                                  std::nullopt) {
     auto file_manager_ctx = storage::FileManagerContext();
     file_manager_ctx.fieldDataMeta.field_schema.set_data_type(
         static_cast<proto::schema::DataType>(data_type));
@@ -148,13 +152,192 @@ CreateNgramIndexForBatchBuild(DataType data_type,
     file_manager_ctx.fieldDataMeta.field_schema.set_nullable(nullable);
     file_manager_ctx.fieldDataMeta.field_id = 100;
 
-    auto ngram_params = index::NgramParams{false, 2, 3};
+    auto ngram_params =
+        params.value_or(index::NgramParams{false, 2, 3});
     if (data_type == DataType::JSON) {
         return std::make_unique<index::NgramInvertedIndex>(
             file_manager_ctx, ngram_params, nested_path);
     }
     return std::make_unique<index::NgramInvertedIndex>(file_manager_ctx,
                                                        ngram_params);
+}
+
+uint64_t
+ReplayLimitAfterBatches(size_t applied_batches) {
+    constexpr uint64_t kRowsPerBatch = 512;
+    constexpr uint64_t kBytesPerValue = 64;
+    constexpr uint64_t kOccurrencesPerValue = 62 + 61;
+    constexpr uint64_t kTermBytesPerValue = 62 * 3 + 61 * 4;
+    constexpr uint64_t kPerRowEstimate =
+        16 + kOccurrencesPerValue * 128 + kTermBytesPerValue;
+    constexpr uint64_t kBase = 4 * 1024 * 1024;
+    constexpr uint64_t kReserve = 64 * 1024 * 1024;
+    const uint64_t batch_growth = kRowsPerBatch * kPerRowEstimate;
+    return kReserve + kBase + applied_batches * batch_growth +
+           batch_growth / 2;
+}
+
+std::vector<std::string>
+MakeReplayRows(size_t count) {
+    std::vector<std::string> values;
+    values.reserve(count);
+    for (size_t row = 0; row < count; ++row) {
+        auto prefix = fmt::format("row-{:08x}-", row);
+        std::string value;
+        value.reserve(64);
+        while (value.size() < 64) {
+            value.append(prefix);
+        }
+        value.resize(64);
+        values.push_back(std::move(value));
+    }
+    auto& marker = values.at(777);
+    marker.assign("unique-replay-marker");
+    marker.resize(64, 'z');
+    return values;
+}
+
+FieldDataPtr
+MakeJsonStringFieldData(const std::vector<std::string>& values) {
+    arrow::BinaryBuilder builder;
+    for (const auto& value : values) {
+        const auto status = builder.Append(
+            value.data(), static_cast<int32_t>(value.size()));
+        if (!status.ok()) {
+            throw std::runtime_error(status.ToString());
+        }
+    }
+    std::shared_ptr<arrow::Array> json_array;
+    const auto status = builder.Finish(&json_array);
+    if (!status.ok()) {
+        throw std::runtime_error(status.ToString());
+    }
+    auto field_data =
+        std::make_shared<FieldData<milvus::Json>>(DataType::JSON, false);
+    field_data->FillFieldData(json_array);
+    return field_data;
+}
+
+constexpr size_t kHighDistinctRowBytes = 64;
+constexpr uint64_t kHighDistinctBaseSeed = 0x4e4752414d5f4d45ULL;
+constexpr uint64_t kSplitMixGamma = 0x9e3779b97f4a7c15ULL;
+constexpr std::string_view kHighDistinctAlphabet =
+    "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+constexpr std::string_view kHighDistinctMarker =
+    "unique-high-distinct-marker-q7v9";
+
+uint64_t
+NextSplitMix64(uint64_t& state) {
+    state += kSplitMixGamma;
+    auto value = state;
+    value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
+    return value ^ (value >> 31);
+}
+
+std::vector<std::string>
+MakeHighDistinctRows(size_t count) {
+    std::vector<std::string> values;
+    values.reserve(count);
+    for (size_t row = 0; row < count; ++row) {
+        uint64_t state =
+            kHighDistinctBaseSeed ^ static_cast<uint64_t>(row) * kSplitMixGamma;
+        std::string value;
+        value.reserve(kHighDistinctRowBytes);
+        for (size_t offset = 0; offset < kHighDistinctRowBytes; ++offset) {
+            value.push_back(kHighDistinctAlphabet[
+                NextSplitMix64(state) % kHighDistinctAlphabet.size()]);
+        }
+        values.push_back(std::move(value));
+    }
+    auto& marker = values.at(777);
+    marker.assign(kHighDistinctMarker);
+    marker.resize(kHighDistinctRowBytes, '-');
+    return values;
+}
+
+const char*
+NgramBackendName(index::NgramBuildBackend backend) {
+    return backend == index::NgramBuildBackend::Direct ? "direct" : "regular";
+}
+
+TargetBitmap
+QueryNgramPostings(index::NgramInvertedIndex& ngram_index,
+                   const std::string& literal);
+
+void
+RunHighDistinctBenchmark(size_t row_count,
+                         index::NgramBuildMode mode,
+                         uint64_t soft_limit_bytes,
+                         index::NgramBuildBackend expected_initial,
+                         index::NgramBuildBackend expected_final,
+                         size_t expected_replay_count) {
+    const auto values = MakeHighDistinctRows(row_count);
+    auto field_data =
+        storage::CreateFieldData(DataType::VARCHAR, DataType::NONE, false);
+    field_data->FillFieldData(values.data(), row_count);
+    auto params = index::NgramParams{
+        .loading_index = false,
+        .min_gram = 3,
+        .max_gram = 4,
+        .build_mode = mode,
+        .direct_soft_limit_bytes = soft_limit_bytes,
+    };
+    auto ngram_index = CreateNgramIndexForBatchBuild(
+        DataType::VARCHAR, false, "", params);
+
+    const auto begin = std::chrono::steady_clock::now();
+    ngram_index->BuildWithFieldData({field_data});
+    ngram_index->finish();
+    const auto build_ms =
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - begin)
+            .count();
+    ngram_index->create_reader(milvus::index::SetBitsetSealed);
+
+    const auto& stats = ngram_index->GetBuildStats();
+    EXPECT_EQ(stats.initial_backend, expected_initial);
+    EXPECT_EQ(stats.final_backend, expected_final);
+    EXPECT_EQ(stats.replay_count, expected_replay_count);
+    if (expected_final == index::NgramBuildBackend::Direct) {
+        EXPECT_EQ(stats.direct_rows_applied, row_count);
+    } else if (expected_initial == index::NgramBuildBackend::Regular) {
+        EXPECT_EQ(stats.direct_rows_applied, 0);
+    } else {
+        EXPECT_GT(stats.direct_rows_applied, 0);
+        EXPECT_LT(stats.direct_rows_applied, row_count);
+    }
+    if (mode == index::NgramBuildMode::Auto) {
+        if (expected_initial == index::NgramBuildBackend::Direct) {
+            EXPECT_LE(stats.preflight_required_bytes, soft_limit_bytes);
+        } else {
+            EXPECT_GT(stats.preflight_required_bytes, soft_limit_bytes);
+        }
+    } else {
+        EXPECT_EQ(stats.preflight_required_bytes, 0);
+    }
+    EXPECT_EQ(ngram_index->Count(), row_count);
+    const auto marker =
+        QueryNgramPostings(*ngram_index, std::string(kHighDistinctMarker));
+    EXPECT_EQ(marker.count(), 1);
+    EXPECT_TRUE(marker[777]);
+
+    std::cout << fmt::format(
+                     "NGRAM_HIGH_DISTINCT_BENCH rows={} build_ms={:.3f} "
+                     "initial_backend={} final_backend={} replay_count={} "
+                     "direct_rows_applied={} preflight_required_bytes={} "
+                     "soft_limit_bytes={} count={} marker_count={}",
+                     row_count,
+                     build_ms,
+                     NgramBackendName(stats.initial_backend),
+                     NgramBackendName(stats.final_backend),
+                     stats.replay_count,
+                     stats.direct_rows_applied,
+                     stats.preflight_required_bytes,
+                     soft_limit_bytes,
+                     ngram_index->Count(),
+                     marker.count())
+              << std::endl;
 }
 
 TargetBitmap
@@ -164,6 +347,27 @@ QueryNgramPostings(index::NgramInvertedIndex& ngram_index,
     ngram_index.ExecutePhase1(
         literal, proto::plan::OpType::InnerMatch, candidates);
     return candidates;
+}
+
+TEST(NgramIndex, RawDataBuildUsesNgramPostings) {
+    const std::vector<std::string> values = {"alpha", "alphabet", "omega"};
+    proto::schema::StringArray serialized_values;
+    for (const auto& value : values) {
+        serialized_values.add_data(value);
+    }
+    std::string serialized;
+    ASSERT_TRUE(serialized_values.SerializeToString(&serialized));
+    auto ngram_index =
+        CreateNgramIndexForBatchBuild(DataType::VARCHAR, false);
+
+    ngram_index->BuildWithRawDataForUT(serialized.size(), serialized.data());
+
+    ASSERT_EQ(ngram_index->Count(), values.size());
+    const auto alpha = QueryNgramPostings(*ngram_index, "alp");
+    ASSERT_EQ(alpha.count(), 2);
+    EXPECT_TRUE(alpha[0]);
+    EXPECT_TRUE(alpha[1]);
+    EXPECT_FALSE(alpha[2]);
 }
 
 TEST(NgramIndex, BatchBuildPreservesNullableStringRowsAcrossChunks) {
@@ -271,6 +475,184 @@ TEST(NgramIndex, BatchBuildPreservesRowsAcrossBatchBoundary) {
     auto after = QueryNgramPostings(*ngram_index, "after");
     EXPECT_EQ(after.count(), 1);
     EXPECT_TRUE(after[512]);
+}
+
+TEST(NgramIndex, DirectMemoryGateReplaysFromRowZeroAtBatchProgressBoundaries) {
+    constexpr size_t kRowCount = 4 * 512;
+    const auto values = MakeReplayRows(kRowCount);
+    std::vector<bool> valid(kRowCount, true);
+    for (size_t row = 0; row < kRowCount; row += 257) {
+        valid[row] = false;
+    }
+    const auto field_data = MakeNullableStringFieldData(values, valid);
+
+    for (size_t applied_batches : {size_t{1}, size_t{2}, size_t{3}}) {
+        SCOPED_TRACE(fmt::format("applied_batches={}", applied_batches));
+        auto params = index::NgramParams{
+            .loading_index = false,
+            .min_gram = 3,
+            .max_gram = 4,
+            .build_mode = index::NgramBuildMode::ForceDirect,
+            .direct_soft_limit_bytes =
+                ReplayLimitAfterBatches(applied_batches),
+        };
+        auto ngram_index = CreateNgramIndexForBatchBuild(
+            DataType::VARCHAR, true, "", params);
+
+        ngram_index->BuildWithFieldData({field_data});
+        ngram_index->finish();
+        ngram_index->create_reader(milvus::index::SetBitsetSealed);
+
+        const auto& stats = ngram_index->GetBuildStats();
+        EXPECT_EQ(stats.initial_backend, index::NgramBuildBackend::Direct);
+        EXPECT_EQ(stats.final_backend, index::NgramBuildBackend::Regular);
+        EXPECT_EQ(stats.replay_count, 1);
+        EXPECT_EQ(stats.direct_rows_applied, applied_batches * 512);
+        EXPECT_EQ(ngram_index->GetAvgRowSize(), 64);
+        EXPECT_EQ(ngram_index->Count(), kRowCount);
+
+        const auto nulls = ngram_index->IsNull();
+        ASSERT_EQ(nulls.size(), kRowCount);
+        for (size_t row = 0; row < kRowCount; ++row) {
+            EXPECT_EQ(nulls[row], !valid[row]) << "row " << row;
+        }
+        const auto marker = QueryNgramPostings(*ngram_index, "replay-marker");
+        ASSERT_EQ(marker.count(), 1);
+        EXPECT_TRUE(marker[777]);
+    }
+}
+
+TEST(NgramIndex, AutoAccountsForTokenizerScratchWhenNoNgramsAreEmitted) {
+    constexpr size_t kValueBytes = 64 * 1024;
+    constexpr uintptr_t kGramWidth = kValueBytes + 1;
+    constexpr uint64_t kSoftLimitBytes = uint64_t{69} * 1024 * 1024;
+    const std::vector<std::string> values(1, std::string(kValueBytes, 'x'));
+    auto field_data =
+        storage::CreateFieldData(DataType::VARCHAR, DataType::NONE, false);
+    field_data->FillFieldData(values.data(), values.size());
+    auto params = index::NgramParams{
+        .loading_index = false,
+        .min_gram = kGramWidth,
+        .max_gram = kGramWidth,
+        .build_mode = index::NgramBuildMode::Auto,
+        .direct_soft_limit_bytes = kSoftLimitBytes,
+    };
+    auto ngram_index = CreateNgramIndexForBatchBuild(
+        DataType::VARCHAR, false, "", params);
+
+    ngram_index->BuildWithFieldData({field_data});
+    ngram_index->finish();
+    ngram_index->create_reader(milvus::index::SetBitsetSealed);
+
+    const auto& stats = ngram_index->GetBuildStats();
+    EXPECT_EQ(stats.initial_backend, index::NgramBuildBackend::Regular);
+    EXPECT_EQ(stats.final_backend, index::NgramBuildBackend::Regular);
+    EXPECT_EQ(stats.replay_count, 0);
+    EXPECT_GT(stats.preflight_required_bytes, kSoftLimitBytes);
+    EXPECT_EQ(ngram_index->Count(), values.size());
+}
+
+TEST(NgramIndex, DirectMemoryGateReplaysJsonFromRowZeroAtBatchProgressBoundaries) {
+    constexpr size_t kRowCount = 4 * 512;
+    const auto values = MakeReplayRows(kRowCount);
+    std::vector<std::string> json_rows;
+    json_rows.reserve(values.size());
+    for (const auto& value : values) {
+        json_rows.push_back(fmt::format(R"({{"a":"{}"}})", value));
+    }
+    const auto field_data = MakeJsonStringFieldData(json_rows);
+
+    for (size_t applied_batches : {size_t{1}, size_t{2}, size_t{3}}) {
+        SCOPED_TRACE(fmt::format("applied_batches={}", applied_batches));
+        auto params = index::NgramParams{
+            .loading_index = false,
+            .min_gram = 3,
+            .max_gram = 4,
+            .build_mode = index::NgramBuildMode::ForceDirect,
+            .direct_soft_limit_bytes =
+                ReplayLimitAfterBatches(applied_batches),
+        };
+        auto ngram_index = CreateNgramIndexForBatchBuild(
+            DataType::JSON, false, "/a", params);
+
+        ngram_index->BuildWithFieldData({field_data});
+        ngram_index->finish();
+        ngram_index->create_reader(milvus::index::SetBitsetSealed);
+
+        const auto& stats = ngram_index->GetBuildStats();
+        EXPECT_EQ(stats.initial_backend, index::NgramBuildBackend::Direct);
+        EXPECT_EQ(stats.final_backend, index::NgramBuildBackend::Regular);
+        EXPECT_EQ(stats.replay_count, 1);
+        EXPECT_EQ(stats.direct_rows_applied, applied_batches * 512);
+        EXPECT_EQ(stats.preflight_required_bytes, 0);
+        EXPECT_EQ(ngram_index->GetAvgRowSize(), 64);
+        EXPECT_EQ(ngram_index->Count(), kRowCount);
+        const auto marker = QueryNgramPostings(*ngram_index, "replay-marker");
+        ASSERT_EQ(marker.count(), 1);
+        EXPECT_TRUE(marker[777]);
+    }
+}
+
+TEST(NgramIndex, InvalidUtf8IsNotConvertedToMemoryReplay) {
+    constexpr size_t kRowCount = 2 * 512;
+    auto values = MakeReplayRows(kRowCount);
+    values[512].assign(kHighDistinctRowBytes, 'x');
+    values[512][0] = static_cast<char>(0xff);
+    auto field_data =
+        storage::CreateFieldData(DataType::VARCHAR, DataType::NONE, false);
+    field_data->FillFieldData(values.data(), kRowCount);
+    auto params = index::NgramParams{
+        .loading_index = false,
+        .min_gram = 3,
+        .max_gram = 4,
+        .build_mode = index::NgramBuildMode::ForceDirect,
+        .direct_soft_limit_bytes = ReplayLimitAfterBatches(1),
+    };
+    auto ngram_index = CreateNgramIndexForBatchBuild(
+        DataType::VARCHAR, false, "", params);
+
+    try {
+        ngram_index->BuildWithFieldData({field_data});
+        FAIL() << "expected invalid UTF-8 to fail the NGRAM build";
+    } catch (const SegcoreError& error) {
+        EXPECT_NE(std::string(error.what()).find("invalid UTF-8 at row 512"),
+                  std::string::npos);
+    }
+
+    const auto& stats = ngram_index->GetBuildStats();
+    EXPECT_EQ(stats.initial_backend, index::NgramBuildBackend::Direct);
+    EXPECT_EQ(stats.final_backend, index::NgramBuildBackend::Direct);
+    EXPECT_EQ(stats.replay_count, 0);
+    EXPECT_EQ(stats.direct_rows_applied, 512);
+}
+
+TEST(NgramIndex, DISABLED_HighDistinctAutoAllowsDirectAt50K) {
+    RunHighDistinctBenchmark(
+        50'000,
+        index::NgramBuildMode::Auto,
+        index::DEFAULT_NGRAM_DIRECT_SOFT_LIMIT_BYTES,
+        index::NgramBuildBackend::Direct,
+        index::NgramBuildBackend::Direct,
+        0);
+}
+
+TEST(NgramIndex, DISABLED_HighDistinctAutoRejectsDirectAt100K) {
+    RunHighDistinctBenchmark(
+        100'000,
+        index::NgramBuildMode::Auto,
+        index::DEFAULT_NGRAM_DIRECT_SOFT_LIMIT_BYTES,
+        index::NgramBuildBackend::Regular,
+        index::NgramBuildBackend::Regular,
+        0);
+}
+
+TEST(NgramIndex, DISABLED_HighDistinctForceDirectReplaysAt50K) {
+    RunHighDistinctBenchmark(50'000,
+                             index::NgramBuildMode::ForceDirect,
+                             uint64_t{768} * 1024 * 1024,
+                             index::NgramBuildBackend::Direct,
+                             index::NgramBuildBackend::Regular,
+                             1);
 }
 
 TEST(NgramIndex, BatchBuildPreservesEveryJsonRowId) {

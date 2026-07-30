@@ -11,6 +11,7 @@
 
 #include "indexbuilder/ScalarIndexCreator.h"
 
+#include <charconv>
 #include <cstdint>
 #include <exception>
 #include <map>
@@ -29,6 +30,45 @@
 #include "nlohmann/json.hpp"
 
 namespace milvus::indexbuilder {
+
+namespace {
+
+uint64_t
+ParseNgramDirectSoftLimit(const Config& config) {
+    const auto key = milvus::index::NGRAM_DIRECT_SOFT_LIMIT_BYTES;
+    if (!config.contains(key) || config.at(key).is_null()) {
+        return milvus::index::DEFAULT_NGRAM_DIRECT_SOFT_LIMIT_BYTES;
+    }
+
+    const auto& value = config.at(key);
+    std::optional<uint64_t> parsed;
+    if (value.is_string()) {
+        const auto& text = value.get_ref<const std::string&>();
+        uint64_t result = 0;
+        const auto [end, error] =
+            std::from_chars(text.data(), text.data() + text.size(), result);
+        if (error == std::errc() && end == text.data() + text.size()) {
+            parsed = result;
+        }
+    } else if (value.is_number_unsigned()) {
+        parsed = value.get<uint64_t>();
+    } else if (value.is_number_integer()) {
+        const auto result = value.get<int64_t>();
+        if (result > 0) {
+            parsed = static_cast<uint64_t>(result);
+        }
+    }
+
+    if (!parsed.has_value() || parsed.value() == 0) {
+        ThrowInfo(milvus::ErrorCode::InvalidParameter,
+                  "ngram_direct_soft_limit_bytes must be a positive integer, "
+                  "got {}",
+                  value.dump());
+    }
+    return parsed.value();
+}
+
+}  // namespace
 
 ScalarIndexCreator::ScalarIndexCreator(
     DataType dtype,
@@ -57,6 +97,25 @@ ScalarIndexCreator::ScalarIndexCreator(
                 std::stoul(milvus::index::GetValueFromConfig<std::string>(
                                config, milvus::index::MAX_GRAM)
                                .value());
+            const auto build_mode =
+                milvus::index::GetValueFromConfig<std::string>(
+                    config, milvus::index::NGRAM_BUILD_MODE)
+                    .value_or("auto");
+            if (build_mode == "regular") {
+                ngram_params.build_mode =
+                    milvus::index::NgramBuildMode::Regular;
+            } else if (build_mode == "auto") {
+                ngram_params.build_mode = milvus::index::NgramBuildMode::Auto;
+            } else if (build_mode == "force_direct") {
+                ngram_params.build_mode =
+                    milvus::index::NgramBuildMode::ForceDirect;
+            } else {
+                ThrowInfo(milvus::ErrorCode::InvalidParameter,
+                          "invalid ngram_build_mode: {}",
+                          build_mode);
+            }
+            ngram_params.direct_soft_limit_bytes =
+                ParseNgramDirectSoftLimit(config);
             index_info.ngram_params = std::make_optional(ngram_params);
         }
     }

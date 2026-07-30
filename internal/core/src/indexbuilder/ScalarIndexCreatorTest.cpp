@@ -14,6 +14,7 @@
 
 #include "common/CDataType.h"
 #include "common/Consts.h"
+#include "common/Exception.h"
 #include "index/Utils.h"
 #include "storage/Util.h"
 #include "indexbuilder/IndexFactory.h"
@@ -65,6 +66,29 @@ build_index(const ScalarIndexCreatorPtr& creator,
     creator->Build(ds);
 
     delete[] (char*)(ds->GetTensor());
+}
+
+milvus::Config
+MakeNgramConfig() {
+    milvus::Config config;
+    config[milvus::index::INDEX_TYPE] = milvus::index::NGRAM_INDEX_TYPE;
+    config[milvus::index::MIN_GRAM] = "2";
+    config[milvus::index::MAX_GRAM] = "3";
+    return config;
+}
+
+void
+ExpectInvalidNgramConfig(milvus::Config config) {
+    try {
+        auto creator = milvus::indexbuilder::CreateScalarIndex(
+            milvus::DataType::VARCHAR,
+            config,
+            milvus::storage::FileManagerContext());
+        (void)creator;
+        FAIL() << "expected invalid NGRAM config to be rejected";
+    } catch (const milvus::SegcoreError& error) {
+        EXPECT_EQ(error.get_error_code(), milvus::ErrorCode::InvalidParameter);
+    }
 }
 
 }  // namespace
@@ -187,4 +211,35 @@ TEST(ScalarIndexCreatorTest, CreateTextMatchIndexForTextField) {
         milvus::indexbuilder::IndexFactory::GetInstance().CreateIndex(
             milvus::DataType::TEXT, config, ctx);
     ASSERT_NE(creator, nullptr);
+}
+
+TEST(ScalarIndexCreatorTest, RejectsInvalidNgramBuildMode) {
+    auto config = MakeNgramConfig();
+    config[milvus::index::NGRAM_BUILD_MODE] = "unknown";
+
+    ExpectInvalidNgramConfig(config);
+}
+
+TEST(ScalarIndexCreatorTest, RejectsInvalidNgramDirectSoftLimit) {
+    for (const auto* value : {"-1", "0", "1024bytes"}) {
+        SCOPED_TRACE(value);
+        auto config = MakeNgramConfig();
+        config[milvus::index::NGRAM_DIRECT_SOFT_LIMIT_BYTES] = value;
+
+        ExpectInvalidNgramConfig(config);
+    }
+}
+
+TEST(ScalarIndexCreatorTest, AcceptsValidNgramBuildSettings) {
+    for (const auto* mode : {"regular", "auto", "force_direct"}) {
+        SCOPED_TRACE(mode);
+        auto config = MakeNgramConfig();
+        config[milvus::index::NGRAM_BUILD_MODE] = mode;
+        config[milvus::index::NGRAM_DIRECT_SOFT_LIMIT_BYTES] = "4096";
+
+        EXPECT_NO_THROW(milvus::indexbuilder::CreateScalarIndex(
+            milvus::DataType::VARCHAR,
+            config,
+            milvus::storage::FileManagerContext()));
+    }
 }
