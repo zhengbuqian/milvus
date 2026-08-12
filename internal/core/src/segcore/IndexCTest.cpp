@@ -204,7 +204,7 @@ TEST(CBoolIndexTest, All) {
         { DeleteBinarySet(binary_set); }
     }
 
-    delete[] (char*)(half_ds->GetTensor());
+    delete[](char*)(half_ds->GetTensor());
 }
 
 // TODO: more scalar type.
@@ -321,9 +321,38 @@ TEST(CStringIndexTest, All) {
         { DeleteBinarySet(binary_set); }
     }
 
-    delete[] (char*)(str_ds->GetTensor());
+    delete[](char*)(str_ds->GetTensor());
 }
 #endif
+
+TEST(CNgramIndexTest, RawDataBuildUsesDefaultContextSchema) {
+    schemapb::StringArray values;
+    values.add_data("alpha");
+    values.add_data("alphabet");
+    values.add_data("omega");
+    auto dataset = GenDsFromPB(values);
+
+    const auto type_params = generate_type_params(MapParams{});
+    const auto index_params =
+        generate_index_params({{"index_type", milvus::index::NGRAM_INDEX_TYPE},
+                               {milvus::index::MIN_GRAM, "2"},
+                               {milvus::index::MAX_GRAM, "3"}});
+
+    CIndex index;
+    auto status = CreateIndexForUT(
+        String, type_params.c_str(), index_params.c_str(), &index);
+    ASSERT_EQ(milvus::Success, status.error_code);
+
+    status = BuildScalarIndex(index, dataset->GetRows(), dataset->GetTensor());
+    EXPECT_EQ(milvus::Success, status.error_code) << status.error_msg;
+    if (status.error_code != milvus::Success) {
+        free(const_cast<char*>(status.error_msg));
+    }
+
+    status = DeleteIndex(index);
+    EXPECT_EQ(milvus::Success, status.error_code);
+    delete[] const_cast<char*>(static_cast<const char*>(dataset->GetTensor()));
+}
 
 TEST(CreateIndexTest, StorageV2) {
     GTEST_SKIP() << "TODO: after index/stats task level fs is finished, should "

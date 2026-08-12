@@ -21,6 +21,8 @@ coverage_report/
 
 internal/core/output/*
 internal/core/build/*
+internal/core/benchmark/ngram_direct/results/
+internal/core/benchmark/ngram_direct/data/
 **/.idea/*
 internal/msgstream/pulsarms/client-cpp/build/
 internal/msgstream/pulsarms/client-cpp/build/*

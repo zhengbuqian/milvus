@@ -1,0 +1,9 @@
+{
+  "rows": 1000000,
+  "cardinality": 1000000,
+  "seed": 42,
+  "min_gram": 3,
+  "max_gram": 4,
+  "warmup_iterations": 1,
+  "test_iterations": 3
+}

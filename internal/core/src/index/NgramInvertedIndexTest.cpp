@@ -140,7 +140,8 @@ MakeNullableNgramStringFieldData(const std::vector<std::string>& values,
 }
 
 std::unique_ptr<index::NgramInvertedIndex>
-CreateNgramIndexForFieldDataBuild(bool nullable) {
+CreateNgramIndexForFieldDataBuild(
+    bool nullable, std::optional<index::NgramParams> params = std::nullopt) {
     auto file_manager_ctx = storage::FileManagerContext();
     file_manager_ctx.fieldDataMeta.field_schema.set_data_type(
         proto::schema::DataType::VarChar);
@@ -149,7 +150,79 @@ CreateNgramIndexForFieldDataBuild(bool nullable) {
     file_manager_ctx.fieldDataMeta.field_id = 100;
 
     return std::make_unique<index::NgramInvertedIndex>(
-        file_manager_ctx, index::NgramParams{false, 2, 3});
+        file_manager_ctx, params.value_or(index::NgramParams{false, 2, 3}));
+}
+
+std::unique_ptr<index::NgramInvertedIndex>
+CreateJsonNgramIndexForFieldDataBuild(
+    const std::string& nested_path,
+    std::optional<index::NgramParams> params = std::nullopt,
+    bool nullable = false) {
+    auto file_manager_ctx = storage::FileManagerContext();
+    file_manager_ctx.fieldDataMeta.field_schema.set_data_type(
+        proto::schema::DataType::JSON);
+    file_manager_ctx.fieldDataMeta.field_schema.set_fieldid(100);
+    file_manager_ctx.fieldDataMeta.field_schema.set_nullable(nullable);
+    file_manager_ctx.fieldDataMeta.field_id = 100;
+
+    return std::make_unique<index::NgramInvertedIndex>(
+        file_manager_ctx,
+        params.value_or(index::NgramParams{false, 2, 3}),
+        nested_path);
+}
+
+uint64_t
+ReplayLimitAfterNgramBatches(size_t applied_batches) {
+    constexpr uint64_t kRowsPerBatch = 512;
+    constexpr uint64_t kOccurrencesPerValue = 62 + 61;
+    constexpr uint64_t kTermBytesPerValue = 62 * 3 + 61 * 4;
+    constexpr uint64_t kPerRowEstimate =
+        16 + kOccurrencesPerValue * 128 + kTermBytesPerValue;
+    constexpr uint64_t kBase = 4 * 1024 * 1024;
+    constexpr uint64_t kReserve = 64 * 1024 * 1024;
+    const uint64_t batch_growth = kRowsPerBatch * kPerRowEstimate;
+    return kReserve + kBase + applied_batches * batch_growth + batch_growth / 2;
+}
+
+std::vector<std::string>
+MakeNgramReplayRows(size_t count) {
+    std::vector<std::string> values;
+    values.reserve(count);
+    for (size_t row = 0; row < count; ++row) {
+        auto prefix = fmt::format("row-{:08x}-", row);
+        std::string value;
+        value.reserve(64);
+        while (value.size() < 64) {
+            value.append(prefix);
+        }
+        value.resize(64);
+        values.push_back(std::move(value));
+    }
+    auto& marker = values.at(777);
+    marker.assign("unique-replay-marker");
+    marker.resize(64, 'z');
+    return values;
+}
+
+FieldDataPtr
+MakeNgramJsonStringFieldData(
+    const std::vector<std::optional<std::string>>& values) {
+    arrow::BinaryBuilder builder;
+    for (const auto& value : values) {
+        const auto status =
+            value.has_value()
+                ? builder.Append(value->data(),
+                                 static_cast<int32_t>(value->size()))
+                : builder.AppendNull();
+        AssertInfo(status.ok(), "failed to append JSON test row");
+    }
+    std::shared_ptr<arrow::Array> json_array;
+    AssertInfo(builder.Finish(&json_array).ok(),
+               "failed to finish JSON test rows");
+    auto field_data =
+        std::make_shared<FieldData<milvus::Json>>(DataType::JSON, true);
+    field_data->FillFieldData(json_array);
+    return field_data;
 }
 
 TargetBitmap
@@ -161,11 +234,21 @@ QueryNgramPostings(index::NgramInvertedIndex& ngram_index,
     return candidates;
 }
 
+void
+ExpectNgramBitmapsEqual(const TargetBitmap& expected,
+                        const TargetBitmap& actual,
+                        const std::string& label) {
+    ASSERT_EQ(actual.size(), expected.size()) << label;
+    for (size_t row = 0; row < expected.size(); ++row) {
+        EXPECT_EQ(actual[row], expected[row]) << label << " at row " << row;
+    }
+}
+
 TEST(NgramIndex, BatchBuildPreservesNullableStringRowsAcrossChunks) {
-    auto batch0 = MakeNullableNgramStringFieldData(
-        {"alpha", "", "beta"}, {true, false, true});
-    auto batch1 = MakeNullableNgramStringFieldData(
-        {"", "gamma", "", ""}, {false, true, true, false});
+    auto batch0 = MakeNullableNgramStringFieldData({"alpha", "", "beta"},
+                                                   {true, false, true});
+    auto batch1 = MakeNullableNgramStringFieldData({"", "gamma", "", ""},
+                                                   {false, true, true, false});
 
     auto ngram_index = CreateNgramIndexForFieldDataBuild(true);
     ngram_index->BuildWithFieldData({batch0, batch1});
@@ -195,8 +278,8 @@ TEST(NgramIndex, BatchBuildPreservesNullableStringRowsAcrossChunks) {
 }
 
 TEST(NgramIndex, BatchBuildAcceptsAllNullStringFieldData) {
-    auto field_data = MakeNullableNgramStringFieldData(
-        {"", "", ""}, {false, false, false});
+    auto field_data =
+        MakeNullableNgramStringFieldData({"", "", ""}, {false, false, false});
 
     auto ngram_index = CreateNgramIndexForFieldDataBuild(true);
     ngram_index->BuildWithFieldData({field_data});
@@ -208,6 +291,191 @@ TEST(NgramIndex, BatchBuildAcceptsAllNullStringFieldData) {
     ASSERT_EQ(nulls.size(), 3);
     EXPECT_TRUE(nulls.all());
     EXPECT_EQ(QueryNgramPostings(*ngram_index, "al").count(), 0);
+}
+
+TEST(NgramIndex, DirectMemoryGateReplaysStringBuildFromRowZero) {
+    constexpr size_t kRowCount = 4 * 512;
+    const auto values = MakeNgramReplayRows(kRowCount);
+    std::vector<bool> valid(kRowCount, true);
+    for (size_t row = 0; row < kRowCount; row += 257) {
+        valid[row] = false;
+    }
+    const auto field_data = MakeNullableNgramStringFieldData(values, valid);
+    const auto params = index::NgramParams{
+        .loading_index = false,
+        .min_gram = 3,
+        .max_gram = 4,
+        .build_mode = index::NgramBuildMode::ForceDirect,
+        .direct_soft_limit_bytes = ReplayLimitAfterNgramBatches(2),
+    };
+    auto ngram_index = CreateNgramIndexForFieldDataBuild(true, params);
+
+    ngram_index->BuildWithFieldData({field_data});
+    ngram_index->finish();
+    ngram_index->create_reader(milvus::index::SetBitsetSealed);
+
+    const auto& stats = ngram_index->GetBuildStats();
+    EXPECT_EQ(stats.initial_backend, index::NgramBuildBackend::Direct);
+    EXPECT_EQ(stats.final_backend, index::NgramBuildBackend::Regular);
+    EXPECT_EQ(stats.replay_count, 1);
+    EXPECT_EQ(stats.direct_rows_applied, 2 * 512);
+    EXPECT_EQ(ngram_index->Count(), kRowCount);
+    const auto marker = QueryNgramPostings(*ngram_index, "replay-marker");
+    ASSERT_EQ(marker.count(), 1);
+    EXPECT_TRUE(marker[777]);
+}
+
+TEST(NgramIndex, AutoPreflightIncludesTokenizerScratchWithoutNgrams) {
+    constexpr size_t kValueBytes = 64 * 1024;
+    constexpr uintptr_t kGramWidth = kValueBytes + 1;
+    constexpr uint64_t kSoftLimitBytes = uint64_t{69} * 1024 * 1024;
+    const std::vector<std::string> values(1, std::string(kValueBytes, 'x'));
+    auto field_data =
+        storage::CreateFieldData(DataType::VARCHAR, DataType::NONE, false);
+    field_data->FillFieldData(values.data(), values.size());
+    const auto params = index::NgramParams{
+        .loading_index = false,
+        .min_gram = kGramWidth,
+        .max_gram = kGramWidth,
+        .build_mode = index::NgramBuildMode::Auto,
+        .direct_soft_limit_bytes = kSoftLimitBytes,
+    };
+    auto ngram_index = CreateNgramIndexForFieldDataBuild(false, params);
+
+    ngram_index->BuildWithFieldData({field_data});
+    ngram_index->finish();
+    ngram_index->create_reader(milvus::index::SetBitsetSealed);
+
+    const auto& stats = ngram_index->GetBuildStats();
+    EXPECT_EQ(stats.initial_backend, index::NgramBuildBackend::Regular);
+    EXPECT_EQ(stats.final_backend, index::NgramBuildBackend::Regular);
+    EXPECT_EQ(stats.replay_count, 0);
+    EXPECT_GT(stats.preflight_required_bytes, kSoftLimitBytes);
+    EXPECT_EQ(ngram_index->Count(), values.size());
+}
+
+TEST(NgramIndex, DirectMemoryGateReplaysJsonBuildFromRowZero) {
+    constexpr size_t kRowCount = 4 * 512;
+    const auto values = MakeNgramReplayRows(kRowCount);
+    std::vector<std::optional<std::string>> json_rows;
+    json_rows.reserve(values.size());
+    for (const auto& value : values) {
+        json_rows.push_back(fmt::format(R"({{"a":"{}"}})", value));
+    }
+    json_rows[0] = std::nullopt;
+    json_rows[1] = R"({"b":"path-missing"})";
+    json_rows[2] = R"({"a":null})";
+    json_rows[3] = R"({"a":["wrong-type-marker"]})";
+    json_rows[4] = R"({"a":""})";
+    json_rows[511] = R"({"a":"boundary-before-511"})";
+    json_rows[512] = R"({"a":"boundary-after-512"})";
+    json_rows[513] = R"({"a":"utf8-中文-🌏"})";
+    const auto field_data = MakeNgramJsonStringFieldData(json_rows);
+    const auto regular_params = index::NgramParams{
+        .loading_index = false,
+        .min_gram = 3,
+        .max_gram = 4,
+        .build_mode = index::NgramBuildMode::Regular,
+    };
+    const auto replay_params = index::NgramParams{
+        .loading_index = false,
+        .min_gram = 3,
+        .max_gram = 4,
+        .build_mode = index::NgramBuildMode::ForceDirect,
+        .direct_soft_limit_bytes = ReplayLimitAfterNgramBatches(2),
+    };
+    auto regular_index =
+        CreateJsonNgramIndexForFieldDataBuild("/a", regular_params, true);
+    auto replay_index =
+        CreateJsonNgramIndexForFieldDataBuild("/a", replay_params, true);
+
+    regular_index->BuildWithFieldData({field_data});
+    regular_index->finish();
+    regular_index->create_reader(milvus::index::SetBitsetSealed);
+    replay_index->BuildWithFieldData({field_data});
+    replay_index->finish();
+    replay_index->create_reader(milvus::index::SetBitsetSealed);
+
+    const auto& regular_stats = regular_index->GetBuildStats();
+    EXPECT_EQ(regular_stats.initial_backend, index::NgramBuildBackend::Regular);
+    EXPECT_EQ(regular_stats.final_backend,
+              std::optional{index::NgramBuildBackend::Regular});
+    EXPECT_EQ(regular_stats.replay_count, 0);
+    EXPECT_EQ(regular_stats.direct_rows_applied, 0);
+
+    const auto& stats = replay_index->GetBuildStats();
+    EXPECT_EQ(stats.initial_backend, index::NgramBuildBackend::Direct);
+    EXPECT_EQ(stats.final_backend,
+              std::optional{index::NgramBuildBackend::Regular});
+    EXPECT_EQ(stats.replay_count, 1);
+    EXPECT_EQ(stats.direct_rows_applied, 2 * 512);
+
+    ASSERT_EQ(regular_index->Count(), kRowCount);
+    ASSERT_EQ(replay_index->Count(), regular_index->Count());
+    const auto regular_nulls = regular_index->IsNull();
+    const auto replay_nulls = replay_index->IsNull();
+    ExpectNgramBitmapsEqual(regular_nulls, replay_nulls, "IsNull");
+    ASSERT_EQ(replay_nulls.count(), 1);
+    EXPECT_TRUE(replay_nulls[0]);
+
+    const std::vector<std::string> literals{
+        "row-0000",
+        "replay-marker",
+        "boundary-before",
+        "boundary-after",
+        "utf8-中文",
+        "path-missing",
+        "wrong-type",
+        "null",
+    };
+    for (const auto& literal : literals) {
+        const auto regular_postings =
+            QueryNgramPostings(*regular_index, literal);
+        const auto replay_postings = QueryNgramPostings(*replay_index, literal);
+        ExpectNgramBitmapsEqual(
+            regular_postings, replay_postings, "posting " + literal);
+    }
+
+    const auto marker = QueryNgramPostings(*replay_index, "replay-marker");
+    ASSERT_EQ(marker.count(), 1);
+    EXPECT_TRUE(marker[777]);
+    const auto before = QueryNgramPostings(*replay_index, "boundary-before");
+    ASSERT_EQ(before.count(), 1);
+    EXPECT_TRUE(before[511]);
+    const auto after = QueryNgramPostings(*replay_index, "boundary-after");
+    ASSERT_EQ(after.count(), 1);
+    EXPECT_TRUE(after[512]);
+    const auto utf8 = QueryNgramPostings(*replay_index, "utf8-中文");
+    ASSERT_EQ(utf8.count(), 1);
+    EXPECT_TRUE(utf8[513]);
+    EXPECT_EQ(QueryNgramPostings(*replay_index, "path-missing").count(), 0);
+    EXPECT_EQ(QueryNgramPostings(*replay_index, "wrong-type").count(), 0);
+    EXPECT_EQ(QueryNgramPostings(*replay_index, "null").count(), 0);
+}
+
+TEST(NgramIndex, InvalidUtf8IsNotConvertedToMemoryReplay) {
+    constexpr size_t kRowCount = 2 * 512;
+    auto values = MakeNgramReplayRows(kRowCount);
+    values[512].assign(64, 'x');
+    values[512][0] = static_cast<char>(0xff);
+    auto field_data =
+        storage::CreateFieldData(DataType::VARCHAR, DataType::NONE, false);
+    field_data->FillFieldData(values.data(), kRowCount);
+    const auto params = index::NgramParams{
+        .loading_index = false,
+        .min_gram = 3,
+        .max_gram = 4,
+        .build_mode = index::NgramBuildMode::ForceDirect,
+        .direct_soft_limit_bytes = ReplayLimitAfterNgramBatches(1),
+    };
+    auto ngram_index = CreateNgramIndexForFieldDataBuild(false, params);
+
+    EXPECT_THROW(ngram_index->BuildWithFieldData({field_data}), SegcoreError);
+    const auto& stats = ngram_index->GetBuildStats();
+    EXPECT_EQ(stats.initial_backend, index::NgramBuildBackend::Direct);
+    EXPECT_FALSE(stats.final_backend.has_value());
+    EXPECT_EQ(stats.replay_count, 0);
+    EXPECT_EQ(stats.direct_rows_applied, 512);
 }
 
 void

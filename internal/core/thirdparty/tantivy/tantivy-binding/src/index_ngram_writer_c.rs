@@ -5,7 +5,9 @@ use std::slice;
 use crate::array::RustResult;
 use crate::cstr_to_str;
 use crate::error::{Result, TantivyBindingError};
-use crate::index_ngram_writer::NgramRow;
+use crate::index_ngram_writer::{
+    ngram_required_memory_bytes, NgramRow, NgramWriteStatus, NgramWriterMode,
+};
 use crate::index_writer::IndexWriterWrapper;
 use crate::log::init_log;
 use crate::util::create_binding;
@@ -117,6 +119,63 @@ pub extern "C" fn tantivy_create_ngram_writer(
 }
 
 #[no_mangle]
+pub extern "C" fn tantivy_create_ngram_writer_with_mode(
+    field_name: *const c_char,
+    path: *const c_char,
+    min_gram: usize,
+    max_gram: usize,
+    num_threads: usize,
+    overall_memory_budget_in_bytes: usize,
+    direct: bool,
+    direct_soft_limit_bytes: u64,
+) -> RustResult {
+    init_log();
+    let field_name_str = cstr_to_str!(field_name);
+    let path_str = cstr_to_str!(path);
+    let mode = if direct {
+        NgramWriterMode::Direct {
+            soft_limit_bytes: direct_soft_limit_bytes,
+        }
+    } else {
+        NgramWriterMode::Regular
+    };
+
+    match IndexWriterWrapper::create_ngram_writer_with_mode(
+        field_name_str,
+        path_str,
+        min_gram,
+        max_gram,
+        num_threads,
+        overall_memory_budget_in_bytes,
+        mode,
+    ) {
+        Ok(index_writer_wrapper) => RustResult::from_ptr(create_binding(index_writer_wrapper)),
+        Err(err) => {
+            RustResult::from_error(format!("create ngram writer failed with error: {}", err))
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn tantivy_ngram_required_memory(
+    logical_rows: u64,
+    occurrence_upper_bound: u64,
+    term_bytes_upper_bound: u64,
+    tokenizer_scratch_bytes: u64,
+    observed_finalize_base_bytes: u64,
+    soft_limit_bytes: u64,
+) -> u64 {
+    ngram_required_memory_bytes(
+        logical_rows,
+        occurrence_upper_bound,
+        term_bytes_upper_bound,
+        tokenizer_scratch_bytes,
+        observed_finalize_base_bytes,
+        soft_limit_bytes,
+    )
+}
+
+#[no_mangle]
 pub extern "C" fn tantivy_index_add_ngram_batch(
     writer: *mut c_void,
     ptrs: *const *const u8,
@@ -129,7 +188,9 @@ pub extern "C" fn tantivy_index_add_ngram_batch(
         return RustResult::from_error(invalid_argument("ngram batch writer is null").to_string());
     }
     if len == 0 {
-        return RustResult::from_success();
+        return RustResult::from(Ok::<u32, TantivyBindingError>(
+            NgramWriteStatus::Applied as u32,
+        ));
     }
     if ptrs.is_null() {
         return RustResult::from_error(invalid_argument("ngram batch ptrs is null").to_string());
@@ -156,7 +217,24 @@ pub extern "C" fn tantivy_index_add_ngram_batch(
     };
 
     let writer = unsafe { &mut *(writer as *mut IndexWriterWrapper) };
-    writer.add_ngram_rows(&rows).into()
+    writer
+        .add_ngram_rows(&rows)
+        .map(|status| status as u32)
+        .into()
+}
+
+#[no_mangle]
+pub extern "C" fn tantivy_index_check_ngram_memory(writer: *mut c_void) -> RustResult {
+    if writer.is_null() {
+        return RustResult::from_error(
+            invalid_argument("ngram memory check writer is null").to_string(),
+        );
+    }
+    let writer = unsafe { &mut *(writer as *mut IndexWriterWrapper) };
+    writer
+        .check_ngram_memory()
+        .map(|status| status as u32)
+        .into()
 }
 
 #[cfg(test)]
@@ -170,6 +248,7 @@ mod tests {
 
     use super::*;
     use crate::array::free_rust_result;
+    use crate::array::Value;
     use crate::index_reader::IndexReaderWrapper;
     use crate::util::set_bitset;
 
@@ -218,6 +297,72 @@ mod tests {
             std::hint::black_box(&self.values);
             result
         }
+    }
+
+    fn result_u32(result: RustResult) -> (bool, Option<u32>, String) {
+        let success = result.success;
+        let value = match &result.value {
+            Value::U32(value) => Some(*value),
+            _ => None,
+        };
+        let error = if result.error.is_null() {
+            String::new()
+        } else {
+            unsafe { CStr::from_ptr(result.error) }
+                .to_string_lossy()
+                .into_owned()
+        };
+        free_rust_result(result);
+        (success, value, error)
+    }
+
+    #[test]
+    fn ngram_required_memory_ffi_uses_exact_term_byte_upper_bound() {
+        let soft_limit = 2 * 1024 * 1024 * 1024u64;
+        let required = tantivy_ngram_required_memory(1, 123, 430, 0, 0, soft_limit);
+        let expected_working = 4 * 1024 * 1024 + 16 + 123 * 128 + 430;
+        assert_eq!(required, expected_working + soft_limit / 4);
+    }
+
+    #[test]
+    fn ngram_required_memory_ffi_saturates_instead_of_wrapping() {
+        assert_eq!(
+            tantivy_ngram_required_memory(
+                u64::MAX,
+                u64::MAX,
+                u64::MAX,
+                u64::MAX,
+                u64::MAX,
+                u64::MAX,
+            ),
+            u64::MAX
+        );
+    }
+
+    #[test]
+    fn ngram_batch_ffi_returns_structured_replay_status() {
+        let dir = TempDir::new().unwrap();
+        let mut writer = IndexWriterWrapper::create_ngram_writer_with_mode(
+            "test",
+            dir.path().to_str().unwrap(),
+            3,
+            4,
+            1,
+            15_000_000,
+            NgramWriterMode::Direct {
+                soft_limit_bytes: 1,
+            },
+        )
+        .unwrap();
+        let batch = BatchInput::new(vec![(0, Some(vec![b'x'; 64]))]);
+
+        let (success, value, error) = result_u32(batch.call(&mut writer));
+
+        assert!(success, "unexpected FFI error: {error}");
+        assert_eq!(
+            value,
+            Some(NgramWriteStatus::ReplayRequiredBeforeBatch as u32)
+        );
     }
 
     fn create_writer() -> (TempDir, IndexWriterWrapper) {
@@ -283,7 +428,7 @@ mod tests {
     #[test]
     fn ngram_batch_empty_accepts_null_top_level_arrays() {
         let (_dir, mut writer) = create_writer();
-        assert_success(tantivy_index_add_ngram_batch(
+        let (success, value, error) = result_u32(tantivy_index_add_ngram_batch(
             &mut writer as *mut IndexWriterWrapper as *mut c_void,
             ptr::null(),
             ptr::null(),
@@ -291,6 +436,8 @@ mod tests {
             ptr::null(),
             0,
         ));
+        assert!(success, "unexpected FFI error: {error}");
+        assert_eq!(value, Some(NgramWriteStatus::Applied as u32));
     }
 
     #[test]
@@ -533,6 +680,6 @@ mod tests {
         assert_success(first.call(&mut writer));
 
         let out_of_order = BatchInput::new(vec![(4, Some(b"second".to_vec()))]);
-        assert_error_contains(out_of_order.call(&mut writer), "strictly ordered");
+        assert_error_contains(out_of_order.call(&mut writer), "strictly increasing");
     }
 }

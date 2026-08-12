@@ -58,7 +58,7 @@ build_index(const ScalarIndexCreatorPtr& creator,
 
     creator->Build(ds);
 
-    delete[] (char*)(ds->GetTensor());
+    delete[](char*)(ds->GetTensor());
 }
 
 template <>
@@ -71,7 +71,7 @@ build_index(const ScalarIndexCreatorPtr& creator,
 
     creator->Build(ds);
 
-    delete[] (char*)(ds->GetTensor());
+    delete[](char*)(ds->GetTensor());
 }
 
 milvus::Config
@@ -244,8 +244,8 @@ TEST(ScalarIndexCreatorTest, RejectsInvalidNgramDirectSoftLimit) {
 
 TEST(ScalarIndexCreatorTest, AcceptsValidNgramBuildSettings) {
     for (const auto* mode : {"regular", "auto", "force_direct"}) {
-        for (const auto& limit : {nlohmann::json("4096"),
-                                  nlohmann::json(4096u)}) {
+        for (const auto& limit :
+             {nlohmann::json("4096"), nlohmann::json(4096u)}) {
             SCOPED_TRACE(fmt::format("mode={}, limit={}", mode, limit.dump()));
             auto config = MakeNgramConfig();
             config[milvus::index::NGRAM_BUILD_MODE] = mode;

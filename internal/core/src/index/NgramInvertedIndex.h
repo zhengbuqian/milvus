@@ -21,6 +21,14 @@ class SegmentExpr;
 
 namespace milvus::index {
 
+struct NgramBuildStats {
+    NgramBuildBackend initial_backend{NgramBuildBackend::Regular};
+    std::optional<NgramBuildBackend> final_backend{std::nullopt};
+    size_t replay_count{0};
+    size_t direct_rows_applied{0};
+    uint64_t preflight_required_bytes{0};
+};
+
 // Extract runs of literal bytes from a regex pattern that are GUARANTEED to
 // appear in any matching string.  Used by ngram index for coarse filtering.
 // Returns empty vector if no safe literals can be extracted (e.g. alternation,
@@ -59,7 +67,9 @@ class NgramInvertedIndex : public InvertedIndexTantivy<std::string> {
     BuildWithFieldData(const std::vector<FieldDataPtr>& datas) override;
 
     void
-    BuildWithJsonFieldData(const std::vector<FieldDataPtr>& datas);
+    BuildWithRawDataForUT(size_t n,
+                          const void* values,
+                          const Config& config = {}) override;
 
     // For unit tests only - combines Phase1 and Phase2 in one call
     std::optional<TargetBitmap>
@@ -102,7 +112,19 @@ class NgramInvertedIndex : public InvertedIndexTantivy<std::string> {
 
     void
     finish() {
-        this->wrapper_->finish();
+        if (this->wrapper_) {
+            this->wrapper_->finish();
+        }
+    }
+
+    const NgramBuildStats&
+    GetBuildStats() const {
+        return build_stats_;
+    }
+
+    size_t
+    GetAvgRowSize() const {
+        return avg_row_size_;
     }
 
     void
@@ -118,6 +140,39 @@ class NgramInvertedIndex : public InvertedIndexTantivy<std::string> {
                 const Config& config) override;
 
  private:
+    enum class BuildAttemptStatus {
+        Applied,
+        ReplayRequired,
+    };
+
+    struct BuildAttemptStats {
+        std::vector<size_t> null_offsets;
+        uint64_t total_bytes{0};
+        uint64_t value_rows{0};
+    };
+
+    uint64_t
+    EstimateDirectBuildMemory(const std::vector<FieldDataPtr>& datas) const;
+
+    void
+    StartBuildAttempt(NgramBuildBackend backend);
+
+    BuildAttemptStatus
+    BuildStringAttempt(const std::vector<FieldDataPtr>& datas,
+                       NgramBuildBackend backend,
+                       BuildAttemptStats& stats);
+
+    BuildAttemptStatus
+    BuildJsonAttempt(const std::vector<FieldDataPtr>& datas,
+                     NgramBuildBackend backend,
+                     BuildAttemptStats& stats);
+
+    BuildAttemptStatus
+    FinishBuildAttempt();
+
+    void
+    PublishBuildAttempt(NgramBuildBackend backend, BuildAttemptStats&& stats);
+
     void
     ApplyIterativeNgramFilter(const std::vector<std::string>& sorted_terms,
                               size_t total_count,
@@ -129,6 +184,10 @@ class NgramInvertedIndex : public InvertedIndexTantivy<std::string> {
     uintptr_t min_gram_{0};
     uintptr_t max_gram_{0};
     int64_t field_id_{0};
+    std::string field_name_;
+    NgramBuildMode build_mode_{NgramBuildMode::Auto};
+    uint64_t direct_soft_limit_bytes_{DEFAULT_NGRAM_DIRECT_SOFT_LIMIT_BYTES};
+    NgramBuildStats build_stats_;
     size_t avg_row_size_{0};
     std::chrono::time_point<std::chrono::system_clock> index_build_begin_;
 

@@ -43,6 +43,7 @@ using JsonErrorRecorder = std::function<void(const Json& json,
 
 using JsonNullAdder = std::function<void(int64_t offset)>;
 using JsonNonExistAdder = std::function<void(int64_t offset)>;
+using JsonShouldContinue = std::function<bool()>;
 
 // Result of converting JSON field data to typed FieldData.
 struct JsonToTypedResult {
@@ -113,7 +114,8 @@ ProcessJsonFieldData(
     JsonDataAdder<T> data_adder,
     JsonNullAdder null_adder,
     JsonNonExistAdder non_exist_adder,
-    JsonErrorRecorder error_recorder);
+    JsonErrorRecorder error_recorder,
+    JsonShouldContinue should_continue = {});
 
 extern template void
 ProcessJsonFieldData<bool>(
@@ -125,7 +127,8 @@ ProcessJsonFieldData<bool>(
     JsonDataAdder<bool> data_adder,
     JsonNullAdder null_adder,
     JsonNonExistAdder non_exist_adder,
-    JsonErrorRecorder error_recorder);
+    JsonErrorRecorder error_recorder,
+    JsonShouldContinue should_continue);
 
 extern template void
 ProcessJsonFieldData<int64_t>(
@@ -137,7 +140,8 @@ ProcessJsonFieldData<int64_t>(
     JsonDataAdder<int64_t> data_adder,
     JsonNullAdder null_adder,
     JsonNonExistAdder non_exist_adder,
-    JsonErrorRecorder error_recorder);
+    JsonErrorRecorder error_recorder,
+    JsonShouldContinue should_continue);
 
 extern template void
 ProcessJsonFieldData<double>(
@@ -149,7 +153,8 @@ ProcessJsonFieldData<double>(
     JsonDataAdder<double> data_adder,
     JsonNullAdder null_adder,
     JsonNonExistAdder non_exist_adder,
-    JsonErrorRecorder error_recorder);
+    JsonErrorRecorder error_recorder,
+    JsonShouldContinue should_continue);
 
 extern template void
 ProcessJsonFieldData<std::string>(
@@ -161,6 +166,7 @@ ProcessJsonFieldData<std::string>(
     JsonDataAdder<std::string> data_adder,
     JsonNullAdder null_adder,
     JsonNonExistAdder non_exist_adder,
-    JsonErrorRecorder error_recorder);
+    JsonErrorRecorder error_recorder,
+    JsonShouldContinue should_continue);
 
 }  // namespace milvus::index

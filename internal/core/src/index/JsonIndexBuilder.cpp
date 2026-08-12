@@ -39,7 +39,8 @@ ProcessJsonFieldData(
     JsonDataAdder<T> data_adder,
     JsonNullAdder null_adder,
     JsonNonExistAdder non_exist_adder,
-    JsonErrorRecorder error_recorder) {
+    JsonErrorRecorder error_recorder,
+    JsonShouldContinue should_continue) {
     int64_t offset = 0;
     using SIMDJSON_T =
         std::conditional_t<std::is_same_v<T, std::string>, std::string_view, T>;
@@ -52,6 +53,9 @@ ProcessJsonFieldData(
     for (const auto& data : field_datas) {
         auto n = data->get_num_rows();
         for (int64_t i = 0; i < n; i++) {
+            if (should_continue && !should_continue()) {
+                return;
+            }
             auto json_column = static_cast<const Json*>(data->RawValue(i));
             if (schema.nullable() && !data->is_valid(i)) {
                 non_exist_adder(offset);
@@ -119,7 +123,8 @@ ProcessJsonFieldData<bool>(
     JsonDataAdder<bool> data_adder,
     JsonNullAdder null_adder,
     JsonNonExistAdder non_exist_adder,
-    JsonErrorRecorder error_recorder);
+    JsonErrorRecorder error_recorder,
+    JsonShouldContinue should_continue);
 
 template void
 ProcessJsonFieldData<int64_t>(
@@ -131,7 +136,8 @@ ProcessJsonFieldData<int64_t>(
     JsonDataAdder<int64_t> data_adder,
     JsonNullAdder null_adder,
     JsonNonExistAdder non_exist_adder,
-    JsonErrorRecorder error_recorder);
+    JsonErrorRecorder error_recorder,
+    JsonShouldContinue should_continue);
 
 template void
 ProcessJsonFieldData<double>(
@@ -143,7 +149,8 @@ ProcessJsonFieldData<double>(
     JsonDataAdder<double> data_adder,
     JsonNullAdder null_adder,
     JsonNonExistAdder non_exist_adder,
-    JsonErrorRecorder error_recorder);
+    JsonErrorRecorder error_recorder,
+    JsonShouldContinue should_continue);
 
 template void
 ProcessJsonFieldData<std::string>(
@@ -155,7 +162,8 @@ ProcessJsonFieldData<std::string>(
     JsonDataAdder<std::string> data_adder,
     JsonNullAdder null_adder,
     JsonNonExistAdder non_exist_adder,
-    JsonErrorRecorder error_recorder);
+    JsonErrorRecorder error_recorder,
+    JsonShouldContinue should_continue);
 
 namespace {
 

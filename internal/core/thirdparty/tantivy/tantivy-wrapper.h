@@ -65,6 +65,18 @@ struct TantivyIndexWrapper {
         bool has_value;
     };
 
+    enum class NgramWriteStatus : uint32_t {
+        Applied = 0,
+        ReplayRequiredBeforeBatch = 1,
+        ReplayRequiredAfterBatch = 2,
+        ReplayRequiredBeforeFinish = 3,
+    };
+
+    static bool
+    RequiresNgramReplay(NgramWriteStatus status) {
+        return status != NgramWriteStatus::Applied;
+    }
+
     template <typename T>
     struct RowBatchView {
         std::span<const T> values;
@@ -155,11 +167,11 @@ struct TantivyIndexWrapper {
         path_ = std::string(path);
     }
 
-    void
+    NgramWriteStatus
     add_ngram_batch(const NgramRowView* rows, uintptr_t len) {
         assert(!finished_);
         if (len == 0) {
-            return;
+            return NgramWriteStatus::Applied;
         }
 
         ngram_ptrs_.clear();
@@ -188,6 +200,46 @@ struct TantivyIndexWrapper {
         AssertInfo(res.result_->success,
                    "failed to add ngram batch: {}",
                    res.result_->error);
+        AssertInfo(res.result_->value.tag == Value::Tag::U32,
+                   "failed to add ngram batch: invalid result type");
+        const auto status = res.result_->value.u32._0;
+        AssertInfo(status <= static_cast<uint32_t>(
+                                 NgramWriteStatus::ReplayRequiredBeforeFinish),
+                   "failed to add ngram batch: invalid status {}",
+                   status);
+        return static_cast<NgramWriteStatus>(status);
+    }
+
+    NgramWriteStatus
+    check_ngram_memory() {
+        assert(!finished_);
+        auto res = RustResultWrapper(tantivy_index_check_ngram_memory(writer_));
+        AssertInfo(res.result_->success,
+                   "failed to check ngram memory: {}",
+                   res.result_->error);
+        AssertInfo(res.result_->value.tag == Value::Tag::U32,
+                   "failed to check ngram memory: invalid result type");
+        const auto status = res.result_->value.u32._0;
+        AssertInfo(status <= static_cast<uint32_t>(
+                                 NgramWriteStatus::ReplayRequiredBeforeFinish),
+                   "failed to check ngram memory: invalid status {}",
+                   status);
+        return static_cast<NgramWriteStatus>(status);
+    }
+
+    static uint64_t
+    ngram_required_memory(uint64_t logical_rows,
+                          uint64_t occurrence_upper_bound,
+                          uint64_t term_bytes_upper_bound,
+                          uint64_t tokenizer_scratch_bytes,
+                          uint64_t observed_finalize_base_bytes,
+                          uint64_t soft_limit_bytes) {
+        return tantivy_ngram_required_memory(logical_rows,
+                                             occurrence_upper_bound,
+                                             term_bytes_upper_bound,
+                                             tokenizer_scratch_bytes,
+                                             observed_finalize_base_bytes,
+                                             soft_limit_bytes);
     }
 
     // load index. create index reader.
@@ -275,16 +327,18 @@ struct TantivyIndexWrapper {
                         WriterBackend backend,
                         uintptr_t num_threads = DEFAULT_NUM_THREADS,
                         uintptr_t overall_memory_budget_in_bytes =
-                            DEFAULT_OVERALL_MEMORY_BUDGET_IN_BYTES) {
-        AssertInfo(backend == WriterBackend::Direct,
-                   "ngram Tantivy writer only supports the Direct backend");
-        auto res = RustResultWrapper(
-            tantivy_create_ngram_writer(field_name,
-                                        path,
-                                        min_gram,
-                                        max_gram,
-                                        num_threads,
-                                        overall_memory_budget_in_bytes));
+                            DEFAULT_OVERALL_MEMORY_BUDGET_IN_BYTES,
+                        uint64_t direct_soft_limit_bytes =
+                            std::numeric_limits<uint64_t>::max()) {
+        auto res = RustResultWrapper(tantivy_create_ngram_writer_with_mode(
+            field_name,
+            path,
+            min_gram,
+            max_gram,
+            num_threads,
+            overall_memory_budget_in_bytes,
+            backend == WriterBackend::Direct,
+            direct_soft_limit_bytes));
 
         AssertInfo(res.result_->success,
                    "failed to create ngram writer: {}",

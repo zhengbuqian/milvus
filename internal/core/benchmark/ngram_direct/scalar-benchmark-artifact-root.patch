@@ -1,0 +1,22 @@
+diff --git a/benchmark/utils/bench_paths.cpp b/benchmark/utils/bench_paths.cpp
+--- a/benchmark/utils/bench_paths.cpp
++++ b/benchmark/utils/bench_paths.cpp
+@@ -12,6 +12,7 @@
+ #include "bench_paths.h"
+ #include "file_system.h"
+ #include "string_utils.h"
++#include <cstdlib>
+ #include <stdexcept>
+
+ namespace milvus {
+@@ -21,6 +22,11 @@
+ // Get path relative to the project
+ std::string
+ GetProjectRelativePath() {
++    if (const char* artifact_root =
++            std::getenv("SCALAR_BENCH_ARTIFACT_ROOT")) {
++        return artifact_root;
++    }
++
+     // Get current working directory
+     std::string current_dir = FileSystem::GetCurrentDirectory();

@@ -151,12 +151,30 @@ RustResult tantivy_create_ngram_writer(const char *field_name,
                                        uintptr_t num_threads,
                                        uintptr_t overall_memory_budget_in_bytes);
 
+RustResult tantivy_create_ngram_writer_with_mode(const char *field_name,
+                                                 const char *path,
+                                                 uintptr_t min_gram,
+                                                 uintptr_t max_gram,
+                                                 uintptr_t num_threads,
+                                                 uintptr_t overall_memory_budget_in_bytes,
+                                                 bool direct,
+                                                 uint64_t direct_soft_limit_bytes);
+
+uint64_t tantivy_ngram_required_memory(uint64_t logical_rows,
+                                       uint64_t occurrence_upper_bound,
+                                       uint64_t term_bytes_upper_bound,
+                                       uint64_t tokenizer_scratch_bytes,
+                                       uint64_t observed_finalize_base_bytes,
+                                       uint64_t soft_limit_bytes);
+
 RustResult tantivy_index_add_ngram_batch(void *writer,
                                          const uint8_t *const *ptrs,
                                          const uintptr_t *lens,
                                          const int64_t *doc_ids,
                                          const uint8_t *has_values,
                                          uintptr_t len);
+
+RustResult tantivy_index_check_ngram_memory(void *writer);
 
 RustResult tantivy_load_index(const char *path, bool load_in_mmap, SetBitsetFn set_bitset);
 

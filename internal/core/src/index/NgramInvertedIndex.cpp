@@ -18,6 +18,8 @@
 #include <chrono>
 #include <cstdint>
 #include <exception>
+#include <iterator>
+#include <limits>
 #include <map>
 #include <string_view>
 #include <utility>
@@ -26,6 +28,7 @@
 #include "bitset/bitset.h"
 #include "boost/filesystem/operations.hpp"
 #include "common/EasyAssert.h"
+#include "common/FieldData.h"
 #include "common/FieldDataInterface.h"
 #include "common/Json.h"
 #include "common/JsonCastFunction.h"
@@ -86,6 +89,76 @@ struct PendingNgramRow {
     bool has_value;
 };
 
+struct NgramPreflightSummary {
+    uint64_t logical_rows{0};
+    uint64_t occurrence_upper_bound{0};
+    uint64_t term_bytes_upper_bound{0};
+    uint64_t tokenizer_scratch_upper_bound{0};
+};
+
+uint64_t
+SaturatingU128ToU64(unsigned __int128 value) {
+    constexpr auto kMax = std::numeric_limits<uint64_t>::max();
+    return value > kMax ? kMax : static_cast<uint64_t>(value);
+}
+
+unsigned __int128
+SquareSum(unsigned __int128 value) {
+    return value * (value + 1) * (2 * value + 1) / 6;
+}
+
+uint64_t
+NgramTokenizerScratchUpperBound(size_t value_len, uintptr_t max_gram) {
+    const auto bytes = static_cast<unsigned __int128>(value_len);
+    const auto max_width = static_cast<unsigned __int128>(max_gram);
+    const auto frontier_count = std::min(bytes + 1, max_width + 1);
+    const auto frontier_capacity =
+        std::max(static_cast<unsigned __int128>(4), frontier_count * 2);
+    const auto frontier_bytes = frontier_capacity * sizeof(uintptr_t);
+    const auto max_token_bytes = std::min(bytes, max_width * 4);
+    const auto token_capacity =
+        max_token_bytes == 0
+            ? 0
+            : std::max(static_cast<unsigned __int128>(8), max_token_bytes * 2);
+    return SaturatingU128ToU64(frontier_bytes + token_capacity);
+}
+
+void
+AddNgramValueToSummary(NgramPreflightSummary& summary,
+                       size_t value_len,
+                       uintptr_t min_gram,
+                       uintptr_t max_gram) {
+    summary.tokenizer_scratch_upper_bound =
+        std::max(summary.tokenizer_scratch_upper_bound,
+                 NgramTokenizerScratchUpperBound(value_len, max_gram));
+    if (value_len > std::numeric_limits<uint32_t>::max()) {
+        summary.occurrence_upper_bound = std::numeric_limits<uint64_t>::max();
+        summary.term_bytes_upper_bound = std::numeric_limits<uint64_t>::max();
+        return;
+    }
+
+    const auto bytes = static_cast<unsigned __int128>(value_len);
+    const auto min_width = static_cast<unsigned __int128>(min_gram);
+    const auto max_width =
+        std::min(static_cast<unsigned __int128>(max_gram), bytes);
+    if (min_width > max_width) {
+        return;
+    }
+
+    const auto width_count = max_width - min_width + 1;
+    const auto width_sum = width_count * (min_width + max_width) / 2;
+    const auto width_square_sum =
+        SquareSum(max_width) - SquareSum(min_width == 0 ? 0 : min_width - 1);
+    const auto occurrences = width_count * (bytes + 1) - width_sum;
+    const auto term_bytes = (bytes + 1) * width_sum - width_square_sum;
+    summary.occurrence_upper_bound = SaturatingU128ToU64(
+        static_cast<unsigned __int128>(summary.occurrence_upper_bound) +
+        occurrences);
+    summary.term_bytes_upper_bound = SaturatingU128ToU64(
+        static_cast<unsigned __int128>(summary.term_bytes_upper_bound) +
+        term_bytes);
+}
+
 inline size_t
 Utf8LiteralLength(const std::string& literal) {
     return Utf8CharCount(literal.data(), literal.size());
@@ -94,7 +167,10 @@ Utf8LiteralLength(const std::string& literal) {
 // for string/varchar type
 NgramInvertedIndex::NgramInvertedIndex(const storage::FileManagerContext& ctx,
                                        const NgramParams& params)
-    : min_gram_(params.min_gram), max_gram_(params.max_gram) {
+    : min_gram_(params.min_gram),
+      max_gram_(params.max_gram),
+      build_mode_(params.build_mode),
+      direct_soft_limit_bytes_(params.direct_soft_limit_bytes) {
     schema_ = ctx.fieldDataMeta.field_schema;
     field_id_ = ctx.fieldDataMeta.field_id;
     file_manager_ = std::make_shared<MemFileManager>(ctx);
@@ -106,14 +182,8 @@ NgramInvertedIndex::NgramInvertedIndex(const storage::FileManagerContext& ctx,
         path_ = disk_file_manager_->GetLocalTempNgramIndexPrefix();
         boost::filesystem::create_directories(path_);
         d_type_ = TantivyDataType::Keyword;
-        std::string field_name =
+        field_name_ =
             std::to_string(disk_file_manager_->GetFieldDataMeta().field_id);
-        wrapper_ = std::make_shared<TantivyIndexWrapper>(
-            field_name.c_str(),
-            path_.c_str(),
-            min_gram_,
-            max_gram_,
-            milvus::tantivy::WriterBackend::Direct);
     }
 }
 
@@ -137,81 +207,242 @@ NgramInvertedIndex::BuildWithFieldData(const std::vector<FieldDataPtr>& datas) {
              field_id_);
 
     index_build_begin_ = std::chrono::system_clock::now();
-    if (schema_.data_type() == proto::schema::DataType::JSON) {
-        BuildWithJsonFieldData(datas);
-    } else {
-        size_t total_bytes = 0;
-        size_t total_rows = 0;
-        size_t total_nulls = 0;
-        for (const auto& data : datas) {
-            total_nulls += data->get_null_count();
+    build_stats_ = {};
+    null_offset_.clear();
+    avg_row_size_ = 0;
+
+    NgramBuildBackend backend = NgramBuildBackend::Regular;
+    switch (build_mode_) {
+        case NgramBuildMode::Regular:
+            break;
+        case NgramBuildMode::ForceDirect:
+            backend = NgramBuildBackend::Direct;
+            break;
+        case NgramBuildMode::Auto:
+            build_stats_.preflight_required_bytes =
+                EstimateDirectBuildMemory(datas);
+            backend = build_stats_.preflight_required_bytes <=
+                              direct_soft_limit_bytes_
+                          ? NgramBuildBackend::Direct
+                          : NgramBuildBackend::Regular;
+            break;
+    }
+    build_stats_.initial_backend = backend;
+
+    for (size_t attempt = 0; attempt < 2; ++attempt) {
+        StartBuildAttempt(backend);
+        BuildAttemptStats attempt_stats;
+        auto status = schema_.data_type() == proto::schema::DataType::JSON
+                          ? BuildJsonAttempt(datas, backend, attempt_stats)
+                          : BuildStringAttempt(datas, backend, attempt_stats);
+        if (status == BuildAttemptStatus::Applied) {
+            status = FinishBuildAttempt();
         }
-        null_offset_.reserve(null_offset_.size() + total_nulls);
+        if (status == BuildAttemptStatus::Applied) {
+            PublishBuildAttempt(backend, std::move(attempt_stats));
+            return;
+        }
 
-        std::vector<TantivyIndexWrapper::NgramRowView> rows;
-        rows.reserve(kNgramBatchRows);
-        auto flush = [this, &rows]() {
-            if (rows.empty()) {
-                return;
-            }
-            wrapper_->add_ngram_batch(rows.data(), rows.size());
-            rows.clear();
-        };
+        AssertInfo(backend == NgramBuildBackend::Direct,
+                   "regular NGRAM writer unexpectedly requested replay");
+        ++build_stats_.replay_count;
+        backend = NgramBuildBackend::Regular;
+    }
 
-        int64_t doc_id = 0;
+    ThrowInfo(ErrorCode::UnexpectedError,
+              "NGRAM build exhausted the direct-to-regular replay attempts");
+}
+
+void
+NgramInvertedIndex::BuildWithRawDataForUT(size_t n,
+                                          const void* values,
+                                          const Config& config) {
+    (void)config;
+    if (schema_.data_type() == proto::schema::DataType::None) {
+        schema_.set_data_type(proto::schema::DataType::VarChar);
+    }
+    AssertInfo(schema_.data_type() == proto::schema::DataType::String ||
+                   schema_.data_type() == proto::schema::DataType::VarChar,
+               "raw NGRAM data requires a string schema, got {}",
+               schema_.data_type());
+    AssertInfo(values != nullptr, "raw NGRAM data pointer must not be null");
+    AssertInfo(n <= static_cast<size_t>(std::numeric_limits<int>::max()),
+               "raw NGRAM protobuf size {} exceeds the parser limit",
+               n);
+
+    proto::schema::StringArray array;
+    AssertInfo(array.ParseFromArray(values, static_cast<int>(n)),
+               "failed to parse raw NGRAM string data");
+    std::vector<std::string> decoded{
+        std::make_move_iterator(array.mutable_data()->begin()),
+        std::make_move_iterator(array.mutable_data()->end())};
+    FieldDataPtr field_data = std::make_shared<FieldData<std::string>>(
+        static_cast<DataType>(schema_.data_type()), false, decoded.size());
+    field_data->FillFieldData(decoded.data(), decoded.size());
+
+    BuildWithFieldData({field_data});
+    wrapper_->create_reader(SetBitsetSealed);
+    ComputeByteSize();
+}
+
+uint64_t
+NgramInvertedIndex::EstimateDirectBuildMemory(
+    const std::vector<FieldDataPtr>& datas) const {
+    NgramPreflightSummary summary;
+    for (const auto& data : datas) {
+        summary.logical_rows = SaturatingU128ToU64(
+            static_cast<unsigned __int128>(summary.logical_rows) +
+            static_cast<uint64_t>(data->get_num_rows()));
+    }
+
+    if (schema_.data_type() == proto::schema::DataType::JSON) {
+        ProcessJsonFieldData<std::string>(
+            datas,
+            schema_,
+            nested_path_,
+            JSON_CAST_TYPE,
+            JSON_CAST_FUNCTION,
+            [this, &summary](
+                const std::string* data, int64_t size, int64_t offset) {
+                AssertInfo(size == 0 || size == 1,
+                           "ngram JSON row {} produced {} string values",
+                           offset,
+                           size);
+                if (size == 1) {
+                    AddNgramValueToSummary(
+                        summary, data[0].size(), min_gram_, max_gram_);
+                }
+            },
+            [](int64_t) {},
+            [](int64_t) {},
+            [](const Json&, const std::string&, simdjson::error_code) {});
+    } else {
         for (const auto& data : datas) {
             const auto row_count = data->get_num_rows();
             const auto* values = static_cast<const std::string*>(data->Data());
             AssertInfo(values != nullptr || row_count == 0,
                        "ngram string field data has {} rows but no values",
                        row_count);
-            for (int64_t i = 0; i < row_count; ++i, ++doc_id) {
-                const bool has_value = !schema_.nullable() || data->is_valid(i);
-                if (!has_value) {
-                    null_offset_.push_back(doc_id);
-                    rows.push_back({nullptr, 0, doc_id, false});
-                } else {
-                    const auto& value = values[i];
-                    rows.push_back(
-                        {reinterpret_cast<const uint8_t*>(value.data()),
-                         value.size(),
-                         doc_id,
-                         true});
-                    total_bytes += value.size();
-                    ++total_rows;
-                }
-
-                if (rows.size() == kNgramBatchRows) {
-                    flush();
+            for (int64_t row = 0; row < row_count; ++row) {
+                if (!schema_.nullable() || data->is_valid(row)) {
+                    AddNgramValueToSummary(
+                        summary, values[row].size(), min_gram_, max_gram_);
                 }
             }
         }
-        flush();
-
-        avg_row_size_ = total_rows > 0 ? total_bytes / total_rows : 0;
-        LOG_INFO("Ngram index avg_row_size: {} bytes", avg_row_size_);
     }
+
+    return TantivyIndexWrapper::ngram_required_memory(
+        summary.logical_rows,
+        summary.occurrence_upper_bound,
+        summary.term_bytes_upper_bound,
+        summary.tokenizer_scratch_upper_bound,
+        0,
+        direct_soft_limit_bytes_);
 }
 
 void
-NgramInvertedIndex::BuildWithJsonFieldData(
-    const std::vector<FieldDataPtr>& field_datas) {
-    AssertInfo(schema_.data_type() == proto::schema::DataType::JSON,
-               "schema data should be json, but is {}",
-               schema_.data_type());
-    LOG_INFO("Start to build ngram index for json, field_id: {}, field: {}",
-             field_id_,
-             nested_path_);
+NgramInvertedIndex::StartBuildAttempt(NgramBuildBackend backend) {
+    wrapper_.reset();
+    boost::system::error_code error;
+    boost::filesystem::remove_all(path_, error);
+    AssertInfo(!error,
+               "failed to remove NGRAM build path {}: {}",
+               path_,
+               error.message());
+    boost::filesystem::create_directories(path_, error);
+    AssertInfo(!error,
+               "failed to create NGRAM build path {}: {}",
+               path_,
+               error.message());
 
-    index_build_begin_ = std::chrono::system_clock::now();
+    wrapper_ = std::make_shared<TantivyIndexWrapper>(
+        field_name_.c_str(),
+        path_.c_str(),
+        min_gram_,
+        max_gram_,
+        backend == NgramBuildBackend::Direct
+            ? milvus::tantivy::WriterBackend::Direct
+            : milvus::tantivy::WriterBackend::Regular,
+        milvus::tantivy::DEFAULT_NUM_THREADS,
+        milvus::tantivy::DEFAULT_OVERALL_MEMORY_BUDGET_IN_BYTES,
+        direct_soft_limit_bytes_);
+}
 
-    size_t total_bytes = 0;
-    size_t total_rows = 0;
+NgramInvertedIndex::BuildAttemptStatus
+NgramInvertedIndex::BuildStringAttempt(const std::vector<FieldDataPtr>& datas,
+                                       NgramBuildBackend backend,
+                                       BuildAttemptStats& stats) {
+    size_t total_nulls = 0;
+    for (const auto& data : datas) {
+        total_nulls += data->get_null_count();
+    }
+    stats.null_offsets.reserve(total_nulls);
+
+    std::vector<TantivyIndexWrapper::NgramRowView> rows;
+    rows.reserve(kNgramBatchRows);
+    auto flush = [this, &rows, backend]() {
+        if (rows.empty()) {
+            return BuildAttemptStatus::Applied;
+        }
+        const auto status = wrapper_->add_ngram_batch(rows.data(), rows.size());
+        if (backend == NgramBuildBackend::Direct &&
+            status != TantivyIndexWrapper::NgramWriteStatus::
+                          ReplayRequiredBeforeBatch) {
+            build_stats_.direct_rows_applied += rows.size();
+        }
+        if (TantivyIndexWrapper::RequiresNgramReplay(status)) {
+            return BuildAttemptStatus::ReplayRequired;
+        }
+        rows.clear();
+        return BuildAttemptStatus::Applied;
+    };
+
+    int64_t doc_id = 0;
+    for (const auto& data : datas) {
+        const auto row_count = data->get_num_rows();
+        const auto* values = static_cast<const std::string*>(data->Data());
+        AssertInfo(values != nullptr || row_count == 0,
+                   "ngram string field data has {} rows but no values",
+                   row_count);
+        for (int64_t row = 0; row < row_count; ++row, ++doc_id) {
+            const bool has_value = !schema_.nullable() || data->is_valid(row);
+            if (!has_value) {
+                stats.null_offsets.push_back(doc_id);
+                rows.push_back({nullptr, 0, doc_id, false});
+            } else {
+                const auto& value = values[row];
+                rows.push_back({reinterpret_cast<const uint8_t*>(value.data()),
+                                value.size(),
+                                doc_id,
+                                true});
+                stats.total_bytes = SaturatingU128ToU64(
+                    static_cast<unsigned __int128>(stats.total_bytes) +
+                    value.size());
+                if (stats.value_rows != std::numeric_limits<uint64_t>::max()) {
+                    ++stats.value_rows;
+                }
+            }
+
+            if (rows.size() == kNgramBatchRows &&
+                flush() == BuildAttemptStatus::ReplayRequired) {
+                return BuildAttemptStatus::ReplayRequired;
+            }
+        }
+    }
+    return flush();
+}
+
+NgramInvertedIndex::BuildAttemptStatus
+NgramInvertedIndex::BuildJsonAttempt(
+    const std::vector<FieldDataPtr>& field_datas,
+    NgramBuildBackend backend,
+    BuildAttemptStats& stats) {
     size_t total_nulls = 0;
     for (const auto& data : field_datas) {
         total_nulls += data->get_null_count();
     }
-    null_offset_.reserve(null_offset_.size() + total_nulls);
+    stats.null_offsets.reserve(total_nulls);
 
     std::vector<PendingNgramRow> pending_rows;
     pending_rows.reserve(kNgramBatchRows);
@@ -219,12 +450,12 @@ NgramInvertedIndex::BuildWithJsonFieldData(
     flat_values.reserve(kNgramJsonBatchBytes);
     std::vector<TantivyIndexWrapper::NgramRowView> row_views;
     row_views.reserve(kNgramBatchRows);
+    bool replay_required = false;
 
-    auto flush = [this, &pending_rows, &flat_values, &row_views]() {
+    auto flush = [&]() {
         if (pending_rows.empty()) {
-            return;
+            return BuildAttemptStatus::Applied;
         }
-
         row_views.clear();
         for (const auto& row : pending_rows) {
             const uint8_t* value = nullptr;
@@ -234,19 +465,29 @@ NgramInvertedIndex::BuildWithJsonFieldData(
             row_views.push_back(
                 {value, row.value_len, row.doc_id, row.has_value});
         }
-        wrapper_->add_ngram_batch(row_views.data(), row_views.size());
+        const auto status =
+            wrapper_->add_ngram_batch(row_views.data(), row_views.size());
+        if (backend == NgramBuildBackend::Direct &&
+            status != TantivyIndexWrapper::NgramWriteStatus::
+                          ReplayRequiredBeforeBatch) {
+            build_stats_.direct_rows_applied += row_views.size();
+        }
         pending_rows.clear();
         flat_values.clear();
+        if (TantivyIndexWrapper::RequiresNgramReplay(status)) {
+            replay_required = true;
+            return BuildAttemptStatus::ReplayRequired;
+        }
+        return BuildAttemptStatus::Applied;
     };
 
     ProcessJsonFieldData<std::string>(
         field_datas,
-        this->schema_,
+        schema_,
         nested_path_,
         JSON_CAST_TYPE,
         JSON_CAST_FUNCTION,
-        [&pending_rows, &flat_values, &flush, &total_bytes, &total_rows](
-            const std::string* data, int64_t size, int64_t offset) {
+        [&](const std::string* data, int64_t size, int64_t offset) {
             AssertInfo(size == 0 || size == 1,
                        "ngram JSON row {} produced {} string values",
                        offset,
@@ -254,41 +495,67 @@ NgramInvertedIndex::BuildWithJsonFieldData(
             const bool has_value = size == 1;
             const uintptr_t value_len =
                 has_value ? static_cast<uintptr_t>(data[0].size()) : 0;
-
             if (!pending_rows.empty() &&
                 (pending_rows.size() == kNgramBatchRows ||
                  flat_values.size() + value_len > kNgramJsonBatchBytes)) {
                 flush();
+                if (replay_required) {
+                    return;
+                }
             }
 
             const size_t value_offset = flat_values.size();
             if (has_value) {
                 const auto& value = data[0];
-                if (!value.empty()) {
-                    const auto* value_bytes =
-                        reinterpret_cast<const uint8_t*>(value.data());
-                    flat_values.insert(flat_values.end(),
-                                       value_bytes,
-                                       value_bytes + value.size());
+                flat_values.insert(
+                    flat_values.end(), value.begin(), value.end());
+                stats.total_bytes = SaturatingU128ToU64(
+                    static_cast<unsigned __int128>(stats.total_bytes) +
+                    value.size());
+                if (stats.value_rows != std::numeric_limits<uint64_t>::max()) {
+                    ++stats.value_rows;
                 }
-                total_bytes += value.size();
-                ++total_rows;
             }
             pending_rows.push_back(
                 {value_offset, value_len, offset, has_value});
-
             if (pending_rows.size() == kNgramBatchRows ||
                 flat_values.size() >= kNgramJsonBatchBytes) {
                 flush();
             }
         },
-        [this](int64_t offset) { this->null_offset_.push_back(offset); },
-        [](int64_t offset) {},
-        [](const Json&, const std::string&, simdjson::error_code) {});
-    flush();
+        [&](int64_t offset) {
+            if (!replay_required) {
+                stats.null_offsets.push_back(offset);
+            }
+        },
+        [](int64_t) {},
+        [](const Json&, const std::string&, simdjson::error_code) {},
+        [&]() { return !replay_required; });
+    if (replay_required) {
+        return BuildAttemptStatus::ReplayRequired;
+    }
+    return flush();
+}
 
-    avg_row_size_ = total_rows > 0 ? total_bytes / total_rows : 0;
-    LOG_INFO("Ngram index (JSON) avg_row_size: {} bytes", avg_row_size_);
+NgramInvertedIndex::BuildAttemptStatus
+NgramInvertedIndex::FinishBuildAttempt() {
+    const auto status = wrapper_->check_ngram_memory();
+    if (TantivyIndexWrapper::RequiresNgramReplay(status)) {
+        return BuildAttemptStatus::ReplayRequired;
+    }
+    wrapper_->finish();
+    return BuildAttemptStatus::Applied;
+}
+
+void
+NgramInvertedIndex::PublishBuildAttempt(NgramBuildBackend backend,
+                                        BuildAttemptStats&& stats) {
+    null_offset_ = std::move(stats.null_offsets);
+    avg_row_size_ =
+        stats.value_rows > 0
+            ? static_cast<size_t>(stats.total_bytes / stats.value_rows)
+            : 0;
+    build_stats_.final_backend = backend;
 }
 
 BinarySet
