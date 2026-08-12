@@ -60,6 +60,9 @@ constexpr const char* INDEX_NON_ENCODING = "index.nonEncoding";
 constexpr const char* NGRAM_INDEX_TYPE = "NGRAM";
 constexpr const char* MIN_GRAM = "min_gram";
 constexpr const char* MAX_GRAM = "max_gram";
+constexpr const char* NGRAM_BUILD_MODE = "ngram_build_mode";
+constexpr const char* NGRAM_DIRECT_SOFT_LIMIT_BYTES =
+    "ngram_direct_soft_limit_bytes";
 constexpr const char* FMINDEX_INDEX_TYPE = "FMINDEX";
 // FM-index build param: suffix-array sampling rate (space vs. locate latency).
 constexpr const char* FM_SA_SAMPLE_RATE = "fm_sa_sample_rate";

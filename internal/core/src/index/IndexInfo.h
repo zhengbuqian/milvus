@@ -21,10 +21,27 @@
 
 namespace milvus::index {
 
+enum class NgramBuildMode {
+    Regular,
+    Auto,
+    ForceDirect,
+};
+
+enum class NgramBuildBackend {
+    Regular,
+    Direct,
+};
+
+constexpr uint64_t DEFAULT_NGRAM_DIRECT_SOFT_LIMIT_BYTES =
+    uint64_t{2} * 1024 * 1024 * 1024;
+
 struct NgramParams {
     bool loading_index;
     uintptr_t min_gram;
     uintptr_t max_gram;
+    NgramBuildMode build_mode{NgramBuildMode::Auto};
+    uint64_t direct_soft_limit_bytes{
+        DEFAULT_NGRAM_DIRECT_SOFT_LIMIT_BYTES};
 };
 
 struct FMIndexParams {

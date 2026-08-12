@@ -74,6 +74,29 @@ build_index(const ScalarIndexCreatorPtr& creator,
     delete[] (char*)(ds->GetTensor());
 }
 
+milvus::Config
+MakeNgramConfig() {
+    milvus::Config config;
+    config[milvus::index::INDEX_TYPE] = milvus::index::NGRAM_INDEX_TYPE;
+    config[milvus::index::MIN_GRAM] = "2";
+    config[milvus::index::MAX_GRAM] = "3";
+    return config;
+}
+
+void
+ExpectInvalidNgramConfig(milvus::Config config) {
+    try {
+        auto creator = milvus::indexbuilder::CreateScalarIndex(
+            milvus::DataType::VARCHAR,
+            config,
+            milvus::storage::FileManagerContext());
+        (void)creator;
+        FAIL() << "expected invalid NGRAM config to be rejected";
+    } catch (const milvus::SegcoreError& error) {
+        EXPECT_EQ(error.get_error_code(), milvus::ErrorCode::InvalidParameter);
+    }
+}
+
 }  // namespace
 
 template <typename T>
@@ -194,6 +217,46 @@ TEST(ScalarIndexCreatorTest, CreateTextMatchIndexForTextField) {
         milvus::indexbuilder::IndexFactory::GetInstance().CreateIndex(
             milvus::DataType::TEXT, config, ctx);
     ASSERT_NE(creator, nullptr);
+}
+
+TEST(ScalarIndexCreatorTest, RejectsInvalidNgramBuildMode) {
+    auto config = MakeNgramConfig();
+    config[milvus::index::NGRAM_BUILD_MODE] = "unknown";
+
+    ExpectInvalidNgramConfig(config);
+}
+
+TEST(ScalarIndexCreatorTest, RejectsInvalidNgramDirectSoftLimit) {
+    for (const auto& value : {nlohmann::json("-1"),
+                              nlohmann::json("0"),
+                              nlohmann::json("1024bytes"),
+                              nlohmann::json("+1"),
+                              nlohmann::json(-1),
+                              nlohmann::json(0),
+                              nlohmann::json(1.5)}) {
+        SCOPED_TRACE(value.dump());
+        auto config = MakeNgramConfig();
+        config[milvus::index::NGRAM_DIRECT_SOFT_LIMIT_BYTES] = value;
+
+        ExpectInvalidNgramConfig(config);
+    }
+}
+
+TEST(ScalarIndexCreatorTest, AcceptsValidNgramBuildSettings) {
+    for (const auto* mode : {"regular", "auto", "force_direct"}) {
+        for (const auto& limit : {nlohmann::json("4096"),
+                                  nlohmann::json(4096u)}) {
+            SCOPED_TRACE(fmt::format("mode={}, limit={}", mode, limit.dump()));
+            auto config = MakeNgramConfig();
+            config[milvus::index::NGRAM_BUILD_MODE] = mode;
+            config[milvus::index::NGRAM_DIRECT_SOFT_LIMIT_BYTES] = limit;
+
+            EXPECT_NO_THROW(milvus::indexbuilder::CreateScalarIndex(
+                milvus::DataType::VARCHAR,
+                config,
+                milvus::storage::FileManagerContext()));
+        }
+    }
 }
 
 TEST(ScalarIndexCreatorTest, EmptyNestedIndexBuildSkipsPersistence) {

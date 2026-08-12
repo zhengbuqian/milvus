@@ -11,8 +11,10 @@ import (
 )
 
 const (
-	MinGramKey = "min_gram"
-	MaxGramKey = "max_gram"
+	MinGramKey                   = "min_gram"
+	MaxGramKey                   = "max_gram"
+	NgramBuildModeKey            = "ngram_build_mode"
+	NgramDirectSoftLimitBytesKey = "ngram_direct_soft_limit_bytes"
 )
 
 type NgramIndexChecker struct {
@@ -59,6 +61,28 @@ func (c *NgramIndexChecker) CheckTrain(dataType schemapb.DataType, elementType s
 
 	if minGram <= 0 || maxGram <= 0 || minGram > maxGram {
 		return merr.WrapErrParameterInvalidMsg("invalid min_gram or max_gram value for Ngram index, min_gram: %d, max_gram: %d", minGram, maxGram)
+	}
+
+	if buildMode, ok := params[NgramBuildModeKey]; ok {
+		switch buildMode {
+		case "regular", "auto", "force_direct":
+		default:
+			return merr.WrapErrParameterInvalidMsg("invalid ngram_build_mode: %s", buildMode)
+		}
+	}
+
+	if softLimit, ok := params[NgramDirectSoftLimitBytesKey]; ok {
+		decimalDigitsOnly := softLimit != ""
+		for _, digit := range softLimit {
+			if digit < '0' || digit > '9' {
+				decimalDigitsOnly = false
+				break
+			}
+		}
+		softLimitBytes, err := strconv.ParseUint(softLimit, 10, 64)
+		if !decimalDigitsOnly || err != nil || softLimitBytes == 0 {
+			return merr.WrapErrParameterInvalidMsg("ngram_direct_soft_limit_bytes must be a positive integer, got: %s", softLimit)
+		}
 	}
 
 	return c.scalarIndexChecker.CheckTrain(dataType, elementType, params)

@@ -90,6 +90,70 @@ func Test_NgramIndexChecker_CheckTrain(t *testing.T) {
 	})
 }
 
+func Test_NgramIndexChecker_CheckBuildOptions(t *testing.T) {
+	checker := newNgramIndexChecker()
+
+	t.Run("valid build modes", func(t *testing.T) {
+		for _, mode := range []string{"regular", "auto", "force_direct"} {
+			t.Run(mode, func(t *testing.T) {
+				params := map[string]string{
+					MinGramKey:        "2",
+					MaxGramKey:        "3",
+					NgramBuildModeKey: mode,
+				}
+				err := checker.CheckTrain(schemapb.DataType_VarChar, schemapb.DataType_None, params)
+				assert.NoError(t, err)
+			})
+		}
+	})
+
+	t.Run("invalid build modes", func(t *testing.T) {
+		for _, mode := range []string{"", "AUTO", "direct", "auto "} {
+			t.Run(mode, func(t *testing.T) {
+				params := map[string]string{
+					MinGramKey:        "2",
+					MaxGramKey:        "3",
+					NgramBuildModeKey: mode,
+				}
+				err := checker.CheckTrain(schemapb.DataType_VarChar, schemapb.DataType_None, params)
+				if assert.Error(t, err) {
+					assert.Contains(t, err.Error(), "invalid ngram_build_mode")
+				}
+			})
+		}
+	})
+
+	t.Run("valid direct soft limits", func(t *testing.T) {
+		for _, limit := range []string{"1", "18446744073709551615"} {
+			t.Run(limit, func(t *testing.T) {
+				params := map[string]string{
+					MinGramKey:                   "2",
+					MaxGramKey:                   "3",
+					NgramDirectSoftLimitBytesKey: limit,
+				}
+				err := checker.CheckTrain(schemapb.DataType_VarChar, schemapb.DataType_None, params)
+				assert.NoError(t, err)
+			})
+		}
+	})
+
+	t.Run("invalid direct soft limits", func(t *testing.T) {
+		for _, limit := range []string{"", "-1", "0", "1bytes", "18446744073709551616", "+1"} {
+			t.Run(limit, func(t *testing.T) {
+				params := map[string]string{
+					MinGramKey:                   "2",
+					MaxGramKey:                   "3",
+					NgramDirectSoftLimitBytesKey: limit,
+				}
+				err := checker.CheckTrain(schemapb.DataType_VarChar, schemapb.DataType_None, params)
+				if assert.Error(t, err) {
+					assert.Contains(t, err.Error(), "ngram_direct_soft_limit_bytes must be a positive integer")
+				}
+			})
+		}
+	})
+}
+
 func Test_NgramIndexChecker_CheckValidDataType(t *testing.T) {
 	checker := newNgramIndexChecker()
 
