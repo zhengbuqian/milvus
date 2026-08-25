@@ -12,50 +12,46 @@
 
 > **Geometry 属于标量索引**。`RTreeIndex : public ScalarIndex<T>` 本就在这棵树下，与其他标量族的差别只是**算子不同**（空间关系谓词 vs 点/范围谓词），生命周期、构建、持久化、pin 与其他标量族完全同构。按算子把它划成独立组件是错误分族——本文档的方法论正是"每族一个窄合同"，多一个空间族不构成例外。
 
-> **JSON shredding 不是索引，是列布局**。判据用总览 §6.3 那条：*是否按数据形态选算法*。shredding 按数据形态选的是**存储布局**（高频 path 抽成 typed 子列、低频落 shared BSON），查询算法完全没变——仍是 exec 把比较 lambda 逐 chunk 跑在原始值上。三条代码事实：
+> **JSON shredding 不是索引，是列布局**。判据用总览 §6.3 那条：_是否按数据形态选算法_。shredding 按数据形态选的是**存储布局**（高频 path 抽成 typed 子列、低频落 shared BSON），查询算法完全没变——仍是 exec 把比较 lambda 逐 chunk 跑在原始值上。三条代码事实：
 >
 > 1. `JsonKeyStats::ExecutorForShreddingData`（`JsonKeyStats.h:266-330`）持有的 `shredding_columns_` 是 `ChunkedColumnInterface`，循环 `column->Span(op_ctx, i)` / `StringViews()` 把 exec 传入的 functor 跑在原始值上，末尾断言 `processed_size == num_rows`——**永远全扫**，与 `SegmentExpr::ProcessDataChunks` 同形。它甚至自带一份 `SkipIndex skip_index_` 用于跳 chunk，而 zone-map 已裁给 columnar-format：同一个概念在两个组件里各存一份。
 > 2. `BsonInvertedIndex`（`json_stats/bson_inverted.h:41`）的 posting 是 `path → [(row_id, offset)]`，`offset` 是**该值在这一行 BSON blob 里的字节偏移**——它索引的是物理位置，不是值。且 `ExecuteForSharedData` 从不把 posting list 返出来，拿到立刻 `shared_column_->BulkRawBsonAt(...)` 回调解码：**它不可能脱离那根列被独立消费**，这正是列内部布局结构（等价于 offsets/dictionary）的定义，不是一个索引面。连 `exists(path)` 都不能由 posting list 单独回答——`ExistsExpr.cpp:264-270` 拿到 (row, offset) 后仍要 `bson.IsBsonValueEmpty(offset)` 才敢置位。
 > 3. 对照组：`JsonFlatIndex` / `JsonFlatIndexQueryExecutor`（`JsonFlatIndex.h:34,736`）的 tantivy 倒排建在**值**上，`TermBitset` / `json_exist_query` / range 直接出 bitmap，全程不碰列。这才是索引语义。
 >
-> 因此 `JsonKeyStats` 的 `NotImplemented` 泛滥（§2.2 第 1 行）不是"合同太宽"而是**站错了组件**：它今天只能靠继承 `ScalarIndex<std::string>` 来蹭索引的工厂、加载与 pin 机制。把它迁进 columnar-format 的代价是 columnar-format 要引入一个它目前没有的概念——**列的可选替代布局：异步构建、可以缺席、缺席时回退原始 JSON 列**（与 interim index 同构）。这个概念必须显式建模，否则只是把烂摊子换了个目录。归属属 [W1∥ columnar-format 收敛](README.md#7-波次计划)，不属本波。
-> **反问：shared 侧确实复用了倒排，那它算不算索引？——复用的是引擎与生命周期管道，不是 `index` 组件。** 若让 columnar-format 持有一个索引对象、经 Reader 访问，就造出 **L1 → L2 的反向边**；而 index → columnar-format 已经存在且必需（[§5.8](#58-nested元素级索引坐标与投影) 的 `IArrayOffsets` 注入；shredded typed 子列本身就是列）。两条边合起来正是 [W0](00-w0-foundation.md) 明令禁止的双向组件对。实际被复用的只有两层东西，都在 `index` **之下**：
+> 因此 `JsonKeyStats` 的 `NotImplemented` 泛滥（§2.2 第 1 行）不是"合同太宽"而是**站错了组件**：它今天只能靠继承 `ScalarIndex<std::string>` 来蹭索引的工厂、加载与 pin 机制。把它迁进 columnar-format 的代价是 columnar-format 要引入一个它目前没有的概念——**列的可选替代布局：异步构建、可以缺席、缺席时回退原始 JSON 列**（与 interim index 同构）。这个概念必须显式建模，否则只是把烂摊子换了个目录。归属属 [W1∥ columnar-format 收敛](README.md#7-%E6%B3%A2%E6%AC%A1%E8%AE%A1%E5%88%92)，不属本波。 **反问：shared 侧确实复用了倒排，那它算不算索引？——复用的是引擎与生命周期管道，不是 `index` 组件。** 若让 columnar-format 持有一个索引对象、经 Reader 访问，就造出 **L1 → L2 的上行边**——columnar-format 在 L1、index 在 L2，[W0](00-w0-foundation.md) 的分层规则直接禁止，不需要再论证是否构成双向依赖。实际被复用的只有两层东西，都在 `index` **之下**：
 >
 > - **引擎**：`TantivyIndexWrapper` 位于 `thirdparty/tantivy/tantivy-wrapper.h`，属外部底座 `tantivy_binding`，**不属 `src/index/`**。`BsonInvertedIndex` 今天已经直接组合它、完全不碰 `IndexBase`/`ScalarIndex`——它正是 §3 原则 2 引用的那个组合正例。组合外部引擎在任何层都合法（正如 vector 族组合 knowhere、text 族组合 tantivy）。
-> - **生命周期管道**：构建→序列化→上传、下载→加载→pin→计费。这套东西**没有一处是索引专属的**，处理见 [§11.2 第 1 条](#112-处理决定)——它下沉到 L1，两边共用。
+> - **生命周期管道**：构建→序列化→上传、下载→加载→pin→计费。这套东西**没有一处是索引专属的**，处理见 [§11.2 第 1 条](#112-%E5%A4%84%E7%90%86%E5%86%B3%E5%AE%9A)——它下沉到 L1，两边共用。
 >
 > 现状依赖数据支持这个判断：`bson_inverted.h` 的全部依赖是 `storage::DiskFileManagerImpl`（L1）+ tantivy wrapper（外部）+ `index/IndexStats.h`；而 `IndexStats` 只依赖 `common/protobuf_utils.h`，内容是 `(file_name, file_size)` 列表加内存尺寸，**零索引语义**。迁移的全部代价就是把这个类降层。
 >
-> 判定索引的可操作标准不是「用了什么引擎」，而是**能否被那根列以外的消费者当索引消费**。`ExecuteForSharedData` 从不把 posting list 返出来，`exists` 也必须回读 blob——答案是不能。一根字典编码列内部可能用哈希表甚至 FST，没人会因此说 dictionary column 属于索引模块。
-> **再反问：那把 shredding 整体上提呢？让它既不属 index 也不属 columnar-format，而是一个同时持有列与索引的更高层组件。——不成立，三条理由。**
+> 判定索引的可操作标准不是「用了什么引擎」，而是**能否被那根列以外的消费者当索引消费**。`ExecuteForSharedData` 从不把 posting list 返出来，`exists` 也必须回读 blob——答案是不能。一根字典编码列内部可能用哈希表甚至 FST，没人会因此说 dictionary column 属于索引模块。 **再反问：那把 shredding 整体上提呢？让它既不属 index 也不属 columnar-format，而是一个同时持有列与索引的更高层组件。——不成立，三条理由。**
 >
 > 1. **shredded 列已经是 columnar-format 对象，不是"某种类似列的东西"。** `JsonKeyStats::LoadShreddingData`（`JsonKeyStats.cpp:1248-1283`）走的是 `ManifestGroupTranslator` → `ChunkedColumnGroup` → `ProxyChunkColumn`——与普通 storage-v2 列**完全同一条构造链**，连 `enable_mmap`/`warmup_policy`/`load_priority`/`size_estimate`/cachinglayer 计费都是同一套，唯一区别是一个 `GroupChunkType::JSON_KEY_STATS` 标签。上提等于按"来自哪个逻辑字段"把 storage-v2 column group 这一个概念劈成两个家。顺带这也解释了 index → segcore 那 5 处 include 的由来：index 组件得伸手到 L3 去拿 translator 才能造出这些列。
-> 2. **"同时持有列与索引并在两者间选路"这个角色已经有人担任，是 exec。** 这件事对所有字段类型都一样（`DetermineExecPath`），不是 JSON 特有。为 JSON 单造一个持列又持索引的组件，等于造一个 mini-exec——而 [§5.4](#54-ngramreader二段执行的正确切分)（ngram）与 [§5.6](#56-spatialreader空间关系谓词)（spatial）的裁决刚把"索引内部做二段执行"赶回 exec，这是同一条原则的反面。
+> 2. **"同时持有列与索引并在两者间选路"这个角色已经有人担任，是 exec。** 这件事对所有字段类型都一样（`DetermineExecPath`），不是 JSON 特有。为 JSON 单造一个持列又持索引的组件，等于造一个 mini-exec——而 [§5.4](#54-ngramreader%E4%BA%8C%E6%AE%B5%E6%89%A7%E8%A1%8C%E7%9A%84%E6%AD%A3%E7%A1%AE%E5%88%87%E5%88%86)（ngram）与 [§5.6](#56-spatialreader%E7%A9%BA%E9%97%B4%E5%85%B3%E7%B3%BB%E8%B0%93%E8%AF%8D)（spatial）的裁决刚把"索引内部做二段执行"赶回 exec，这是同一条原则的反面。
 > 3. **上提的落点其实是 segcore（L3），不是新层**——它的一句话定义正是"列/索引/可见性三条读通道"。但那会让 segcore 拥有一个 JSON 专属数据结构（与 segcore 重构"甩掉类型特例"的方向相反），并且 JSON 字段将无法经统一 `ColumnInterface` 提供，把 [#51504](https://github.com/milvus-io/milvus/pull/51504) 刚统一起来的数据访问路径重新劈开。
 >
-> 那么"哪个 path 有 typed 子列、cast 成什么、没有时回退哪根列"这些内部知识放哪儿？——**列的自述（layout metadata）**，与列知道自己的 chunk 几何（`ColumnPlanner`）同类。exec 问"field F 的 path P 你能以什么形态给我"，拿到能力答案后自己选路。即 [§12.5](#12-未决问题) 那个 `ColumnCaps` 未决项，不需要新组件。
+> 那么"哪个 path 有 typed 子列、cast 成什么、没有时回退哪根列"这些内部知识放哪儿？——**列的自述（layout metadata）**，与列知道自己的 chunk 几何（`ColumnPlanner`）同类。exec 问"field F 的 path P 你能以什么形态给我"，拿到能力答案后自己选路。即 [§12.5](#12-%E6%9C%AA%E5%86%B3%E9%97%AE%E9%A2%98) 那个 `ColumnCaps` 未决项，不需要新组件。
 >
-> **本裁决的失效条件（写死，便于将来复查）**：今天 `BsonInvertedIndex` 的 term 是 **path**、posting 是 `(row_id, blob 内字节偏移)`，是定位器。若将来 shared 侧改为索引**值**（例如支持 `a.b > 3` 直接出 bitmap 而不回读 blob），那么该布局内部就真的嵌了一个索引，"跨两层"的前提成立，本条裁决必须重开。
-> **外部独立证实：[宽表建模设计文档](https://zilliverse.feishu.cn/wiki/G9RIwzFwwiYdm4k1WlGcciBSnff)（2026-08 草稿）。** 该文档「需求 Scope」第 3 条写明：*在单个 Sealed Segment 内部，`Struct` 和 `JSON` 应在 schema 推断后，以相同的底层结构存储，即拆列*。`Struct` 拆列是无争议的存储/schema 概念（物理列、FieldID 分配、etcd schema）；要求 JSON 与之同构，等于宣告 **JSON shredding 是拆列的一个变体**——差别只在 layout 从哪儿来。既然 `Struct` 拆列显然不需要一个「同时持有列与索引」的新组件，JSON 更不需要。
+> **本裁决的失效条件（写死，便于将来复查）**：今天 `BsonInvertedIndex` 的 term 是 **path**、posting 是 `(row_id, blob 内字节偏移)`，是定位器。若将来 shared 侧改为索引**值**（例如支持 `a.b > 3` 直接出 bitmap 而不回读 blob），那么该布局内部就真的嵌了一个索引，"跨两层"的前提成立，本条裁决必须重开。 **外部独立证实：**[**宽表建模设计文档**](https://zilliverse.feishu.cn/wiki/G9RIwzFwwiYdm4k1WlGcciBSnff)**（2026-08 草稿）。** 该文档「需求 Scope」第 3 条写明：_在单个 Sealed Segment 内部，`Struct` 和 `JSON` 应在 schema 推断后，以相同的底层结构存储，即拆列_。`Struct` 拆列是无争议的存储/schema 概念（物理列、FieldID 分配、etcd schema）；要求 JSON 与之同构，等于宣告 **JSON shredding 是拆列的一个变体**——差别只在 layout 从哪儿来。既然 `Struct` 拆列显然不需要一个「同时持有列与索引」的新组件，JSON 更不需要。
 >
 > 但该文档同时**修正了本裁决的一处粒度**：JSON 一节写「拆列的结构无需保存到 etcd，就按现在只保存在 stats 里即可，每个 Segment 在 Segcore 里动态管理」。这不影响子列对象的归属，但把 **layout 目录** 的归属钉在了 segcore。三段划分：
 >
-> | 东西 | 归属 | 依据 |
-> |---|---|---|
-> | 子列对象（typed 子列、shared BSON 子列） | **columnar-format (L1)** | 与 `Struct` 子列同构（宽表建模 Scope 3）；今天已经是 `ManifestGroupTranslator`→`ChunkedColumnGroup`→`ProxyChunkColumn` |
-> | layout 目录（path → 哪根子列 / cast type / 是否只在 shared 里） | **segcore (L3)** | JSON 的 layout 来自 per-segment stats、动态推断、每段不同；`Struct` 的 layout 来自 collection schema，走 schema 通道 |
-> | 定位倒排（path → (row, byte offset)） | 随 shared 子列，归 columnar-format | 不能脱离该列被消费 |
-> | 选路（走 path index 还是扫子列） | exec (L4) | 与所有字段类型一致 |
+> | 东西                                                 | 归属                            | 依据                                                                                                    |
+> | -------------------------------------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------- |
+> | 子列对象（typed 子列、shared BSON 子列）                      | **columnar-format (L1)**      | 与 `Struct` 子列同构（宽表建模 Scope 3）；今天已经是 `ManifestGroupTranslator`→`ChunkedColumnGroup`→`ProxyChunkColumn` |
+> | layout 目录（path → 哪根子列 / cast type / 是否只在 shared 里） | **segcore (L3)**              | JSON 的 layout 来自 per-segment stats、动态推断、每段不同；`Struct` 的 layout 来自 collection schema，走 schema 通道       |
+> | 定位倒排（path → (row, byte offset)）                    | 随 shared 子列，归 columnar-format | 不能脱离该列被消费                                                                                             |
+> | 选路（走 path index 还是扫子列）                             | exec (L4)                     | 与所有字段类型一致                                                                                             |
 >
-> 这比「列的自述」更准确：**JSON 的 layout 自述不是列自己知道的，是 segcore 从 stats 加载后装配给列的**；`Struct` 的 layout 则由 schema 直接给出。同一个数据访问接口、两个元数据来源——[§12.5](#12-未决问题) 的 `ColumnCaps` 必须按这个形状设计。
-> **W1 内的过渡处理（宽表建模落地前）。** 上面的终局裁决依赖两个尚未定型的外部件（嵌套数据表达、Struct/JSON 拆列统一），但 W1 不能等——`JsonKeyStats` 挂在 `ScalarIndex<std::string>` 下会挡住 `IndexBase` 退役，5 处 `index → segcore` 反向边也是 W1 的出口判据。好消息是**代价几乎为零**：盘点后，它与索引机制的耦合全仓只剩一行。
+> 这比「列的自述」更准确：**JSON 的 layout 自述不是列自己知道的，是 segcore 从 stats 加载后装配给列的**；`Struct` 的 layout 则由 schema 直接给出。同一个数据访问接口、两个元数据来源——[§12.5](#12-%E6%9C%AA%E5%86%B3%E9%97%AE%E9%A2%98) 的 `ColumnCaps` 必须按这个形状设计。 **W1 内的过渡处理（宽表建模落地前）。** 上面的终局裁决依赖两个尚未定型的外部件（嵌套数据表达、Struct/JSON 拆列统一），但 W1 不能等——`JsonKeyStats` 挂在 `ScalarIndex<std::string>` 下会挡住 `IndexBase` 退役，5 处 `index → segcore` 反向边也是 W1 的出口判据。好消息是**代价几乎为零**：盘点后，它与索引机制的耦合全仓只剩一行。
 >
-> | 事实 | 证据 |
-> |---|---|
-> | 构建侧**不经 `IndexFactory`** | `indexbuilder/index_c.cpp:477` 直接 `make_unique<JsonKeyStats>`，只调 `Build(config)` + `Upload(config)` |
-> | 加载侧**不经类型擦除** | `ChunkedSegmentSealedImpl::BuildJsonKeyStatsIndex` 直接构造，存为 `shared_ptr<JsonKeyStats>`（`ChunkedSegmentSealedImpl.h:350`、`SegmentInterface.h:941`）——**不是** `CacheIndexBasePtr`/`IndexBase` |
-> | 查询侧**不经虚函数** | `segment->GetJsonStats()` 拿具体类型，调 `ExecutorForShreddingData` / `ExecuteForSharedData` |
-> | 唯一耦合点 | `JsonKeyStats.h:76` 的 `: public ScalarIndex<std::string>`——**一个没有任何调用点使用的继承子句** |
+> | 事实                       | 证据                                                                                                                                                                                       |
+> | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+> | 构建侧**不经 `IndexFactory`** | `indexbuilder/index_c.cpp:477` 直接 `make_unique<JsonKeyStats>`，只调 `Build(config)` + `Upload(config)`                                                                                      |
+> | 加载侧**不经类型擦除**            | `ChunkedSegmentSealedImpl::BuildJsonKeyStatsIndex` 直接构造，存为 `shared_ptr<JsonKeyStats>`（`ChunkedSegmentSealedImpl.h:350`、`SegmentInterface.h:941`）——**不是** `CacheIndexBasePtr`/`IndexBase` |
+> | 查询侧**不经虚函数**             | `segment->GetJsonStats()` 拿具体类型，调 `ExecutorForShreddingData` / `ExecuteForSharedData`                                                                                                    |
+> | 唯一耦合点                    | `JsonKeyStats.h:76` 的 `: public ScalarIndex<std::string>`——**一个没有任何调用点使用的继承子句**                                                                                                          |
 >
 > 因此过渡动作是两步，无行为变更、无格式变更、无 Go 侧改动：
 >
@@ -64,9 +60,9 @@
 >
 > **为什么落点是 segcore 而不是一个更"干净"的独立组件**：它需要 `ManifestGroupTranslator`（segcore），同时又被 segcore 的 `runtime.json_stats` 持有——独立组件必然成环，除非先把 translator 迁出 segcore，而那是 W2/W3 的量。segcore 内是当前唯一无环的落点，且**不是浪费**：宽表建模已裁定 JSON layout「每个 Segment 在 Segcore 里动态管理」，layout 目录终局就在 segcore。将来变的只是"它持有的子列升格为 columnar-format 一等对象"——那是 segcore 内部的替换，不再是跨组件搬家。
 >
-> **明确不做**（全部等宽表建模定型）：不把 typed 子列升格为 columnar-format 一等对象；不设计"列的可选替代布局"概念与 `ColumnCaps`；不改 exec 的 JSON 表达式调用形态（只改 include 路径）；不接 [§11.2](#112-处理决定) 的 L1 产物管道（它继续手写自己的 `Build`/`Serialize`/`Upload`/`Load`）；不改名（`JsonKeyStats` 这个名字跨到 proto 与 Go 侧，且宽表建模统一 Struct/JSON 时会自然重定）。
+> **明确不做**（全部等宽表建模定型）：不把 typed 子列升格为 columnar-format 一等对象；不设计"列的可选替代布局"概念与 `ColumnCaps`；不改 exec 的 JSON 表达式调用形态（只改 include 路径）；不接 [§11.2](#112-%E5%A4%84%E7%90%86%E5%86%B3%E5%AE%9A) 的 L1 产物管道（它继续手写自己的 `Build`/`Serialize`/`Upload`/`Load`）；不改名（`JsonKeyStats` 这个名字跨到 proto 与 Go 侧，且宽表建模统一 Struct/JSON 时会自然重定）。
 >
-> **代价与退出条件**：过渡期内 `segcore/json_stats/` 是 segcore 里的一个 JSON 专属数据结构，与 segcore 重构"甩掉类型特例"的方向相反。这是**有意接受的临时状态**，退出条件写死：宽表建模「六、查询节点的数据表达」定型 + 子列升格为 columnar-format 对象。挂在 [README §8](README.md#8-segcore-章节文档的已知待修订项) 的 segcore 待修订项里，避免就地生根。
+> **代价与退出条件**：过渡期内 `segcore/json_stats/` 是 segcore 里的一个 JSON 专属数据结构，与 segcore 重构"甩掉类型特例"的方向相反。这是**有意接受的临时状态**，退出条件写死：宽表建模「六、查询节点的数据表达」定型 + 子列升格为 columnar-format 对象。挂在 [README §8](README.md#8-segcore-%E7%AB%A0%E8%8A%82%E6%96%87%E6%A1%A3%E7%9A%84%E5%B7%B2%E7%9F%A5%E5%BE%85%E4%BF%AE%E8%AE%A2%E9%A1%B9) 的 segcore 待修订项里，避免就地生根。
 
 合同设计一次覆盖全部纳入族；**迁移可以分批**（先常规 scalar，再 ngram/text/json，最后 vector 归位），但接口不为"第一批"特化。
 
@@ -112,7 +108,7 @@
    > **仓库里已有正例**：`BsonInvertedIndex`（`json_stats/bson_inverted.h:42`）是个裸类，不继承 `IndexBase`/`ScalarIndex`/`InvertedIndexTantivy`，直接持有 `shared_ptr<TantivyIndexWrapper>` 并调 `term_query_i64`。同一个 tantivy 引擎，`TextMatchIndex`/`Ngram`/`JsonFlat` 靠继承复用、它靠组合——**后者才是本波要推广的形态**。代价是它把生命周期面（`AddRecord`/`BuildIndex`/`LoadIndex`/`UploadIndex`/`CellByteSize`）手写了一遍；四面化后这部分由共享的 Builder/Loader 承接，组合的好处保留、重复消失。
 3. **能力自述，不许 throw**。每个 reader 携带能力描述符；不支持的操作在类型上就不存在，或经 `std::optional` 表达。
 4. **模板留在热路径，类型擦除只在管理面**。exec 的表达式本就按值类型模板化，typed reader 无装箱开销；inventory 持类型擦除根，root→face 的 downcast **每个表达式节点一次**（随 pin 获取），不在 batch 或行的粒度上发生（§4.3）。
-5. **不认识 segment 与 executor**。构建输入是 columnar-format 的扫描游标或纯数组；查询输出是 bitmap / 值，**坐标一律是行号**——元素级（nested）索引在 reader 内部完成元素→行的投影后才返回，见 [§5.8](#58-nested元素级索引坐标与投影)。
+5. **不认识 segment 与 executor**。构建输入是纯数组；查询输出是 bitmap / 值，**坐标一律落在索引自己的坐标系里**——行级索引给行号，元素级（nested）索引给元素号。**元素→行的投影不属于索引**：折叠的时机由查询语义决定，只有 plan 知道，见 [§5.8](#58-nested元素级索引坐标与投影)。
 6. **IO 注入**。索引类不持有 `FileManagerContext`；文件读写经注入的 sink/source 接口，只在 Loader 与 Artifact 序列化的实现内出现。
 
 ## 4. 合同总览
@@ -145,12 +141,12 @@ IndexLoader（每族一个，只读方向）                        → 文件 �
 namespace milvus::index {
 
 struct ReaderCaps {
-    bool predicate          = false;  // In/NotIn/Range/Null
+    bool predicate          = false;  // In/NotIn/Range（空值谓词见 NullReader，全族提供、不设位）
     bool pattern_match      = false;  // LIKE 族
     bool text_match         = false;
     bool ngram_candidates   = false;  // 候选族：结果为超集，需二次验证
     bool spatial            = false;  // 候选族：空间关系谓词（MBR 粗筛）
-    bool nested             = false;  // 元素级索引：命中经存在量词投影到行（§5.8）
+    bool nested             = false;  // 元素级索引：命中是元素坐标，折叠由 exec 按 plan 决定（§5.8）
     bool value_lookup       = false;  // 可反查原值
     bool cheap_value_lookup = false;  // 逐行反查代价 O(1)/O(log n)
     bool json_paths         = false;  // path 寻址的复合索引
@@ -172,6 +168,9 @@ exec 的执行路径决策（`DetermineExecPath`）只消费这个结构，不 `
 // index/contracts/IndexReader.h
 namespace milvus::index {
 
+// 索引结果所处的坐标系。行级索引给行号，元素级（nested）索引给元素号。
+enum class Domain { Row, Element };
+
 class IndexReaderBase {
  public:
     virtual ~IndexReaderBase() = default;
@@ -180,6 +179,8 @@ class IndexReaderBase {
     // 见 §4.1/§4.3）；本方法用于 growing 快照、单测与一致性断言。
     virtual ReaderCaps  Caps() const = 0;
 
+    // 坐标系：Row（行级索引）或 Element（nested 索引）。Count() 是该坐标系的基数。
+    virtual Domain      CoordDomain() const = 0;
     virtual int64_t     Count() const = 0;
     virtual DataType    ValueType() const = 0;
     virtual int64_t     MemoryUsage() const = 0;   // 纯自述；缓存计费在 load 侧 translator
@@ -228,11 +229,30 @@ class IndexReaderBase {
 
 所有 reader **不可变**：由 `Seal()` 或 `Loader::Open()` 产生后线程安全、可无锁并发读。bitmap 语义统一：1 = 命中；bitmap 尺寸 = `Count()`。
 
-> **输出形态只有一种：`TargetBitmap`。** 谓词族、候选族、nested 投影一律如此，不提供稀疏 offsets 或回调变体。
+**`Count()` 是 reader 自身坐标系的基数，不一定是行数。** 行级索引的坐标系是行，元素级（nested）索引的坐标系是元素，由 reader 经 [§4.2](#42-类型擦除根) 的 `CoordDomain()` 自述；消费者据此决定拿到的 bitmap 按什么单位解读。**索引不做跨坐标系的折叠**，理由见 [§5.8](#58-nested元素级索引坐标与投影)。
+
+> **输出形态只有一种：`TargetBitmap`。** 谓词族、候选族、nested 的元素级结果一律如此，不提供稀疏 offsets 或回调变体。
 >
 > 理由：**选择率是查询的运行时属性，不是 reader 的静态属性**——同一个 `In` 查罕见 term 命中 10 行、查常见 term 命中 90%；常见三元组的 ngram 候选、覆盖全域的空间查询同样接近全表。既然形态无法按族静态决定，就只能选退化时不爆炸的那个：bitmap 大小恒为 `Count()/8`，与选择率无关；极稀疏时的代价是 `find_first`/`find_next` 的字跳扫描（1 亿行约 150 万次字读，亚毫秒级）。反过来稀疏 offsets 在稠密结果上是 8 字节/行 vs 1 比特/行的 **64 倍膨胀**——9000 万命中就是 720MB，不可接受。
 >
 > 因此 `SpatialReader::Candidates` 现状的 `std::vector<int64_t>` 属于 RTree 的历史写法，规整为 bitmap（消费者迭代置位即可，refine 逻辑不变）。
+
+**跨族共有面：`NullReader`。** 空值谓词与值类型无关，且标量七族**全部真实现、零 throw**（`BitmapIndex.cpp:816`、`FMIndex.cpp:392`、`RTreeIndex.cpp:469`、`InvertedIndexTantivy.cpp:349`、`ScalarIndexSort.cpp:508`、`StringIndexSort.cpp:462`、`StringIndexMarisa.cpp:406`），因此它单独成面：
+
+```cpp
+// index/contracts/NullReader.h
+class NullReader {
+ public:
+    virtual TargetBitmap IsNull() const = 0;
+    virtual TargetBitmap IsNotNull() const = 0;
+};
+```
+
+> **为什么必须从 `ScalarPredicateReader<T>` 拆出来。** 直接原因是 [§12 第 8 条](#12-未决问题)：`RTreeIndex` 的 `In`/`NotIn`/`Range` 经确认是空壳（全是 `ThrowInfo(NotImplemented)`，`RTreeIndex.cpp:462,534,542`）并予删除后，它**不能再实现 `ScalarPredicateReader<T>`**——否则 `T = std::string` 会把 WKB 上的点谓词重新拖回来；但 `geo_field IS NULL` 是活路径：`PhyNullExpr` 经 `ProcessChunksForValid` → `ProcessIndexChunksForValid`（`Expr.h:2457`）确实路由到索引，而 `RTreeIndex::IsNull`/`IsNotNull`（`RTreeIndex.cpp:469,491`）是真实现。
+>
+> 信号在现状里早已存在：`IsNull`/`IsNotNull` 是 `ScalarIndex<T>`（`ScalarIndex.h:132,135`）里**唯二不带 `T`** 的方法。不带 `T` 的方法长在按 `T` 模板化的接口上，本身就是分面错误。
+>
+> `NullReader` **不设 `ReaderCaps` 位**——标量族全员提供，是无条件可用面。同理它也不在 [§8 映射表](#8-现有实现类--新合同映射)里逐行重复。
 
 ### 5.1 `ScalarPredicateReader<T>`
 
@@ -246,12 +266,14 @@ class ScalarPredicateReader {
     virtual TargetBitmap Range(const T& value, OpType op) const = 0;
     virtual TargetBitmap Range(const T& lo, bool lo_inc,
                                const T& hi, bool hi_inc) const = 0;
-    virtual TargetBitmap IsNull() const = 0;
-    virtual TargetBitmap IsNotNull() const = 0;
 };
 ```
 
-与现状的差异：`Query(DatasetPtr)` 这个 knowhere 风格的万能入口删除；`Build`/`Size`/`GetIndexType` 不在查询面上；**`InApplyFilter` / `InApplyCallback` 一并删除**，理由见下。
+与现状的差异：`Query(DatasetPtr)` 这个 knowhere 风格的万能入口删除；`Build`/`Size`/`GetIndexType` 不在查询面上；**`InApplyFilter` / `InApplyCallback` 一并删除**（理由见下）；**`IsNull`/`IsNotNull` 移出**到跨族的 `NullReader`（见 [§5 开头](#5-查询面)）。
+
+> **字符串族的 `T` 取 `std::string_view`。** 本面与 [§5.2](#52-patternmatchreader) 的入参全部只读、指向调用方内存，view 化无生命周期问题；tantivy FFI 本来就是 ptr+len，marisa 的 `predictive_search`、FMIndex 的 pattern 同理。
+>
+> **这条只适用于输入侧。** 取值面 [`ScalarValueReader<T>::Lookup`](#55-scalarvaluereadert取值面) 不能跟着 view 化——理由（marisa 的原值在反查时现场重建）见该节。
 
 > **`InApplyFilter` / `InApplyCallback` 为什么不进合同。** 盘点结果：`InApplyFilter` 生产代码**零调用点**（唯一引用是 `JsonFlatIndexTest.cpp:799`），`RTreeIndex` 的实现还是 throw 空壳；`InApplyCallback` 只有一个消费者——`PhyUnaryRangeFilterExpr::ExecArrayEqualForIndex`（`UnaryExpr.cpp:804,807`），用于 ARRAY 整体相等走元素级索引时逐元素求交 + 1% 提前退出。
 >
@@ -269,7 +291,7 @@ class PatternMatchReader {
 };
 ```
 
-提供者：tantivy inverted、marisa（prefix）、**FMIndex（它只有这一个面**——现在它作为 `ScalarIndex<std::string>` 背着 20 个不相关方法）。
+提供者：tantivy inverted、marisa（prefix）、**FMIndex（它只有这一个谓词面**——加上全族共有的 `NullReader`（`FMIndex.cpp:392` 是真实现）就是它的全部；现在它作为 `ScalarIndex<std::string>` 背着 20 个不相关方法）。
 
 ### 5.3 `TextMatchReader`
 
@@ -310,14 +332,22 @@ class NgramReader {
 template <typename T>
 class ScalarValueReader {
  public:
-    virtual std::optional<T> Lookup(int64_t offset) const = 0;
+    // 返回值**持有所有权**：owned_t<std::string_view> = std::string，其余 owned_t<T> = T。
+    virtual std::optional<owned_t<T>> Lookup(int64_t offset) const = 0;
     // 批量反查；实现可按内部布局聚簇。输出对接 columnar-format 的 TakeResult 约定。
+    // 回调期间 const T* 有效即可，作用域由实现方掌握，因此这里可以是 view。
     virtual void Gather(const int64_t* offsets, int64_t count,
                         const std::function<void(int64_t i, const T*, bool valid)>& out) const = 0;
 };
 ```
 
 对应现状 `Reverse_Lookup` + `SupportFastReverseLookup` + `HasRawData`。"反查太贵就回原始列"的**决策不在这里**——`caps.cheap_value_lookup` 自述代价，选择权在消费者（reduce 的 Materializer / exec）。
+
+> **`Lookup` 不能返回 view，`Gather` 可以——这是取值面与谓词面 `T` 不同步 view 化的原因**（[§5.1](#51-scalarpredicatereadert) 的 `string_view` 决定只覆盖输入侧）。
+>
+> `StringIndexMarisa::Reverse_Lookup`（`StringIndexMarisa.cpp:800-811`）的返回语句是 `std::string(agent.key().ptr(), agent.key().length())`：字节活在函数内的 `marisa::Agent` 局部里。trie 是压缩存储，**原值在反查时现场重建**，索引内部根本没有一段可指向的常驻缓冲——返回 view 必悬垂。任何 trie / 压缩族都是这个形态，这不是 marisa 的实现瑕疵。
+>
+> `Gather` 不受此限：实现可以让 agent 活到回调返回之后，view 在回调作用域内有效。这是本面用回调而非返回容器的**第二个**理由（第一个是按内部布局聚簇）。
 
 ### 5.6 `SpatialReader`——空间关系谓词
 
@@ -334,8 +364,9 @@ class SpatialReader {
 ```
 
 - `SpatialOp` 是**契约层的 native 枚举**，不是 `proto::plan::GISFunctionFilterExpr_GISOp`——现状 `QueryCandidates` 直接吃 proto 枚举（`RTreeIndex.h:184`），违反"pb 只在 adapter"（[总览 §5 规则 2](README.md#5-全局硬规则)），plan→native 的映射发生在 plan/exec 侧。
-- `RTreeIndex` 被迫实现的 `In`/`NotIn`/`Range`×2/`InApplyFilter`/`InApplyCallback` 与 throw 的 `Reverse_Lookup` 全部移除；`Query(DatasetPtr)` 万能入口一并删除。
-- **候选族的共性**：`SpatialReader`、`NgramReader` 与 nested 索引上的 ARRAY 相等（§5.8）是同一模式的三个实例——索引给超集、exec 做精确验证。它们共享 `caps.exact = false` 的语义约定与统一的 bitmap 输出，消费者的处理骨架相同（取候选 → 按候选行取原值 → 重新求值）。
+- `RTreeIndex` 被迫实现的 `In`/`NotIn`/`Range`×2/`InApplyFilter`/`InApplyCallback` 与 `Reverse_Lookup` 全部移除；`Query(DatasetPtr)` 万能入口一并删除。**已 grep 确认删除安全**（[§12 第 8 条](#12-未决问题)）：这七个方法在 `RTreeIndex.cpp:462,515,525,534,542` 与 `RTreeIndex.h:187` 全是 `ThrowInfo(NotImplemented)` 空壳，零实现、零生产调用方。
+- **但 `IsNull`/`IsNotNull` 不在删除之列**：它们是真实现（`RTreeIndex.cpp:469,491`，由 `null_offset_` 生成），且 `geo_field IS NULL` 经 `PhyNullExpr` 走索引。因此 **RTree 的面是 `SpatialReader` + `NullReader`**，后者是全族共有面（见 [§5 开头](#5-查询面)）——空值谓词不属于"geo 算子"，把它一起删掉会打断活路径。
+- **候选族的共性**：`SpatialReader`、`NgramReader` 与 nested 索引上的 ARRAY 相等（§5.8）是同一模式的三个实例——索引给超集、exec 做精确验证。它们共享 `caps.exact = false` 的语义约定与统一的 bitmap 输出，消费者的处理骨架相同（取候选 → 取原值 → 重新求值）。差别只在候选所处的坐标系：前两者是行，nested 是元素，需先经 exec 的投影算子折叠。
 
 ### 5.7 `JsonIndexReader`——path 寻址的谓词索引
 
@@ -374,32 +405,52 @@ class JsonIndexReader {
 
 **nested 不是独立的族，是现有实现类上的一个模式位**：`BitmapIndex`（`BitmapIndex.h:88`）、`StringIndexSort`（`StringIndexSort.cpp:229`）都带 `is_nested_index_`，并**持久化在产物里**（`BinarySet` 的 `"is_nested_index"` 项、新 writer 的 `is_nested` meta，加载时做 `is_nested_index_ || loaded` 的兼容合并）。它表示：索引的对象是数组**元素**，而非行。
 
-#### 投影到行由 reader 完成——这是正确性要求，不是风格选择
+#### 投影不属于索引：折叠点由查询语义决定
 
-nested 索引内部命中的是元素坐标，但**对外必须返回行级 bitmap**。原因是元素级布尔组合会得出错误答案：
+nested 索引在**元素坐标系**里工作——命中的是数组元素，返回的 bitmap 尺寸是元素总数（`CoordDomain() == Domain::Element`）。元素→行的存在量词折叠由 exec 完成，且**折叠发生在哪一步由 plan 决定**，因为折叠得太早、太晚各有一类查询会算错：
 
-- `contains(1) AND contains(2)`：行 r 的元素 0 命中 1、元素 1 命中 2，两个元素级 bitmap 相与得到空（不同元素位），而行级正确答案是**真**。
-- `NOT contains(1)`：元素级取反得到"不等于 1 的元素"，对行过滤无意义；正确语义是"不存在任何元素等于 1"，是行级存在量词的取反。
+- **折叠太早会错**（必须先在元素级组合）：struct array 上的**相关**元素谓词。`struct[*].a == 1 AND struct[*].b == 2` 的语义是 `∃i:(a[i]=1 ∧ b[i]=2)`。若两侧各自先折叠到行，得到的是 `∃i:a[i]=1 ∧ ∃j:b[j]=2`——两个元素可以不同，行会被错误命中。
+- **折叠太晚会错**（必须先折叠到行）：同一数组上的**不相关**谓词。`contains(1) AND contains(2)` 的语义就是 `∃i:x[i]=1 ∧ ∃j:x[j]=2`，元素级相与等于要求"同一个元素既等于 1 又等于 2"，行会被错误漏掉。`NOT contains(1)` 同理：正确语义是 `¬∃i:x[i]=1`，元素级取反得到的是"存在不等于 1 的元素"，两者不等价。
 
-因此投影必须发生在组合之前，即在 reader 内部：**行 r 置位 ⟺ ∃ 元素命中**。
+同一个 nested 索引必须同时服务这两类查询，而区分它们的信息只在 plan 里。因此 **reader 不能替 plan 决定折叠点，只能交付元素级结果**。
 
-现状违反了这一点：元素 offset 被泄给 exec，由 `to_row_offset` lambda（`UnaryExpr.cpp:741`）经 `array_offsets->ElementIDToRowID()` 在消费者侧转换。目标态下该 lambda 消失，[§3 原则 5](#3-设计原则)（坐标一律是行号）随之成立——**当前实现是违例，不是该原则的例外**。
+这不是新设计，是现状架构的准确描述：
 
-投影之后 `arr == [1,2,3]` 仍需 exec 侧 `is_same_array` 精确验证（存在量词 ≠ 精确相等），即候选族的常规形态，与 geometry / ngram 同构。
+```cpp
+// exec/expression/JsonContainsExpr.cpp:2469
+auto element_bitset = index_ptr->In(n, data);        // 索引 → 元素级
+if (!index_ptr->IsNestedIndex()) return element_bitset;
+return array_offsets->ForEachRowElementRange(...);   // exec 做 ∃ 折叠
+```
 
-#### 元素→行映射存哪里
+`array_offsets` 由 **exec 自己**从 segment 取（`JsonContainsExpr.cpp:2462` 的 `segment_->GetArrayOffsets(...)`），索引全程不认识它。两种折叠策略各有专门机制：
 
-映射体就是 `ArrayOffsetsSealed` 持有的 `std::vector<int32_t> row_to_element_start`（前缀和，4 字节/行）。三个选项：
+| 场景 | 机制 | 折叠发生在 |
+|---|---|---|
+| 相关元素谓词（struct array） | `PhyElementFilterBitsNode`：取 offsets 存进 `QueryContext`、元素级求值、`set_bitset_is_element_level(true)`（`ElementFilterBitsNode.cpp:102,134`） | 最晚——`ProjectNode` 的 `find_first_n_element`、`VectorSearchNode.cpp:129,147`、`ExecPlanNodeVisitor.cpp:74,332` 这些边界算子 |
+| 不相关谓词（`ContainsAll`） | `result &= query_in(...)`（`JsonContainsExpr.cpp:2497-2500`）：每个值先 ∃ 折叠到行，再行级相与 | 最早——进 AND 之前 |
 
-| 方案 | 评价 |
-|---|---|
-| **注入 segment 共享的 `IArrayOffsets`（推荐）** | 无重复；单一真相来源 |
-| 索引产物内自带一份前缀和 | 与列各存一份：1000 万行的字段多 40MB；reopen / schema evolution 后两份存在不一致风险 |
-| postings 里直接存 row id（构建期投影） | 最省，但把投影固化在构建期，丢失元素重数与位置信息，多层嵌套（见下）无回旋余地 |
+exec 侧已把这个选择做成每次调用的开关：`ProcessIndexChunksWithRowLevel`（`func_returns_row_level = true`，调用方 lambda 自己折叠）对应前者之外的一切；默认路径的 `need_element_slicing`（`Expr.h:2181`）把元素级 bitmap 按元素区间切片后**原样往下传**（`Expr.h:2198-2214`），完全不折叠。
 
-推荐注入的关键依据：`array_offsets_map` 存放在 segment 的 runtime state 中，是 `shared_ptr<ArrayOffsetsSealed>`（`ChunkedSegmentSealedImpl.h:345`），**常驻元数据，不是可淘汰的 cache cell**。因此 reader 引用它**不会 pin 任何列数据**，不影响 index-only 执行——这是"自带一份以免拖起列"这个理由不成立的原因。
+折叠之后 `arr == [1,2,3]` 仍需 exec 侧 `is_same_array` 精确验证（存在量词 ≠ 精确相等），即候选族的常规形态，与 geometry / ngram 同构。
 
-代价与约束：reader 不再能由 `Loader::Open` 单独构造完毕，需由 segcore 在加载时注入；持 `shared_ptr` 以保证 COW 换代后不悬垂。依赖方向合法：`IArrayOffsets` 随 [W0](00-w0-foundation.md#36-common-hygiene-轨道与-w1-并行) 迁入 columnar-format（L1），index 是 L2，L2→L1 是下行边，这条依赖由 reader 侧的注入建立（builder 侧不认识列，见 §6.1）。
+#### 本波要收敛的：把折叠规整成一个显式算子
+
+折叠今天散在三处、粒度各不相同：`JsonContainsExpr.cpp:2469` 用 `ForEachRowElementRange` 逐行折叠、`UnaryExpr.cpp:743` 用 `ElementIDToRowID` 逐元素反查、`Expr.h:2205` 用 `ElementIDRangeOfRow` 做区间切片。三份实现、三种写法。
+
+要收敛的**不是**"把折叠塞进 reader"，而是把它规整成 exec 侧一个**显式的投影算子**，由 plan 决定放在哪一步。这条属于 [W4 query 三分](README.md#7-波次计划)，W1 只需保证索引侧交付的是干净的元素级结果。
+
+#### 元素→行映射的归属：列的派生物，索引不持有
+
+映射体是 `ArrayOffsetsSealed` 的前缀和（`std::vector<int32_t>`，4 字节/行）。三条事实钉死它的归属：
+
+1. **由列加载产出**：`ArrayOffsetsSealed::BuildFromColumn(*column, field_meta, num_rows)`（`ChunkedSegmentSealedImpl.cpp:6963`），存进 segment 的 runtime state。
+2. **按 struct 共享**：`struct_to_array_offsets[struct_name]`（`:6957-6966`）——同一 struct 下所有 array 字段共用一个实例，`array_offsets_map[field_id]` 只是第二把索引。
+3. **随列换代**：字段释放/reopen 时 erase（`:4003,4018`），reopen 后重建为新对象；COW 换代时拷进新 runtime snapshot（`:1029,1425`）。
+
+它是**列的派生物**。索引侧不持有、不注入、不需要知道它存在——这也让 reader 保持 [§5](#5-查询面) 声明的"由 `Seal()`/`Open()` 产生后即不可变"，无需任何加载后装配或 reopen 重绑。
+
+由此排除一个看似最省的做法：**postings 里直接存 row id（构建期折叠）**。它把折叠固化在构建期，等于让索引替 plan 做了决定，struct array 的相关元素谓词从此永远查不对；省下的空间换掉的是一整类查询的正确性。
 
 #### 多层嵌套：不是 roadmap，是子列的固定形态
 
@@ -409,11 +460,11 @@ nested 索引内部命中的是元素坐标，但**对外必须返回行级 bitm
 
 即：多层不是将来要加的能力，而是嵌套子列的**通用形态**，单层只是深度 = 1 的特例。三条直接后果：
 
-1. **元素→行的映射不是"一个 `IArrayOffsets`"，是一条 offsets 链**（每层一个）。投影是沿链**逐层折叠**的前缀和复合，而非单次 `ElementIDToRowID`。上表的注入方案随之升级为"注入该子列的 offsets 链"，其余评价不变。
-2. **"注入共享实例"的推荐被强化**：该文档「五、存储层的更新」明确 *Array of struct 里的 offset 共享*。索引内自带一份前缀和会与存储层的共享方向正面冲突，且层数越多复制代价越大。
-3. **本节查询面合同按 N 层写、N=1 退化**，不得出现单层假设。对外形态不变——reader 始终输出行级 bitmap，存在量词沿嵌套层级逐级投影到行；变化被限制在 builder 侧与精确验证的复杂度上。这也是不选"postings 直接存 row id"的原因：它在构建期抹掉层次信息。
+1. **元素→行的映射不是"一个 `IArrayOffsets`"，是一条 offsets 链**（每层一个）。折叠是沿链**逐层复合**的前缀和，而非单次 `ElementIDToRowID`。归属不变——链在 exec / columnar-format 侧，索引只在它建索引的**那一层**元素坐标系里工作。
+2. **"索引自带一份前缀和"被彻底排除**：该文档「五、存储层的更新」明确 *Array of struct 里的 offset 共享*，索引内复制一份既与存储层的共享方向正面冲突，层数越多复制代价越大，而且它连折叠都不该做。
+3. **本节查询面合同按 N 层写、N=1 退化**，不得出现单层假设。对外形态不变——reader 始终在**最内层元素坐标系**输出 bitmap，`CoordDomain()` 只区分行 / 元素、不暴露层数；变化被限制在 builder 侧与 exec 折叠链的复杂度上。
 
-**节奏依赖（不由本波决定）**：该文档「二十、后续功能」把**标量索引**列为嵌套建模的后续项。因此 W1 在嵌套面上**只定形状、不定实现**，实现节奏由宽表建模的推进牵引。
+**节奏依赖（不由本波决定）**：该文档「二十、后续功能」把**标量索引**列为嵌套建模的后续项。因此 W1 在嵌套面上**只定形状、不定实现**，实现节奏由宽表建模的推进牵引。折叠归 exec 之后，index 侧对该文档「六、查询节点的数据表达」的依赖降级：索引只需知道自己建在哪一层，不需要知道链怎么表达。
 
 ## 6. 构建面与加载面
 
@@ -466,7 +517,7 @@ class IndexArtifact {
 
 > **为什么没有 `Consume(ScanCursor&)`（pull 面）**。两条构建路径的源与模式本就不同：**离线构建**（indexbuilder，生产主路径）的源是远端 manifest/binlog，且**已经是 push**——`IterateFieldDataFromManifest(..., const std::function<void(FieldDataPtr)>& consumer, max_inflight_bytes)`（`storage/Util.h:352`）逐 batch 回调、后台池解码、按输入字节限流，那里根本没有 segment、没有列对象、没有 `ScanCursor`；**就地建**的源才是已加载的列（`generate_interim_index` 收 `ChunkedColumnInterface`，`ChunkedSegmentSealedImpl.h:1385`）。把 pull 摊成 push 只是调用方写个循环，把 push 包装成 pull 要加线程/协程或缓冲反转。所以统一到 push。
 >
-> 连带结论：**builder 的输入货币是裸数组，不是任何组件的对象**——它不认识列、不认识游标、不认识存储格式，`index → columnar-format` 在 builder 侧归零（reader 侧因 [§5.8](#58-nested元素级索引坐标与投影) 的 `IArrayOffsets` 注入仍在）。
+> 连带结论：**builder 的输入货币是裸数组，不是任何组件的对象**——它不认识列、不认识游标、不认识存储格式，`index → columnar-format` 在 builder 侧归零；reader 侧同样归零（[§5.8](#58-nested元素级索引坐标与投影)：元素→行折叠不属于索引），因此这条边在四面化后**整体消失**。
 
 各族的 builder 是这个面的**实现**而非新的面：text 族的分词器配置、json 族的 path 配置都是构造参数。
 
@@ -574,7 +625,21 @@ Appender **不是标量专属**。`segcore/FieldIndexing.h` 里两族今天都�
 
 > **四个面对两族统一；每个面内部的接口按族分。** 面是按**调用方**切的（谁在用），族是按**数据与算法**切的（用什么结构）——两者正交。`FieldIndexing` 的错误正是把"两族共有一个面"误当成"两族共有一组方法"。
 
-因此 growing 合同的形状是：`GrowingScalarIndex<T>` 与 `GrowingVectorIndex` **并列**，各自定义 `Append` 的签名（前者吃 `(values, valid)`，后者吃 dense/sparse 原始向量），共享的只有**语义**——快照 + 水位。两族在这三点上一致：
+因此 growing 合同的形状是：`GrowingScalarIndex<T>` 与 `GrowingVectorIndex` **并列**，共享**语义**——快照 + 水位。但两族 `Append` 的签名差异比原先设想的小：现状那份 dense/sparse 二分**不是族的本质差异**。
+
+> **`AppendSegmentIndexDense`/`Sparse` 的二分不该保留，而原因不在签名——在于这两个方法各自内部同时是 Builder 和 Appender。**
+>
+> 对比两个实现（`FieldIndexing.cpp:348` sparse / `:489` dense）：骨架同形——凑够 `build_threshold` 行连续内存 → `knowhere::GenDataSet` → id-map validity → `BuildWithDataset` → 此后 `AddWithDataset` 增量。真实差异只有三点：dense 的 `dim` 来自 schema、sparse 的 `dim` 是**每批次传入**的 `new_data_dim`；dense 定宽可 `FastMemcpy`、sparse 是 `SparseRow` 对象须逐元素赋值；sparse 多一个 `SetIsSparse(true)`。三点都不构成两个接口的理由。
+>
+> 关键在分支：`!built_` 分支（`:376-405` / `:518-551`）把 `[0, build_threshold)` 从整根 `ConcurrentVector` 全量 gather 出来做 `BuildWithDataset`——这是**冷启动全量建**，正是 [§6.1.1](#611-输入形态五档两族交错) 的 **form B+（连续缓冲）**，属于 Builder 面；`built_` 分支（`:578-626`）只用本批 `data_source` 做 `AddWithDataset`，这才是 Appender。
+>
+> 签名里那个 `const VectorBase*`（整根列）**只为第一个分支存在**。第二个分支对它的唯一用途是取本批 validity：`PrepareNullableAppendInfo`（`:84`）只调了 `bulk_is_valid_range(reserved_offset, size, ...)`，**只读新批次那一段**，等价于一个 `const bool* valid`。
+>
+> 因此顺序是：先把 `!built_` 冷启动分支迁到 Builder 面（segcore 在越过阈值时从列 gather 一次喂 `IndexBuilder`，产物交给 appender 作起点），`Append` 即退化为与标量同形的**单个**方法，`VectorBase*` 从签名消失，dense/sparse 只剩一个 `dim` 参数的区别（见 [§11.3](#113-vector-的四面归位不重设计)）。
+>
+> 这反过来印证本节点 3「就地建 ≠ growing」不是纸面区分：`FieldIndexing` 签名畸形的**直接成因**，就是两个面混在同一个方法体里。
+
+两族在这三点上一致：
 
 | 语义 | scalar | vector |
 |---|---|---|
@@ -591,17 +656,19 @@ Appender **不是标量专属**。`segcore/FieldIndexing.h` 里两族今天都�
 | 现类 | 查询面 | 构建/growing | 备注 |
 |---|---|---|---|
 | `InvertedIndexTantivy<T>` | `ScalarPredicateReader<T>` + `PatternMatchReader` | Builder | tantivy 封装降为内部引擎，不再是基类 |
-| `BitmapIndex<T>` / `ScalarIndexSort<T>` / `StringIndexMarisa` | `ScalarPredicateReader<T>`（marisa 另 + `PatternMatchReader`） + `ScalarValueReader<T>` | Builder | `is_nested_index_` 模式位保留，投影移入 reader（§5.8） |
+| `BitmapIndex<T>` / `ScalarIndexSort<T>` / `StringIndexMarisa` | `ScalarPredicateReader<T>`（marisa 另 + `PatternMatchReader`） + `ScalarValueReader<T>` | Builder | `is_nested_index_` 模式位保留，对外表达为 `CoordDomain() == Element`（§5.8） |
 | `HybridScalarIndex<T>` | **消失** | Builder 选型策略 | §6.3 |
 | `StringIndexSort` / `BoolIndex` | 同 sort/bitmap | Builder | 薄别名，随迁 |
-| `FMIndex` | `PatternMatchReader` **仅此** | Builder | `SegcoreConfig` 依赖改构造参数注入（修复 [11-cross-cutting §2.5](../segcore_refactor/11-cross-cutting.md)） |
+| `FMIndex` | `PatternMatchReader` **仅此谓词面** | Builder | `SegcoreConfig` 依赖改构造参数注入（修复 [11-cross-cutting §2.5](../segcore_refactor/11-cross-cutting.md)） |
 | `TextMatchIndex` | `TextMatchReader` | `IndexBuilder<std::string_view>` 的 text 实现 + `GrowingTextIndex` | 四构造函数拆到四个归属 |
 | `NgramInvertedIndex` | `NgramReader` | Builder | Phase2 删除，`index → exec` 边消失 |
 | `JsonFlatIndex` (+ QueryExecutor) | `JsonIndexReader` | `IndexBuilder<std::string_view>` 的 json 实现 | |
 | json path cast index | `ScalarPredicateReader<T>` | Builder | inventory 按 (field, path) 注册 |
 | `JsonKeyStats` | **迁出 index**。W1 内落到 `segcore/json_stats/`（断继承 + `git mv`）；终局子列升格 columnar-format、layout 目录留 segcore | 构建仍是离线任务，暂不接 L1 产物管道 | `NotImplemented` 泛滥消失；对 segcore 的 5 处 include 当场清零；`BsonInvertedIndex` 一并迁走。终局与过渡见 [§1](#1-范围) |
-| `RTreeIndex` / geometry | `SpatialReader`（§5.6） | Builder | `QueryCandidates` 成为唯一查询面；点谓词重载与 throw 的 `Reverse_Lookup` 移除；GIS proto 枚举换 native `SpatialOp` |
+| `RTreeIndex` / geometry | `SpatialReader`（§5.6） | Builder | `QueryCandidates` 成为唯一**谓词**查询面；点谓词重载（已确认为空壳，`RTreeIndex.cpp:462,534,542`）与 `Reverse_Lookup` 移除，但 `IsNull`/`IsNotNull` 保留、归 `NullReader`；GIS proto 枚举换 native `SpatialOp` |
 | `SkipIndex` | **移出 index 合同** | | 归 columnar-format（zone-map/`CellSkipPredicate`） |
+
+> 表中**不逐行重复 `NullReader`**：标量七族全员真实现、零 throw，是无条件可用的共有面（见 [§5 开头](#5-查询面)）。
 | `VectorMemIndex<T>` / `VectorDiskIndex<T>` | `VectorSearchReader` + `VectorValueReader`（§11.3） | `VectorIndexBuilder` + growing（接替 `VectorFieldIndexing`） | knowhere 交互原样内移，不重设计 |
 
 ## 9. 消费者对接
@@ -611,7 +678,7 @@ Appender **不是标量专属**。`segcore/FieldIndexing.h` 里两族今天都�
 | exec 表达式 | `PinIndex` 拿 `IndexBase*` 后 `dynamic_cast` 到具体类型；能力探测靠 `Support*` + try | pin 出口给 typed reader；路径决策只读 `ReaderCaps`；`dynamic_cast` 清零（W1 出口标准） |
 | exec ngram | `ExecutePhase1/2`，Phase2 传 `exec::SegmentExpr*` | Phase1 = `NgramReader::Candidates`；Phase2 = exec 用 columnar-format `Scan`/`Take` 取值后自行求值 |
 | exec geometry | `QueryCandidates` + `PhyGISCoarseConjunctExpr`/`PhyGISRefineConjunctExpr`——**切分已正确** | 仅换合同：`SpatialReader::Candidates` + native `SpatialOp` + bitmap 输出；粗筛/精化的骨架不动，与 ngram 收敛为同一候选族处理流程 |
-| exec ARRAY 相等 | `ExecArrayEqualForIndex`：`InApplyCallback` 逐元素回调 → `unordered_set` 求交 → `to_row_offset` 转坐标 → `is_same_array` 精确验证 | reader 内部投影到行（§5.8），exec 侧改为 `In()` 返回的行级 bitmap 逐元素 `inplace_and` + 1% 提前退出；`to_row_offset` lambda 与 `unordered_set` 一并消失 |
+| exec ARRAY 相等 | `ExecArrayEqualForIndex`：`InApplyCallback` 逐元素回调 → `unordered_set` 求交 → `to_row_offset` 转坐标 → `is_same_array` 精确验证 | 索引给元素级 `In()` bitmap（§5.8）；exec 侧逐元素 `inplace_and` + 1% 提前退出，再经统一的投影算子折叠到行做 `is_same_array` 验证。`InApplyCallback` 与 `unordered_set` 消失，`to_row_offset` lambda 并入投影算子 |
 | indexbuilder | `ScalarIndexCreator` 调 `CreateIndex/Build/Serialize/Upload` | Builder + `Artifact::Serialize` + storage sink；Creator 变薄壳 |
 | segcore load | `Load`/`LoadUnified` + cachinglayer 计费长在索引里 | `Loader::Open` + 计费在 load 侧 translator |
 | segcore growing | `FieldIndexing`/`ScalarFieldIndexing` 散装机制 | `GrowingScalarIndex`/`GrowingTextIndex`，由 `GrowingIndexSet` 持有 |
@@ -654,7 +721,7 @@ Appender **不是标量专属**。`segcore/FieldIndexing.h` 里两族今天都�
 
    下沉的理由：这套管道**没有一处是索引专属的**。JSON shredded 布局（[§1](#1-范围)）同样是「离线构建、落盘、按需加载、参与缓存计费的派生产物」，需要同一套东西，而它在 L1；把管道留在 L2 就只剩两条出路——要么 L1→L2 反向边，要么 `BsonInvertedIndex` 那样把 `AddRecord`/`BuildIndex`/`LoadIndex`/`UploadIndex`/`CellByteSize` 再手写一遍。下沉后两者都不必。`ArtifactLoader::Open` 返回 `shared_ptr<LoadedArtifact>`，各层自己 downcast——与 §4.2 的类型擦除根同一手法，只是下移一层。
 
-   设计验收标准：三种物化形态都装得下——knowhere `BinarySet`（内存 blob 集合）、DiskANN（本地大文件、流式）、mmap。**连带**：`IndexArtifact`/`IndexLoader`/`IndexStats` 的 `Index` 前缀随下沉失效，且 `CellByteSize` 涉及硬规则 4 的 cachinglayer 传染面——见 [§12.11](#12-未决问题)。
+   设计验收标准：三种物化形态都装得下——knowhere `BinarySet`（内存 blob 集合）、DiskANN（本地大文件、流式）、mmap。**连带**：`IndexArtifact`/`IndexLoader`/`IndexStats` 的 `Index` 前缀随下沉失效（命名待定，见 [§12](#12-未决问题)）。`CellByteSize` 的返回类型不再触碰硬规则 4——`ResourceUsage` 从 cachinglayer 移到 milvus-common 的 `common/ResourceUsage.h`（`namespace milvus`），L1 与 segcore 共用同一个类型、无需边界转换；这是一条**跨仓前置改动**，须先于管道下沉落地。
 2. **查询面零共享写死**：vector 查询族与 scalar 各族并列（§11.3），不设计任何跨族查询合同。
 3. **`IndexBase` 在 W1 内退役**：vector 同波迁移，**不需要 adapter 过渡**。顺序：立共享根与 Loader → scalar 各族迁移 → vector 归位 → 删 `IndexBase`。`CacheIndexBasePtr` 的句柄角色由 `IndexReaderBase` 接替。**出口清单必须含 growing 侧**：`FieldIndexing::get_chunk_indexing`/`get_segment_indexing` 也返回 `PinWrapper<index::IndexBase*>`（`FieldIndexing.h:128,131`），见 [§7.1](#71-vector-的-appender-面今天已存在且带着与-indexbase-同构的病)。
 4. **工厂拆族**：`CreateIndexInfo` 拆散，族级 loader/builder registry 取代 `IndexFactory` 的 God switch。
@@ -681,13 +748,12 @@ class VectorSearchReader {
 class VectorValueReader { /* GetVector 系 */ };
 
 // Appender 面（growing interim 索引）：与 GrowingScalarIndex<T> 并列，
-// 语义相同（快照 + 水位），签名按族分。
+// 语义相同（快照 + 水位），签名同形——族间只差一个 dim（dense 恒为 schema dim，
+// sparse 为本批次 dim）。dense/sparse 不再是两个方法，理由见 §7.1。
 class GrowingVectorIndex {
  public:
-    virtual void AppendDense(int64_t reserved_offset, int64_t size,
-                             const void* data) = 0;
-    virtual void AppendSparse(int64_t reserved_offset, int64_t size,
-                              int64_t new_dim, const void* data) = 0;
+    virtual void Append(int64_t reserved_offset, size_t n,
+                        const void* data, int64_t dim, const bool* valid) = 0;
     virtual std::shared_ptr<const VectorSearchReader> ReaderSnapshot() const = 0;
     virtual int64_t CommittedRows() const = 0;   // 阈值未达时快照为空
 };
@@ -698,7 +764,7 @@ class GrowingVectorIndex {
 | 面 | scalar | vector | 关系 |
 |---|---|---|---|
 | Reader | §5 的各查询 face | `VectorSearchReader` / `VectorValueReader` | 形态同、内容**零共享**（§11.2 第 2 条） |
-| Appender | `GrowingScalarIndex<T>` | `GrowingVectorIndex` | 语义共享（快照 + 水位），签名分族（[§7.1](#71-vector-的-appender-面今天已存在且带着与-indexbase-同构的病)） |
+| Appender | `GrowingScalarIndex<T>` | `GrowingVectorIndex` | 语义共享（快照 + 水位），签名**同形**、仅差一个 `dim` 位；前提是冷启动全量建先迁出到 Builder 面（[§7.1](#71-vector-的-appender-面今天已存在且带着与-indexbase-同构的病)） |
 | Builder | `IndexBuilder<T>::Add` + `Seal()` | 同一个面；knowhere 内存索引落 B+ 档、DiskANN 落 D 档 | **面统一**，差异收进 `BuilderInputSpec`（[§6.1.1/6.1.2](#611-输入形态五档两族交错)） |
 | Loader | 同一套 | 同一套 | 完全同构 |
 
@@ -708,16 +774,34 @@ class GrowingVectorIndex {
 
 ## 12. 未决问题
 
-1. **segcore pin 出口的类型形态**：typed `Pin<ScalarPredicateReader<T>>`（无装箱，需要 inventory 做一次每-batch downcast）vs `ScalarValue` variant 抹平类型（契约简单，热路径装箱）。倾向 typed，需要基准确认 variant 的实际开销后才有资格翻案。
-2. **growing 水位的补齐策略**是统一语义（一律回退列扫描）还是按索引族策略化（text match 允许滞后）。涉及正确性语义（文本查询结果是否包含最新写入），需要与产品语义对齐后定。
-3. **`T = std::string` 是否改 `std::string_view`**：查询面全部只读，view 化可消除一批拷贝，但牵动 tantivy FFI 签名。
-4. ~~**`InWithCallback` 优化口的去留**~~ **已结案：删除。** 盘点结果与理由见 [§5.1](#51-scalarpredicatereadert) 注。
-5. **同一 path 既有 path index 又有 shredded 子列时怎么选**：shredding 迁出后这不再是两个索引之间的选择，而是**索引 vs 列扫描**的普通 `DetermineExecPath`——但 exec 必须知道「这个 path 有 typed 子列」（typed 子列扫描远快于原始 JSON 列逐行解析），而这是**列的能力自述**，index 侧的 `ReaderCaps` 给不出。需要 columnar-format 的列合同暴露等价物（#51504 的 `ColumnPlanner` 是自然落点），并在 exec 侧与 `FieldIndexCapability` 合流。**跨 W1 与 W1∥ 两波，必须两边同时定**。
-6. **vector 查询族合同的细化**（`SearchInfo` 的归属、iterator 生命周期）：若 §11.3 的骨架在落地时不够，独立成 `02-vector-index.md`。~~growing vector interim index 的 appender 形态~~ **已结案**：Appender 面两族共有、签名按族分，语义（快照 + 水位）共享——见 [§7.1](#71-vector-的-appender-面今天已存在且带着与-indexbase-同构的病)。剩余待定的只有 `GrowingVectorIndex::Append` 的具体签名是否原样保留 dense/sparse 二分。
-7. ~~**候选族的输出形态统一**~~ **已结案：统一 `TargetBitmap`。** 选择率是查询的运行时属性而非族的静态属性，理由见 [§5 开头](#5-查询面)。
-8. **`RTreeIndex` 现有点谓词重载的真实消费者**：`In`/`NotIn`/`Range` 在 WKB 值上的语义是否有实际调用方（可能是 WKB 字节相等，而非空间关系）。若有，需保留一个 `ScalarPredicateReader<std::string>` 面而非直接删除——W1 开工前 grep 确认。
-9. ~~**`IndexCodec` 是否改名**~~ **已结案：改名 `IndexLoader`，方法 `Deserialize` → `Open`。** 该面只承担读方向，`Codec` 承诺双向、与职责不符；理由见 [§6](#6-构建面与加载面)。
-10. **L1 产物管道的精确落点与命名**（§11.2 第 1 条的两个尾巴）：① 落在 `storage` 内（它的一句话定义「字节与文件的世界，不认识 index、segment、查询」正好覆盖），还是新立一个 L1 小组件？倾向前者，但需确认不会把 storage 变成第二个杂物间。② 名字去掉 `Index` 前缀（`Artifact`/`ArtifactLoader`/`ArtifactStats`）——本文档暂仍写 `IndexArtifact`/`IndexLoader`，等落点定了一次改完，避免两轮改名。③ **与总览硬规则 4 冲突**：`CellByteSize()` 返回 `cachinglayer::ResourceUsage`，而硬规则 4 规定 cachinglayer 类型只允许出现在 columnar-format 与 segcore 内部。现状 `IndexBase::CellByteSize`/`SetCellSize` 已经违反了这条；管道下沉会把它固化到 L1。要么放宽规则（承认「参与分级缓存的产物」是一等概念），要么用 L0 的中性 `ResourceUsage` 类型在边界转换。**W1 开工前必须裁决**，否则 lint 规则自相矛盾。
-11. **上游阻塞：嵌套结构的查询节点数据表达尚未设计**（[宽表建模](https://zilliverse.feishu.cn/wiki/G9RIwzFwwiYdm4k1WlGcciBSnff)「六、查询节点的数据表达」仍是 TODO：内存/mmap/Vortex 如何表达嵌套、仅单子列加载）。本文档 [§5.8](#58-nested元素级索引坐标与投影) 的逐层投影与下一条的注入点**都建立在这个未定项之上**。同时 [#51504](https://github.com/milvus-io/milvus/pull/51504) 的 `ColumnInterface`（`ScanCursor`/`ScanBatch` = values + validity + row_ids）目前是**平坦列**接口，没有嵌套层次的表达位置——**若在嵌套表达定型前把 `ColumnInterface` 冻结，之后加嵌套就是二次改接口**。W1∥ 与宽表建模第六章必须合并考虑，这是本重构对外部设计的一条硬依赖。
-12. **shredded 子列上的 cast 类型面**：[宽表建模](https://zilliverse.feishu.cn/wiki/G9RIwzFwwiYdm4k1WlGcciBSnff)「二十、后续功能」第 6 条设想 *JSON Shredding 支持 path type cast*（cast 成 geo / timestamptz 甚至 ref-mode LOB）。若成立，空间谓词等会作用在**一根 shredded 子列**上而非顶层字段——[§5.6 `SpatialReader`](#56-spatialreader空间关系谓词) 的寻址单位必须是 `(field, path)` 而不只是 `field`（[§5.7](#57-jsonindexreaderpath-寻址的谓词索引) 的 `Resolve(path, cast_type)` 已是这个形状，空间族需对齐）。
-13. **nested 投影所需 `IArrayOffsets` 的注入点**（[§5.8](#58-nested元素级索引坐标与投影) 推荐"注入共享实例"）：注入发生在 `Loader::Open` 的 `LoadOptions` 里，还是加载后由 segcore 二次装配？前者让 loader 认识 columnar-format 类型，后者让 reader 有一个"未装配"的中间态。W1 落地时定。
+1. **~~segcore pin 出口的类型形态~~** **已结案：typed `Pin<ScalarPredicateReader<T>>`，无需基准。** 原条目里"需要 inventory 做一次每-batch downcast"是错的，[§4.3](#43-对象模型谁创建谁持有何时-pin) 才是对的：索引查询**整段只跑一次**——`ProcessIndexChunksImpl` 用 `cached_index_chunk_id_` 加 `ExprCacheHelper::GetOrCompute`（`Expr.h:2077,2116`）算出全段一张 bitmap，之后每 batch 只做切片（`Expr.h:3072` 的注释即"Populated once per segment, then sliced per batch"）；pin 同样只一次（`EnsurePinnedIndex()`，`Expr.h:395`，幂等、路径确定后才调）。
+
+   反向的事实更有说服力：**typed 消掉的是一处今天真实存在的每 batch cast**。非 source 表达式（`has_offset_input_`，上游已给候选 offsets）走 `ProcessIndexChunksByOffsets`（`Expr.h:686`）/ `ProcessIndexLookupByOffsetsImpl`（`Expr.h:754`），这两条每 batch 调用一次，且每次重做 `dynamic_cast<const Index*>(pinned_index_[0].get())`（`Expr.h:698,765`）。而 variant 方案唯一的真代价——逐行装箱——落在取值面 [§5.5](#55-scalarvaluereadert取值面)，是每行而非每 batch。两条路径 typed 都不劣，权衡不成立。
+2. **~~growing 水位的补齐策略~~** **已结案：按索引族策略化**（text match 允许滞后，其余回退列扫描）。策略化**不改索引侧合同**——[§7 第 2 条](#7-growing-面)的"桥接不在本合同内，索引只报水位"原样保留：策略表放 segcore（消费者侧），按索引族 key。索引侧**不新增任何表达策略的位**，否则 `ReaderCaps` 会开始承载产品语义，而它的定位是纯能力自述。
+3. **~~`T = std::string` 是否改 `std::string_view`~~** **已结案：改，但只改输入侧。** 谓词面与模式匹配面的入参全部只读且指向调用方内存，view 化无生命周期问题，tantivy FFI 本来就是 ptr+len（[§5.1](#51-scalarpredicatereadert) 已写入）。**取值面不能跟着改**：`StringIndexMarisa::Reverse_Lookup`（`StringIndexMarisa.cpp:800-811`）返回 `std::string(agent.key().ptr(), agent.key().length())`，字节活在函数内的 `marisa::Agent` 局部里——trie 是压缩存储，原值在反查时现场重建，索引内没有可指向的常驻缓冲。因此 `Lookup` 返回 owned、`Gather` 给 view，见 [§5.5](#55-scalarvaluereadert取值面)。
+4. **~~`InWithCallback` 优化口的去留~~** **已结案：删除。** 盘点结果与理由见 [§5.1](#51-scalarpredicatereadert) 注。
+5. **~~同一 path 既有 path index 又有 shredded 子列时怎么选~~** **已结案：索引优先于列数据暴搜。**
+
+   **这条顺带拆掉了一条跨波硬依赖。** 原结论是"exec 必须知道『这个 path 有 typed 子列』，而那是列的能力自述、`ReaderCaps` 给不出，所以 W1 与 W1∥ 必须两边同时定"。规则一立，exec 的**路径决策不再需要这个知识**：有索引走索引，没索引才轮到列；typed 子列快不快只影响 columnar-format 内部怎么扫，不上升为 exec 的选路合同。`FieldIndexCapability` 与 `ColumnPlanner` 的合流因此**不是 W1 的前置**。
+
+   > 一个 caveat，记录但不改规则：分级存储下这条不是无条件最优——冷索引 cell 的拉起代价可能高于扫一根已在内存的 typed 子列。这属于 cost model 层面的将来优化，不应反过来污染合同。
+6. **vector 查询族合同的细化**（`SearchInfo` 的归属、iterator 生命周期）：若 [§11.3](#113-vector-的四面归位不重设计) 的骨架在落地时不够，独立成 `02-vector-index.md`。**这是本条唯一剩下的未决部分。**
+
+   ~~growing vector interim index 的 appender 形态~~ **已结案**：Appender 面两族共有，语义（快照 + 水位）共享——见 [§7.1](#71-vector-的-appender-面今天已存在且带着与-indexbase-同构的病)。
+
+   ~~`GrowingVectorIndex::Append` 是否原样保留 dense/sparse 二分~~ **已确认：不保留，合并为单个 `Append`。** 两个实现（`FieldIndexing.cpp:348` / `:489`）骨架同形，真实差异只有 `dim` 来源（dense 取 schema、sparse 每批传入）、元素拷贝方式与一个 `SetIsSparse`。二分之所以看起来必要，是因为**两个方法内部各自同时是 Builder 和 Appender**：`!built_` 分支从整根 `ConcurrentVector` 全量 gather 做 `BuildWithDataset`（form B+，属 Builder 面），`built_` 分支才是真 Append；签名里的 `const VectorBase*` **只为前者存在**（后者对它的唯一用途是 `bulk_is_valid_range` 取本批 validity，`:84`，等价于 `const bool* valid`）。冷启动分支迁出 Builder 面后，`Append(reserved_offset, n, data, dim, valid)` 与标量同形。详见 [§7.1](#71-vector-的-appender-面今天已存在且带着与-indexbase-同构的病) 与 [§11.3](#113-vector-的四面归位不重设计)。
+7. **~~候选族的输出形态统一~~** **已结案：统一 `TargetBitmap`。** 选择率是查询的运行时属性而非族的静态属性，理由见 [§5 开头](#5-%E6%9F%A5%E8%AF%A2%E9%9D%A2)。
+8. **~~`RTreeIndex` 现有点谓词重载的真实消费者~~** **已结案：无消费者，直接删除。** grep 确认 `In`（`RTreeIndex.cpp:462`）、`NotIn`（`:534`）、`Range`×2（`:542`）、`InApplyFilter`（`:515`）、`InApplyCallback`（`:525`）、`Reverse_Lookup`（`RTreeIndex.h:187`）全是 `ThrowInfo(NotImplemented)` 空壳。
+
+   **但带出一条合同修正**：`IsNull`/`IsNotNull` 是真实现（`RTreeIndex.cpp:469,491`）且走索引（`PhyNullExpr` → `ProcessChunksForValid` → `ProcessIndexChunksForValid`，`Expr.h:2457`），`geo_field IS NULL` 是活路径。删掉点谓词后 RTree 不能再实现 `ScalarPredicateReader<T>`（否则 `T = std::string` 把 WKB 点谓词拖回来），于是**空值谓词必须拆成独立的跨族 `NullReader` 面**——已写入 [§5 开头](#5-查询面)、[§5.1](#51-scalarpredicatereadert)、[§5.6](#56-spatialreader空间关系谓词)。顺带修正 [§5.2](#52-patternmatchreader)：`FMIndex` 也不是"只有一个面"，它是 `PatternMatchReader` + `NullReader`。
+9. **~~`IndexCodec` 是否改名~~** **已结案：改名 `IndexLoader`，方法 `Deserialize` → `Open`。** 该面只承担读方向，`Codec` 承诺双向、与职责不符；理由见 [§6](#6-%E6%9E%84%E5%BB%BA%E9%9D%A2%E4%B8%8E%E5%8A%A0%E8%BD%BD%E9%9D%A2)。
+10. **L1 产物管道的精确落点与命名**（§11.2 第 1 条的两个尾巴）：① 落在 `storage` 内（它的一句话定义「字节与文件的世界，不认识 index、segment、查询」正好覆盖），还是新立一个 L1 小组件？倾向前者，但需确认不会把 storage 变成第二个杂物间。② 名字去掉 `Index` 前缀（`Artifact`/`ArtifactLoader`/`ArtifactStats`）——本文档暂仍写 `IndexArtifact`/`IndexLoader`，等落点定了一次改完，避免两轮改名。
+
+    ~~③ `CellByteSize` 与总览硬规则 4 冲突~~ **已结案：把 `ResourceUsage` 移出 cachinglayer，硬规则 4 一个字不改。** 在 milvus-common 新立 `include/common/ResourceUsage.h`、`namespace milvus`（`include/common/` 已存在），把 `ResourceUsage` 与它依赖的 `StorageType` 一并挪过去；`ToString()`/`FormatBytes` 的实现下沉到 `.cpp`，头里只留 `<cstdint>`/`<cmath>`/`<string>`。两个收益：(a) 它不再是"cachinglayer 类型"，规则 4 按原措辞即合规，**且不需要任何边界转换**——L1 与 segcore 用同一个类型；(b) 现状 `cachinglayer/Utils.h` 自带 `folly/futures/Future.h` 与三个 prometheus 头，L1 一旦 include 它就把这些拖进 L1 的编译依赖面，拆走后消失。改动面：milvus-common 10 文件 / 123 处，milvus 仓 36 文件 / 111 处（segcore 25、index 6、common 5），全为机械替换——index 那 6 个正是今天违规、改完自动合规的。
+
+    残留（不阻塞 W1 开工）：`IndexBase` 上 `cell_size_`（外部 `SetCellSize` 灌入）与 `cached_byte_size_`（子类 `ComputeByteSize` 算出，`Index.h:130-135` 注明 growing 不更新）两套语义重叠的自述要先合成一个，`Index.h:117` 的 `// TODO: how to get the cell byte size?` 一并了结。
+11. **上游阻塞：嵌套结构的查询节点数据表达尚未设计**（[宽表建模](https://zilliverse.feishu.cn/wiki/G9RIwzFwwiYdm4k1WlGcciBSnff)「六、查询节点的数据表达」仍是 TODO：内存/mmap/Vortex 如何表达嵌套、仅单子列加载）。本文档 [§5.8](#58-nested%E5%85%83%E7%B4%A0%E7%BA%A7%E7%B4%A2%E5%BC%95%E5%9D%90%E6%A0%87%E4%B8%8E%E6%8A%95%E5%BD%B1) 的逐层折叠建立在这个未定项之上——但只影响 exec / columnar-format 侧的链表达，index 侧只需知道自己建在哪一层。同时 [#51504](https://github.com/milvus-io/milvus/pull/51504) 的 `ColumnInterface`（`ScanCursor`/`ScanBatch` = values + validity + row_ids）目前是**平坦列**接口，没有嵌套层次的表达位置——**若在嵌套表达定型前把 `ColumnInterface` 冻结，之后加嵌套就是二次改接口**。W1∥ 与宽表建模第六章必须合并考虑，这是本重构对外部设计的一条硬依赖。
+    1. 这个先不管。
+12. **shredded 子列上的 cast 类型面**：[宽表建模](https://zilliverse.feishu.cn/wiki/G9RIwzFwwiYdm4k1WlGcciBSnff)「二十、后续功能」第 6 条设想 _JSON Shredding 支持 path type cast_（cast 成 geo / timestamptz 甚至 ref-mode LOB）。若成立，空间谓词等会作用在**一根 shredded 子列**上而非顶层字段——[§5.6 `SpatialReader`](#56-spatialreader%E7%A9%BA%E9%97%B4%E5%85%B3%E7%B3%BB%E8%B0%93%E8%AF%8D) 的寻址单位必须是 `(field, path)` 而不只是 `field`（[§5.7](#57-jsonindexreaderpath-%E5%AF%BB%E5%9D%80%E7%9A%84%E8%B0%93%E8%AF%8D%E7%B4%A2%E5%BC%95) 的 `Resolve(path, cast_type)` 已是这个形状，空间族需对齐）。
+    1. 这个也先不管。
+13. **~~nested 折叠所需 `IArrayOffsets` 的注入点~~** **已结案：不存在注入点——reader 不需要 `IArrayOffsets`。** 折叠点由查询语义决定、只有 plan 知道：相关元素谓词（struct array）必须元素级组合后再折叠，不相关谓词（`ContainsAll`/`NOT contains`）必须先折叠再组合。因此 reader 只能交付元素级结果，折叠是 exec 的算子。现状代码已是这个形态（`JsonContainsExpr.cpp:2462-2469`、`ElementFilterBitsNode.cpp:102,134`），本波要做的是把散在三处的折叠规整成一个显式算子。见 [§5.8](#58-nested元素级索引坐标与投影)。
