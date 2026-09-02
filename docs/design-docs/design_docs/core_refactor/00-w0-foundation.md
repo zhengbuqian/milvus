@@ -42,7 +42,7 @@ W0 的所有产出都是**工具与数据**，不含接口设计，因此可以�
 
 **19 对双向边**，最严重的几对（两个方向的 include 数）：`common ↔ segcore` 3/378、`common ↔ exec` 5/382、`segcore ↔ query` 21/14、`index ↔ segcore` 6/74、`storage ↔ index` 5/140、`mmap ↔ segcore` 3/20。
 
-> **两条此前未被记录的发现**（[segcore 章 11-cross-cutting](../segcore_refactor/11-cross-cutting.md) 只列了 5 组边）：
+> **两条此前未被记录的发现**（早前的 segcore 域内盘点只列了 5 组反向边）：
 > 1. **`common` 依赖了 L1/L3/L4 三层共 16 处**——不只是"3 处 segcore include"。`ElementFilterIterator` 让 L0 直接依赖 exec 的表达式内核，是全 core 最深的一条反向边。
 > 2. **`mmap` → `segcore` 3 处**。mmap 要独立成 columnar-format，这三条是硬阻塞：`SegcoreConfig`（配置错位，与 `FMIndex` 同病）、`GroupCTMeta`（cachinglayer 调优参数）、`ChunkTranslator`（translator 属于 segcore load）。
 
@@ -65,7 +65,7 @@ W0 的所有产出都是**工具与数据**，不含接口设计，因此可以�
 
 ### 3.1 `internal/core/module_deps.yaml` —— 规则声明
 
-全 core 版本的规则表（segcore 内部模块规则见 [segcore 章 11-cross-cutting §4.1](../segcore_refactor/11-cross-cutting.md#41-规则表述)，W3 时并入）：
+全 core 版本的规则表（segcore 内部模块之间的更细规则留到 W3 定）：
 
 ```yaml
 layers:                      # 组件 → 层号，唯一事实来源

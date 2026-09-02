@@ -3,7 +3,7 @@
 > **状态：设计提案，讨论中。** 本文档是 `internal/core` 整体重构的顶层总览：现状盘点、目标分层图、每个组件的一句话定义。
 > 现状事实基于 master `e255009e01`。
 >
-> [segcore 章节](../segcore_refactor/README.md)（12 篇）先于本文档写成，视角限于 segcore 域内，后续将修订并降级为本总览的一章。
+> 早前有一套 12 篇的 segcore 域内设计（`segcore_refactor/`），写在"把 index/storage/mmap 当作不动的外部件"这个前提上。本轮重构逐条违反了那个前提——index 合同整体搬出 segcore、json_stats 整体搬入、产物管道下沉 L1——**该套文档已删除**，其中仍然成立的结论已就地并入本总览与各章节（W3 的既定裁决见 §8）。
 
 ## 1. 范围
 
@@ -117,7 +117,7 @@ graph TD
 | **storage** | 字节与文件的世界：远端/本地 IO、binlog 编解码、加密压缩、读取规划；不认识 index、segment、查询 | 吸收 segcore 的 `memory_planner`、`default_fs`、packed/arrow_fs C 壳 |
 | **columnar-format**（mmap 升格） | 列数据的统一内存表示与访问契约：Chunk、ChunkedColumn、Scan/Take 游标、cell 几何规划、**列的物理布局（含 zone-map 与 JSON shredding）**；storage 产出、segcore/exec 消费 | 转正与 Scan/Take 契约已由 [#51504](https://github.com/milvus-io/milvus/pull/51504) 起步（见下方说明）；剩余：接口分面、legacy chunk 双轨退役、growing 通道、**JSON shredding 从 index 迁入**（见下方说明） |
 | **index** | 单列数据的索引算法本体，按调用方分查询 / growing 写入 / 构建 / 持久化四面窄合同；IO 注入，不认识 segment 与 executor | 标量+向量两族四面化（W1，[01](01-scalar-index.md)）、拆实现继承树、共享根收缩与 `IndexBase` 退役、修反向边（→exec、→segcore、→SegcoreConfig）；minhash 归并候选 |
-| **segcore** | 单 segment 的数据面内核：列/索引/可见性三条读通道 + 写入与装载，能力经 contracts 以 ReadView 发布 | [segcore 章](../segcore_refactor/README.md) 修正版；跨 segment 归并移出 |
+| **segcore** | 单 segment 的数据面内核：列/索引/可见性三条读通道 + 写入与装载，能力经 contracts 以 ReadView 发布 | W3 重新定义（既定裁决见 §8）；跨 segment 归并移出 |
 | **plan** | 查询的中间表示：把 proto plan 编译成类型化表达式树与 PlanNode DAG；只编译不执行 | 吸收 expr/ 与 query/ 的 `PlanProto`、`Plan` |
 | **exec** | 执行引擎：把编译好的 plan 在 segment ReadView 上向量化求值，含标量过滤、向量检索算子、重打分 | 吸收 query/ 的 `SearchOn*`、`SearchBruteForce` 与 rescores/ |
 | **app 编排层**（segcore_app、indexbuilder、clustering） | 每个 Go 服务入口对应的 C++ 编排服务：顺序编排、并发、取消、追踪；不含算法 | segcore_app 新建（含跨 segment 归并）；indexbuilder/clustering 改为消费 index/storage 窄合同 |
@@ -160,7 +160,7 @@ query/ 被三分：`PlanProto`/`Plan` 并入 plan；`SearchOnSealed/Growing`、`
 
 `Materializer`/`DataArrayBuilder`（单 segment 物化）留在 segcore、只依赖 contracts；`ReduceHelper`（多 segment 归并，依赖 `query::Plan`）移出 segcore、归 app 层。这同时裁决了 segcore 章的未定问题 4，并消掉"L2 依赖 query"这条怪边。
 
-更重要的是 segcore 由此获得可执行的定义——**"单 segment 的数据面内核"**：所有跨 segment 概念（归并、切片、分发）都在它之上。这句话是判断"什么该进 segcore"的裁决器，[10-capi §5](../segcore_refactor/10-capi.md) 中那批与 segment 无关的 `*_c.cpp` 迁出也是它的自然推论。
+更重要的是 segcore 由此获得可执行的定义——**"单 segment 的数据面内核"**：所有跨 segment 概念（归并、切片、分发）都在它之上。这句话是判断"什么该进 segcore"的裁决器：那批与 segment 无关的 `*_c.cpp` 迁出，是它的自然推论。
 
 ### 6.3 app 防杂物间的判据
 
@@ -178,22 +178,22 @@ app 层只允许**顺序编排**（先 A 后 B、错误处理、租约/取消/tr
 | **W1 index 四面化（标量 + 向量）** | [01-scalar-index.md](01-scalar-index.md)：标量各族窄合同、growing 增量合同、三条脏边修复；**标量/向量共享面清理**（共享根收缩为生命周期根、Loader/IO 注入、工厂拆族、knowhere 逐出标量路径）；vector 四面**归位**（不重设计 knowhere 交互）；`IndexBase` 波内退役 | exec `dynamic_cast` 到具体索引清零；index → segcore/exec/query include 为 0；标量族零 knowhere include；多实现逐位一致测试矩阵 |
 | **W1∥ columnar-format 收敛** | 主线是 #51504 的两阶段计划（外部推进）；我们侧的收尾要求 = 上文"内部跟踪项"四条 + growing 列通道 + **JSON shredding 从 index 迁入**（需先建模"可选替代布局"概念） | 第二阶段完成：公共接口收敛为 `ColumnInterface`（仅 Scan/Take）；`index/json_stats/` 目录清空；exec 的 JSON 路径不再 include `index/json_stats/JsonKeyStats.h` |
 | **W2 storage 边界收口**（可与 W1 并行） | 吸收 `memory_planner`/`default_fs`/packed C 壳；`FileSink`/`FileSource` 落地；边界 lint（不认识 index/segment/查询）；**不动内部实现**（避让 storage-v2/loon 活跃开发） | storage → segcore include 为 0；W1 的 Loader/Artifact 消费 FileSource/FileSink |
-| **W3 segcore 数据面** | [segcore 章](../segcore_refactor/README.md) 12 篇修正版（ReadView、growing 故事、reduce 拆分、indexing/columnar 模块随 W1/W1∥ 简化） | segcore 章验收标准（修订版） |
+| **W3 segcore 数据面** | 按 §8 的既定裁决重写 segcore 设计（ReadView、growing 故事、reduce 拆分、indexing/columnar 模块随 W1/W1∥ 简化） | 依赖边数、契约宽度、impl 行数（§8 第 6 条） |
 | **W4 query 三分 + exec 收编** | query/ 编译半边并入 plan、`SearchOn*`/BruteForce 下沉 exec、编排上移 app；rescores/minhash 归并决策落地 | query/ 目录消失；plan/exec/app 边界 lint 通过 |
 | **W5 app / capi 收尾** | 全仓 `*_c.cpp` 收敛三步形态；删除全部过渡适配器与 lint baseline | 全局硬规则无 baseline 通过 |
 
-## 8. segcore 章节的已知待修订项
+## 8. W3 segcore 的既定裁决
 
-[segcore 12 篇](../segcore_refactor/README.md)先于本总览写成，视角限于 segcore 域内（把 index/storage/mmap 当作不动的外部）。以下问题已在讨论中确认，**W3 开工前修订**：
+早前那套 segcore 域内设计（12 篇）已删除：它的框架——把 index/storage/mmap 当作不动的外部件——被本轮重构逐条推翻，而框架错了的文档比没有文档更危险，因为它会被引用。**但其中经过讨论确认的结论仍然成立**，就地保留在这里，作为 W3 开工时的输入：
 
 1. **读一致性模型缺位（契约层最大的洞）**：`ISegment` 的三个独立投影（`columns()`/`indexes()`/`mvcc()`）无法保证来自同一发布代，而 segment 支持 reopen/COW 换代——列来自 gen N、索引来自 gen N+1 会导致行号语义错位。当前靠 `ReadGate` 隐式维持，契约层却没有租约的痕迹。修正：一等公民改为 **ReadView**——一次 Capture 的快照，持有读租约，捆绑三个能力投影；`ISegment::OpenReadView(OpContext*)` 取代三个裸投影；`exec::ExecutorFactory` 接受 ReadView 而非三个散装引用。这同时裁决了"gate 属于哪层"：它是契约语义的一部分，不是 segment 的实现私事。
 2. **growing 故事缺失 + 一处事实错误**：02-mvcc 的"不可变快照"设计只覆盖 sealed；growing 的 ts 是并发 append 的 `ConcurrentVector`（`InsertRecord.h:1921`）、delete 可先于 insert 到达（当前 `DeletedRecord` 那个 `std::function` 回调存在的原因）。且**"sealed 有 lifecycle、growing 有 sink"的能力矩阵是错的**——`SegmentGrowingImpl` 今天就有 `LoadFieldData` 与三个 `Reopen` 重载（`SegmentGrowingImpl.h:111,157-165`），两者都有。修正：读投影契约共享，内部架构 sealed（不可变快照组合）与 growing（带 barrier 协议的可写结构）分开陈述。**连带风险**：P1 选 mvcc 做方法论验证会最先撞上 growing 的并发语义，需明确 P1 收缩为 sealed-only 或先补齐 growing 故事。
 3. **reduce 拆分**：见 [§6.2](#62-reduce-拆两半segcore-由此获得定义)。
 4. **indexing 模块简化**：[01-scalar-index §4 起](01-scalar-index.md#4-合同总览) 的窄合同定义在 index 本体，segcore 侧的 adapter 层删除，indexing 模块退化为 segment 级清单 + pin 管理。
-5. **签名级矛盾清账**（接口冻结前）：contracts 的 proto 禁令被 `IGrowingSink::Insert(InsertRecordProto*)` 与 `PkRange(proto::plan::OpType)` 违反（契约层应定义 native enum 与非 proto 的 InsertBatch 视图）；`Gather`/`ColumnSink` 的逐行虚调用与 [03 §5](../segcore_refactor/03-columnar.md#5-性能约束)"虚调用锁定 chunk 粒度"冲突（retrieve 物化是热路径，sink 接口需批量化——注意 [#51504](https://github.com/milvus-io/milvus/pull/51504) 的 `TakeResult`+`GetOwn()` 已给出更好答案）；`Pinned<T>` 的 friend 工厂堵死 contracts_testing 的 fake；skip index 在 columnar（持有）与 `IIndexProvider`（暴露）两处开门，须择一（[01-scalar-index §1](01-scalar-index.md#1-范围) 已裁定归 columnar-format）。
+5. **签名级矛盾清账**（接口冻结前）：contracts 的 proto 禁令被 `IGrowingSink::Insert(InsertRecordProto*)` 与 `PkRange(proto::plan::OpType)` 违反（契约层应定义 native enum 与非 proto 的 InsertBatch 视图）；`Gather`/`ColumnSink` 的逐行虚调用与 早前 columnar 章定下的性能约束"虚调用锁定 chunk 粒度"冲突（retrieve 物化是热路径，sink 接口需批量化——注意 [#51504](https://github.com/milvus-io/milvus/pull/51504) 的 `TakeResult`+`GetOwn()` 已给出更好答案）；`Pinned<T>` 的 friend 工厂堵死 contracts_testing 的 fake；skip index 在 columnar（持有）与 `IIndexProvider`（暴露）两处开门，须择一（[01-scalar-index §1](01-scalar-index.md#1-范围) 已裁定归 columnar-format）。
 6. **验收措辞降级**："测试不链接 `milvus_core`"从"唯一不可妥协的验收信号"降为代理指标之一。主目标是 prod 代码的结构与职责划分，直接指标（依赖边数、include 面、契约宽度、impl 行数）优先。
 
-### 8.1 segcore 章六个未定问题的裁决
+### 8.1 六个未定问题的裁决
 
 | 未定问题 | 裁决 | 理由 |
 |---|---|---|
@@ -222,4 +222,3 @@ app 层只允许**顺序编排**（先 A 后 B、错误处理、租约/取消/tr
 
 - [00-w0-foundation.md](00-w0-foundation.md) —— W0：基建（依赖 baseline、lint、组件转正、common hygiene）
 - [01-scalar-index.md](01-scalar-index.md) —— W1：Index 四面化（标量各族 + 标量/向量共享面）
-- [segcore 章节](../segcore_refactor/README.md)（12 篇，先于本总览写成，W3 前按 §8 修订）

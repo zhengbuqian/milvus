@@ -233,7 +233,7 @@ class IndexReaderBase {
 >
 > 今天真正每 batch 重做 `dynamic_cast` 的是 by-offsets 路径：非 source 表达式（`has_offset_input_`，上游已给候选 offsets）走 `ProcessIndexChunksByOffsets`（`Expr.h:686`）或 `ProcessIndexLookupByOffsetsImpl`（`Expr.h:754`），每批 cast 一次（`Expr.h:698,765`）。pin 出口给 typed reader 后这处开销一并消失。
 
-**第 1 步不得 pin 是硬约束。** 现状代码注释已写明理由："短路路径（TextIndex/PkIndex/JsonStats）与 RawData 路径永不调用它，标量索引 cell 在分级存储里保持冷态"。若把 caps 做成必须持有对象才能调的虚函数，路径决策就会把冷索引全部拉起——这是线上冷取放大的直接来源（[04-indexing §6](../segcore_refactor/04-indexing.md) 已把"`Capability()` 不触发 pin"列为必测项）。
+**第 1 步不得 pin 是硬约束。** 现状代码注释已写明理由："短路路径（TextIndex/PkIndex/JsonStats）与 RawData 路径永不调用它，标量索引 cell 在分级存储里保持冷态"。若把 caps 做成必须持有对象才能调的虚函数，路径决策就会把冷索引全部拉起——这是线上冷取放大的直接来源。**因此"`Capability()` 不触发 pin"是必测项**：用计数型 fake `CacheSlot` 断言 pin 次数为 0——这是一个今天完全没被测到、而线上会造成冷取放大的行为。
 
 **growing 侧的不对称**：appender 不是"每次写入去取"——`GrowingIndexSet` 长期持有 appender（每个建索引字段一个），insert 路径直接调 `Append`。读侧 `ReaderSnapshot()` 返回的是**另一个对象**：commit/reload 时产生的不可变快照，所有并发查询经 `shared_ptr` 共享同一份。**每次 commit 创建一次，不是每次查询**。
 
@@ -342,7 +342,7 @@ class NgramReader {
 };
 ```
 
-**Phase2（验证）从索引中删除。** 现状 `ExecutePhase2(literal, op, exec::SegmentExpr*, ...)` 的本质是"对候选行取原值重新求值"——取值走 columnar-format 的 `Take`/`Scan`，求值本来就是 exec 的表达式内核。切分后：`index → exec` 反向边消失，且不需要引入回调（[11-cross-cutting §2.4](../segcore_refactor/11-cross-cutting.md) 原方案的 `ValueFetcher` 回调也不再需要）。
+**Phase2（验证）从索引中删除。** 现状 `ExecutePhase2(literal, op, exec::SegmentExpr*, ...)` 的本质是"对候选行取原值重新求值"——取值走 columnar-format 的 `Take`/`Scan`，求值本来就是 exec 的表达式内核。切分后：`index → exec` 反向边消失，且不需要引入回调（早期方案里为打断这条边而设想的 `ValueFetcher` 回调也不再需要——切分本身就消除了它）。
 
 > **这不是新发明，是向 geometry 看齐。** `RTreeIndex::QueryCandidates` 出候选、exec 的 `PhyGISRefineConjunctExpr` 做精确验证——同一模式在空间族已经正确落地多时（§5.6）。ngram 是这个模式的**未完成实现**：它把验证留在了索引里，于是拖出一条 `index → exec` 反向边。
 
@@ -697,7 +697,7 @@ Appender **不是标量专属**。`segcore/FieldIndexing.h` 里两族今天都�
 | `HybridScalarIndex<T>` | **消失** | Builder 选型策略 | §6.3 |
 | `StringIndexSort` | `ScalarPredicateReader<std::string>` + **`PatternMatchReader`** + `ScalarValueReader` | Builder | **更正：它不是薄别名**（576 + 1860 行，自带 pImpl 层次与自己的带版本二进制格式，存在的原因是 `ScalarIndexSort<T>` `static_assert(is_arithmetic_v<T>)` 装不下 string）。它也有完整 LIKE 族（`StringIndexSort.h:131,136`，三处实现覆写）。与 `ScalarIndexSort` 合并是真实工作量，不是随迁 |
 | `BoolIndex` | 同 bitmap | Builder | 这个才是薄别名（32 行、无类），随迁 |
-| `FMIndex` | `PatternMatchReader` **仅此谓词面** | Builder | `SegcoreConfig` 依赖改构造参数注入（修复 [11-cross-cutting §2.5](../segcore_refactor/11-cross-cutting.md)） |
+| `FMIndex` | `PatternMatchReader` **仅此谓词面** | Builder | `SegcoreConfig` 依赖改构造参数注入。病因是**全局可变配置放在 segcore 里**，于是所有要读配置的模块都被迫依赖它（`FMIndex.h:30` include `segcore/SegcoreConfig.h`、`:227` 读 `default_config()`） |
 | `TextMatchIndex` | `TextMatchReader` | `IndexBuilder<std::string_view>` 的 text 实现 + `GrowingTextIndex` | 四构造函数拆到四个归属 |
 | `NgramInvertedIndex` | `NgramReader` | Builder | Phase2 删除，`index → exec` 边消失 |
 | `JsonFlatIndex` (+ QueryExecutor) | `JsonIndexReader` | `IndexBuilder<std::string_view>` 的 json 实现 | |
