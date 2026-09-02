@@ -216,6 +216,7 @@ app 层只允许**顺序编排**（先 A 后 B、错误处理、租约/取消/tr
 2. **rescores → exec、minhash → index 的归并**。各 2k 行以下、消费者单一，独立成组件的证据不足。**W4 前决策。**
 3. **indexbuilder / clustering 是否合并为单一"离线服务编排"组件**。**W4 决策。**
 4. **`common/Types.h` 的拆分**。33 个 include、被 195 个生产文件 include，god header 实锤，但拆它触碰全仓。**W3 后独立评估**（[W0 §3.6](00-w0-foundation.md#36-common-hygiene-轨道与-w1-并行) 明确排除）。
+5. **嵌套结构的查询节点数据表达**（[宽表建模](https://zilliverse.feishu.cn/wiki/G9RIwzFwwiYdm4k1WlGcciBSnff)「六、查询节点的数据表达」仍是 TODO：内存 / mmap / Vortex 如何表达嵌套、如何只加载单根子列）。**不卡 index 侧**——索引只需知道自己建在哪一层，输出始终是最内层元素坐标系的 bitmap（[01-scalar-index §5.8](01-scalar-index.md#58-nested元素级索引坐标与投影)）。卡的是 **`ColumnInterface` 的冻结时机**：[#51504](https://github.com/milvus-io/milvus/pull/51504) 的 `ScanBatch` 目前是 values + validity + row_ids 的平坦三元组，没有层次的表达位置，在嵌套表达定型前冻结它，之后加嵌套就是二次改接口。可执行的缓解：冻结前只需先答一个二选一——嵌套是**加字段**（`ScanBatch` 多一个 offsets 成员，`row_ids` 含义不变，可以先冻结）还是**改维度**（`row_ids` 变元素坐标、`Take` 按元素寻址，不能先冻结）。**W1∥ 与宽表建模第六章合并考虑。**
 
 ## 10. 章节文档
 
