@@ -29,7 +29,7 @@
 #include "segcore/SegmentInterface.h"
 #include "common/bson_view.h"
 #include "exec/expression/Utils.h"
-#include "index/json_stats/bson_inverted.h"
+#include "segcore/json_stats/bson_inverted.h"
 #include "cachinglayer/CacheSlot.h"
 
 namespace milvus {

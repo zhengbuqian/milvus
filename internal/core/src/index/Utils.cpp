@@ -35,16 +35,13 @@
 #include "common/EasyAssert.h"
 #include "common/FieldData.h"
 #include "common/FieldDataInterface.h"
-#include "common/QueryInfo.h"
-#include "common/RangeSearchHelper.h"
 #include "common/Slice.h"
 #include "common/Utils.h"
 #include "fmt/core.h"
+#include "index/Families.h"
 #include "index/Meta.h"
-#include "index/ScalarIndex.h"
 #include "index/Utils.h"
 #include "storage/IndexData.h"
-#include "knowhere/comp/index_param.h"
 #include "storage/Util.h"
 
 namespace milvus::index {
@@ -54,74 +51,6 @@ get_file_size(int fd) {
     struct stat s;
     fstat(fd, &s);
     return s.st_size;
-}
-
-std::vector<IndexType>
-NM_List() {
-    static std::vector<IndexType> ret{
-        knowhere::IndexEnum::INDEX_FAISS_IVFFLAT,
-    };
-    return ret;
-}
-
-std::vector<IndexType>
-BIN_List() {
-    static std::vector<IndexType> ret{
-        knowhere::IndexEnum::INDEX_FAISS_BIN_IDMAP,
-        knowhere::IndexEnum::INDEX_FAISS_BIN_IVFFLAT,
-    };
-    return ret;
-}
-
-// TODO caiyd: should list supported list
-std::vector<std::tuple<IndexType, MetricType>>
-unsupported_index_combinations() {
-    static std::vector<std::tuple<IndexType, MetricType>> ret{
-        std::make_tuple(knowhere::IndexEnum::INDEX_FAISS_BIN_IVFFLAT,
-                        knowhere::metric::L2),
-        std::make_tuple(knowhere::IndexEnum::INDEX_SPARSE_INVERTED_INDEX,
-                        knowhere::metric::L2),
-        std::make_tuple(knowhere::IndexEnum::INDEX_SPARSE_INVERTED_INDEX,
-                        knowhere::metric::COSINE),
-        std::make_tuple(knowhere::IndexEnum::INDEX_SPARSE_INVERTED_INDEX,
-                        knowhere::metric::HAMMING),
-        std::make_tuple(knowhere::IndexEnum::INDEX_SPARSE_INVERTED_INDEX,
-                        knowhere::metric::JACCARD),
-        std::make_tuple(knowhere::IndexEnum::INDEX_SPARSE_INVERTED_INDEX,
-                        knowhere::metric::SUBSTRUCTURE),
-        std::make_tuple(knowhere::IndexEnum::INDEX_SPARSE_INVERTED_INDEX,
-                        knowhere::metric::SUPERSTRUCTURE),
-        std::make_tuple(knowhere::IndexEnum::INDEX_SPARSE_WAND,
-                        knowhere::metric::L2),
-        std::make_tuple(knowhere::IndexEnum::INDEX_SPARSE_WAND,
-                        knowhere::metric::COSINE),
-        std::make_tuple(knowhere::IndexEnum::INDEX_SPARSE_WAND,
-                        knowhere::metric::HAMMING),
-        std::make_tuple(knowhere::IndexEnum::INDEX_SPARSE_WAND,
-                        knowhere::metric::JACCARD),
-        std::make_tuple(knowhere::IndexEnum::INDEX_SPARSE_WAND,
-                        knowhere::metric::SUBSTRUCTURE),
-        std::make_tuple(knowhere::IndexEnum::INDEX_SPARSE_WAND,
-                        knowhere::metric::SUPERSTRUCTURE),
-    };
-    return ret;
-}
-
-bool
-is_in_bin_list(const IndexType& index_type) {
-    return is_in_list<IndexType>(index_type, BIN_List);
-}
-
-bool
-is_in_nm_list(const IndexType& index_type) {
-    return is_in_list<IndexType>(index_type, NM_List);
-}
-
-bool
-is_unsupported(const IndexType& index_type, const MetricType& metric_type) {
-    return is_in_list<std::tuple<IndexType, MetricType>>(
-        std::make_tuple(index_type, metric_type),
-        unsupported_index_combinations);
 }
 
 bool
@@ -198,92 +127,22 @@ GetBitmapCardinalityLimitFromConfig(const Config& config) {
     }
 }
 
-ScalarIndexType
-GetHybridLowCardinalityIndexTypeFromConfig(const Config& config) {
-    auto index_type = GetValueFromConfig<std::string>(
-        config, index::HYBRID_LOW_CARDINALITY_INDEX_TYPE);
-    if (index_type.has_value()) {
-        return FromString(index_type.value());
-    }
-    // Default to BITMAP for low cardinality
-    return ScalarIndexType::BITMAP;
+std::string
+GetLowCardinalityFamilyFromConfig(const Config& config) {
+    // TODO: move existing logic here (see the pre-refactor
+    // Utils.cpp:201-211 GetHybridLowCardinalityIndexTypeFromConfig), returning
+    // `families::kBitmap` in place of `ScalarIndexType::BITMAP`.
+    return {};
 }
 
-ScalarIndexType
-GetHybridHighCardinalityIndexTypeFromConfig(const Config& config) {
-    auto index_type = GetValueFromConfig<std::string>(
-        config, index::HYBRID_HIGH_CARDINALITY_INDEX_TYPE);
-    if (index_type.has_value()) {
-        return FromString(index_type.value());
-    }
-    // Default to STLSORT for high cardinality
-    return ScalarIndexType::STLSORT;
+std::string
+GetHighCardinalityFamilyFromConfig(const Config& config) {
+    // TODO: move existing logic here (see the pre-refactor
+    // Utils.cpp:212-222 GetHybridHighCardinalityIndexTypeFromConfig).
+    return {};
 }
 
 // TODO :: too ugly
-storage::FieldDataMeta
-GetFieldDataMetaFromConfig(const Config& config) {
-    storage::FieldDataMeta field_data_meta;
-    // set collection id
-    auto collection_id =
-        index::GetValueFromConfig<std::string>(config, index::COLLECTION_ID);
-    AssertInfo(collection_id.has_value(),
-               "collection id not exist in index config");
-    field_data_meta.collection_id = std::stol(collection_id.value());
-
-    // set partition id
-    auto partition_id =
-        index::GetValueFromConfig<std::string>(config, index::PARTITION_ID);
-    AssertInfo(partition_id.has_value(),
-               "partition id not exist in index config");
-    field_data_meta.partition_id = std::stol(partition_id.value());
-
-    // set segment id
-    auto segment_id =
-        index::GetValueFromConfig<std::string>(config, index::SEGMENT_ID);
-    AssertInfo(segment_id.has_value(), "segment id not exist in index config");
-    field_data_meta.segment_id = std::stol(segment_id.value());
-
-    // set field id
-    auto field_id =
-        index::GetValueFromConfig<std::string>(config, index::FIELD_ID);
-    AssertInfo(field_id.has_value(), "field id not exist in index config");
-    field_data_meta.field_id = std::stol(field_id.value());
-
-    return field_data_meta;
-}
-
-storage::IndexMeta
-GetIndexMetaFromConfig(const Config& config) {
-    storage::IndexMeta index_meta;
-    // set segment id
-    auto segment_id =
-        index::GetValueFromConfig<std::string>(config, index::SEGMENT_ID);
-    AssertInfo(segment_id.has_value(), "segment id not exist in index config");
-    index_meta.segment_id = std::stol(segment_id.value());
-
-    // set field id
-    auto field_id =
-        index::GetValueFromConfig<std::string>(config, index::FIELD_ID);
-    AssertInfo(field_id.has_value(), "field id not exist in index config");
-    index_meta.field_id = std::stol(field_id.value());
-
-    // set index version
-    auto index_version =
-        index::GetValueFromConfig<std::string>(config, index::INDEX_VERSION);
-    AssertInfo(index_version.has_value(),
-               "index_version id not exist in index config");
-    index_meta.index_version = std::stol(index_version.value());
-
-    // set index id
-    auto build_id =
-        index::GetValueFromConfig<std::string>(config, index::INDEX_BUILD_ID);
-    AssertInfo(build_id.has_value(), "build id not exist in index config");
-    index_meta.build_id = std::stol(build_id.value());
-
-    return index_meta;
-}
-
 Config
 ParseConfigFromIndexParams(
     const std::map<std::string, std::string>& index_params) {
@@ -509,38 +368,5 @@ ReadDataFromFD(int fd, void* buf, size_t size, size_t chunk_size) {
     }
 }
 
-bool
-CheckAndUpdateKnowhereRangeSearchParam(const SearchInfo& search_info,
-                                       const int64_t topk,
-                                       const MetricType& metric_type,
-                                       knowhere::Json& search_config) {
-    const auto radius =
-        index::GetValueFromConfig<float>(search_info.search_params_, RADIUS);
-    if (!radius.has_value()) {
-        return false;
-    }
-
-    search_config[RADIUS] = radius.value();
-    // `range_search_k` is only used as one of the conditions for iterator early termination.
-    // not gurantee to return exactly `range_search_k` results, which may be more or less.
-    // set it to -1 will return all results in the range.
-    search_config[knowhere::meta::RANGE_SEARCH_K] = topk;
-
-    const auto range_filter =
-        GetValueFromConfig<float>(search_info.search_params_, RANGE_FILTER);
-    if (range_filter.has_value()) {
-        search_config[RANGE_FILTER] = range_filter.value();
-        CheckRangeSearchParam(
-            search_config[RADIUS], search_config[RANGE_FILTER], metric_type);
-    }
-
-    const auto page_retain_order =
-        GetValueFromConfig<bool>(search_info.search_params_, PAGE_RETAIN_ORDER);
-    if (page_retain_order.has_value()) {
-        search_config[knowhere::meta::RETAIN_ITERATOR_ORDER] =
-            page_retain_order.value();
-    }
-    return true;
-}
 
 }  // namespace milvus::index

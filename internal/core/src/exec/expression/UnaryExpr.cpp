@@ -52,8 +52,8 @@
 #include "glog/logging.h"
 #include "index/NgramInvertedIndex.h"
 #include "index/TextMatchIndex.h"
-#include "index/json_stats/JsonKeyStats.h"
-#include "index/json_stats/utils.h"
+#include "segcore/json_stats/JsonKeyStats.h"
+#include "segcore/json_stats/utils.h"
 #include "log/Log.h"
 #include "monitor/Monitor.h"
 #include "opentelemetry/trace/span.h"
@@ -731,6 +731,16 @@ PhyUnaryRangeFilterExpr::ExecArrayEqualForIndex(EvalCtx& context,
                 }
             }
 
+            // ELEMENT -> ROW FOLD, SITE 2 OF 3 (per element, via
+            // `ElementIDToRowID`). See the note at
+            // exec/expression/JsonContainsExpr.cpp and the
+            // "ELEMENT -> ROW PROJECTION" section of
+            // exec/expression/CandidateRefine.h. The `to_row_offset` lambda
+            // below is what merges into that projection operator; the
+            // surrounding `InApplyCallback` + `unordered_set` intersection is
+            // replaced by an element-level `In()` bitmap AND (§9, "exec ARRAY
+            // equality"), with `is_same_array` staying here as the candidate
+            // family's exact verification step.
             std::shared_ptr<const IArrayOffsets> array_offsets;
             if (index_ptr->IsNestedIndex()) {
                 array_offsets = segment_->GetArrayOffsets(field_id_);

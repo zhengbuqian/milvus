@@ -22,9 +22,62 @@
 #include "ArrayOffsets.h"
 #include "common/Tracer.h"
 #include "common/Types.h"
-#include "knowhere/config.h"
+#include "nlohmann/json.hpp"
+
+// NO KNOWHERE HEADER IN THIS FILE — see core_refactor/01-scalar-index.md
+// §12.1(a) and §10 rule 6.
+//
+// THE CHAIN THIS BREAKS. §10 rule 6 requires "zero knowhere includes in the
+// scalar families' contracts and implementations", and the current-state
+// baseline recorded there says the violation is NOT any scalar index including
+// knowhere directly (their own headers count zero) — it is two transitive
+// chains, and this file is one of them:
+//
+//     common/QueryInfo.h -> knowhere/config.h
+//     index/Utils.h      -> common/QueryInfo.h
+//     nearly every scalar family .cpp -> index/Utils.h
+//       (BitmapIndex.cpp, ScalarIndexSort.cpp, StringIndexMarisa.cpp,
+//        StringIndexSort.cpp, InvertedIndexTantivy.cpp, FMIndex.cpp,
+//        RTreeIndex.cpp, NgramInvertedIndex.cpp, HybridScalarIndex.cpp,
+//        ScalarIndex.cpp, bson_inverted.cpp, ...)
+//
+// so every scalar index translation unit compiles knowhere today. The other
+// chain is `index/Index.h`, the shared root, which has three direct references;
+// breaking that one belongs to the index-side work.
+//
+// THE FIX IS TO BREAK THE CHAIN, NOT TO SPLIT `SearchInfo`. §12.1(a) is
+// explicit that "how to split `SearchInfo`" was investigated and CLOSED with
+// the opposite conclusion: `index/` reads exactly FOUR of its fields —
+// `search_params_`, `metric_type_`, `topk_`, `trace_ctx_` — and never touches
+// `array_offsets_`, `active_count_`, `group_by_field_ids_`,
+// `iterative_filter_execution`, `iterator_v2_info_` or the refine ratios.
+// A wide struct passed by `const&` is not a wide dependency: the extra fields
+// create no edge and are never read. (That also disproves a more worrying
+// guess: since index never reads `array_offsets_`, the element-level fold does
+// NOT happen inside an index today, consistent with §5.8.) So the correct move
+// is the narrowing this design uses everywhere else: THE FACE DECLARES ITS OWN
+// PARAMETER TYPE. That type is `index::VectorSearchParams` in
+// `index/contracts/VectorFaces.h` — the vector family's own header, where
+// knowhere is allowed (§11.2 item 5, and §12.1(c) which rules that knowhere
+// types may appear freely inside the vector family). `SearchInfo` stays what it
+// always was: exec's own aggregate, projected onto the narrow type at the call
+// site.
+//
+// WHY `nlohmann::json` IS THE RIGHT SPELLING HERE, AND WHAT IT DOES NOT BUY.
+// `knowhere::Json` is a typedef for `nlohmann::json` (knowhere/config.h:35), so
+// naming the underlying type costs nothing at the call sites — building
+// `index::VectorSearchParams{search_params_, ...}` needs no conversion. BE
+// HONEST ABOUT THE SCOPE OF THE WIN: this removes a knowhere INCLUDE from every
+// scalar translation unit (which is the stated benefit — compile isolation, and
+// a knowhere upgrade no longer rebuilding every scalar index), it does not make
+// the parameter blob independent of knowhere's schema. The params are still
+// knowhere search parameters; only the header dependency is gone.
 
 namespace milvus {
+
+// The search-parameter blob. Same underlying type as `knowhere::Json`, named
+// without the knowhere header — see the note above.
+using SearchParamsJson = nlohmann::json;
 
 struct SearchIteratorV2Info {
     std::string token = "";
@@ -49,7 +102,7 @@ struct SearchInfo {
     int64_t round_decimal_{0};
     FieldId field_id_;
     MetricType metric_type_;
-    knowhere::Json search_params_;
+    SearchParamsJson search_params_;
     BruteForceIndexParams brute_force_index_params_;
     std::vector<FieldId>
         group_by_field_ids_;  // Group by field IDs (single or multi-field)

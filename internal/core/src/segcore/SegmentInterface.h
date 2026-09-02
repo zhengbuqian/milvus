@@ -59,7 +59,7 @@
 #include "index/NgramInvertedIndex.h"
 #include "index/SkipIndex.h"
 #include "index/TextMatchIndex.h"
-#include "index/json_stats/JsonKeyStats.h"
+#include "segcore/json_stats/JsonKeyStats.h"
 #include "mmap/ChunkedColumnInterface.h"
 #include "parquet/statistics.h"
 #include "pb/plan.pb.h"
@@ -220,6 +220,22 @@ class SegmentInterface {
     virtual PinWrapper<index::TextMatchIndex*>
     GetTextIndex(milvus::OpContext* op_ctx, FieldId field_id) const = 0;
 
+    // `IndexBase` EXIT — SEALED SIDE. `PinJsonIndex` and `PinIndex` below both
+    // hand out `PinWrapper<const index::IndexBase*>`, i.e. an UNTYPED handle
+    // that forces every consumer to `dynamic_cast` to a concrete index class
+    // (exec/expression/Expr.h:678,745,2112,2412,2512,2564,2654 and the
+    // per-batch casts at `:698,765`). W1 replaces both with the typed pin exits
+    // on `segcore::IndexInventory` (segcore/indexing/IndexInventory.h), which
+    // do the root->face sibling cast ONCE PER EXPRESSION NODE and return a
+    // `Pinned<Face>`; `index::IndexReaderBase` takes over `IndexBase`'s handle
+    // role (core_refactor/01-scalar-index.md §11.2 item 3, §4.3). The W1 exit
+    // criterion is "exec's `dynamic_cast` to concrete indexes drops to zero",
+    // and these two signatures are what makes those casts necessary.
+    //
+    // The `PinWrapper` in the return type is separately a problem: README §5
+    // rule 4 confines cachinglayer types to columnar-format and segcore
+    // internals, and anything crossing outwards must be an RAII handle
+    // (`segcore::Pinned<T>`) or a cursor.
     virtual std::vector<PinWrapper<const index::IndexBase*>>
     PinJsonIndex(milvus::OpContext* op_ctx,
                  FieldId field_id,
@@ -269,6 +285,20 @@ class SegmentInterface {
                          FieldId field_id,
                          const std::string& nested_path) const = 0;
 
+    // JSON shredding is a COLUMN LAYOUT, not an index — see
+    // core_refactor/01-scalar-index.md §1. Its class moved to
+    // `segcore/json_stats/` in W1 and lost its `ScalarIndex<std::string>` base;
+    // this accessor is unchanged, and that is the point of the §1 evidence
+    // table: the query side never went through a virtual, it always took the
+    // CONCRETE type from here and called `ExecutorForShreddingData` /
+    // `ExecuteForSharedData` on it.
+    //
+    // END STATE (blocked on wide-table modelling, not on W1): the typed
+    // sub-columns become first-class columnar-format objects and this accessor
+    // degrades to a LAYOUT DIRECTORY ("which sub-column holds path P, cast to
+    // what, or is it only in the shared BSON blob"), which stays in segcore
+    // because a JSON layout is inferred per segment from stats rather than
+    // coming down the schema channel.
     virtual std::shared_ptr<index::JsonKeyStats>
     GetJsonStats(milvus::OpContext* op_ctx, FieldId field_id) const = 0;
 

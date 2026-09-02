@@ -36,7 +36,7 @@
 #include "index/NgramInvertedIndex.h"
 #include "exec/expression/Utils.h"
 #include "common/bson_view.h"
-#include "index/json_stats/bson_inverted.h"
+#include "segcore/json_stats/bson_inverted.h"
 #include "cachinglayer/CacheSlot.h"
 #include "index/NgramInvertedIndex.h"
 

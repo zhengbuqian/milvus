@@ -156,7 +156,13 @@ struct ReaderCaps {
 }  // namespace milvus::index
 ```
 
+> **caps 之外还有第二层判定：逐调用护栏。** `ReaderCaps` 是**索引的静态属性**（能不能做 LIKE），但还存在一类**每次调用才能判定**的属性：这个具体字面量值不值得走索引。现状里它是 `ScalarIndex<T>::ShouldUseOp(op, pattern)`（`ScalarIndex.h:228`），由 `exec/expression/Expr.h:2716` 消费，`FMIndex` 覆写它、用 O(|pattern|) 的出现次数统计拒掉退化字面量（`FMIndex.h:200`）。[§5.4](#54-ngramreader二段执行的正确切分) 的 `NgramReader::CanHandle` 是同一形状，但本文档只给了 ngram、没给出通则——这是遗漏。
+>
+> 裁决：**两层分工写死**——`ReaderCaps` 决定**要不要 pin**（静态、纯数据、pin 前可读），pin 到的 face 回答**这次调用用不用得上**（动态、需要索引对象、只在已 pin 的前提下调）。因此 `PatternMatchReader` 需要一个与 `CanHandle` 同形的方法；不能把它塞进 caps 位——caps 是 pin 前读的，而这层判定必须看到字面量。
+
 exec 的执行路径决策（`DetermineExecPath`）只消费这个结构，不 `dynamic_cast`、不 try-catch。segcore 的 `FieldIndexCapability`（segment 级"某 field 有什么索引"）由 inventory 聚合各索引的 `ReaderCaps` 得到——**单索引能力自述归 index，segment 级聚合归 segcore**。
+
+> **聚合是 entry 列表，不是按位 OR。** 同一 field 上可以同时存在 ngram（`exact = false`）与 inverted（`exact = true`），把两者的 caps 按位或起来会得到一个**不对应任何真实索引**的描述符——exec 据此选路就会拿着"精确"的假设去用候选族的结果。正确形状是每个索引一条 entry、各带自己的 caps，选路时先选 entry 再读 caps。
 
 > **选路规则：有可用索引就走索引，没有才回退列扫描。** shredding 迁出 index 后，"同一 path 既有 path 索引又有 shredded typed 子列"不再是两个索引之间的选择，而是索引 vs 列扫描的普通判定。typed 子列扫得快不快只影响 columnar-format 内部怎么扫，不上升为 exec 的选路输入——因此列侧 `ColumnCaps` 与 `FieldIndexCapability` 的合流**不是 W1 的前置**。
 >
@@ -244,6 +250,12 @@ class IndexReaderBase {
 > 理由：**选择率是查询的运行时属性，不是 reader 的静态属性**——同一个 `In` 查罕见 term 命中 10 行、查常见 term 命中 90%；常见三元组的 ngram 候选、覆盖全域的空间查询同样接近全表。既然形态无法按族静态决定，就只能选退化时不爆炸的那个：bitmap 大小恒为 `Count()/8`，与选择率无关；极稀疏时的代价是 `find_first`/`find_next` 的字跳扫描（1 亿行约 150 万次字读，亚毫秒级）。反过来稀疏 offsets 在稠密结果上是 8 字节/行 vs 1 比特/行的 **64 倍膨胀**——9000 万命中就是 720MB，不可接受。
 >
 > 因此 `SpatialReader::Candidates` 现状的 `std::vector<int64_t>` 属于 RTree 的历史写法，规整为 bitmap（消费者迭代置位即可，refine 逻辑不变）。
+
+> **算子枚举一律 native，这是通则不是空间族的特例。** [§5.6](#56-spatialreader空间关系谓词) 只对 GIS 算子写了这条，但 `milvus::OpType` 本身就是 `proto::plan::OpType`（`common/Types.h:106`），所以 §5.1 / §5.2 / §5.4 里凡出现 `OpType` 的签名都在违反[总览 §5 规则 2](README.md#5-全局硬规则)（pb 只在 adapter）。契约层需要三个 native 枚举：比较算子、模式匹配算子、空间算子；proto→native 的映射统一发生在 plan/exec 侧。
+>
+> **模式匹配算子集比 [§5.2](#52-patternmatchreader) 写的多一个 `RegexMatch`。** 文档写的是 `{Match, PrefixMatch, PostfixMatch, InnerMatch}`，但 `RegexMatch` 今天真的走进 `NgramInvertedIndex::ExecutePhase1`（`NgramInvertedIndex.cpp:818,937,1084,1143`），`StringIndexMarisa.cpp:650-654` 的接受集里也显式列了它。照文档字面写会静默删掉一条活路径。
+>
+> **[§5.5](#55-scalarvaluereadert取值面) 用到的 `owned_t<T>` 仓库里不存在**，需在契约层定义：`owned_t<std::string_view> = std::string`，其余 `= T`。
 
 **跨族共有面：`NullReader`。** 空值谓词与值类型无关，且标量七族**全部真实现、零 throw**（`BitmapIndex.cpp:816`、`FMIndex.cpp:392`、`RTreeIndex.cpp:469`、`InvertedIndexTantivy.cpp:349`、`ScalarIndexSort.cpp:508`、`StringIndexSort.cpp:462`、`StringIndexMarisa.cpp:406`），因此它单独成面：
 
@@ -372,8 +384,10 @@ class SpatialReader {
 ```
 
 - `SpatialOp` 是**契约层的 native 枚举**，不是 `proto::plan::GISFunctionFilterExpr_GISOp`——现状 `QueryCandidates` 直接吃 proto 枚举（`RTreeIndex.h:184`），违反"pb 只在 adapter"（[总览 §5 规则 2](README.md#5-全局硬规则)），plan→native 的映射发生在 plan/exec 侧。
-- `RTreeIndex` 被迫实现的 `In`/`NotIn`/`Range`×2/`InApplyFilter`/`InApplyCallback` 与 `Reverse_Lookup` 全部移除；`Query(DatasetPtr)` 万能入口一并删除。这七个方法在 `RTreeIndex.cpp:462,515,525,534,542` 与 `RTreeIndex.h:187` 全是 `ThrowInfo(NotImplemented)` 空壳，零实现、零生产调用方，删除安全。
+- `RTreeIndex` 被迫实现的 `In`/`NotIn`/`Range`×2/`InApplyFilter`/`InApplyCallback` 与 `Reverse_Lookup` 全部移除。这批确是 `ThrowInfo(NotImplemented)` 空壳，零生产调用方，删除安全——实际位置是 `RTreeIndex.cpp:412,420,427,464,474,481,489,500`（本文档早前引用的 `462,515,525,534,542` 是错的，其中 515/525 落在活代码里）。
+- **但 `Query(DatasetPtr)` 不是空壳，它是今天 RTree 唯一的生产入口。** `RTreeIndex.cpp:521-543` 有完整实现（从 dataset 取出 op 与 geometry → `QueryCandidates` → 拼 bitmap），调用点是 `exec/expression/GISFunctionFilterExpr.cpp:466` 的 `idx_ptr->Query(ds)`——`QueryCandidates` 正是**经由它**才被走到。所以要删的是 `DatasetPtr` 这层**信封**（万能入口、参数靠字符串 key 取），行为整体搬进 `Candidates(SpatialOp, const Geometry&)`。按"空壳、删除安全"的字面理解去删会打断活路径。
 - **但 `IsNull`/`IsNotNull` 不在删除之列**：它们是真实现（`RTreeIndex.cpp:469,491`，由 `null_offset_` 生成），且 `geo_field IS NULL` 经 `PhyNullExpr` 走索引。因此 **RTree 的面是 `SpatialReader` + `NullReader`**，后者是全族共有面（见 [§5 开头](#5-查询面)）——空值谓词不属于"geo 算子"，把它一起删掉会打断活路径。
+- **现状实现并不区分算子**：`RTreeIndexWrapper::query_candidates`（`RTreeIndexWrapper.cpp:253-281`）拿到 `op` 之后**只用于 `LOG_DEBUG`**，实际永远跑 `intersects(query_box)`。`op` 保留在合同上是因为 exec 必须能表达要哪种空间关系（精确验证在 exec 侧按 op 分支），但不要以为索引层今天会按 op 走不同粗筛。`DWithin` 同理不带 distance 参数——距离在 exec 侧先转成 bbox（`GISFunctionFilterExpr.cpp:448-455`，注释原话 "Distance is not used for bounding box intersection query"）；`STIsValid` 明确不可用索引（`:201-202`），不进 `SpatialOp`。
 - **候选族的共性**：`SpatialReader`、`NgramReader` 与 nested 索引上的 ARRAY 相等（§5.8）是同一模式的三个实例——索引给超集、exec 做精确验证。它们共享 `caps.exact = false` 的语义约定与统一的 bitmap 输出，消费者的处理骨架相同（取候选 → 取原值 → 重新求值）。差别只在候选所处的坐标系：前两者是行，nested 是元素，需先经 exec 的投影算子折叠。
 
 ### 5.7 `JsonIndexReader`——path 寻址的谓词索引
@@ -647,11 +661,20 @@ Appender **不是标量专属**。`segcore/FieldIndexing.h` 里两族今天都�
 >
 > 关键在分支：`!built_` 分支（`:376-405` / `:518-551`）把 `[0, build_threshold)` 从整根 `ConcurrentVector` 全量 gather 出来做 `BuildWithDataset`——这是**冷启动全量建**，正是 [§6.1.1](#611-输入形态五档两族交错) 的 **form B+（连续缓冲）**，属于 Builder 面；`built_` 分支（`:578-626`）只用本批 `data_source` 做 `AddWithDataset`，这才是 Appender。
 >
-> 签名里那个 `const VectorBase*`（整根列）**只为第一个分支存在**。第二个分支对它的唯一用途是取本批 validity：`PrepareNullableAppendInfo`（`:84`）只调了 `bulk_is_valid_range(reserved_offset, size, ...)`，**只读新批次那一段**，等价于一个 `const bool* valid`。
+> 签名里那个 `const VectorBase*`（整根列）**只为第一个分支存在**。第二个分支对它的唯一用途是取本批 validity，等价于一个 `const bool* valid`。
+>
+> **更正（本条此前引用的 `PrepareNullableAppendInfo` 与 `bulk_is_valid_range` 在仓库里都不存在，是错误引用）**：真实代码在 `FieldIndexing.cpp:75-95`——`field_meta.is_nullable() && field_raw_data->is_mapping_storage()` 时取 `field_raw_data->get_valid_count()`，再与 `get_build_threshold()` 比较决定走哪个分支。结论不变（validity 只需本批一段），但本节所有 `FieldIndexing.cpp` 行号一并作废，见下。
 >
 > 因此顺序是：先把 `!built_` 冷启动分支迁到 Builder 面（segcore 在越过阈值时从列 gather 一次喂 `IndexBuilder`，产物交给 appender 作起点），`Append` 即退化为与标量同形的**单个**方法，`VectorBase*` 从签名消失，dense/sparse 只剩一个 `dim` 参数的区别（见 [§11.3](#113-vector-的四面归位不重设计)）。
 >
 > 这反过来印证本节点 3「就地建 ≠ growing」不是纸面区分：`FieldIndexing` 签名畸形的**直接成因**，就是两个面混在同一个方法体里。
+
+> **本节引用的 `FieldIndexing.cpp` 行号全部作废**（`FieldIndexing.h` 的行号是对的）。实测对照：sparse append 在 **268**（本文档写 348）、dense 在 **418**（写 489）、`!built_` 冷启动分支在 **292-336 / 444-489**（写 376-405 / 518-551）、`built_` 增量分支在 **340-414 / 492-567**（写 578-626）。上面的**结构判断**——两个分支分属 Builder 与 Appender——经复核成立，错的只是坐标。
+
+> **两处现状描述需要更正，否则会把"要求"误读成"现状"。**
+>
+> 1. **vector growing 今天没有换代，也没有快照。** 本节表里"快照不可变、knowhere interim index 换代"不是现状描述：`index_` 是一个活对象，`AddWithDataset` **就地修改**，`get_segment_indexing()` 把裸指针直接交给查询（`FieldIndexing.h:332-335`），`sync_with_index_` 只是个 bool。所以 §7 的快照 + 水位模型对 vector 是**真实的行为变更要求**，不是把现状形式化。
+> 2. **"growing 标量索引是已有生产事实"要收窄。** 真正在跑的只有 **GEOMETRY**：其余标量类型的 `ScalarFieldIndexing::AppendSegmentIndex` 直接 `ThrowInfo(Unsupported, "... not implemented for non-geometry scalar fields")`（`FieldIndexing.cpp:706-711,745-750`），而 `recreate_index` 仍为它们造出 marisa/sort 对象（`:659-662`）——**造完永不喂、永不读**，`ScalarFieldIndexing::data_` 全仓零写入，`get_chunk_indexing` 会索引到空 vector。加上 `TextMatchIndex` 的 growing 构造（那个是真的），生产事实是"文本 + 空间两族"，不是"标量族普遍"。这不改变设计结论（统一合同仍要做），但改变**风险画像**：`GrowingScalarIndex` 对绝大多数族是**新增能力**而非重构既有能力，[§13.1](#13-被本重构激活的现状缺陷) 的 bitmap 越界因此是必然撞上，不是可能撞上。
 
 两族在这三点上一致：
 
@@ -670,16 +693,17 @@ Appender **不是标量专属**。`segcore/FieldIndexing.h` 里两族今天都�
 | 现类 | 查询面 | 构建/growing | 备注 |
 |---|---|---|---|
 | `InvertedIndexTantivy<T>` | `ScalarPredicateReader<T>` + `PatternMatchReader` | Builder | tantivy 封装降为内部引擎，不再是基类 |
-| `BitmapIndex<T>` / `ScalarIndexSort<T>` / `StringIndexMarisa` | `ScalarPredicateReader<T>`（marisa 另 + `PatternMatchReader`） + `ScalarValueReader<T>` | Builder | `is_nested_index_` 模式位保留，对外表达为 `CoordDomain() == Element`（§5.8） |
+| `BitmapIndex<T>` / `ScalarIndexSort<T>` / `StringIndexMarisa` | `ScalarPredicateReader<T>` + `ScalarValueReader<T>`；**`BitmapIndex<std::string>` 与 `StringIndexMarisa` 另 + `PatternMatchReader`** | Builder | `is_nested_index_` 模式位保留，对外表达为 `CoordDomain() == Element`（§5.8）。**更正**：本行早前只把 `PatternMatchReader` 给了 marisa，是错的——`BitmapIndex` 有完整 LIKE 族（`BitmapIndex.h:219` `SupportPatternMatch`、`:224` `PatternMatch`、`:281` `PatternQuery` 用 `LikePatternMatcher`），照原表删会打断活路径 |
 | `HybridScalarIndex<T>` | **消失** | Builder 选型策略 | §6.3 |
-| `StringIndexSort` / `BoolIndex` | 同 sort/bitmap | Builder | 薄别名，随迁 |
+| `StringIndexSort` | `ScalarPredicateReader<std::string>` + **`PatternMatchReader`** + `ScalarValueReader` | Builder | **更正：它不是薄别名**（576 + 1860 行，自带 pImpl 层次与自己的带版本二进制格式，存在的原因是 `ScalarIndexSort<T>` `static_assert(is_arithmetic_v<T>)` 装不下 string）。它也有完整 LIKE 族（`StringIndexSort.h:131,136`，三处实现覆写）。与 `ScalarIndexSort` 合并是真实工作量，不是随迁 |
+| `BoolIndex` | 同 bitmap | Builder | 这个才是薄别名（32 行、无类），随迁 |
 | `FMIndex` | `PatternMatchReader` **仅此谓词面** | Builder | `SegcoreConfig` 依赖改构造参数注入（修复 [11-cross-cutting §2.5](../segcore_refactor/11-cross-cutting.md)） |
 | `TextMatchIndex` | `TextMatchReader` | `IndexBuilder<std::string_view>` 的 text 实现 + `GrowingTextIndex` | 四构造函数拆到四个归属 |
 | `NgramInvertedIndex` | `NgramReader` | Builder | Phase2 删除，`index → exec` 边消失 |
 | `JsonFlatIndex` (+ QueryExecutor) | `JsonIndexReader` | `IndexBuilder<std::string_view>` 的 json 实现 | |
 | json path cast index | `ScalarPredicateReader<T>` | Builder | inventory 按 (field, path) 注册 |
 | `JsonKeyStats` | **迁出 index**。W1 内落到 `segcore/json_stats/`（断继承 + `git mv`）；终局子列升格 columnar-format、layout 目录留 segcore | 构建仍是离线任务，暂不接 L1 产物管道 | `NotImplemented` 泛滥消失；对 segcore 的 5 处 include 当场清零；`BsonInvertedIndex` 一并迁走。终局与过渡见 [§1](#1-范围) |
-| `RTreeIndex` / geometry | `SpatialReader`（§5.6） | Builder | `QueryCandidates` 成为唯一**谓词**查询面；点谓词重载（已确认为空壳，`RTreeIndex.cpp:462,534,542`）与 `Reverse_Lookup` 移除，但 `IsNull`/`IsNotNull` 保留、归 `NullReader`；GIS proto 枚举换 native `SpatialOp` |
+| `RTreeIndex` / geometry | `SpatialReader`（§5.6） | Builder | `Candidates` 成为唯一**谓词**查询面；点谓词重载（空壳，`RTreeIndex.cpp:412,420,427,464,474,481,489,500`）与 `Reverse_Lookup` 移除，但 `IsNull`/`IsNotNull` 保留、归 `NullReader`；`Query(DatasetPtr)` 是活入口不是空壳，删的是信封、行为搬进 `Candidates`（见 §5.6）；GIS proto 枚举换 native `SpatialOp` |
 | `SkipIndex` | **移出 index 合同** | | 归 columnar-format（zone-map/`CellSkipPredicate`） |
 
 > 表中**不逐行重复 `NullReader`**：标量七族全员真实现、零 throw，是无条件可用的共有面（见 [§5 开头](#5-查询面)）。
@@ -706,7 +730,7 @@ Appender **不是标量专属**。`segcore/FieldIndexing.h` 里两族今天都�
 3b. `ReaderCaps` 的查询期来源必须是 inventory 缓存的纯数据；lint 检查路径决策代码（`DetermineExecPath` 一族）不出现 pin 调用（§4.3）。
 4. 能力缺失禁止用 `ThrowInfo(Unsupported)` 表达——lint 检查合同实现中不出现该模式。
 5. cachinglayer 类型不得出现在任何合同签名（计费/pin 在 segcore load 侧）。
-6. `knowhere` 头不得出现在共享根与标量族的合同及实现中，仅 vector 族及其 Loader/Artifact 可见（§11.2 第 5 条）。**现状违规基线**：标量族头文件自身 knowhere 计数为 0，违规全部来自两条传递链——`index/Index.h`（共享根，3 处直接引用）与 `index/Utils.h` → `common/QueryInfo.h` → `knowhere/config.h`（几乎所有标量族实现文件都 include `index/Utils.h`，见 [§12.1(a)](#121-vector-查询族合同的细化)）。断这两条链才是本规则的实际工作量。
+6. `knowhere` 头不得出现在共享根与标量族的合同及实现中，仅 vector 族及其 Loader/Artifact 可见（§11.2 第 5 条）。**现状违规基线**：标量族头文件自身 knowhere 计数为 0，违规全部来自传递链——`index/Index.h`（共享根，3 处直接引用）、`index/Utils.h` → `common/QueryInfo.h` → `knowhere/config.h`（几乎所有标量族实现文件都 include `index/Utils.h`），以及**最大的一条：`common/Types.h` 自己**（`:27-34` 直接 include `knowhere/binaryset.h`、`comp/index_param.h`、`dataset.h`、`operands.h` 与 `pb/plan.pb.h`、`pb/schema.pb.h`、`pb/segcore.pb.h`）。而 `TargetBitmap`/`DataType`/`FieldId` 只在 `Types.h` 里 alias——**任何契约头只要用 `TargetBitmap` 就传递性拉进 knowhere 与 pb**。见 [§12.1(a)](#121-vector-查询族合同的细化)。
 
 ## 11. 标量/向量共享面：盘点与处理
 
@@ -736,8 +760,22 @@ Appender **不是标量专属**。`segcore/FieldIndexing.h` 里两族今天都�
    下沉的理由：这套管道**没有一处是索引专属的**。JSON shredded 布局（[§1](#1-范围)）同样是「离线构建、落盘、按需加载、参与缓存计费的派生产物」，需要同一套东西，而它在 L1；把管道留在 L2 就只剩两条出路——要么 L1→L2 反向边，要么 `BsonInvertedIndex` 那样把 `AddRecord`/`BuildIndex`/`LoadIndex`/`UploadIndex`/`CellByteSize` 再手写一遍。下沉后两者都不必。`ArtifactLoader::Open` 返回 `shared_ptr<LoadedArtifact>`，各层自己 downcast——与 §4.2 的类型擦除根同一手法，只是下移一层。
 
    设计验收标准：三种物化形态都装得下——knowhere `BinarySet`（内存 blob 集合）、DiskANN（本地大文件、流式）、mmap。**连带**：`IndexArtifact`/`IndexLoader`/`IndexStats` 的 `Index` 前缀随下沉失效（命名待定，见 [§12.2](#122-产物管道该放在哪个组件叫什么)）。`CellByteSize` 的返回类型不再触碰硬规则 4——`ResourceUsage` 从 cachinglayer 移到 milvus-common 的 `common/ResourceUsage.h`（`namespace milvus`），L1 与 segcore 共用同一个类型、无需边界转换；这是一条**跨仓前置改动**，须先于管道下沉落地。
+
+   > **验收结果：第一版 `FileSink`/`FileSource` 三种形态里只装下了一种半，且冒出了第四种形态。** 这是把契约落到代码后跑出来的，不是纸面推演：
+   >
+   > | 形态 | 结论 | 依据 |
+   > |---|---|---|
+   > | knowhere `BinarySet` | **装得下**，但有前提 | `index_.Serialize(BinarySet)` 产出具名内存 blob，对上 `WriteEntry` 是字面匹配。前提是 `Disassemble`/`Assemble`（超过 `FILE_SLICE_SIZE` 的 blob 切成 `name_0..name_k` + `INDEX_FILE_SLICE_META`）**必须沉进 sink/source 内部**——否则 `EntryNames()` 返回的是物理切片名，物理布局泄进 Loader，且每族抄一遍 |
+   > | DiskANN 本地大文件 | 写侧装得下，**读侧要补一条承诺** | 写侧 `WriteEntryFromLocalFile` 正合适；读侧是"下载到本地目录 + knowhere 自己按 `DISK_ANN_PREFIX_PATH` 开文件"，`ReadEntriesToLocalDir` 能表达，但合同必须补上今天没有的一条：**本地文件名等于 entry basename** |
+   > | mmap | **装不下** | `VectorMemIndex::LoadFromFile` 把 **n 个远端 entry 流式合并成 1 个本地文件**（`storage::FileWriter`），knowhere mmap 的正是这个合并文件。`FileSource` 只有 1→内存、1→1 文件、n→n 文件，**没有 n→1** |
+   > | **DiskANN streaming（第四形态，此前未列）** | **描述不了** | `GetCacheFilesForDiskIndexLoad(index_files, index_.LoadIndexWithStream())`（`index/VectorIndexValidDataUtils.h:98`）：streaming 时只下载 valid-data 切片，**索引字节根本不经过管道**，引擎自己去远端读。管道不是这些字节的读者，`ReadEntry`/`ReadEntryToLocalFile`/`ReadEntriesToLocalDir` 任何组合都表达不了 |
+   >
+   > 前两条与 mmap 那条其实是同一个解：**把 slice 层沉进 sink/source**，于是"一个逻辑 entry"本身就是合并结果，`ReadEntryToLocalFile` 直接够用。代价是读写两侧必须**一起定**，不能先冻结写侧。第四形态是真正的新问题——它要求管道承认一种"我不搬运字节，只搬运位置"的产物，这在当前 `Artifact`/`Loader` 的语义里没有位置。
+   >
+   > 另有一处无归属：`CleanLocalData`（`indexbuilder/VecIndexCreator.cpp:123` 调用）——`FileSink` 到 `Finish()` 为止不知道 staging 目录的存在。
+
 2. **查询面零共享写死**：vector 查询族与 scalar 各族并列（§11.3），不设计任何跨族查询合同。
-3. **`IndexBase` 在 W1 内退役**：vector 同波迁移，**不需要 adapter 过渡**。顺序：立共享根与 Loader → scalar 各族迁移 → vector 归位 → 删 `IndexBase`。`CacheIndexBasePtr` 的句柄角色由 `IndexReaderBase` 接替。**出口清单必须含 growing 侧**：`FieldIndexing::get_chunk_indexing`/`get_segment_indexing` 也返回 `PinWrapper<index::IndexBase*>`（`FieldIndexing.h:128,131`），见 [§7.1](#71-vector-的-appender-面今天已存在且带着与-indexbase-同构的病)。
+3. **`IndexBase` 在 W1 内退役**：vector 同波迁移，**不需要 adapter 过渡**。顺序：立共享根与 Loader → scalar 各族迁移 → vector 归位 → 删 `IndexBase`。`CacheIndexBasePtr` 的句柄角色由 `IndexReaderBase` 接替。**出口清单必须含 growing 侧**：`FieldIndexing::get_chunk_indexing`/`get_segment_indexing` 也返回 `PinWrapper<index::IndexBase*>`（`FieldIndexing.h:128,131`），**以及第三个此前漏列的出口** `FieldIndexing::has_raw_data()`（`FieldIndexing.h:174`，直接调 `IndexBase::HasRawData()`，经 `IndexingRecord::HasRawData` 被 `SegmentGrowingImpl.cpp:409,764,1032,1997,2078` 五处消费），见 [§7.1](#71-vector-的-appender-面今天已存在且带着与-indexbase-同构的病)。
 4. **工厂拆族**：`CreateIndexInfo` 拆散，族级 loader/builder registry 取代 `IndexFactory` 的 God switch。
 5. **knowhere 逐出标量路径**：标量族合同与实现零 knowhere include；`BinarySet` 只出现在 vector 族的 Loader/Artifact。收益：标量索引编译隔离、knowhere 升级不再重编全部标量索引。
 6. **storage 管道收到 Loader/Artifact 边界之后**（两族同规则），17 个头的 `FileManager` 引用缩到各族 Loader/Artifact 实现文件内。
@@ -807,7 +845,11 @@ class GrowingVectorIndex {
 
 **但有一条真实成本，且它来自 include 而不是字段混装**：`common/QueryInfo.h:26` 包含 `knowhere/config.h`，而 `index/Utils.h` 包含 `QueryInfo.h`，**几乎所有标量族的实现文件都包含 `index/Utils.h`**（`BitmapIndex.cpp`、`ScalarIndexSort.cpp`、`StringIndexMarisa.cpp`、`StringIndexSort.cpp`、`InvertedIndexTantivy.cpp`、`FMIndex.cpp`、`RTreeIndex.cpp`、`NgramInvertedIndex.cpp`、`HybridScalarIndex.cpp`、`ScalarIndex.cpp`、`bson_inverted.cpp` 等）。所以 [§11.2 第 5 条](#112-处理决定)"标量族零 knowhere include"今天是被这条链破坏的，而不是被某个标量索引直接 include 破坏的（标量族的头文件自身 knowhere 计数全为 0，只有 `index/Index.h` 有 3 处）。
 
-修法是断链，不是拆结构体：窄参数类型（含 `knowhere::Json`）声明在 **vector 族自己的头**里——按 §11.2 第 5 条 vector 族本就可见 knowhere；`common/QueryInfo.h` 与 `index/Utils.h` 都不再需要 knowhere。这条计入 [§10 规则 6](#10-硬性规则lint) 的现状违规基线。
+修法是断链，不是拆结构体：窄参数类型（含 `knowhere::Json`）声明在 **vector 族自己的头**里——按 §11.2 第 5 条 vector 族本就可见 knowhere；`common/QueryInfo.h` 与 `index/Utils.h` 都不再需要 knowhere。
+
+**但断这条链不足以达成"标量族零 knowhere"，还有一条更大的洞：`common/Types.h` 自己。** 它在 `:27-34` 直接 include 了 knowhere 四个头与 pb 三个头，而 `TargetBitmap`/`DataType`/`FieldId` 只在这里 alias——**任何契约头只要用 `TargetBitmap`，就传递性拉进 knowhere 与 pb**。这意味着 §10 规则 6 在头文件层面不拆 `common/Types.h` 就无法真正达成，而拆它被[总览 §9 第 4 条](README.md#9-未决问题)明确推到"W3 后独立评估"（33 个 include、被 195 个生产文件 include，触碰全仓）。
+
+这是设计里一处**真实的未解张力**，不掩盖：W1 能做到的是"标量族不新增、不直接 include knowhere，且断掉 `Index.h` 与 `Utils.h` 两条自造链"；"零 knowhere"这个措辞在 `Types.h` 拆分前只对**直接 include** 成立。规则 6 的验收口径按这个收窄，不要写成传递闭包为零——那是做不到的承诺。
 
 **(b) iterator 生命周期——已确认是现状问题，W1 不修。**
 
@@ -860,7 +902,7 @@ class GrowingVectorIndex {
 | `SetCellSize({index_load_info_.index_size, 0})` | **压缩前的索引文件大小**（`segcore/Types.h:58` 的注释原话：_It's the size of index file before compressing_） | `V1SealedIndexTranslator.cpp:157-161,198-204`、`SealedIndexTranslator.cpp:199` —— 绝大多数族走这条 |
 | `SetCellSize({index->ByteSize(), 0})` | **实测的常驻内存占用**（子类 `ComputeByteSize()` 算出） | `TextMatchIndexTranslator.cpp:125,127`；`FMIndex.cpp:713-714` 取回估算、把 memory 半边换成实测、保留 file 半边再塞回去 |
 
-于是：大多数标量族报给缓存层的是**远端文件大小**，text match 与 FMIndex 报的是**实测内存**。对 marisa trie、roaring bitmap、tantivy 这类序列化形态与常驻形态差别很大的族，前者系统性地偏；而两个分支只是把同一个数字放进 memory 半边还是 file 半边（看 `enable_mmap`），并没有换算。口径按族不同，意味着内存核算的偏差方向也按族不同——这不是整洁问题，是缓存准入与淘汰的准确性问题。
+于是：大多数标量族报给缓存层的是**远端文件大小**，text match 与 FMIndex 报的是**实测内存**，而 `RTreeIndex` **一次都没调过 `SetCellSize`**——它的 `cell_size_` 恒为 `{0,0}`，等于向缓存层报告自己不占资源。所以口径不是两套，是三套，第三套是"没有"。对 marisa trie、roaring bitmap、tantivy 这类序列化形态与常驻形态差别很大的族，前者系统性地偏；而两个分支只是把同一个数字放进 memory 半边还是 file 半边（看 `enable_mmap`），并没有换算。口径按族不同，意味着内存核算的偏差方向也按族不同——这不是整洁问题，是缓存准入与淘汰的准确性问题。
 
 `ByteSize()` 也不是一个独立的公开概念：全仓 5 处非测试消费者里，4 处是**为了算 cell size**（`TextMatchIndex.h:129-131`、`TextMatchIndexTranslator`、`FMIndex`）或族内部聚合子索引（`HybridScalarIndex.h:172`、`StringIndexSort.cpp:570`、`RTreeIndex.h:170`），唯一独立的消费者是 `SegmentGrowingImpl.cpp:602` 的 growing 内存上报——而那正好是 `Index.h:130-135` 注明"growing 不更新缓存值"的场景，见 [§13.3](#13-被本重构激活的现状缺陷)。
 
@@ -904,7 +946,7 @@ class GrowingVectorIndex {
 
 **13.1 growing 标量索引会激活 `size_per_chunk_` 越界（issue #51237 同型）。**
 
-`Expr.h:2240-2252` 的注释已经把触发条件写死了：缓存的 index bitmap 是段全局的（标量索引恒为单 chunk），而 `size_per_chunk_` 是原始数据的 chunk 粒度（`segcore.chunkRows`），两者无关；sealed 段上二者恰好相等所以至今没炸，**而今天只有 sealed 段能走到这里，因为 growing 段上 `HasIndex()` 只对 vector/geometry 为真**。注释原话：_The moment a scalar field gains an interim index on growing … `size_per_chunk_` would over-run the bitmap exactly as in issue #51237._
+`Expr.h:2239-2253` 的注释已经把触发条件写死了（**有两个触发条件，不是一个**：注释原话是 _a scalar field gains an interim index on growing, **or geometry is routed through `ProcessIndexChunks`**_——而 geometry 恰好就是今天唯一在跑的 growing 标量索引，见 [§7.1](#71-vector-的-appender-面今天已存在且带着与-indexbase-同构的病)）：缓存的 index bitmap 是段全局的（标量索引恒为单 chunk），而 `size_per_chunk_` 是原始数据的 chunk 粒度（`segcore.chunkRows`），两者无关；sealed 段上二者恰好相等所以至今没炸，**而今天只有 sealed 段能走到这里，因为 growing 段上 `HasIndex()` 只对 vector/geometry 为真**。注释原话：_The moment a scalar field gains an interim index on growing … `size_per_chunk_` would over-run the bitmap exactly as in issue #51237._
 
 [§7](#7-growing-面) 的 `GrowingScalarIndex` 统一合同**正是那个触发条件**。所以这不是"将来某天可能撞上"，是本波直接激活。W1 落地 growing 标量索引的同一个 PR 里必须先修这处边界，或至少让 growing 标量索引走一条不经过该分支的路径。
 

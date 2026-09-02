@@ -26,7 +26,7 @@
 #include "exec/expression/Expr.h"
 #include "exec/expression/Element.h"
 #include "segcore/SegmentInterface.h"
-#include "index/json_stats/bson_inverted.h"
+#include "segcore/json_stats/bson_inverted.h"
 #include "cachinglayer/CacheSlot.h"
 
 namespace milvus {

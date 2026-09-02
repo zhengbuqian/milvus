@@ -27,6 +27,23 @@
 
 namespace milvus::indexbuilder {
 
+// RETIRING — REPLACED BY `index::BuilderRegistry<T>` (index/contracts/Registry.h),
+// reached through `indexbuilder::MakeBuildDriver` (indexbuilder/BuildDriver.h).
+//
+// See core_refactor/01-scalar-index.md §11.2 item 4: "SPLIT THE FACTORY BY
+// FAMILY — `CreateIndexInfo` is broken up and per-family loader/builder
+// registries replace `IndexFactory`'s God switch." The switch below is that
+// God switch's outer half (data type -> scalar vs vector creator); the inner
+// half is `index::IndexFactory::CreateIndex`'s dispatch on index type, which
+// the same registry replaces.
+//
+// Two consequences worth stating, because they are the point of the change and
+// not side effects:
+//   - a family registers itself, so adding one stops being an edit to a shared
+//     switch that every family's translation unit already depends on;
+//   - `CreateIndexInfo`'s mixed parameter bag disappears; each family reads its
+//     own `index::BuildParams`.
+//
 // consider template factory if too many factories are needed.
 class IndexFactory {
  public:

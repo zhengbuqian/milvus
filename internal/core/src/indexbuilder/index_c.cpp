@@ -33,7 +33,7 @@
 #include "index/Meta.h"
 #include "index/TextMatchIndex.h"
 #include "index/Utils.h"
-#include "index/json_stats/JsonKeyStats.h"
+#include "segcore/json_stats/JsonKeyStats.h"
 #include "indexbuilder/IndexCreatorBase.h"
 #include "indexbuilder/IndexFactory.h"
 #include "indexbuilder/VecIndexCreator.h"
@@ -284,6 +284,19 @@ get_config(std::unique_ptr<milvus::proto::indexcgo::BuildIndexInfo>& info) {
     return config;
 }
 
+// TODO: rewrite to capi's three-step shape (README §5 rule 3: convert types ->
+// call one service -> turn exceptions into a CStatus, and nothing else). The
+// body below is ~110 lines of proto unpacking, config stuffing and file-manager
+// assembly, all of which becomes:
+//     auto request = ToBuildRequest(*build_index_info);   // adapter, this file
+//     auto creator = std::make_unique<ScalarIndexCreator>(std::move(request),
+//                                                          ctx);
+//     creator->Build();
+//     *res_index = creator.release();
+// with `ToBuildRequest` absorbing the parameter translation that used to live
+// in `ScalarIndexCreator`'s constructor (core_refactor/01-scalar-index.md §9,
+// row "indexbuilder"; §11.2 item 4 for the registry that replaces
+// `IndexFactory::CreateIndex`).
 CStatus
 CreateIndex(CIndex* res_index,
             const uint8_t* serialized_build_index_info,
@@ -400,6 +413,16 @@ CreateIndex(CIndex* res_index,
     }
 }
 
+// JSON shredding: NOT an index build, a column-layout build
+// (core_refactor/01-scalar-index.md §1). W1 changed only this file's include
+// path — `segcore/json_stats/JsonKeyStats.h` instead of
+// `index/json_stats/JsonKeyStats.h` — which makes this an L5 -> L3 edge, and
+// legal. Everything else here is deliberately untouched:
+//   - it never went through `index::IndexFactory` (the `make_unique` below is
+//     the whole construction path), so nothing had to be unhooked;
+//   - it is NOT wired to the L1 artifact pipeline this wave (§1 "明确不做"):
+//     `Build(config)` / `Upload(config)` stay hand-written until wide-table
+//     modelling settles the sub-column representation.
 CStatus
 BuildJsonKeyIndex(ProtoLayoutInterface result,
                   const uint8_t* serialized_build_index_info,
@@ -1061,6 +1084,12 @@ CleanLocalData(CIndex index) {
     return status;
 }
 
+// TODO: `real_index->Upload()` becomes
+// `IndexBuildService::Publish(artifact)` -> `storage::ArtifactStats`, and the
+// `SerializeAt` below serializes those stats instead of an
+// `index::IndexStatsPtr`. §11.2 item 1 sinks the artifact pipeline to L1 and
+// drops the `Index` prefix; §6.2 puts the upload ORCHESTRATION in the
+// indexbuilder service while the bytes keep moving inside storage.
 CStatus
 SerializeIndexAndUpLoad(CIndex index, ProtoLayoutInterface result) {
     SCOPE_CGO_CALL_METRIC();
