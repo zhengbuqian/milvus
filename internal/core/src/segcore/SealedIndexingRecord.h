@@ -25,6 +25,21 @@
 
 namespace milvus::segcore {
 
+// RETIRING — FOLDS INTO `segcore/indexing/IndexInventory.h`.
+//
+// See core_refactor/01-scalar-index.md §4.3 and README §8 item 4 ("the
+// indexing module degenerates to a segment-level inventory plus pin
+// management"). This record plus the four parallel maps in
+// `ChunkedSegmentSealedImpl::RuntimeResourceState` (`scalar_indexings`,
+// `ngram_indexings`, `json_indices`, `text_indexes`,
+// ChunkedSegmentSealedImpl.h:347-360) are five spellings of one table.
+//
+// The handle changes with the merge: `index::CacheIndexBasePtr` is
+// `shared_ptr<CacheSlot<IndexBase>>` (index/Index.h:167), and W1 retires
+// `IndexBase` — `index::IndexReaderBase` takes over the type-erased handle
+// role, so the entry becomes `CacheSlot<index::IndexReaderBase>` plus a
+// PURE-DATA `index::ReaderCaps` alongside it. The caps copy is what lets
+// `exec::DetermineExecPath` decide a path WITHOUT pinning (§4.1/§4.3).
 struct SealedIndexingEntry {
     MetricType metric_type_;
     index::CacheIndexBasePtr indexing_;

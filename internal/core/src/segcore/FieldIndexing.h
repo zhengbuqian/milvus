@@ -46,6 +46,39 @@
 
 namespace milvus::segcore {
 
+// RETIRING — REPLACED BY `segcore/indexing/GrowingIndexSet.h`.
+//
+// See core_refactor/01-scalar-index.md §7 ("segcore's `GrowingIndexSet` holds
+// these appenders; `FieldIndexing`'s scattered mechanism retires"), §7.1 and
+// §11.2 item 3.
+//
+// Two independent reasons this class goes:
+//
+// 1. LISKOV VIOLATION, SAME SHAPE AS `IndexBase` (§2.2, growing row). The root
+//    below is the UNION of two families' interfaces: of its five pure virtuals
+//    three are vector-only and two are scalar-only, and each subclass throws
+//    away the other half (`ScalarFieldIndexing` throws in
+//    `AppendSegmentIndexDense` / `AppendSegmentIndexSparse` /
+//    `GetDataFromIndex`; `VectorFieldIndexing` throws in both
+//    `AppendSegmentIndex` overloads). The lesson §7.1 draws: the APPENDER FACE
+//    is shared by both families, the APPEND SIGNATURE is not.
+//
+// 2. IT LEAKS `IndexBase` INTO THE GROWING SIDE. `get_chunk_indexing` and
+//    `get_segment_indexing` return `PinWrapper<index::IndexBase*>`, so the
+//    W1 retirement of `IndexBase` must include these two exits or the sealed
+//    side ends up clean while growing still holds a reference (§11.2 item 3,
+//    §7.1 end). Their consumers are `SegmentGrowingImpl.h:252,562` and
+//    `query/SearchOnGrowing.cpp:139`; after W1 the growing read path is
+//    `GrowingIndexSet::ReaderSnapshot()`, a typed `shared_ptr<const Face>`
+//    that needs no handle type at all.
+//
+// Also note `AppendSegmentIndexDense`/`Sparse` are not just two spellings of
+// one thing: each contains BOTH a Builder and an Appender (§7.1). The `!built_`
+// branch gathers the whole `ConcurrentVector` prefix and does a full
+// `BuildWithDataset` — that is form B+ Builder work and moves to
+// `index::IndexBuilder<T>`; only the `built_` branch is a real appender, and it
+// reads nothing from `VectorBase*` except the new batch's validity.
+
 // this should be concurrent
 // All concurrent
 class FieldIndexing {

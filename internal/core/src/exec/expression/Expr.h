@@ -33,6 +33,7 @@
 #include "common/OpContext.h"
 #include "common/Types.h"
 #include "exec/expression/EvalCtx.h"
+#include "exec/expression/IndexPathSelection.h"
 #include "exec/expression/ExprCacheHelper.h"
 #include "exec/expression/Utils.h"
 #include "exec/QueryContext.h"
@@ -49,16 +50,20 @@ namespace exec {
 
 enum class FilterType { sequential = 0, random = 1 };
 
-// Execution path for expression evaluation.
-// Determines how the expression result bitmap is produced.
-enum class ExprExecPath {
-    RawData,      // brute-force scan raw data
-    ScalarIndex,  // pinned_index_ scalar index
-    PkIndex,      // segment_->pk_range / search_ids
-    TextIndex,    // segment_->GetTextIndex
-    JsonStats,    // segment_->GetJsonStats
-};
+// `ExprExecPath` moved to exec/expression/IndexPathSelection.h, next to the
+// function that decides it. See core_refactor/01-scalar-index.md §4.1: the path
+// decision consumes `index::ReaderCaps` and nothing else — no `dynamic_cast`,
+// no try/catch — so it does not belong in the expression kernel header.
 
+// REPLACED BY THE TYPED PIN EXITS ON `segcore::IndexInventory`
+// (segcore/indexing/IndexInventory.h). This free function is the reason exec
+// holds `PinWrapper<const index::IndexBase*>` and has to `dynamic_cast` at
+// every use — `Expr.h:678,745,2112,2412,2512,2564,2654`, plus once per batch on
+// the by-offsets path (`:698,765`). After W1 the caller pins the FACE IT NEEDS,
+// once per expression node, and gets a `segcore::Pinned<Face>` back:
+//   `PinScalarPredicate<T>` / `PinPatternMatch` / `PinTextMatch` / `PinNgram` /
+//   `PinSpatial` / `PinNull` / `PinValue<T>` / `PinJson`.
+// See core_refactor/01-scalar-index.md §4.3 and §9 (row "exec expression").
 inline std::vector<PinWrapper<const index::IndexBase*>>
 PinIndex(milvus::OpContext* op_ctx,
          const segcore::SegmentInternalInterface* segment,
@@ -2199,6 +2204,15 @@ class SegmentExpr : public Expr {
         }
 
         if (need_element_slicing) {
+            // ELEMENT -> ROW FOLD, SITE 3 OF 3 — except this one does NOT fold:
+            // it slices the element-level bitmap by the batch's element range
+            // and passes it down untouched, leaving the fold to a boundary
+            // operator. That is the "fold as late as possible" strategy for
+            // correlated struct-array predicates. See the note at
+            // exec/expression/JsonContainsExpr.cpp and the
+            // "ELEMENT -> ROW PROJECTION" section of
+            // exec/expression/CandidateRefine.h (W4; §5.8 / §12.5).
+            //
             // Nested index with element-level result: batch by rows, slice elements
             auto array_offsets = segment_->GetArrayOffsets(field_id_);
 
@@ -2697,6 +2711,13 @@ class SegmentExpr : public Expr {
     // when the caller has one (string pattern ops): an index with a cheap
     // per-literal cost bound (FMINDEX's count-first guard) uses it to decline
     // degenerate high-hit literals whose enumeration would lose to the scan.
+    // TODO: split by where the knowledge lives (§4.1). The PER-INDEX half
+    // ("does this family support this operator at all") becomes a
+    // `index::ReaderCaps` bit read before the pin. The PER-CALL half (FMINDEX's
+    // count-first cost guard, which needs the concrete literal) stays a
+    // question asked on the PINNED face — the same two-level shape as
+    // `NgramReader::CanHandle(literal, op)` (§5.4). Neither half is a
+    // `dynamic_cast` to a concrete index class afterwards.
     template <typename T>
     bool
     CanUseIndexForOp(OpType op, const std::string& pattern = "") const {
@@ -2803,6 +2824,15 @@ class SegmentExpr : public Expr {
     // nested path falls back to RawData without ever touching the cache
     // slot. Short-circuit subclass paths (TextIndex/PkIndex/JsonStats)
     // bypass this method entirely and never pin either.
+    // TODO: replace body and every subclass override with a single call to the
+    // pure function `exec::DetermineExecPath(ExprIndexRequirement,
+    // segcore::FieldIndexCapability)` (exec/expression/IndexPathSelection.h),
+    // then pin the ONE face the decision chose. Two things go away in the move:
+    // the "pin, then check whether the pin actually produced something" dance
+    // below, and every subclass's "refine by asking the pinned concrete index"
+    // tail (`CanUseIndexForOp` / `PinnedJsonIndexIsFlat` / the `Support*`
+    // probes) — all of which are caps reads that belong BEFORE the pin.
+    // See core_refactor/01-scalar-index.md §4.1, §4.3, §9 and §10 rule 3b.
     virtual void
     DetermineExecPath() {
         if (!HasCompatibleScalarIndex() || !IsJsonPathCompatible()) {
