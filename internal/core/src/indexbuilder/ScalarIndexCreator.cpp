@@ -11,245 +11,52 @@
 
 #include "indexbuilder/ScalarIndexCreator.h"
 
-#include <charconv>
-#include <cstdint>
-#include <exception>
-#include <map>
-#include <optional>
-#include <string>
-#include <string_view>
-#include <system_error>
-
-#include "common/Consts.h"
-#include "common/EasyAssert.h"
-#include "common/JsonCastType.h"
-#include "common/Types.h"
-#include "index/IndexFactory.h"
-#include "index/IndexInfo.h"
-#include "index/Meta.h"
-#include "index/Utils.h"
-#include "knowhere/dataset.h"
-#include "nlohmann/json.hpp"
+#include <utility>
 
 namespace milvus::indexbuilder {
 
-namespace {
-
-uint32_t
-ParseFMIndexParam(const Config& config,
-                  const std::string& key,
-                  uint32_t default_value,
-                  uint32_t min_value,
-                  uint32_t max_value,
-                  bool require_power_of_two) {
-    if (!config.contains(key) || config.at(key).is_null()) {
-        return default_value;
-    }
-
-    const auto& value = config.at(key);
-    std::string raw;
-    if (value.is_string()) {
-        raw = value.get<std::string>();
-    } else if (value.is_number_unsigned()) {
-        raw = std::to_string(value.get<uint64_t>());
-    } else if (value.is_number_integer()) {
-        auto parsed = value.get<int64_t>();
-        if (parsed < 0) {
-            ThrowInfo(ErrorCode::InvalidParameter,
-                      "{} for FMINDEX must be an integer in [{}, {}], got {}",
-                      key,
-                      min_value,
-                      max_value,
-                      parsed);
-        }
-        raw = std::to_string(parsed);
-    } else {
-        ThrowInfo(ErrorCode::InvalidParameter,
-                  "{} for FMINDEX must be an integer, got {}",
-                  key,
-                  value.dump());
-    }
-
-    // Go's create-index checker uses strconv.Atoi, which accepts a leading
-    // plus sign. Keep the C++ defense-in-depth parser in lockstep so a request
-    // accepted synchronously cannot fail later in the asynchronous build.
-    std::string_view digits(raw);
-    if (!digits.empty() && digits.front() == '+') {
-        digits.remove_prefix(1);
-    }
-    uint64_t parsed = 0;
-    auto [end, ec] =
-        std::from_chars(digits.data(), digits.data() + digits.size(), parsed);
-    if (digits.empty() || ec != std::errc{} ||
-        end != digits.data() + digits.size() || parsed < min_value ||
-        parsed > max_value) {
-        ThrowInfo(ErrorCode::InvalidParameter,
-                  "{} for FMINDEX must be an integer in [{}, {}], got '{}'",
-                  key,
-                  min_value,
-                  max_value,
-                  raw);
-    }
-    if (require_power_of_two && (parsed & (parsed - 1)) != 0) {
-        ThrowInfo(ErrorCode::InvalidParameter,
-                  "{} for FMINDEX must be a power of two in [{}, {}], got {}",
-                  key,
-                  min_value,
-                  max_value,
-                  parsed);
-    }
-    return static_cast<uint32_t>(parsed);
-}
-
-}  // namespace
-
 ScalarIndexCreator::ScalarIndexCreator(
-    DataType dtype,
-    Config& config,
-    const storage::FileManagerContext& file_manager_context)
-    : config_(config), dtype_(dtype) {
-    milvus::index::CreateIndexInfo index_info;
-    if (config.contains(milvus::index::INDEX_TYPE)) {
-        index_type_ = config.at(milvus::index::INDEX_TYPE).get<std::string>();
-
-        if (index_type_ == milvus::index::NGRAM_INDEX_TYPE) {
-            if (!config.contains(milvus::index::MIN_GRAM) ||
-                !config.contains(milvus::index::MAX_GRAM)) {
-                ThrowInfo(
-                    milvus::ErrorCode::InvalidParameter,
-                    "Ngram index must specify both min_gram and max_gram");
-            }
-
-            milvus::index::NgramParams ngram_params{};
-            ngram_params.loading_index = false;
-            ngram_params.min_gram =
-                std::stoul(milvus::index::GetValueFromConfig<std::string>(
-                               config, milvus::index::MIN_GRAM)
-                               .value());
-            ngram_params.max_gram =
-                std::stoul(milvus::index::GetValueFromConfig<std::string>(
-                               config, milvus::index::MAX_GRAM)
-                               .value());
-            index_info.ngram_params = std::make_optional(ngram_params);
-        } else if (index_type_ == milvus::index::FMINDEX_INDEX_TYPE) {
-            milvus::index::FMIndexParams fmindex_params{};
-            fmindex_params.sa_sample_rate =
-                ParseFMIndexParam(config,
-                                  milvus::index::FM_SA_SAMPLE_RATE,
-                                  /*default_value=*/8,
-                                  /*min_value=*/4,
-                                  /*max_value=*/256,
-                                  /*require_power_of_two=*/false);
-            fmindex_params.block_bytes =
-                ParseFMIndexParam(config,
-                                  milvus::index::FM_BLOCK_BYTES,
-                                  /*default_value=*/64,
-                                  /*min_value=*/8,
-                                  /*max_value=*/128,
-                                  /*require_power_of_two=*/true);
-            index_info.fmindex_params = std::make_optional(fmindex_params);
-        }
-    }
-    // Config should have value for milvus::index::SCALAR_INDEX_ENGINE_VERSION for production calling chain.
-    // Use value_or(1) for unit test without setting this value
-    index_info.scalar_index_engine_version =
-        milvus::index::GetValueFromConfig<int32_t>(
-            config, milvus::index::SCALAR_INDEX_ENGINE_VERSION)
-            .value_or(1);
-
-    index_info.tantivy_index_version =
-        milvus::index::GetValueFromConfig<int32_t>(
-            config, milvus::index::TANTIVY_INDEX_VERSION)
-            .value_or(milvus::index::TANTIVY_INDEX_LATEST_VERSION);
-
-    auto is_text_match_str =
-        milvus::index::GetValueFromConfig<std::string>(config, "is_text_match")
-            .value_or("false");
-    index_info.is_text_match = (is_text_match_str == "true");
-
-    index_info.analyzer_extra_info =
-        milvus::index::GetValueFromConfig<std::string>(config,
-                                                       "analyzer_extra_info")
-            .value_or("");
-
-    index_info.field_type = dtype_;
-    index_info.field_name =
-        file_manager_context.fieldDataMeta.field_schema.name();
-    index_info.index_type = index_type();
-    if (dtype == DataType::JSON) {
-        index_info.json_cast_type = milvus::JsonCastType::FromString(
-            config.at(JSON_CAST_TYPE).get<std::string>());
-        index_info.json_path = config.at(JSON_PATH).get<std::string>();
-        if (config.contains(JSON_CAST_FUNCTION)) {
-            index_info.json_cast_function =
-                config.at(JSON_CAST_FUNCTION).get<std::string>();
-        }
-    }
-    index_ = index::IndexFactory::GetInstance().CreateIndex(
-        index_info, file_manager_context);
-}
-
-void
-ScalarIndexCreator::Build(const milvus::DatasetPtr& dataset,
-                          const bool* valid_data,
-                          const int64_t valid_data_len) {
-    (void)valid_data;
-    (void)valid_data_len;
-    auto size = dataset->GetRows();
-    auto data = dataset->GetTensor();
-    try {
-        index_->BuildWithRawDataForUT(size, data);
-    } catch (const SegcoreError& e) {
-        if (e.get_error_code() == DataIsEmpty) {
-            skip_empty_ = true;
-            return;
-        }
-        throw;
-    }
+    BuildRequest request, storage::FileManagerContext& file_manager_context)
+    : service_(std::move(request), file_manager_context) {
+    // Nothing else. The 80 lines of parameter translation that used to sit in
+    // this constructor (`indexbuilder/ScalarIndexCreator.cpp:106-190` before
+    // Refactor phase 1: the ngram min_gram/max_gram check,
+    // `ParseFMIndexParam`'s range/power-of-two validation for `sa_sample_rate`
+    // and `block_bytes`, `scalar_index_engine_version`,
+    // `tantivy_index_version`, `is_text_match`, `analyzer_extra_info`, and the
+    // JSON cast type/path/function fields) were building an
+    // `index::CreateIndexInfo` parameter bag.
+    //
+    // TODO: move that translation into the `BuildRequest` adapter in
+    // `index_c.cpp`. Two reasons it belongs there and not here:
+    //   - it reads a `milvus::Config` that came straight off
+    //     `proto::indexcgo::BuildIndexInfo`, and README §5 rule 2 confines
+    //     proto-shaped data to the named adapter files and capi;
+    //   - §11.2 item 4 breaks `CreateIndexInfo` up: each family's builder takes
+    //     its own parameters through `index::BuilderRegistry<T>`'s
+    //     `BuildParams`, so there is no single bag left to fill.
+    // The VALIDATION itself must not be lost in the move — it is
+    // defence-in-depth kept in lockstep with Go's create-index checker (which
+    // uses `strconv.Atoi`, hence the tolerated leading '+'), so a request
+    // accepted synchronously cannot fail later in the asynchronous build.
 }
 
 void
 ScalarIndexCreator::Build() {
-    try {
-        index_->Build(config_);
-    } catch (const SegcoreError& e) {
-        if (e.get_error_code() == DataIsEmpty) {
-            skip_empty_ = true;
-            return;
-        }
-        throw;
-    }
+    // TODO: move existing logic here — the old body was
+    // `index_->Build(config_)` wrapped in a `DataIsEmpty` catch
+    // (ScalarIndexCreator.cpp:212-222 before refactor phase 1). New shape:
+    //   artifact_ = service_.RunToArtifact();
+    // i.e. push the manifest batches through the driver and `Seal()`.
 }
 
-milvus::BinarySet
-ScalarIndexCreator::Serialize() {
-    if (skip_empty_) {
-        return {};
-    }
-    return index_->Serialize(config_);
-}
-
-void
-ScalarIndexCreator::Load(const milvus::BinarySet& binary_set) {
-    index_->Load(binary_set);
-}
-
-std::string
-ScalarIndexCreator::index_type() {
-    return index_type_;
-}
-
-index::IndexStatsPtr
+storage::ArtifactStats
 ScalarIndexCreator::Upload() {
-    if (skip_empty_) {
-        return index::IndexStats::New(0, {});
-    }
-    auto version = index::GetValueFromConfig<int32_t>(
-                       config_, index::SCALAR_INDEX_ENGINE_VERSION)
-                       .value_or(1);
-    if (version >= 3) {
-        return index_->UploadUnified(config_);
-    }
-    return index_->Upload(config_);
+    // TODO: move existing logic here — the old body was the
+    // `UploadUnified`-vs-`Upload` fork on `SCALAR_INDEX_ENGINE_VERSION`
+    // (ScalarIndexCreator.cpp:242-254 before refactor phase 1). New shape:
+    //   return service_.Publish(*artifact_);
+    return {};
 }
+
 }  // namespace milvus::indexbuilder

@@ -22,7 +22,7 @@
 #include <unordered_map>
 #include <tuple>
 
-#include "index/json_stats/utils.h"
+#include "segcore/json_stats/utils.h"
 #include "common/EasyAssert.h"
 #include "index/IndexStats.h"
 

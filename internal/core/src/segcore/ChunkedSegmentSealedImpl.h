@@ -61,7 +61,7 @@
 #include "google/protobuf/message.h"
 #include "index/Index.h"
 #include "index/NgramInvertedIndex.h"
-#include "index/json_stats/JsonKeyStats.h"
+#include "segcore/json_stats/JsonKeyStats.h"
 #include "milvus-storage/column_groups.h"
 #include "milvus-storage/common/metadata.h"
 #include "milvus-storage/properties.h"
@@ -337,6 +337,33 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
     std::optional<Timestamp>
     EffectiveCommitTs() const;
 
+    // The segment's per-generation runtime state.
+    //
+    // TWO REFACTOR PHASE 1 NOTES (core_refactor/01-scalar-index.md):
+    //
+    // 1. THE FIVE INDEX MAPS BELOW (`scalar_indexings`, `ngram_indexings`,
+    //    `json_indices`, `text_indexes`, plus `SealedIndexingRecord`
+    //    `vector_indexings`) COLLAPSE INTO ONE `segcore::IndexInventory`
+    //    (segcore/indexing/IndexInventory.h): one table of
+    //    `CacheSlot<index::IndexReaderBase>` keyed by `(field, json_path)`,
+    //    each with a pure-data `index::ReaderCaps` beside it so that
+    //    `exec::DetermineExecPath` can choose a path WITHOUT pinning
+    //    (§4.1/§4.3). `index::CacheIndexBasePtr` disappears with `IndexBase`
+    //    (§11.2 item 3).
+    //
+    // 2. `struct_to_array_offsets` / `array_offsets_map` STAY EXACTLY WHERE
+    //    THEY ARE. §5.8 — the element-to-row mapping is a derivative of the
+    //    COLUMN and the index does not own it — nails it down with three facts
+    //    that all hold here: the map is PRODUCED BY
+    //    COLUMN LOAD (`ArrayOffsetsSealed::BuildFromColumn`,
+    //    ChunkedSegmentSealedImpl.cpp:6963), SHARED PER STRUCT (`:6957-6966`,
+    //    with `array_offsets_map[field_id]` only a second lookup key), and
+    //    REPLACED WITH THE COLUMN (erased at `:4003,4018` on release/reopen,
+    //    copied into the new snapshot on COW at `:1029,1425`). It is a
+    //    DERIVATIVE OF THE COLUMN. No index holds it, none is injected with it,
+    //    and none needs to know it exists — which is also what keeps a reader
+    //    "immutable once `Seal()`/`Open()` returns" with no post-load assembly
+    //    and no reopen rebinding.
     struct RuntimeResourceState {
         std::unordered_map<FieldId, std::shared_ptr<ChunkedColumnInterface>>
             fields;

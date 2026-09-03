@@ -38,8 +38,8 @@
 #include "folly/FBVector.h"
 #include "monitor/Monitor.h"
 #include "index/ScalarIndex.h"
-#include "index/json_stats/JsonKeyStats.h"
-#include "index/json_stats/utils.h"
+#include "segcore/json_stats/JsonKeyStats.h"
+#include "segcore/json_stats/utils.h"
 #include "opentelemetry/trace/span.h"
 #include "segcore/SegmentInterface.h"
 #include "segcore/SegmentSealed.h"
@@ -2389,7 +2389,20 @@ PhyJsonContainsFilterExpr::ExecArrayContainsForIndexSegmentImpl() {
     }
     boost::container::vector<GetType> elems(elements.begin(), elements.end());
 
-    // Get array offsets for nested index (needed for element-to-row conversion)
+    // ELEMENT -> ROW FOLD, SITE 1 OF 3 (per row, via `ForEachRowElementRange`).
+    // The other two are exec/expression/UnaryExpr.cpp (per element, via
+    // `ElementIDToRowID`) and exec/expression/Expr.h (range slice, via
+    // `ElementIDRangeOfRow`). Regularising the three into ONE explicit
+    // projection operator placed by the plan is refactor phase 4 work — see
+    // exec/expression/CandidateRefine.h ("ELEMENT -> ROW PROJECTION") and
+    // core_refactor/01-scalar-index.md §5.8 / §12.5. DO NOT ADD A FOURTH SITE,
+    // and do not push the fold into the reader: the fold POINT is a plan
+    // decision (folding too early breaks correlated struct-array predicates,
+    // too late breaks `contains(a) AND contains(b)`).
+    //
+    // Note that `array_offsets` is fetched by EXEC here — the index never sees
+    // it, which is §5.8's "the element->row map is a derivative of the column;
+    // the index neither holds nor is injected with it".
     auto array_offsets = segment_->GetArrayOffsets(expr_->column_.field_id_);
 
     auto execute_sub_batch =
