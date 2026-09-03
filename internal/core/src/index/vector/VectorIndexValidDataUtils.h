@@ -30,10 +30,31 @@
 #include "common/FastMem.h"
 #include "common/OffsetMapping.h"
 #include "index/Meta.h"
-#include "index/Utils.h"
-#include "index/VectorIndex.h"
+#include "index/vector/VectorValidData.h"
 
 namespace milvus::index {
+
+// Moved from `index/VectorIndexValidDataUtils.h` with the rest of the vector
+// family (core_refactor/01-scalar-index.md §11.3). Two edits, no logic change:
+//
+//  1. The two keys below used to live on the retired base class
+//     (`index/VectorIndex.h:45-46`). They are pure vector-family vocabulary —
+//     the entry names a nullable vector artifact carries — so they land next to
+//     the code that reads and writes them.
+//  2. `BuildValidDataFromBitmap` / `LoadValidDataFromBinarySet` took a
+//     `VectorIndex*` purely to call `BuildValidData` on it. There is no
+//     `VectorIndex` any more (§11.2 rule 3), and the state they mutate is
+//     `VectorValidData` (VectorValidData.h), so they take that instead. This
+//     also puts them on the right side of the interface split: both are
+//     BUILDER / LOADER helpers, never reader ones.
+//
+// `index/Utils.h` is no longer included: it pulls `common/QueryInfo.h` ->
+// `knowhere/config.h`, which is the include chain §12.1(a) identifies as the
+// real reason the scalar families compile knowhere today. Nothing here needs it.
+
+// Entry names of the valid-data payload inside a nullable vector artifact.
+constexpr const char* VALID_DATA_KEY = "valid_data";
+constexpr const char* VALID_DATA_COUNT_KEY = "valid_data_count";
 
 inline bool
 IsValidDataBinary(const std::string& name) {
@@ -167,7 +188,7 @@ PackValidDataBitmap(const OffsetMapping& offset_mapping) {
 }
 
 inline void
-BuildValidDataFromBitmap(VectorIndex* vector_index,
+BuildValidDataFromBitmap(VectorValidData& valid,
                          size_t count,
                          const uint8_t* bitmap,
                          const OffsetMappingBuildOptions& options = {}) {
@@ -175,7 +196,7 @@ BuildValidDataFromBitmap(VectorIndex* vector_index,
     for (size_t i = 0; i < count; ++i) {
         valid_data[i] = (bitmap[i / 8] >> (i % 8)) & 1;
     }
-    vector_index->BuildValidData(valid_data.get(), count, options);
+    valid.Build(valid_data.get(), count, options);
 }
 
 inline void
@@ -202,7 +223,7 @@ AppendValidDataToBinarySet(const OffsetMapping& offset_mapping,
 
 inline bool
 LoadValidDataFromBinarySet(const BinarySet& binary_set,
-                           VectorIndex* vector_index,
+                           VectorValidData& valid,
                            const OffsetMappingBuildOptions& options = {}) {
     bool has_count = binary_set.Contains(VALID_DATA_COUNT_KEY);
     bool has_data = binary_set.Contains(VALID_DATA_KEY);
@@ -224,8 +245,7 @@ LoadValidDataFromBinarySet(const BinarySet& binary_set,
     AssertInfo(
         data_ptr != nullptr && data_ptr->size >= GetValidDataBitmapSize(count),
         "nullable vector index valid_data bitmap file is invalid");
-    BuildValidDataFromBitmap(
-        vector_index, count, data_ptr->data.get(), options);
+    BuildValidDataFromBitmap(valid, count, data_ptr->data.get(), options);
     return true;
 }
 
