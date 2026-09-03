@@ -16,6 +16,36 @@
 
 #pragma once
 
+// Leaf helpers shared by the index families.
+//
+// TWO CHAINS ARE CUT HERE, and cutting them is the point of this file's edit.
+//
+// (a) `index/ -> common/QueryInfo.h -> knowhere/config.h`. 01-scalar-index.md
+//     §12.1(a) identifies this as ONE OF THE TWO transitive paths by which
+//     knowhere reaches every scalar index translation unit — almost every
+//     scalar `.cpp` includes this header, and this header included
+//     `QueryInfo.h`. §11.2 rule 5 / §10 rule 6 require the scalar families to
+//     be knowhere-free. The only declaration that needed it was
+//     `CheckAndUpdateKnowhereRangeSearchParam`, which took a `SearchInfo&` and
+//     filled a `knowhere::Json&` — a VECTOR-side concern. §12.1(a) states the
+//     fix in as many words: "declare the narrow parameter type (including
+//     `knowhere::Json`) in the vector family's own header — the vector family
+//     is allowed to see knowhere by §11.2 rule 5 — and then neither
+//     `common/QueryInfo.h` nor `index/Utils.h` needs knowhere". It is removed
+//     from here; see the handoff note where it used to be declared.
+//
+// (b) `index/ -> index/ScalarIndex.h` for the single enum `ScalarIndexType`.
+//     `ScalarIndex<T>` is retired (§11.2 rule 3), and the two config getters
+//     that returned that enum now return FAMILY NAMES (index/Families.h).
+//
+// A THIRD CHAIN IS NOT CUT AND CANNOT BE CUT HERE: `common/Types.h` itself
+// includes four knowhere headers (`common/Types.h:43-46`) and defines
+// `BinarySet` / `IndexType` / `IndexVersion` as knowhere aliases (:681-687).
+// Every file that needs `TargetBitmap` includes it — including the contract
+// layer. §12.1(a) names only chains (a) and (b) as the baseline; this one is a
+// third, and no amount of work inside index/ removes it. Reported, not worked
+// around.
+
 #include <unordered_map>
 #include <vector>
 #include <stdio.h>
@@ -31,10 +61,7 @@
 #include "common/Common.h"
 #include "common/Types.h"
 #include "common/FieldData.h"
-#include "common/QueryInfo.h"
-#include "common/RangeSearchHelper.h"
 #include "index/IndexInfo.h"
-#include "index/ScalarIndex.h"
 #include "storage/Types.h"
 #include "storage/DataCodec.h"
 #include "log/Log.h"
@@ -44,44 +71,23 @@ namespace milvus::index {
 size_t
 get_file_size(int fd);
 
-std::vector<IndexType>
-NM_List();
-
-std::vector<IndexType>
-BIN_List();
-
-std::vector<std::tuple<IndexType, MetricType>>
-unsupported_index_combinations();
-
-bool
-is_in_bin_list(const IndexType& index_type);
-
-bool
-is_in_nm_list(const IndexType& index_type);
-
-bool
-is_unsupported(const IndexType& index_type, const MetricType& metric_type);
+// REMOVED FROM HERE — handoff to the vector family, same reason as
+// `CheckAndUpdateKnowhereRangeSearchParam` below.
+//
+// `bool is_unsupported(const IndexType&, const MetricType&)` (was Utils.h:62-63)
+// and the three tables behind it (`NM_List`, `BIN_List`,
+// `unsupported_index_combinations`, Utils.cpp:59-108) are a hardcoded list of
+// knowhere index-type / metric-type pairs. `is_unsupported` had one consumer,
+// `index/VectorMemIndex.cpp`; the other five had none at all. Keeping them here
+// is what forced `#include "knowhere/comp/index_param.h"` into Utils.cpp and,
+// with it, knowhere into a translation unit every scalar family links against
+// (§10 rule 6, §11.2 rule 5).
 
 bool
 CheckKeyInConfig(const Config& cfg, const std::string& key);
 
 void
 ParseFromString(google::protobuf::Message& params, const std::string& str);
-
-template <typename T>
-void inline CheckParameter(Config& conf,
-                           const std::string& key,
-                           std::function<T(std::string)> fn,
-                           std::optional<T> default_v) {
-    if (!conf.contains(key)) {
-        if (default_v.has_value()) {
-            conf[key] = default_v.value();
-        }
-    } else {
-        auto value = conf[key];
-        conf[key] = fn(value);
-    }
-}
 
 template <typename T>
 inline std::optional<T>
@@ -136,12 +142,6 @@ GetValueFromConfig(const Config& cfg, const std::string& key) {
 
 template <typename T>
 inline void
-SetValueToConfig(Config& cfg, const std::string& key, const T value) {
-    cfg[key] = value;
-}
-
-template <typename T>
-inline void
 CheckMetricTypeSupport(const MetricType& metric_type) {
     if constexpr (std::is_same_v<T, bin1>) {
         AssertInfo(
@@ -171,17 +171,15 @@ GetIndexEngineVersionFromConfig(const Config& config);
 int32_t
 GetBitmapCardinalityLimitFromConfig(const Config& config);
 
-ScalarIndexType
-GetHybridLowCardinalityIndexTypeFromConfig(const Config& config);
+// Return a FAMILY NAME (index/Families.h), not a `ScalarIndexType`.
+// The enum lived on the retired `ScalarIndex<T>` header, and persisting its
+// ORDINAL is exactly the fragility the `auto` family removes — see
+// `index/scalar/auto/AutoIndexBuilder.cpp`. Consumed by `AutoBuildParams`.
+std::string
+GetLowCardinalityFamilyFromConfig(const Config& config);
 
-ScalarIndexType
-GetHybridHighCardinalityIndexTypeFromConfig(const Config& config);
-
-storage::FieldDataMeta
-GetFieldDataMetaFromConfig(const Config& config);
-
-storage::IndexMeta
-GetIndexMetaFromConfig(const Config& config);
+std::string
+GetHighCardinalityFamilyFromConfig(const Config& config);
 
 Config
 ParseConfigFromIndexParams(
@@ -225,11 +223,19 @@ AssembleIndexDatas(std::map<std::string, FieldDataChannelPtr>& index_datas,
 void
 ReadDataFromFD(int fd, void* buf, size_t size, size_t chunk_size = 0x7ffff000);
 
-bool
-CheckAndUpdateKnowhereRangeSearchParam(const SearchInfo& search_info,
-                                       const int64_t topk,
-                                       const MetricType& metric_type,
-                                       knowhere::Json& search_config);
+// REMOVED FROM HERE — handoff to the vector family.
+//
+// `bool CheckAndUpdateKnowhereRangeSearchParam(const SearchInfo&, int64_t topk,
+//  const MetricType&, knowhere::Json&)` (was Utils.h:228-232, defined at
+// Utils.cpp:512-544) is the ONLY declaration in this header that needed
+// `common/QueryInfo.h`, and through it `knowhere/config.h`. Its consumers are
+// `index/vector/...` and `query/CachedSearchIterator.cpp:66` — all vector-side.
+//
+// Per §12.1(a) it must be re-declared in the VECTOR family's own header, which
+// is allowed to see knowhere (§11.2 rule 5, §12.1(c)). It is not moved here
+// because the vector half of this phase is a separate change; if it has not
+// landed when this one does, that call fails to resolve, which is the intended
+// forcing function rather than an accident.
 
 // for unused
 void inline SetBitsetUnused(void* bitset, const uint32_t* doc_id, uintptr_t n) {

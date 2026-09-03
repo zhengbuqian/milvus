@@ -16,7 +16,33 @@
 
 #pragma once
 
-#include "knowhere/comp/index_param.h"
+#include <cstdint>
+#include <string>
+
+// Parameter and metadata KEYS shared by the index families.
+//
+// TWO EDITS, both required by 01-scalar-index.md §10:
+//
+// 1. `#include "knowhere/comp/index_param.h"` is gone. It was the only include
+//    in this file, nothing here used it, and this header is pulled into 89
+//    translation units — so it was a third knowhere chain into the scalar
+//    families on top of the two §12.1(a) names. Rule 6 / §11.2 rule 5.
+//
+// 2. The scalar index-type NAME constants below (`ASCENDING_SORT`,
+//    `MARISA_TRIE`, `INVERTED_INDEX_TYPE`, ...) are the USER-FACING vocabulary
+//    that arrives from the plan and the create-index request, aliases and
+//    legacy spellings included. They are NOT the family names the registry and
+//    the artifact metadata use — those are in `index/Families.h`, and the
+//    mapping between the two happens once, in the index-type adapter. Keeping
+//    the two vocabularies apart is what lets a family be renamed without
+//    touching an on-disk contract, and vice versa.
+//
+// STILL WRONG, AND NOT FIXABLE FROM INSIDE index/ — reported instead:
+// `kOverrideRootPathForUT` at the bottom of this file is a UNIT-TEST HOOK read
+// by PRODUCTION storage code (`storage/FileManager.h:305,307,332,334`, which
+// includes this header at `:30`). That is an L1 -> L2 edge, forbidden by
+// README §5 rule 1, and it is the only reason `index/Meta.cpp` exists at all.
+// The fix is to move the hook into storage; that file is out of scope here.
 
 namespace milvus::index {
 constexpr const char* OPERATOR_TYPE = "operator_type";
