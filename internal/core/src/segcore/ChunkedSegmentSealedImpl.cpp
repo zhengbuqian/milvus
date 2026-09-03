@@ -88,7 +88,7 @@
 #include "index/IndexFactory.h"
 #include "index/Meta.h"
 #include "index/NgramInvertedIndex.h"
-#include "index/json_stats/JsonKeyStats.h"
+#include "segcore/json_stats/JsonKeyStats.h"
 #include "index/ScalarIndex.h"
 #include "index/TextMatchIndex.h"
 #include "index/Utils.h"

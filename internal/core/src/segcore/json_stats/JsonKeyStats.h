@@ -54,11 +54,10 @@
 #include "glog/logging.h"
 #include "index/IndexStats.h"
 #include "index/Meta.h"
-#include "index/ScalarIndex.h"
 #include "index/SkipIndex.h"
-#include "index/json_stats/bson_inverted.h"
-#include "index/json_stats/parquet_writer.h"
-#include "index/json_stats/utils.h"
+#include "segcore/json_stats/bson_inverted.h"
+#include "segcore/json_stats/parquet_writer.h"
+#include "segcore/json_stats/utils.h"
 #include "log/Log.h"
 #include "mmap/ChunkedColumnInterface.h"
 #include "pb/common.pb.h"
@@ -74,7 +73,62 @@ class TraverseJsonForBuildStatsAccessor;
 class JsonStatsProjectionTestAccessor;
 
 namespace milvus::index {
-class JsonKeyStats : public ScalarIndex<std::string> {
+
+// JSON SHREDDING IS NOT AN INDEX, IT IS A COLUMN LAYOUT.
+// See core_refactor/01-scalar-index.md §1 ("JSON shredding is a column layout,
+// not an index") and the §8 mapping table row for `JsonKeyStats`.
+//
+// This class used to derive from `ScalarIndex<std::string>` purely to borrow
+// the index factory / load / pin machinery; the price was a whole predicate
+// surface of `ThrowInfo(NotImplemented)` overrides that no call site ever
+// reached. §1's transitional treatment for refactor phase 1 is exactly two
+// steps, with NO behaviour change, NO format change and NO Go-side change:
+//   1. drop the inheritance clause and the dead `NotImplemented` overrides
+//      (`In` / `NotIn` / `Range` x2 / `IsNull` / `IsNotNull` / `Reverse_Lookup`
+//      / `Build(n, values, valid)` / `BuildWithDataset` / `BuildWithRawDataForUT`
+//      / `Load(BinarySet)`), keeping `Build(config)` / `Upload(config)` /
+//      `Load(TraceContext, Config)` / `Serialize` as ordinary methods because
+//      those have real call sites;
+//   2. `git mv index/json_stats/ -> segcore/json_stats/`, which zeroes the five
+//      `index -> segcore` reverse include edges on the spot (they were all in
+//      `JsonKeyStats.cpp`). `indexbuilder` now includes segcore: an L5 -> L3
+//      downward edge, which is legal.
+//
+// WHY segcore AND NOT A CLEANER STANDALONE COMPONENT: it needs
+// `ManifestGroupTranslator` (segcore) while segcore's `runtime.json_stats`
+// holds it, so a standalone component would cycle unless the translator moved
+// out of segcore first (refactor phase 2 / refactor phase 3 work). The
+// wide-table modelling design has already ruled that the JSON layout directory
+// lives in segcore permanently, so this is not throwaway placement.
+//
+// EXPLICITLY NOT DONE THIS PHASE (all of it waits on wide-table modelling, see
+// §1's "explicitly out of scope" list):
+//   - the typed sub-columns are NOT promoted to first-class columnar-format
+//     objects (they are already `ManifestGroupTranslator` ->
+//     `ChunkedColumnGroup` -> `ProxyChunkColumn`, i.e. the ordinary
+//     storage-v2 column construction chain, but the promotion is a separate
+//     modelling step);
+//   - the "optional alternative layout of a column" concept and `ColumnCaps`
+//     are NOT designed;
+//   - exec's JSON expression call shape is unchanged (only include paths moved);
+//   - this class is NOT wired to the L1 artifact pipeline
+//     (`storage::Artifact` / `storage::ArtifactLoader`, §11.2 item 1) — it keeps
+//     hand-writing its own `Build` / `Serialize` / `Upload` / `Load`;
+//   - NOT renamed: `JsonKeyStats` crosses into proto and the Go side.
+//
+// DELIBERATE LEFTOVER: the namespace stays `milvus::index` even though the file
+// now lives under `segcore/`. §1 authorises exactly the two steps above and
+// insists on zero call-site changes; a namespace rename is a third step it does
+// not authorise, and wide-table modelling will re-name these types anyway when
+// it unifies Struct/JSON shredding. Revisit together with the rename.
+//
+// EXIT CONDITION for this transitional placement (§1's cost-and-exit-condition
+// entry): wide-table modelling chapter 6 (the query node's data representation)
+// lands AND the sub-columns are promoted to columnar-format objects. Until then
+// `segcore/json_stats/` is a JSON-specific data structure inside segcore, which
+// runs against segcore's "shed the type special cases" direction. That is
+// knowingly accepted.
+class JsonKeyStats {
  public:
     explicit JsonKeyStats(
         const storage::FileManagerContext& ctx,
@@ -84,123 +138,56 @@ class JsonKeyStats : public ScalarIndex<std::string> {
         int64_t json_stats_write_batch_size = 81920,
         uint32_t tantivy_index_version = TANTIVY_INDEX_LATEST_VERSION);
 
-    ~JsonKeyStats() override;
-
-    using ScalarIndex<std::string>::BuildWithFieldData;
+    ~JsonKeyStats();
 
  public:
+    // ---- Build / persist / load ---------------------------------------------
+    // These four are the ONLY members of the former `ScalarIndex<std::string>`
+    // surface that had real call sites, so §1 keeps them as ordinary methods
+    // (no `override`, nothing to override any more):
+    //   Build(config)            <- indexbuilder/index_c.cpp:485 (BuildJsonKeyIndex)
+    //   Upload(config)           <- indexbuilder/index_c.cpp:486
+    //   Load(TraceContext, ...)  <- ChunkedSegmentSealedImpl::BuildJsonKeyStatsIndex
+    //   Serialize(config)        <- internal to the build path
+    //
+    // NOT wired to `storage::Artifact` / `storage::ArtifactLoader` this phase —
+    // §1's "explicitly out of scope" list keeps the hand-written pipeline until
+    // wide-table modelling lands (§12.2 also notes refactor phase 1 ends with
+    // index as the pipeline's only real consumer, so the second consumer cannot
+    // be validated yet).
     void
     BuildWithFieldData(const std::vector<FieldDataPtr>& datas, bool nullable);
 
     void
-    Load(milvus::tracer::TraceContext ctx, const Config& config = {}) override;
+    Load(milvus::tracer::TraceContext ctx, const Config& config = {});
 
     void
-    Load(const BinarySet& binary_set, const Config& config) override {
-        ThrowInfo(ErrorCode::NotImplemented,
-                  "Load not supported for JsonKeyStats");
-    }
+    Build(const Config& config = {});
 
-    /*
-     * deprecated.
-     * TODO: why not remove this?
-     */
-    void
-    BuildWithDataset(const DatasetPtr& dataset,
-                     const Config& config = {}) override {
-        ThrowInfo(ErrorCode::NotImplemented,
-                  "BuildWithDataset should be deprecated");
-    }
+    BinarySet
+    Serialize(const Config& config);
 
-    ScalarIndexType
-    GetIndexType() const override {
-        return ScalarIndexType::JSONSTATS;
-    }
+    IndexStatsPtr
+    Upload(const Config& config = {});
 
-    void
-    Build(const Config& config = {}) override;
-
+    // ---- Self-description ----------------------------------------------------
     int64_t
-    Count() override {
+    Count() const {
         return num_rows_;
     }
 
-    BinarySet
-    Serialize(const Config& config) override;
-
-    IndexStatsPtr
-    Upload(const Config& config = {}) override;
-
-    const bool
-    HasRawData() const override {
-        return false;
-    }
-
-    int64_t
-    Size() override {
-        return Count();
-    }
-
-    void
-    BuildWithRawDataForUT(size_t n,
-                          const void* values,
-                          const Config& config) override {
-        ThrowInfo(ErrorCode::NotImplemented,
-                  "BuildWithRawDataForUT Not supported for JsonKeyStats");
-    }
-
-    void
-    Build(size_t n,
-          const std::string* values,
-          const bool* valid_data = nullptr) override {
-        ThrowInfo(ErrorCode::NotImplemented,
-                  "Build not supported for JsonKeyStats");
-    }
-
-    const TargetBitmap
-    In(size_t n, const std::string* values) override {
-        ThrowInfo(ErrorCode::NotImplemented,
-                  "In not supported for JsonKeyStats");
-    }
-
-    const TargetBitmap
-    IsNull() override {
-        ThrowInfo(ErrorCode::NotImplemented,
-                  "IsNull not supported for JsonKeyStats");
-    }
-
-    TargetBitmap
-    IsNotNull() override {
-        ThrowInfo(ErrorCode::NotImplemented,
-                  "IsNotNull not supported for JsonKeyStats");
-    }
-
-    const TargetBitmap
-    NotIn(size_t n, const std::string* values) override {
-        ThrowInfo(ErrorCode::NotImplemented,
-                  "NotIn not supported for JsonKeyStats");
-    }
-
-    const TargetBitmap
-    Range(const std::string& value, OpType op) override {
-        ThrowInfo(ErrorCode::NotImplemented,
-                  "Range not supported for JsonKeyStats");
-    }
-
-    const TargetBitmap
-    Range(const std::string& lower_bound_value,
-          bool lb_inclusive,
-          const std::string& upper_bound_value,
-          bool ub_inclusive) override {
-        ThrowInfo(ErrorCode::NotImplemented,
-                  "Range not supported for JsonKeyStats");
-    }
-
-    std::optional<std::string>
-    Reverse_Lookup(size_t offset) const override {
-        ThrowInfo(ErrorCode::NotImplemented,
-                  "Reverse_Lookup not supported for JsonKeyStats");
-    }
+    // DELETED WITH THE INHERITANCE CLAUSE (§1, the "only coupling point"
+    // table): every one of these was a `ThrowInfo(NotImplemented)` shell
+    // reachable from no call site.
+    //   Load(BinarySet, Config), BuildWithDataset, BuildWithRawDataForUT,
+    //   Build(n, values, valid), In, NotIn, Range x2, IsNull, IsNotNull,
+    //   Reverse_Lookup, HasRawData, Size, GetIndexType
+    // (`GetIndexType()` returned `ScalarIndexType::JSONSTATS` and had ZERO call
+    // sites — it existed only to satisfy the base class, and keeping it would
+    // have kept `index/ScalarIndex.h` in this header's include set for nothing.)
+    // The query surface of shredding is `ExecutorForShreddingData` /
+    // `ExecuteForSharedData` below, which exec calls on the CONCRETE type via
+    // `segment->GetJsonStats()` — never through a virtual dispatch.
 
  public:
     PinWrapper<BsonInvertedIndex*>
@@ -679,6 +666,15 @@ class JsonKeyStats : public ScalarIndex<std::string> {
 
     std::string shared_column_field_name_;
     std::shared_ptr<milvus::ChunkedColumnInterface> shared_column_;
+    // DUPLICATED CONCEPT — MERGE WHEN THE SUB-COLUMNS ARE PROMOTED.
+    // `SkipIndex` is the column's zone-map statistic and has already been ruled
+    // to belong to columnar-format (core_refactor/01-scalar-index.md §1
+    // exclusions; PR #51504 wires it in as `CellSkipPredicate` during scan
+    // planning, which settles the ownership). This class keeps a SECOND COPY of
+    // it to skip chunks in `ExecutorForShreddingData` — the same concept stored
+    // once per component. README's columnar-format entry lists merging the two
+    // as connected item (1) of the shredding migration; it is work parallel to
+    // refactor phase 1 and NOT done here.
     SkipIndex skip_index_;
 
     // Meta file for storing layout type map and other metadata

@@ -25,7 +25,7 @@
 #include "common/EasyAssert.h"
 #include "glog/logging.h"
 #include "index/Utils.h"
-#include "index/json_stats/bson_inverted.h"
+#include "segcore/json_stats/bson_inverted.h"
 #include "log/Log.h"
 #include "storage/DiskFileManagerImpl.h"
 #include "storage/LocalChunkManager.h"

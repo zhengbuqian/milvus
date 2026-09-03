@@ -41,9 +41,9 @@
 #include "common/jsmn.h"
 #include "fmt/core.h"
 #include "index/Utils.h"
-#include "index/json_stats/JsonKeyStats.h"
-#include "index/json_stats/bson_builder.h"
-#include "index/json_stats/parquet_writer.h"
+#include "segcore/json_stats/JsonKeyStats.h"
+#include "segcore/json_stats/bson_builder.h"
+#include "segcore/json_stats/parquet_writer.h"
 #include "milvus-storage/common/config.h"
 #include "milvus-storage/common/constants.h"
 #include "milvus-storage/common/metadata.h"
@@ -169,8 +169,11 @@ JsonKeyStats::JsonKeyStats(const storage::FileManagerContext& ctx,
                            double json_stats_shredding_ratio_threshold,
                            int64_t json_stats_write_batch_size,
                            uint32_t tantivy_index_version)
-    : ScalarIndex<std::string>(JSON_KEY_STATS_INDEX_TYPE),
-      file_manager_context_(ctx) {
+    // No base-class initializer any more: the `ScalarIndex<std::string>` clause
+    // is gone (01-scalar-index.md §1, transitional step 1). The former base
+    // argument `JSON_KEY_STATS_INDEX_TYPE` fed `IndexBase::index_type_`, which
+    // nothing on this class ever read back.
+    : file_manager_context_(ctx) {
     schema_ = ctx.fieldDataMeta.field_schema;
     field_id_ = ctx.fieldDataMeta.field_id;
     segment_id_ = ctx.fieldDataMeta.segment_id;

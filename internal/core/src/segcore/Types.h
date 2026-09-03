@@ -50,11 +50,37 @@ struct LoadIndexInfo {
             INDEX_STORE_PATH_VERSION_BUILD_ROOTED};
     std::map<std::string, std::string> index_params;
     std::vector<std::string> index_files;
+    // Both die with `IndexBase` (core_refactor/01-scalar-index.md §11.2 item 3).
+    // `index` becomes the `std::shared_ptr<index::IndexReaderBase>` that
+    // `index::IndexLoader::Open(FileSource&, LoadOptions&)` returns, and
+    // `cache_index` becomes `CacheSlot<index::IndexReaderBase>` held by
+    // `segcore::IndexInventory` alongside a pure-data `index::ReaderCaps`
+    // derived here at load time via `index::IndexLoader::DeriveCaps()` — the
+    // caps copy is what lets the path decision run WITHOUT a pin (§4.1/§4.3).
     index::IndexBasePtr index;
     index::CacheIndexBasePtr cache_index;
     std::string uri;
     IndexVersion index_engine_version;
     proto::schema::FieldSchema schema;
+    // OPEN QUESTION §12.3 — `cell_size_` HAS NO DEFINITION, AND THIS FIELD IS
+    // ONE OF ITS TWO INCOMPATIBLE SOURCES. cachinglayer bills admission and
+    // eviction off `cell_size_` (index/Index.h:156), which is filled either
+    // from THIS field — the PRE-COMPRESSION REMOTE FILE SIZE, see the comment
+    // below — for most families
+    // (storagev1translator/V1SealedIndexTranslator.cpp:157-161,198-204;
+    // storagev2translator/SealedIndexTranslator.cpp:199) or from
+    // `index->ByteSize()`, the MEASURED RESIDENT FOOTPRINT, for text match and
+    // FMIndex (TextMatchIndexTranslator.cpp:125,127; index/FMIndex.cpp:713-714).
+    // No conversion happens between them; the two branches only choose which
+    // half (memory or file) of the pair to put the number in. For marisa tries,
+    // roaring bitmaps and tantivy — where the serialized and resident forms
+    // differ a lot — the first source is systematically off, and the direction
+    // of the error differs per family. This must be DEFINED (not merely
+    // "unified into one accessor") BEFORE the artifact pipeline sinks to L1,
+    // because `storage::LoadedArtifact::CellByteSize()` will carry it and
+    // changing it afterwards changes an L1 public contract. §13.3 is the same
+    // code's other defect: the value is cached and is NOT refreshed while a
+    // growing segment keeps inserting.
     int64_t index_size;  // It's the size of index file before compressing
     // (aka. the filesize before loading operation at knowhere),
     // because the uncompressed-index-file-size may not be stored at previous milvus.
