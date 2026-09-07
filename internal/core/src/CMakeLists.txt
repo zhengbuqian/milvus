@@ -130,7 +130,8 @@ if (MILVUS_USE_PCH)
     # source files compiled with special target flags (-mavx512f, -march=armv8-a+sve)
     # which are incompatible with PCH compiled under default target features.
     foreach(_target
-        milvus_common milvus_config milvus_monitor milvus_storage milvus_index
+        milvus_common milvus_config milvus_monitor milvus_storage
+        milvus_storage_artifact milvus_index
         milvus_query milvus_segcore milvus_indexbuilder milvus_clustering
         milvus_exec milvus_futures milvus_rescores
         milvus_plan)
@@ -144,6 +145,7 @@ add_library(milvus_core SHARED
     $<TARGET_OBJECTS:milvus_common>
     $<TARGET_OBJECTS:milvus_monitor>
     $<TARGET_OBJECTS:milvus_storage>
+    $<TARGET_OBJECTS:milvus_storage_artifact>
     $<TARGET_OBJECTS:milvus_index>
     $<TARGET_OBJECTS:milvus_query>
     $<TARGET_OBJECTS:milvus_segcore>
