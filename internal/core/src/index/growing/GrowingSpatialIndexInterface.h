@@ -59,7 +59,8 @@
 // stranded: a growing INVERTED index would want `ScalarPredicateReader<T>` AND
 // `PatternMatchReader` AND `NullReader` on one snapshot, and the contract's
 // return type can carry only one interface. The structural fix is for
-// `ReaderSnapshot()` to return `IndexReaderBasePtr` (the type-erased base
+// `ReaderSnapshot()` to return `shared_ptr<IndexReaderBase>` (the type-erased
+// base
 // class) and let the consumer sibling-cast, exactly as
 // `JsonIndexReader::Resolve` already does (§5.7) — one snapshot, N interfaces,
 // same rule as the sealed side. Declared family-locally here rather than by

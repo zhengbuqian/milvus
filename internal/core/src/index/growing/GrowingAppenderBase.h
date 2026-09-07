@@ -129,7 +129,10 @@ class GrowingAppenderBase {
     // snapshot means no readable snapshot yet"). The consumer sibling-casts to
     // the interface it needs, exactly as it does after a pin on the sealed side
     // (§4.3).
-    virtual IndexReaderBasePtr
+    // Growing publication is the intentional exception to sealed-reader
+    // unique ownership: immutable generations may overlap while readers pin
+    // different snapshots.
+    virtual std::shared_ptr<IndexReaderBase>
     ReaderSnapshotErased() const = 0;
 };
 

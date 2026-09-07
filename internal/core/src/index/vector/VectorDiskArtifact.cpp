@@ -203,11 +203,11 @@ VectorDiskArtifact<T>::VectorDiskArtifact(
 }
 
 template <typename T>
-std::shared_ptr<storage::LoadedArtifact>
+std::unique_ptr<storage::LoadedArtifact>
 VectorDiskArtifact<T>::OpenReader() const {
     if (const auto* loaded = std::get_if<LoadedState>(&state_)) {
         std::shared_ptr<const void> owner = loaded->file_manager;
-        return std::make_shared<VectorDiskReader<T>>(loaded->engine,
+        return std::make_unique<VectorDiskReader<T>>(loaded->engine,
                                                      loaded->valid,
                                                      loaded->search_beamwidth,
                                                      std::move(owner));
@@ -271,7 +271,7 @@ VectorDiskArtifact<T>::OpenReader() const {
     }
 
     std::shared_ptr<const void> owner = file_manager;
-    return std::make_shared<VectorDiskReader<T>>(
+    return std::make_unique<VectorDiskReader<T>>(
         std::move(engine), builder.valid, beamwidth, std::move(owner));
 }
 

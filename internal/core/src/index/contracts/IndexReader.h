@@ -91,6 +91,6 @@ class IndexReaderBase : public storage::LoadedArtifact {
     MemoryUsage() const = 0;
 };
 
-using IndexReaderBasePtr = std::shared_ptr<IndexReaderBase>;
+using IndexReaderBasePtr = std::unique_ptr<IndexReaderBase>;
 
 }  // namespace milvus::index

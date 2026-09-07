@@ -740,14 +740,14 @@ LoadState(storage::FileSource& source,
     return result;
 }
 
-std::shared_ptr<IndexReaderBase>
+std::unique_ptr<IndexReaderBase>
 MakeReader(const NgramLoadState& state) {
     AssertInfo(state.directory != nullptr,
                "NGRAM load state requires a directory owner");
     AssertInfo(state.engine != nullptr, "NGRAM load state requires an engine");
     AssertInfo(state.null_offsets != nullptr,
                "NGRAM load state requires immutable null offsets");
-    return std::make_shared<NgramIndexReader>(
+    return std::make_unique<NgramIndexReader>(
         state.mmap ? state.directory : nullptr,
         state.engine,
         state.null_offsets,
@@ -775,7 +775,7 @@ NgramIndexLoader::DeriveCaps(const Config& index_meta) const {
         ReaderCaps{.ngram_candidates = true, .exact = false});
 }
 
-std::shared_ptr<IndexReaderBase>
+std::unique_ptr<IndexReaderBase>
 NgramIndexLoader::OpenIndex(storage::FileSource& source,
                             const storage::LoadOptions& opts) {
     auto projection = PrepareJsonProjectedOpen(families::kNgram, source, opts);

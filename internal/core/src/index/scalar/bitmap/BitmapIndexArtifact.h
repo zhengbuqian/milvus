@@ -62,7 +62,7 @@ class BitmapIndexArtifact final : public storage::Artifact {
 
     ~BitmapIndexArtifact() override;
 
-    std::shared_ptr<storage::LoadedArtifact>
+    std::unique_ptr<storage::LoadedArtifact>
     OpenReader() const override;
 
     void

@@ -568,13 +568,13 @@ RTreeIndexLoader::DeriveCaps(const Config& index_meta) const {
     return ReaderCaps{.spatial = true, .exact = false};
 }
 
-std::shared_ptr<IndexReaderBase>
+std::unique_ptr<IndexReaderBase>
 RTreeIndexLoader::OpenIndex(storage::FileSource& source,
                             const storage::LoadOptions& opts) {
     // Boost's R-tree archive has no mmap view. `enable_mmap` is a preference;
     // preserve the baseline heap fallback and report the resulting heap bytes.
     auto loaded = LoadState(source, opts);
-    return std::make_shared<RTreeIndexReader>(std::move(loaded.state));
+    return std::make_unique<RTreeIndexReader>(std::move(loaded.state));
 }
 
 RehydratedIndex
@@ -584,7 +584,7 @@ RTreeIndexLoader::OpenForRewrite(storage::FileSource& source,
     RehydratedIndex result;
     result.artifact = std::make_unique<RTreeIndexArtifact>(
         loaded.directory, loaded.engine_files, loaded.state);
-    result.reader = std::make_shared<RTreeIndexReader>(loaded.state);
+    result.reader = std::make_unique<RTreeIndexReader>(loaded.state);
     return result;
 }
 

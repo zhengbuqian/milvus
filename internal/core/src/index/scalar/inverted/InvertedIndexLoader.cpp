@@ -647,7 +647,7 @@ LoadState(storage::FileSource& source,
     return result;
 }
 
-std::shared_ptr<IndexReaderBase>
+std::unique_ptr<IndexReaderBase>
 MakeReader(const InvertedLoadState& state) {
     AssertInfo(state.directory != nullptr,
                "inverted load state requires a directory owner");
@@ -656,8 +656,8 @@ MakeReader(const InvertedLoadState& state) {
     AssertInfo(state.null_offsets != nullptr,
                "inverted load state requires immutable null offsets");
     const auto engine_path_bytes = state.directory->PathHeapBytes();
-    const auto make = [&]<typename T>() -> std::shared_ptr<IndexReaderBase> {
-        return std::make_shared<InvertedIndexReader<T>>(
+    const auto make = [&]<typename T>() -> std::unique_ptr<IndexReaderBase> {
+        return std::make_unique<InvertedIndexReader<T>>(
             state.mmap ? state.directory : nullptr,
             state.engine,
             state.null_offsets,
@@ -715,7 +715,7 @@ InvertedIndexLoader::DeriveCaps(const Config& index_meta) const {
         });
 }
 
-std::shared_ptr<IndexReaderBase>
+std::unique_ptr<IndexReaderBase>
 InvertedIndexLoader::OpenIndex(storage::FileSource& source,
                                const storage::LoadOptions& opts) {
     auto projection =

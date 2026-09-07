@@ -957,7 +957,7 @@ RehydrateNumeric(storage::FileSource& source,
                  const RuntimeParams& params) {
     auto state = LoadNumericState<T>(source, opts, meta, params);
     auto artifact = std::make_unique<SortedIndexArtifact<T>>(state);
-    auto reader = std::make_shared<SortedIndexReader<T>>(std::move(state));
+    auto reader = std::make_unique<SortedIndexReader<T>>(std::move(state));
     return {.artifact = std::move(artifact), .reader = std::move(reader)};
 }
 
@@ -968,7 +968,7 @@ RehydrateString(storage::FileSource& source,
                 const RuntimeParams& params) {
     auto state = LoadStringState(source, opts, meta, params);
     auto artifact = std::make_unique<SortedStringIndexArtifact>(state);
-    auto reader = std::make_shared<SortedStringIndexReader>(std::move(state));
+    auto reader = std::make_unique<SortedStringIndexReader>(std::move(state));
     return {.artifact = std::move(artifact), .reader = std::move(reader)};
 }
 
@@ -998,7 +998,7 @@ SortedIndexLoader::DeriveCaps(const Config& index_meta) const {
                    .exact = !params.nested});
 }
 
-std::shared_ptr<IndexReaderBase>
+std::unique_ptr<IndexReaderBase>
 SortedIndexLoader::OpenIndex(storage::FileSource& source,
                              const storage::LoadOptions& opts) {
     auto projection = PrepareJsonProjectedOpen(families::kSort, source, opts);
@@ -1012,40 +1012,40 @@ SortedIndexLoader::OpenIndex(storage::FileSource& source,
         return FinishJsonProjectedOpen(
             std::move(projection),
             source,
-            std::make_shared<SortedStringIndexReader>(
+            std::make_unique<SortedStringIndexReader>(
                 LoadStringState(source, opts, ReadStringMeta(source), params)));
     }
 
     const auto meta = ReadNumericMeta(source);
-    std::shared_ptr<IndexReaderBase> inner;
+    std::unique_ptr<IndexReaderBase> inner;
     switch (params.value_type) {
         case DataType::BOOL:
-            inner = std::make_shared<SortedIndexReader<bool>>(
+            inner = std::make_unique<SortedIndexReader<bool>>(
                 LoadNumericState<bool>(source, opts, meta, params));
             break;
         case DataType::INT8:
-            inner = std::make_shared<SortedIndexReader<int8_t>>(
+            inner = std::make_unique<SortedIndexReader<int8_t>>(
                 LoadNumericState<int8_t>(source, opts, meta, params));
             break;
         case DataType::INT16:
-            inner = std::make_shared<SortedIndexReader<int16_t>>(
+            inner = std::make_unique<SortedIndexReader<int16_t>>(
                 LoadNumericState<int16_t>(source, opts, meta, params));
             break;
         case DataType::INT32:
-            inner = std::make_shared<SortedIndexReader<int32_t>>(
+            inner = std::make_unique<SortedIndexReader<int32_t>>(
                 LoadNumericState<int32_t>(source, opts, meta, params));
             break;
         case DataType::INT64:
         case DataType::TIMESTAMPTZ:
-            inner = std::make_shared<SortedIndexReader<int64_t>>(
+            inner = std::make_unique<SortedIndexReader<int64_t>>(
                 LoadNumericState<int64_t>(source, opts, meta, params));
             break;
         case DataType::FLOAT:
-            inner = std::make_shared<SortedIndexReader<float>>(
+            inner = std::make_unique<SortedIndexReader<float>>(
                 LoadNumericState<float>(source, opts, meta, params));
             break;
         case DataType::DOUBLE:
-            inner = std::make_shared<SortedIndexReader<double>>(
+            inner = std::make_unique<SortedIndexReader<double>>(
                 LoadNumericState<double>(source, opts, meta, params));
             break;
         default:

@@ -18,6 +18,7 @@
 
 #include <memory>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "common/JsonCastType.h"
@@ -49,6 +50,70 @@
 // base.
 
 namespace milvus::index {
+
+// A path-resolution result never extends the lifetime of the field-level
+// reader. Owned results contain only a lightweight path view; borrowed results
+// point at an existing child reader. In both cases the caller must keep the
+// parent cache pin alive while using the result.
+class JsonResolvedReader {
+ public:
+    JsonResolvedReader() = default;
+
+    JsonResolvedReader(const JsonResolvedReader&) = delete;
+    JsonResolvedReader&
+    operator=(const JsonResolvedReader&) = delete;
+
+    JsonResolvedReader(JsonResolvedReader&& other) noexcept
+        : owned_(std::move(other.owned_)), reader_(other.reader_) {
+        if (owned_ != nullptr) {
+            reader_ = owned_.get();
+        }
+        other.reader_ = nullptr;
+    }
+
+    JsonResolvedReader&
+    operator=(JsonResolvedReader&& other) noexcept {
+        if (this != &other) {
+            owned_ = std::move(other.owned_);
+            reader_ = owned_ != nullptr ? owned_.get() : other.reader_;
+            other.reader_ = nullptr;
+        }
+        return *this;
+    }
+
+    static JsonResolvedReader
+    Owned(std::unique_ptr<const IndexReaderBase> reader) noexcept {
+        JsonResolvedReader result;
+        result.owned_ = std::move(reader);
+        result.reader_ = result.owned_.get();
+        return result;
+    }
+
+    static JsonResolvedReader
+    Borrowed(const IndexReaderBase* reader) noexcept {
+        JsonResolvedReader result;
+        result.reader_ = reader;
+        return result;
+    }
+
+    const IndexReaderBase*
+    get() const noexcept {
+        return reader_;
+    }
+
+    const IndexReaderBase*
+    operator->() const noexcept {
+        return reader_;
+    }
+
+    explicit operator bool() const noexcept {
+        return reader_ != nullptr;
+    }
+
+ private:
+    std::unique_ptr<const IndexReaderBase> owned_;
+    const IndexReaderBase* reader_{nullptr};
+};
 
 // NATIVE ENUM. Today `index::JsonValueType` is an ALIAS OF THE TANTIVY ENUM
 // `::JsonExistValueType` (`index/JsonFlatIndex.h:31`,
@@ -95,7 +160,7 @@ class JsonIndexReader {
     // to this document. §12.4 says in as many words: "`JsonCastType` is the
     // conservative choice, `DataType` is betting early." This skeleton takes the
     // conservative one. Revisit when geo/timestamptz casts become real.
-    virtual std::shared_ptr<const IndexReaderBase>
+    virtual JsonResolvedReader
     Resolve(std::string_view path, JsonCastType cast_type) const = 0;
 
     // Path existence. An inverted index built on VALUES can answer this on its

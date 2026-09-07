@@ -135,7 +135,7 @@ class BuildSession final {
     std::optional<index::AdaptedIndexType> direct_spec_;
     std::optional<BuildProduct> product_;
     std::optional<PhysicalBinarySet> physical_buffers_;
-    std::shared_ptr<LoadedState> loaded_state_;
+    std::unique_ptr<LoadedState> loaded_state_;
     State state_{State::Ready};
 };
 

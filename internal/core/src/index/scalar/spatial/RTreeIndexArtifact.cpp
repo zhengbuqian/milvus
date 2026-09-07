@@ -245,10 +245,10 @@ RTreeIndexArtifact::NullOffsets() const {
         state_);
 }
 
-std::shared_ptr<storage::LoadedArtifact>
+std::unique_ptr<storage::LoadedArtifact>
 RTreeIndexArtifact::OpenReader() const {
     if (const auto* loaded = std::get_if<LoadedArtifactState>(&state_)) {
-        return std::make_shared<RTreeIndexReader>(loaded->state);
+        return std::make_unique<RTreeIndexReader>(loaded->state);
     }
     const auto& builder = std::get<BuilderArtifactState>(state_);
     auto engine = std::make_shared<RTreeQueryEngine>(
@@ -256,7 +256,7 @@ RTreeIndexArtifact::OpenReader() const {
     engine->Load();
     auto state = RTreeIndexState::Create(
         std::move(engine), builder.null_offsets, builder.total_num_rows);
-    return std::make_shared<RTreeIndexReader>(std::move(state));
+    return std::make_unique<RTreeIndexReader>(std::move(state));
 }
 
 void

@@ -213,7 +213,11 @@ class IndexReaderBase {
 | `ReaderCaps` | 索引清单构建时由加载期元数据算出 | 与索引清单条目同寿 | 纯数据拷贝 |
 | `Pinned<ReaderT>` 句柄 | 取用时 | 栈上 RAII：cache pin + 类型化裸指针 | 两个指针 |
 
-索引清单持有的是 `CacheSlot`，不是索引对象。现状即 `CacheIndexBasePtr = shared_ptr<CacheSlot<IndexBase>>`（`Index.h:165`），阶段 1 后为 `CacheSlot<IndexReaderBase>`。索引对象活在 slot 内、可被淘汰，因此取查询接口必须先 pin 后 cast——pin 之前对象可能根本不存在。
+索引清单持有的是 `CacheSlot`，不是索引对象。现状即 `CacheIndexBasePtr = shared_ptr<CacheSlot<IndexBase>>`（`Index.h:165`），阶段 1 后为 `CacheSlot<IndexReaderBase>`。Segment 的清单与运行状态快照可以通过 `shared_ptr` 保持 slot 的生命周期；slot 内部以 `unique_ptr<IndexReaderBase>` 独占 Reader。Loader 将唯一所有权移交给 slot，查询使用者只拿 pin/accessor 与类型化非拥有指针。索引对象活在 slot 内、可被淘汰，因此取查询接口必须先 pin 后 cast——pin 之前对象可能根本不存在。
+
+**不增加 `IndexReaderCell`。** 外部缓存的 Translator 接收 `unique_ptr<CellT>`，Reader 工厂应直接满足这个所有权契约，而不是用一层 cell 包装保留不必要的 `shared_ptr<Reader>`。用户持有 pin 时缓存不能淘汰对应 Reader；仅持有一个 Reader 的 `shared_ptr` 不能替代 pin，否则对象仍存活而缓存已退还计费的情况会被隐藏。
+
+**Reader 外壳与底层数据的所有权分开。** `Artifact::OpenReader()` 每次创建一个独占 Reader，可以与 Artifact 共享不可变引擎、数组、validity 或文件生命周期，不复制索引 payload。直接构建/重写场景由 session 独占 Reader；若之后交给缓存，用 move 移交。底层状态的共享不等于 Reader 外壳需要共享；缓存计费仍需覆盖真实存活的底层资源，不能借共享绕过 pin 管理。
 
 查询期流程：
 
@@ -235,7 +239,7 @@ class IndexReaderBase {
 
 **第 1 步不得 pin 是硬约束。** 现状代码注释已写明理由："短路路径（TextIndex/PkIndex/JsonStats）与 RawData 路径永不调用它，标量索引 cell 在分级存储里保持冷态"。若把 `ReaderCaps` 做成必须持有对象才能调的虚函数，路径决策就会把未加载的索引全部拉起——这是线上多余冷加载的直接来源。因此"`Capability()` 不触发 pin"是必测项：用计数型 fake `CacheSlot` 断言 pin 次数为 0——这是一个今天完全没被测到、而线上会造成多余冷加载的行为。
 
-**growing 侧的不对称**：appender 不是"每次写入去取"——`GrowingIndexSet` 长期持有 appender（每个建索引字段一个），insert 路径直接调 `Append`。读侧 `ReaderSnapshot()` 返回的是另一个对象：commit/reload 时产生的不可变快照，所有并发查询经 `shared_ptr` 共享同一份。每次 commit 创建一次，不是每次查询。
+**growing 侧的不对称**：appender 不是"每次写入去取"——`GrowingIndexSet` 长期持有 appender（每个建索引字段一个），insert 路径直接调 `Append`。读侧 `ReaderSnapshot()` 返回的是另一个对象：commit/reload 时产生的不可变快照，所有并发查询经 `shared_ptr` 共享同一份。每次 commit 创建一次，不是每次查询。若快照来自通用 Reader 工厂，只在这个明确的发布边界把 `unique_ptr` 移入共享不可变生命周期；sealed Loader 不因此返回共享指针。
 
 两侧因此都不存在"每查询一个 proxy"：sealed 是 pin 一个长期对象，growing 是共享一个 commit 期快照。
 
@@ -402,11 +406,11 @@ class JsonIndexReader {
  public:
     virtual ~JsonIndexReader() = default;
 
-    // 该 path 上是否有可用的谓词接口；有则返回类型擦除基类，
-    // 消费者按 cast_type 做一次跨继承树的 dynamic_cast 得到 ScalarPredicateReader<T> / PatternMatchReader。
-    // 返回 null = 该 path 无索引，exec 回退列扫描（可能落在 shredded 子列上，也可能落在
+    // 该 path 上是否有可用的谓词接口；结果 get() 返回非拥有的类型擦除指针，
+    // 消费者在父 pin 有效期内按 cast_type 做一次跨继承树的 dynamic_cast。
+    // 返回空结果 = 该 path 无索引，exec 回退列扫描（可能落在 shredded 子列上，也可能落在
     // 原始 JSON 列上——那是 columnar-format 的事，本类型不知道也不需要知道）。
-    virtual std::shared_ptr<const IndexReaderBase>
+    virtual JsonResolvedReader
     Resolve(std::string_view path, DataType cast_type) const = 0;
 
     // path 存在性。建在值上的倒排能独立回答（json_exist_query），无需回读列。
@@ -417,7 +421,10 @@ class JsonIndexReader {
 };
 ```
 
-- `JsonFlatIndex` 实现 `JsonIndexReader`：`Resolve` 返回一个绑定了 path 的 `JsonFlatIndexQueryExecutor<T>`——今天它已经是这个形态（`JsonFlatIndex.h:34`），只是靠继承 `InvertedIndexTantivy<T>` 拿到查询接口；改为组合后它直接实现 `ScalarPredicateReader<T>`。
+**路径视图也不能带走缓存 Reader 的所有权。** `JsonResolvedReader` 是 move-only 的路径解析结果，提供 `get()` / 空结果判断，不实现或转发查询方法。它有两种构造形态：借用父 Reader 已有的子 Reader，或以 `unique_ptr<const IndexReaderBase>` 持有一个临时路径视图；二者都不独立持有索引 payload。使用方必须同时保留父 Reader 的 pin/accessor，且路径视图先于父 pin 释放。查询从 `get()` 取得类型化接口后直接调用，不经结果对象逐 batch 转发。
+
+- `JsonFlatIndex` 实现 `JsonIndexReader`：`Resolve` 创建一个绑定 path 的独占查询视图，借用父 Reader 的不可变 state。今天已有按 path 创建 `JsonFlatIndexQueryExecutor<T>` 的形态（`JsonFlatIndex.h:34`），只是靠继承 `InvertedIndexTantivy<T>` 拿到查询接口；改为组合后它直接实现 `ScalarPredicateReader<T>`。此视图不是新加载的索引，不复制 payload，也不通过共享指针延长 payload 生命周期。不为任意查询 path 向父 Reader 添加可变缓存。
+- `JsonProjectedIndexReader` 独占其 `inner` Reader；匹配路径时返回借用该对象的结果，不复制 Reader、不重新加载、不额外构造转发代理。
 - 逐 path 的 cast index 不需要专门接口：它就是普通的 `ScalarPredicateReader<T>`，在索引清单里以 `(field, path)` 为键注册；`JsonIndexReader` 对它退化为一层查表。
 - `ReaderCaps::json_paths` 的含义随之收紧为「该索引对象按 path 寻址」，不再暗示 shredded 列的存在。「这个 path 有 typed 子列」是列的能力描述，由 columnar-format 提供。
 - `IndexBase::GetCastType`/`Exists` 从基类移除，收进本类型。
@@ -536,7 +543,7 @@ class IndexBuilder {
 // 产物：内存 reader 或文件集合，由索引类型自己决定物化形态
 class IndexArtifact {
  public:
-    virtual std::shared_ptr<IndexReaderBase> OpenReader() const = 0;   // 直接使用
+    virtual std::unique_ptr<IndexReaderBase> OpenReader() const = 0;   // 创建并移交 Reader
     virtual void Serialize(storage::FileSink&) const = 0;              // 交给持久化
 };
 ```
@@ -595,12 +602,14 @@ class IndexLoader {
 
     // 与 IndexArtifact::OpenReader() 是通向 Reader 的两个入口：
     // 前者从落盘产物打开，后者从刚构建完的产物直接打开。
-    virtual std::shared_ptr<IndexReaderBase>
+    virtual std::unique_ptr<IndexReaderBase>
     Open(storage::FileSource&, const LoadOptions& opts) = 0;   // opts: mmap、warmup
 };
 ```
 
 方法名用 `Open` 而非 `Deserialize`：mmap 形态下并不发生"反序列化"（不完整物化），且 `Open` 与 `Artifact::OpenReader()` 成对，读出两个入口的同构关系。
+
+两个入口均返回新 Reader 的唯一所有权。实现中的 L1 `Artifact::OpenReader()` / `ArtifactLoader::Open()` 返回 `unique_ptr<LoadedArtifact>`；L2 `IndexLoader::OpenIndex()` 返回 `unique_ptr<IndexReaderBase>`，由 `Open()` 移动向上转换。智能指针返回类型不支持虚函数协变，因此仍保留 `OpenIndex` 与 `Open` 的命名区分。`OpenForRewrite` 同时返回 Artifact 与独占 Reader，两者只共享所需底层状态，不共享 Reader 外壳。
 
 `FileSink`/`FileSource` 是 storage 提供的最小接口（本地暂存 + 远端读写），取代索引类持有 `FileManagerContext`。`Serialize`/`Load`/`Upload`/`LoadUnified`/`UploadUnified` 从索引类上全部移除：序列化在 Artifact，打开在 Loader，上传编排在 indexbuilder 服务，加载编排在 segcore load。
 
@@ -755,7 +764,7 @@ Appender 不是标量专属。`segcore/FieldIndexing.h` 里两类索引今天都
    | 产物的构建与加载流程 | `Artifact`（`Serialize(FileSink&)`）、`ArtifactLoader`（`Open(FileSource&, LoadOptions&)`）、`FileSink`/`FileSource`/`LoadOptions`/`ArtifactStats`、最小基类 `LoadedArtifact`（负责 `CellByteSize()` 计费） | L1 | index 各索引类型（下层依赖）、columnar-format 的 shredded 布局（同层） |
    | 索引查询基类 | `IndexReaderBase : LoadedArtifact`（能力描述、`Count()`、类型擦除） | L2 | 仅 index |
 
-   下移的理由：这套流程没有一处是索引专属的。JSON shredded 布局（[§1](#1-范围)）同样是「离线构建、落盘、按需加载、参与缓存计费的派生产物」，需要同一套东西，而它在 L1；把流程留在 L2 就只剩两条路——要么 L1→L2 违反分层方向的依赖，要么 `BsonInvertedIndex` 那样把 `AddRecord`/`BuildIndex`/`LoadIndex`/`UploadIndex`/`CellByteSize` 再手写一遍。下移后两者都不必。`ArtifactLoader::Open` 返回 `shared_ptr<LoadedArtifact>`，各层自己 downcast——与 §4.2 的类型擦除基类同一手法，只是下移一层。
+   下移的理由：这套流程没有一处是索引专属的。JSON shredded 布局（[§1](#1-范围)）同样是「离线构建、落盘、按需加载、参与缓存计费的派生产物」，需要同一套东西，而它在 L1；把流程留在 L2 就只剩两条路——要么 L1→L2 违反分层方向的依赖，要么 `BsonInvertedIndex` 那样把 `AddRecord`/`BuildIndex`/`LoadIndex`/`UploadIndex`/`CellByteSize` 再手写一遍。下移后两者都不必。`ArtifactLoader::Open` 返回 `unique_ptr<LoadedArtifact>`，各层自己 downcast——与 §4.2 的类型擦除基类同一手法，只是下移一层。向下转换须先验证类型，再移交所有权；转换失败仍由原 owning pointer 析构，不能先 release 后检查。
 
    设计验收标准：三种物化形态都装得下——knowhere `BinarySet`（内存 blob 集合）、DiskANN（本地大文件、流式）、mmap。连带：`IndexArtifact`/`IndexLoader`/`IndexStats` 的 `Index` 前缀随下移失效（命名待定，见 [§12.2](#122-产物的构建与加载流程放在哪个组件叫什么)）。`CellByteSize` 的返回类型不再触碰硬规则 4——`ResourceUsage` 从 cachinglayer 移到 milvus-common 的 `common/ResourceUsage.h`（`namespace milvus`），L1 与 segcore 共用同一个类型、无需边界转换；这是一条跨仓前置改动，须先于流程下移实现。
 

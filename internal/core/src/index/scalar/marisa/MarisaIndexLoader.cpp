@@ -921,9 +921,9 @@ LoadState(storage::FileSource& source, const storage::LoadOptions& opts) {
     return storage;
 }
 
-std::shared_ptr<IndexReaderBase>
+std::unique_ptr<IndexReaderBase>
 MakeReader(const std::shared_ptr<const MarisaIndexStorage>& storage) {
-    return std::make_shared<MarisaIndexReader>(storage);
+    return std::make_unique<MarisaIndexReader>(storage);
 }
 
 }  // namespace
@@ -947,7 +947,7 @@ MarisaIndexLoader::DeriveCaps(const Config& index_meta) const {
                                               .cheap_value_lookup = true});
 }
 
-std::shared_ptr<IndexReaderBase>
+std::unique_ptr<IndexReaderBase>
 MarisaIndexLoader::OpenIndex(storage::FileSource& source,
                              const storage::LoadOptions& opts) {
     auto projection = PrepareJsonProjectedOpen(families::kMarisa, source, opts);

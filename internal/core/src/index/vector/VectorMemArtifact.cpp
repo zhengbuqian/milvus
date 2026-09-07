@@ -129,11 +129,11 @@ VectorMemArtifact<T>::VectorMemArtifact(
 }
 
 template <typename T>
-std::shared_ptr<storage::LoadedArtifact>
+std::unique_ptr<storage::LoadedArtifact>
 VectorMemArtifact<T>::OpenReader() const {
     // A handle copy of the knowhere node plus a shared validity mapping — see
     // the note on `KnowhereEngine`'s copy ctor.
-    return std::make_shared<VectorMemReader<T>>(engine_, valid_, local_files_);
+    return std::make_unique<VectorMemReader<T>>(engine_, valid_, local_files_);
 }
 
 template <typename T>

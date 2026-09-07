@@ -809,11 +809,11 @@ PopulateState(OpenedMemState& state,
 }
 
 template <typename T>
-std::shared_ptr<IndexReaderBase>
+std::unique_ptr<IndexReaderBase>
 MakeReader(OpenedMemState& state) {
     // Pass an lvalue owner so state continues to pin the mmap generation if
-    // make_shared or reader construction throws after moving the engine.
-    return std::make_shared<VectorMemReader<T>>(
+    // reader construction throws after moving the engine.
+    return std::make_unique<VectorMemReader<T>>(
         std::move(state.engine), std::move(state.valid), state.local_files);
 }
 
@@ -823,13 +823,15 @@ MakeRewrite(OpenedMemState& state) {
     auto artifact = std::make_unique<VectorMemArtifact<T>>(
         state.engine, state.valid, state.local_files);
     auto loaded = artifact->OpenReader();
-    auto reader = std::dynamic_pointer_cast<IndexReaderBase>(loaded);
+    auto* reader = dynamic_cast<IndexReaderBase*>(loaded.get());
     AssertInfo(reader != nullptr,
                "vector_mem artifact opened an incompatible reader");
-    return {.artifact = std::move(artifact), .reader = std::move(reader)};
+    loaded.release();
+    std::unique_ptr<IndexReaderBase> reader_owner(reader);
+    return {.artifact = std::move(artifact), .reader = std::move(reader_owner)};
 }
 
-std::shared_ptr<IndexReaderBase>
+std::unique_ptr<IndexReaderBase>
 DispatchReader(DataType physical_type, OpenedMemState& state) {
     switch (physical_type) {
         case DataType::VECTOR_FLOAT:
@@ -888,7 +890,7 @@ VectorMemLoader::DeriveCaps(const Config& index_meta) const {
     return {};
 }
 
-std::shared_ptr<IndexReaderBase>
+std::unique_ptr<IndexReaderBase>
 VectorMemLoader::OpenIndex(storage::FileSource& source,
                            const storage::LoadOptions& opts) {
     const auto params = ParseRuntimeParams(opts.params);

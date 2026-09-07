@@ -223,7 +223,7 @@ template <typename T>
 BitmapIndexArtifact<T>::~BitmapIndexArtifact() = default;
 
 template <typename T>
-std::shared_ptr<storage::LoadedArtifact>
+std::unique_ptr<storage::LoadedArtifact>
 BitmapIndexArtifact<T>::OpenReader() const {
     RewriteState args;
     if (const auto* rewrite = std::get_if<RewriteState>(&state_)) {
@@ -257,9 +257,9 @@ BitmapIndexArtifact<T>::OpenReader() const {
     }
 
     if constexpr (std::is_same_v<T, std::string>) {
-        return std::make_shared<BitmapStringIndexReader>(std::move(args));
+        return std::make_unique<BitmapStringIndexReader>(std::move(args));
     } else {
-        return std::make_shared<BitmapIndexReader<T>>(std::move(args));
+        return std::make_unique<BitmapIndexReader<T>>(std::move(args));
     }
 }
 

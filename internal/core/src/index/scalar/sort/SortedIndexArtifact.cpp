@@ -241,9 +241,9 @@ template <typename T>
 SortedIndexArtifact<T>::~SortedIndexArtifact() = default;
 
 template <typename T>
-std::shared_ptr<storage::LoadedArtifact>
+std::unique_ptr<storage::LoadedArtifact>
 SortedIndexArtifact<T>::OpenReader() const {
-    return std::make_shared<SortedIndexReader<T>>(state_);
+    return std::make_unique<SortedIndexReader<T>>(state_);
 }
 
 template <typename T>
@@ -307,9 +307,9 @@ SortedStringIndexArtifact::SortedStringIndexArtifact(
 
 SortedStringIndexArtifact::~SortedStringIndexArtifact() = default;
 
-std::shared_ptr<storage::LoadedArtifact>
+std::unique_ptr<storage::LoadedArtifact>
 SortedStringIndexArtifact::OpenReader() const {
-    return std::make_shared<SortedStringIndexReader>(state_);
+    return std::make_unique<SortedStringIndexReader>(state_);
 }
 
 void

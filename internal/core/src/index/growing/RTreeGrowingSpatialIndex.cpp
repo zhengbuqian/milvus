@@ -134,7 +134,7 @@ RTreeGrowingSpatialIndex::Family() const {
     return "rtree";
 }
 
-IndexReaderBasePtr
+std::shared_ptr<IndexReaderBase>
 RTreeGrowingSpatialIndex::ReaderSnapshotErased() const {
     std::lock_guard<std::mutex> lock(mtx_);
     return std::const_pointer_cast<IndexReaderBase>(

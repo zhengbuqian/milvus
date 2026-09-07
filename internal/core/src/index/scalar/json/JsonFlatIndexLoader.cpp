@@ -683,11 +683,11 @@ JsonFlatIndexLoader::DeriveCaps(const Config& index_meta) const {
     return ReaderCaps{.json_paths = true, .exact = true};
 }
 
-std::shared_ptr<IndexReaderBase>
+std::unique_ptr<IndexReaderBase>
 JsonFlatIndexLoader::OpenIndex(storage::FileSource& source,
                                const storage::LoadOptions& opts) {
     auto loaded = LoadState(source, opts);
-    return std::make_shared<JsonFlatIndexReader>(std::move(loaded.state));
+    return std::make_unique<JsonFlatIndexReader>(std::move(loaded.state));
 }
 
 RehydratedIndex
@@ -698,7 +698,7 @@ JsonFlatIndexLoader::OpenForRewrite(storage::FileSource& source,
     result.artifact = std::make_unique<JsonFlatIndexArtifact>(
         loaded.directory, loaded.engine_files, loaded.state);
     result.reader =
-        std::make_shared<JsonFlatIndexReader>(std::move(loaded.state));
+        std::make_unique<JsonFlatIndexReader>(std::move(loaded.state));
     return result;
 }
 

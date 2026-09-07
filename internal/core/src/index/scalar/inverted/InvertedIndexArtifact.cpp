@@ -112,7 +112,7 @@ IndexFiles(const std::string& directory) {
     return files;
 }
 
-std::shared_ptr<storage::LoadedArtifact>
+std::unique_ptr<storage::LoadedArtifact>
 MakeReader(std::shared_ptr<InvertedIndexDirectory> directory,
            std::shared_ptr<milvus::tantivy::TantivyIndexWrapper> engine,
            std::shared_ptr<const std::vector<size_t>> null_offsets,
@@ -122,7 +122,7 @@ MakeReader(std::shared_ptr<InvertedIndexDirectory> directory,
            size_t engine_bytes) {
     const auto engine_path_bytes = directory->PathHeapBytes();
     const auto make = [&]<typename T>() {
-        return std::make_shared<InvertedIndexReader<T>>(directory,
+        return std::make_unique<InvertedIndexReader<T>>(directory,
                                                         engine,
                                                         null_offsets,
                                                         value_type,
@@ -262,7 +262,7 @@ InvertedIndexArtifact::InvertedIndexArtifact(
 
 InvertedIndexArtifact::~InvertedIndexArtifact() = default;
 
-std::shared_ptr<storage::LoadedArtifact>
+std::unique_ptr<storage::LoadedArtifact>
 InvertedIndexArtifact::OpenReader() const {
     auto engine = std::make_shared<milvus::tantivy::TantivyIndexWrapper>(
         directory_->Path().c_str(), true, SetBitsetSealed);

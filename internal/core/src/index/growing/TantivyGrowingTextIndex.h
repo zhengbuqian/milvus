@@ -128,7 +128,7 @@ class TantivyGrowingTextIndex final : public GrowingTextIndex,
     std::string
     Family() const override;
 
-    IndexReaderBasePtr
+    std::shared_ptr<IndexReaderBase>
     ReaderSnapshotErased() const override;
 
  private:

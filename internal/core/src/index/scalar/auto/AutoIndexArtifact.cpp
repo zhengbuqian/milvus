@@ -38,7 +38,7 @@ AutoIndexArtifact::AutoIndexArtifact(storage::ArtifactPtr inner,
 
 AutoIndexArtifact::~AutoIndexArtifact() = default;
 
-std::shared_ptr<storage::LoadedArtifact>
+std::unique_ptr<storage::LoadedArtifact>
 AutoIndexArtifact::OpenReader() const {
     return inner_->OpenReader();
 }

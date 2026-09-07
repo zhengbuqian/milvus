@@ -71,10 +71,10 @@ PrepareJsonProjectedOpen(std::string_view family,
 // Legacy artifacts without completeness metadata return `inner` unchanged.
 // Complete artifacts read the native-size_t sidecar directly into its final
 // vector and return one JsonProjectedIndexReader wrapper.
-std::shared_ptr<IndexReaderBase>
+std::unique_ptr<IndexReaderBase>
 FinishJsonProjectedOpen(JsonProjectedOpenPlan plan,
                         storage::FileSource& source,
-                        std::shared_ptr<IndexReaderBase> inner);
+                        std::unique_ptr<IndexReaderBase> inner);
 
 // Rewrite loading preserves the same completeness decision. Complete
 // projections read offsets once, build the outer reader synchronously, and

@@ -162,9 +162,9 @@ MarisaIndexArtifact::MarisaIndexArtifact(
 
 MarisaIndexArtifact::~MarisaIndexArtifact() = default;
 
-std::shared_ptr<storage::LoadedArtifact>
+std::unique_ptr<storage::LoadedArtifact>
 MarisaIndexArtifact::OpenReader() const {
-    return std::make_shared<MarisaIndexReader>(storage_);
+    return std::make_unique<MarisaIndexReader>(storage_);
 }
 
 void

@@ -51,7 +51,7 @@ struct LoadIndexInfo {
     std::map<std::string, std::string> index_params;
     std::vector<std::string> index_files;
     // Both die with `IndexBase` (core_refactor/01-scalar-index.md §11.2 item 3).
-    // `index` becomes the `std::shared_ptr<index::IndexReaderBase>` that
+    // `index` becomes the `std::unique_ptr<index::IndexReaderBase>` that
     // `index::IndexLoader::Open(FileSource&, LoadOptions&)` returns, and
     // `cache_index` becomes `CacheSlot<index::IndexReaderBase>` held by
     // `segcore::IndexInventory` alongside a pure-data `index::ReaderCaps`

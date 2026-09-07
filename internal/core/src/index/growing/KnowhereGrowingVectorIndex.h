@@ -142,7 +142,7 @@ class KnowhereGrowingVectorIndex final : public GrowingVectorIndex,
     std::string
     Family() const override;
 
-    IndexReaderBasePtr
+    std::shared_ptr<IndexReaderBase>
     ReaderSnapshotErased() const override;
 
     // --- the Builder hand-off (§7.1, §7 point 3) ----------------------------

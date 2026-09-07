@@ -37,7 +37,7 @@ class BitmapIndexLoader final : public IndexLoader {
     ReaderCaps
     DeriveCaps(const Config& index_meta) const override;
 
-    std::shared_ptr<IndexReaderBase>
+    std::unique_ptr<IndexReaderBase>
     OpenIndex(storage::FileSource& source,
               const storage::LoadOptions& opts) override;
 

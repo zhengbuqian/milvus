@@ -868,7 +868,7 @@ MaterializeEngineEntries(
 }
 
 template <typename T>
-std::shared_ptr<IndexReaderBase>
+std::unique_ptr<IndexReaderBase>
 OpenTyped(storage::FileSource& source,
           const RuntimeParams& params,
           const EntryPlan& plan,
@@ -973,7 +973,7 @@ OpenTyped(storage::FileSource& source,
     }
 
     ValidateShape(params, plan, engine, valid);
-    return std::make_shared<VectorDiskReader<T>>(std::move(engine),
+    return std::make_unique<VectorDiskReader<T>>(std::move(engine),
                                                  std::move(valid),
                                                  params.beamwidth,
                                                  std::move(opaque_owner));
@@ -1071,13 +1071,15 @@ OpenTypedForRewrite(storage::FileSource& source,
                                                             file_manager,
                                                             std::move(files));
     auto loaded = artifact->OpenReader();
-    auto reader = std::dynamic_pointer_cast<IndexReaderBase>(loaded);
+    auto* reader = dynamic_cast<IndexReaderBase*>(loaded.get());
     AssertInfo(reader != nullptr,
                "disk vector artifact opened an unexpected reader type");
-    return {std::move(artifact), std::move(reader)};
+    loaded.release();
+    std::unique_ptr<IndexReaderBase> reader_owner(reader);
+    return {std::move(artifact), std::move(reader_owner)};
 }
 
-std::shared_ptr<IndexReaderBase>
+std::unique_ptr<IndexReaderBase>
 DispatchOpen(storage::FileSource& source,
              const RuntimeParams& params,
              const EntryPlan& plan,
@@ -1143,7 +1145,7 @@ VectorDiskLoader::DeriveCaps(const Config& index_meta) const {
     return {};
 }
 
-std::shared_ptr<IndexReaderBase>
+std::unique_ptr<IndexReaderBase>
 VectorDiskLoader::OpenIndex(storage::FileSource& source,
                             const storage::LoadOptions& opts) {
     const auto params = ParseRuntimeParams(opts.params, true);

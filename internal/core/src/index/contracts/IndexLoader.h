@@ -50,7 +50,7 @@ namespace milvus::index {
 
 struct RehydratedIndex {
     storage::ArtifactPtr artifact;
-    std::shared_ptr<IndexReaderBase> reader;
+    std::unique_ptr<IndexReaderBase> reader;
 };
 
 class IndexLoader : public storage::ArtifactLoader {
@@ -87,14 +87,14 @@ class IndexLoader : public storage::ArtifactLoader {
     //
     // !! SPELLED `OpenIndex`, NOT `Open`, FOR A C++ REASON, NOT A DESIGN ONE.
     // §6.2's signature is `Open(storage::FileSource&, const LoadOptions&) ->
-    // shared_ptr<IndexReaderBase>`, i.e. the L2 narrowing of
-    // `ArtifactLoader::Open`, which returns `shared_ptr<LoadedArtifact>` (§11.2
+    // unique_ptr<IndexReaderBase>`, i.e. the L2 narrowing of
+    // `ArtifactLoader::Open`, which returns `unique_ptr<LoadedArtifact>` (§11.2
     // rule 1). C++ covariant return types apply to raw pointers and references
-    // only, never to `shared_ptr`, so an override cannot narrow the return type
+    // only, never to `unique_ptr`, so an override cannot narrow the return type
     // and an overload cannot differ by return type alone. The narrowing is
     // therefore a second virtual plus a `final` forwarder below. Behaviour and
     // pairing are exactly as §6.2 describes.
-    virtual std::shared_ptr<IndexReaderBase>
+    virtual std::unique_ptr<IndexReaderBase>
     OpenIndex(storage::FileSource& source,
               const storage::LoadOptions& opts) = 0;
 
@@ -111,7 +111,7 @@ class IndexLoader : public storage::ArtifactLoader {
 
     // Implemented once, here, in terms of `OpenIndex`. Families override
     // `OpenIndex`.
-    std::shared_ptr<storage::LoadedArtifact>
+    std::unique_ptr<storage::LoadedArtifact>
     Open(storage::FileSource& source, const storage::LoadOptions& opts) final {
         return OpenIndex(source, opts);
     }

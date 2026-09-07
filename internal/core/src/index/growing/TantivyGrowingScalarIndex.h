@@ -190,7 +190,7 @@ class TantivyGrowingScalarIndex final : public GrowingScalarIndex<T>,
     std::string
     Family() const override;
 
-    IndexReaderBasePtr
+    std::shared_ptr<IndexReaderBase>
     ReaderSnapshotErased() const override;
 
  private:

@@ -95,7 +95,7 @@ FromPublishedFiles(const storage::ArtifactStats& stats) {
 struct BuildSession::LoadedState {
     LoadedState(PhysicalBinarySet physical_buffers,
                 std::optional<BuildProduct> publication_product,
-                std::shared_ptr<index::IndexReaderBase> opened_reader) noexcept
+                std::unique_ptr<index::IndexReaderBase> opened_reader) noexcept
         : buffers(std::move(physical_buffers)),
           publishable(std::move(publication_product)),
           reader(std::move(opened_reader)) {
@@ -104,7 +104,7 @@ struct BuildSession::LoadedState {
     // Destruction is reader, publication artifact, physical input generation.
     PhysicalBinarySet buffers;
     std::optional<BuildProduct> publishable;
-    std::shared_ptr<index::IndexReaderBase> reader;
+    std::unique_ptr<index::IndexReaderBase> reader;
 };
 
 BuildSession::BuildSession(BuildRequest request,
@@ -281,7 +281,7 @@ BuildSession::LoadPhysical(PhysicalBinarySet buffers) {
     options.params = *normalized_params;
 
     std::optional<BuildProduct> publishable;
-    std::shared_ptr<index::IndexReaderBase> reader;
+    std::unique_ptr<index::IndexReaderBase> reader;
     if (requested_family == index::families::kVectorDisk) {
         AssertInfo(mode_ == Mode::Production && service_ != nullptr &&
                        file_manager_context != nullptr &&
@@ -354,10 +354,10 @@ BuildSession::LoadPhysical(PhysicalBinarySet buffers) {
                "index loader for family {} returned a null reader",
                requested_family);
 
-    auto loaded = std::make_shared<LoadedState>(
+    auto loaded = std::make_unique<LoadedState>(
         std::move(buffers), std::move(publishable), std::move(reader));
     // Commit only after every fallible operation above has completed. The
-    // following shared/optional resets and pointer move cannot allocate.
+    // following pointer/optional resets and pointer move cannot allocate.
     product_.reset();
     physical_buffers_.reset();
     loaded_state_ = std::move(loaded);

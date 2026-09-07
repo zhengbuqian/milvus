@@ -66,7 +66,7 @@ class VectorDiskArtifact final : public storage::Artifact {
     // A builder artifact lazily opens a fresh node. A loader artifact copies
     // the already-open immutable node handle, so rewrite loading deserializes
     // exactly once.
-    std::shared_ptr<storage::LoadedArtifact>
+    std::unique_ptr<storage::LoadedArtifact>
     OpenReader() const override;
 
     // The sink owns physical slicing and publication. Paths are borrowed and

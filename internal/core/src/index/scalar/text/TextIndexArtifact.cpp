@@ -231,9 +231,9 @@ TextIndexArtifact::TextIndexArtifact(
 
 TextIndexArtifact::~TextIndexArtifact() = default;
 
-std::shared_ptr<storage::LoadedArtifact>
+std::unique_ptr<storage::LoadedArtifact>
 TextIndexArtifact::OpenReader() const {
-    return std::make_shared<TextIndexReader>(
+    return std::make_unique<TextIndexReader>(
         reader_file_backed_ ? directory_ : nullptr,
         engine_,
         count_,

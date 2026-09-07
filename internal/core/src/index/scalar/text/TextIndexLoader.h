@@ -54,9 +54,9 @@ class TextIndexLoader final : public IndexLoader {
     DeriveCaps(const Config& index_meta) const override;
 
     // `OpenIndex` rather than `Open`: C++ covariant returns do not apply to
-    // `shared_ptr`, so `IndexLoader` declares this and `final`-forwards `Open`
+    // `unique_ptr`, so `IndexLoader` declares this and `final`-forwards `Open`
     // (see index/contracts/IndexLoader.h and its README's deviation table).
-    std::shared_ptr<IndexReaderBase>
+    std::unique_ptr<IndexReaderBase>
     OpenIndex(storage::FileSource& source,
               const storage::LoadOptions& opts) override;
 

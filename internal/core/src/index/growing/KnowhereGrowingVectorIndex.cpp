@@ -136,7 +136,7 @@ KnowhereGrowingVectorIndex<T>::Family() const {
 }
 
 template <typename T>
-IndexReaderBasePtr
+std::shared_ptr<IndexReaderBase>
 KnowhereGrowingVectorIndex<T>::ReaderSnapshotErased() const {
     std::lock_guard<std::mutex> lock(mtx_);
     return std::const_pointer_cast<IndexReaderBase>(

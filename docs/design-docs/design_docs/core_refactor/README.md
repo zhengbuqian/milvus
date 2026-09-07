@@ -5,6 +5,8 @@
 >
 > 早前有一套 12 篇的 segcore 域内设计（`segcore_refactor/`），写在"把 index/storage/mmap 当作不动的外部件"这个前提上。本轮重构推翻了那个前提——index 接口定义整体搬出 segcore、json_stats 整体搬入、产物的构建与加载流程移到 L1——该套文档已删除，其中仍然成立的结论已原样并入本总览与各章节（阶段 3 的已定判断见 §8）。
 
+尚未解决的问题及已选临时方案统一记录在 [PENDING ISSUES](PENDING_ISSUES.md)。其中 Go 加载信息暂采用同步 C 调用，native 线程状态与清理策略仍未定案。
+
 ## 1. 范围
 
 重构对象是 `internal/core/src` 全部约 20.7 万行生产代码，不只是 segcore。目标：每个组件有职责定义、可编译期验证的边界、单向依赖 DAG、可独立测试。
@@ -147,6 +149,7 @@ graph TD
 2. **pb 只在 adapter**：proto 类型只允许出现在显式列名的 adapter 文件与 capi；不得出现在任何接口签名上（枚举需要时在接口层定义 native enum 并在边界映射）。
 3. **capi 薄封装层**：类型转换 → 调 service → 异常转 CStatus；每个 C 函数 ≤ 30 行；错误码在构造点决定，capi 不得重写（见 [error_handling_guide](../../../dev/error_handling_guide.md)）。
 4. **cachinglayer 传播范围**：`PinWrapper`/`CacheSlot` 只允许 columnar-format 与 segcore 内部出现；对外一律以 RAII 句柄（`Pinned<T>`）或游标表示。
+   **索引 Reader 所有权**：Loader 与 Artifact 的 Reader 工厂返回 `unique_ptr`，将 Reader 外壳的唯一所有权交给调用方；sealed 路径最终交给 cache slot。Segment 可以共享 slot 的生命周期，查询使用者只持有 pin/accessor 与非拥有接口指针，不取得 Reader 的共享所有权。不引入 `IndexReaderCell` 适配这一签名。Reader 与 Artifact 共享底层不可变引擎或文件状态、growing 发布共享不可变快照，是不同层次的生命周期，不要求 Loader 返回 `shared_ptr<Reader>`。
 5. **无递归 glob，每个目录都有构建 target**：每个组件是显式 source list 的 target；组件 target 之间不写 `target_link_libraries`（沿用 [#35610](https://github.com/milvus-io/milvus/pull/35610) 纪律，依赖方向靠 lint）。
 6. **职责定义测试**：向组件新增代码时，若无法用该组件的[职责定义](#4-组件定义)描述这段代码，就放错了地方。
 

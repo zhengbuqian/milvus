@@ -290,14 +290,14 @@ namespace {
 
 class JsonPathReaderBase : public IndexReaderBase, public NullReader {
  public:
-    JsonPathReaderBase(std::shared_ptr<const JsonFlatIndexReaderState> state,
+    JsonPathReaderBase(const JsonFlatIndexReaderState* state,
                        std::string tantivy_path,
                        JsonValueType comparable_type)
-        : state_(std::move(state)),
+        : state_(state),
           tantivy_path_(std::move(tantivy_path)),
           comparable_type_(comparable_type) {
         AssertInfo(state_ != nullptr,
-                   "JSON path reader requires shared field state");
+                   "JSON path reader requires pinned field state");
     }
 
     Domain
@@ -340,7 +340,7 @@ class JsonPathReaderBase : public IndexReaderBase, public NullReader {
     }
 
  protected:
-    const std::shared_ptr<const JsonFlatIndexReaderState>&
+    const JsonFlatIndexReaderState*
     State() const {
         return state_;
     }
@@ -359,7 +359,7 @@ class JsonPathReaderBase : public IndexReaderBase, public NullReader {
     ObjectBytes() const = 0;
 
  private:
-    std::shared_ptr<const JsonFlatIndexReaderState> state_;
+    const JsonFlatIndexReaderState* state_{nullptr};
     std::string tantivy_path_;
     JsonValueType comparable_type_{JsonValueType::Any};
 };
@@ -376,10 +376,8 @@ NotIn(const Reader& reader, size_t n, const T* values) {
 class JsonBoolPathReader final : public JsonPathReaderBase,
                                  public ScalarPredicateReader<bool> {
  public:
-    JsonBoolPathReader(std::shared_ptr<const JsonFlatIndexReaderState> state,
-                       std::string path)
-        : JsonPathReaderBase(
-              std::move(state), std::move(path), JsonValueType::Bool) {
+    JsonBoolPathReader(const JsonFlatIndexReaderState* state, std::string path)
+        : JsonPathReaderBase(state, std::move(path), JsonValueType::Bool) {
     }
 
     ReaderCaps
@@ -689,10 +687,9 @@ class JsonNumericPathReader final : public JsonPathReaderBase,
                                     public ScalarPredicateReader<int64_t>,
                                     public ScalarPredicateReader<double> {
  public:
-    JsonNumericPathReader(std::shared_ptr<const JsonFlatIndexReaderState> state,
+    JsonNumericPathReader(const JsonFlatIndexReaderState* state,
                           std::string path)
-        : JsonPathReaderBase(
-              std::move(state), std::move(path), JsonValueType::Numeric) {
+        : JsonPathReaderBase(state, std::move(path), JsonValueType::Numeric) {
     }
 
     ReaderCaps
@@ -943,10 +940,9 @@ class JsonStringPathReader final
       public ScalarPredicateReader<std::string_view>,
       public PatternMatchReader {
  public:
-    JsonStringPathReader(std::shared_ptr<const JsonFlatIndexReaderState> state,
+    JsonStringPathReader(const JsonFlatIndexReaderState* state,
                          std::string path)
-        : JsonPathReaderBase(
-              std::move(state), std::move(path), JsonValueType::String) {
+        : JsonPathReaderBase(state, std::move(path), JsonValueType::String) {
     }
 
     ReaderCaps
@@ -1158,30 +1154,33 @@ JsonFlatIndexReader::IsNotNull() const {
     return state_->FieldIsNotNull();
 }
 
-std::shared_ptr<const IndexReaderBase>
+JsonResolvedReader
 JsonFlatIndexReader::Resolve(std::string_view path,
                              JsonCastType cast_type) const {
     auto tantivy_path = ResolveTantivyPath(state_->RootPath(), path);
     if (!tantivy_path) {
-        return nullptr;
+        return {};
     }
 
     switch (cast_type.element_type()) {
         case JsonCastType::DataType::BOOL:
-            return std::make_shared<JsonBoolPathReader>(
-                state_, std::move(*tantivy_path));
+            return JsonResolvedReader::Owned(
+                std::make_unique<JsonBoolPathReader>(state_.get(),
+                                                     std::move(*tantivy_path)));
         case JsonCastType::DataType::DOUBLE:
-            return std::make_shared<JsonNumericPathReader>(
-                state_, std::move(*tantivy_path));
+            return JsonResolvedReader::Owned(
+                std::make_unique<JsonNumericPathReader>(
+                    state_.get(), std::move(*tantivy_path)));
         case JsonCastType::DataType::VARCHAR:
-            return std::make_shared<JsonStringPathReader>(
-                state_, std::move(*tantivy_path));
+            return JsonResolvedReader::Owned(
+                std::make_unique<JsonStringPathReader>(
+                    state_.get(), std::move(*tantivy_path)));
         case JsonCastType::DataType::UNKNOWN:
         case JsonCastType::DataType::ARRAY:
         case JsonCastType::DataType::JSON:
-            return nullptr;
+            return {};
     }
-    return nullptr;
+    return {};
 }
 
 TargetBitmap

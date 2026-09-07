@@ -106,7 +106,7 @@ class TextIndexArtifact final : public storage::Artifact {
     // serializes at all. Paired with `TextIndexLoader::OpenIndex`, which is the
     // same reader reached from bytes (§6.2: "the method is named Open, not
     // Deserialize, and pairs with Artifact::OpenReader").
-    std::shared_ptr<storage::LoadedArtifact>
+    std::unique_ptr<storage::LoadedArtifact>
     OpenReader() const override;
 
     void

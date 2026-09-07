@@ -31,7 +31,7 @@ class AutoIndexArtifact final : public storage::Artifact {
 
     ~AutoIndexArtifact() override;
 
-    std::shared_ptr<storage::LoadedArtifact>
+    std::unique_ptr<storage::LoadedArtifact>
     OpenReader() const override;
 
     void

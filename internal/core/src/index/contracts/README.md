@@ -87,7 +87,7 @@ nested（元素级）不是独立的查询接口，是**实现类上的一个模
 | `PatternMatchReader::PatternMatch` / `NgramReader` | `OpType op` | native `PatternOp` | 同上。取值集就是 §5.2 列出的 `{Match, PrefixMatch, PostfixMatch, InnerMatch, RegexMatch}` |
 | `JsonIndexReader::Resolve` / `CastTypesOf` | `DataType cast_type` | `JsonCastType` | §12.4 明说"写 `DataType` 等于提前选定，写 `JsonCastType` 是保守取值"。本轮取保守取值 |
 | `JsonIndexReader::Exists` 的 `JsonValueType` | 未说明来源 | 本层 native enum | 现状 `index::JsonValueType` 是 tantivy 引擎枚举 `::JsonExistValueType` 的别名（`JsonFlatIndex.h:31`）。引擎类型不进接口签名 |
-| `IndexLoader::Open` | `Open(...) -> shared_ptr<IndexReaderBase>` | `OpenIndex(...)` + `final` 转发的 `Open` | C++ 的协变返回只对裸指针/引用成立，对 `shared_ptr` 不成立，无法把 `ArtifactLoader::Open` 的返回类型改成更窄的类型。语义与配对关系不变 |
+| `IndexLoader::Open` | `Open(...) -> unique_ptr<IndexReaderBase>` | `OpenIndex(...)` + `final` 转发的 `Open` | C++ 的协变返回只对裸指针/引用成立，对 `unique_ptr` 不成立，无法把 `ArtifactLoader::Open` 的返回类型改成更窄的类型。语义与配对关系不变 |
 | `IndexArtifact` | 在 §6.1 的片段里 | `storage::Artifact` | §11.2 第 1 条把产物的构建与加载流程整体移到 L1 并去掉 `Index` 前缀 |
 | `IndexBuilder<T>::Seal()` | `IndexArtifactPtr` | `storage::ArtifactPtr` | 同上 |
 | `IndexLoader::DeriveCaps` | 文档无此方法 | 新增 | §4.1 要求 `ReaderCaps`"由加载期元数据算出、不 pin 就能读"，而按索引类型划分的知识只有 Loader 有。这是 §4.1 的直接后果，不是新增设计 |

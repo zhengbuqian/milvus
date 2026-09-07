@@ -45,7 +45,7 @@ class ArtifactLoader {
     // Returns the type-erased L1 base class; each layer downcasts its own
     // product (§11.2 rule 1). `index::IndexLoader` narrows this to
     // `index::IndexReaderBase` — see index/contracts/IndexLoader.h.
-    virtual std::shared_ptr<LoadedArtifact>
+    virtual std::unique_ptr<LoadedArtifact>
     Open(FileSource& source, const LoadOptions& opts) = 0;
 };
 

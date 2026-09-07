@@ -596,10 +596,10 @@ FmIndexLoader::DeriveCaps(const Config& index_meta) const {
     return ReaderCaps{.pattern_match = true};
 }
 
-std::shared_ptr<IndexReaderBase>
+std::unique_ptr<IndexReaderBase>
 FmIndexLoader::OpenIndex(storage::FileSource& source,
                          const storage::LoadOptions& opts) {
-    return std::make_shared<FmIndexReader>(LoadStorage(source, opts));
+    return std::make_unique<FmIndexReader>(LoadStorage(source, opts));
 }
 
 RehydratedIndex
@@ -609,7 +609,7 @@ FmIndexLoader::OpenForRewrite(storage::FileSource& source,
     RehydratedIndex result;
     result.artifact =
         std::make_unique<FmIndexArtifact>(storage, opts.mmap_dir_path);
-    result.reader = std::make_shared<FmIndexReader>(std::move(storage));
+    result.reader = std::make_unique<FmIndexReader>(std::move(storage));
     return result;
 }
 

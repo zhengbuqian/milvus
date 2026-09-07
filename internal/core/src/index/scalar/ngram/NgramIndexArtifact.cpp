@@ -175,11 +175,11 @@ NgramIndexArtifact::NgramIndexArtifact(
 
 NgramIndexArtifact::~NgramIndexArtifact() = default;
 
-std::shared_ptr<storage::LoadedArtifact>
+std::unique_ptr<storage::LoadedArtifact>
 NgramIndexArtifact::OpenReader() const {
     auto engine = std::make_shared<milvus::tantivy::TantivyIndexWrapper>(
         directory_->Path().c_str(), true, SetBitsetSealed);
-    return std::make_shared<NgramIndexReader>(directory_,
+    return std::make_unique<NgramIndexReader>(directory_,
                                               std::move(engine),
                                               null_offsets_,
                                               value_type_,

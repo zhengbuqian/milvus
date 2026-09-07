@@ -77,7 +77,7 @@ class VectorMemArtifact final : public storage::Artifact {
     // (`segcore/ChunkedSegmentSealedImpl.h:1385`) and the growing appender's
     // cold-start build take — see §7 point 3 ("build-in-place is NOT growing")
     // and index/growing/KnowhereGrowingVectorIndex.h.
-    std::shared_ptr<storage::LoadedArtifact>
+    std::unique_ptr<storage::LoadedArtifact>
     OpenReader() const override;
 
     // Hand the bytes to the sink. NO UPLOAD HERE: upload orchestration is the

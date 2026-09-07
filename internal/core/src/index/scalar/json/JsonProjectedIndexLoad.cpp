@@ -628,10 +628,10 @@ PrepareJsonProjectedOpen(std::string_view family,
     return result;
 }
 
-std::shared_ptr<IndexReaderBase>
+std::unique_ptr<IndexReaderBase>
 FinishJsonProjectedOpen(JsonProjectedOpenPlan plan,
                         storage::FileSource& source,
-                        std::shared_ptr<IndexReaderBase> inner) {
+                        std::unique_ptr<IndexReaderBase> inner) {
     AssertInfo(inner != nullptr,
                "typed JSON load requires a non-null inner reader");
     if (plan.completeness != JsonProjectionCompleteness::Complete) {
@@ -644,7 +644,7 @@ FinishJsonProjectedOpen(JsonProjectedOpenPlan plan,
         offsets = ReadNonExistOffsets(plan, source, inner->Count());
     }
     const auto row_count = inner->Count();
-    return std::make_shared<JsonProjectedIndexReader>(
+    return std::make_unique<JsonProjectedIndexReader>(
         std::move(inner),
         JsonProjectedIndexSpec(
             std::move(plan.json_path), *plan.cast_type, row_count),
@@ -670,7 +670,7 @@ FinishJsonProjectedRewrite(JsonProjectedOpenPlan plan,
     if (plan.has_non_exist_entry) {
         offsets = ReadNonExistOffsets(plan, source, row_count);
     }
-    auto outer_reader = std::make_shared<JsonProjectedIndexReader>(
+    auto outer_reader = std::make_unique<JsonProjectedIndexReader>(
         std::move(inner.reader),
         JsonProjectedIndexSpec(plan.json_path, *plan.cast_type, row_count),
         offsets);

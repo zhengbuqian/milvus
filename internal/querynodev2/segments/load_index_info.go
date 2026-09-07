@@ -42,12 +42,7 @@ type LoadIndexInfo struct {
 // newLoadIndexInfo returns a new LoadIndexInfo and error
 func newLoadIndexInfo(ctx context.Context) (*LoadIndexInfo, error) {
 	var cLoadIndexInfo C.CLoadIndexInfo
-
-	var status C.CStatus
-	GetDynamicPool().Submit(func() (any, error) {
-		status = C.NewLoadIndexInfo(&cLoadIndexInfo)
-		return nil, nil
-	}).Await()
+	status := C.NewLoadIndexInfo(&cLoadIndexInfo)
 	if err := HandleCStatus(ctx, &status, "NewLoadIndexInfo failed"); err != nil {
 		return nil, err
 	}
@@ -56,10 +51,12 @@ func newLoadIndexInfo(ctx context.Context) (*LoadIndexInfo, error) {
 
 // deleteLoadIndexInfo would delete C.CLoadIndexInfo
 func deleteLoadIndexInfo(info *LoadIndexInfo) {
-	GetDynamicPool().Submit(func() (any, error) {
-		C.DeleteLoadIndexInfo(info.cLoadIndexInfo)
-		return nil, nil
-	}).Await()
+	if info == nil || info.cLoadIndexInfo == nil {
+		return
+	}
+	handle := info.cLoadIndexInfo
+	info.cLoadIndexInfo = nil
+	C.DeleteLoadIndexInfo(handle)
 }
 
 func (li *LoadIndexInfo) appendLoadIndexInfo(ctx context.Context, info *cgopb.LoadIndexInfo) error {
@@ -68,12 +65,7 @@ func (li *LoadIndexInfo) appendLoadIndexInfo(ctx context.Context, info *cgopb.Lo
 		return err
 	}
 
-	var status C.CStatus
-	_, _ = GetDynamicPool().Submit(func() (any, error) {
-		status = C.FinishLoadIndexInfo(li.cLoadIndexInfo, (*C.uint8_t)(unsafe.Pointer(&marshaled[0])), (C.uint64_t)(len(marshaled)))
-		return nil, nil
-	}).Await()
-
+	status := C.FinishLoadIndexInfo(li.cLoadIndexInfo, (*C.uint8_t)(unsafe.Pointer(&marshaled[0])), (C.uint64_t)(len(marshaled)))
 	return HandleCStatus(ctx, &status, "FinishLoadIndexInfo failed")
 }
 

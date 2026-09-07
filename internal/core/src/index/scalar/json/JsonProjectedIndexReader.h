@@ -70,7 +70,7 @@ class JsonProjectedIndexSpec final {
 class JsonProjectedIndexReader final : public IndexReaderBase,
                                        public JsonIndexReader {
  public:
-    JsonProjectedIndexReader(std::shared_ptr<IndexReaderBase> inner,
+    JsonProjectedIndexReader(std::unique_ptr<IndexReaderBase> inner,
                              JsonProjectedIndexSpec spec,
                              const std::vector<size_t>& non_exist_offsets);
 
@@ -94,7 +94,7 @@ class JsonProjectedIndexReader final : public IndexReaderBase,
     cachinglayer::ResourceUsage
     CellByteSize() const override;
 
-    std::shared_ptr<const IndexReaderBase>
+    JsonResolvedReader
     Resolve(std::string_view path, JsonCastType cast_type) const override;
 
     // Precondition: `path` is this reader's exact registered path and `type`
@@ -109,7 +109,7 @@ class JsonProjectedIndexReader final : public IndexReaderBase,
     CastTypesOf(std::string_view path) const override;
 
  private:
-    std::shared_ptr<IndexReaderBase> inner_;
+    std::unique_ptr<IndexReaderBase> inner_;
     JsonProjectedIndexSpec spec_;
     TargetBitmap exists_;
     ReaderCaps caps_;

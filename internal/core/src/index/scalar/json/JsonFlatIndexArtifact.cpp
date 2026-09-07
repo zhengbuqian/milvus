@@ -265,10 +265,10 @@ JsonFlatIndexArtifact::JsonFlatIndexArtifact(
 
 JsonFlatIndexArtifact::~JsonFlatIndexArtifact() = default;
 
-std::shared_ptr<storage::LoadedArtifact>
+std::unique_ptr<storage::LoadedArtifact>
 JsonFlatIndexArtifact::OpenReader() const {
     if (const auto* loaded = std::get_if<LoadedArtifactState>(&state_)) {
-        return std::make_shared<JsonFlatIndexReader>(loaded->state);
+        return std::make_unique<JsonFlatIndexReader>(loaded->state);
     }
     const auto& builder = std::get<BuilderArtifactState>(state_);
     const auto engine_bytes = DirectoryBytes(builder.directory->Path());
@@ -282,7 +282,7 @@ JsonFlatIndexArtifact::OpenReader() const {
                                          true,
                                          engine_bytes,
                                          builder.directory->PathHeapBytes());
-    return std::make_shared<JsonFlatIndexReader>(std::move(state));
+    return std::make_unique<JsonFlatIndexReader>(std::move(state));
 }
 
 void

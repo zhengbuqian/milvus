@@ -46,7 +46,7 @@ class SortedIndexArtifact final : public storage::Artifact {
 
     ~SortedIndexArtifact() override;
 
-    std::shared_ptr<storage::LoadedArtifact>
+    std::unique_ptr<storage::LoadedArtifact>
     OpenReader() const override;
 
     void
@@ -71,7 +71,7 @@ class SortedStringIndexArtifact final : public storage::Artifact {
 
     ~SortedStringIndexArtifact() override;
 
-    std::shared_ptr<storage::LoadedArtifact>
+    std::unique_ptr<storage::LoadedArtifact>
     OpenReader() const override;
 
     void

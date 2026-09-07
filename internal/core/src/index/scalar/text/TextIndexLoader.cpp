@@ -596,7 +596,7 @@ LoadState(storage::FileSource& source,
     return result;
 }
 
-std::shared_ptr<IndexReaderBase>
+std::unique_ptr<IndexReaderBase>
 MakeReader(const TextLoadState& state) {
     AssertInfo(state.directory != nullptr,
                "text load state requires a publication directory");
@@ -604,7 +604,7 @@ MakeReader(const TextLoadState& state) {
                "text load state requires a reader engine");
     AssertInfo(state.null_offsets != nullptr,
                "text load state requires validated null offsets");
-    return std::make_shared<TextIndexReader>(
+    return std::make_unique<TextIndexReader>(
         state.reader_file_backed ? state.directory : nullptr,
         state.engine,
         state.count,
@@ -626,7 +626,7 @@ TextIndexLoader::DeriveCaps(const Config& index_meta) const {
     return ReaderCaps{.text_match = true};
 }
 
-std::shared_ptr<IndexReaderBase>
+std::unique_ptr<IndexReaderBase>
 TextIndexLoader::OpenIndex(storage::FileSource& source,
                            const storage::LoadOptions& opts) {
     auto state = LoadState(source, opts, ParseRuntimeParams(opts.params));

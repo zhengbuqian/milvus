@@ -228,7 +228,7 @@ JsonProjectedIndexSpec::ValidateNonExistOffsets(
 }
 
 JsonProjectedIndexReader::JsonProjectedIndexReader(
-    std::shared_ptr<IndexReaderBase> inner,
+    std::unique_ptr<IndexReaderBase> inner,
     JsonProjectedIndexSpec spec,
     const std::vector<size_t>& non_exist_offsets)
     : inner_(std::move(inner)), spec_(std::move(spec)) {
@@ -298,10 +298,12 @@ JsonProjectedIndexReader::CellByteSize() const {
     return {cell_memory_bytes_, file_bytes_};
 }
 
-std::shared_ptr<const IndexReaderBase>
+JsonResolvedReader
 JsonProjectedIndexReader::Resolve(std::string_view path,
                                   JsonCastType cast_type) const {
-    return spec_.Matches(path, cast_type) ? inner_ : nullptr;
+    return spec_.Matches(path, cast_type)
+               ? JsonResolvedReader::Borrowed(inner_.get())
+               : JsonResolvedReader{};
 }
 
 TargetBitmap

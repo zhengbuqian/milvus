@@ -71,7 +71,7 @@ class InvertedIndexArtifact final : public storage::Artifact {
 
     ~InvertedIndexArtifact() override;
 
-    std::shared_ptr<storage::LoadedArtifact>
+    std::unique_ptr<storage::LoadedArtifact>
     OpenReader() const override;
 
     void

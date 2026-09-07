@@ -49,6 +49,6 @@ class LoadedArtifact {
     CellByteSize() const = 0;
 };
 
-using LoadedArtifactPtr = std::shared_ptr<LoadedArtifact>;
+using LoadedArtifactPtr = std::unique_ptr<LoadedArtifact>;
 
 }  // namespace milvus::storage

@@ -55,17 +55,19 @@ JsonProjectedIndexArtifact::JsonProjectedIndexArtifact(
 
 JsonProjectedIndexArtifact::~JsonProjectedIndexArtifact() = default;
 
-std::shared_ptr<storage::LoadedArtifact>
+std::unique_ptr<storage::LoadedArtifact>
 JsonProjectedIndexArtifact::OpenReader() const {
     AssertInfo(inner_ != nullptr,
                "typed JSON projection artifact has no inner artifact");
     auto loaded = inner_->OpenReader();
-    auto reader = std::dynamic_pointer_cast<IndexReaderBase>(std::move(loaded));
+    auto* reader = dynamic_cast<IndexReaderBase*>(loaded.get());
     AssertInfo(reader != nullptr,
                "typed JSON projection inner artifact did not open an index "
                "reader");
-    return std::make_shared<JsonProjectedIndexReader>(
-        std::move(reader), spec_, non_exist_offsets_);
+    loaded.release();
+    std::unique_ptr<IndexReaderBase> reader_owner(reader);
+    return std::make_unique<JsonProjectedIndexReader>(
+        std::move(reader_owner), spec_, non_exist_offsets_);
 }
 
 void

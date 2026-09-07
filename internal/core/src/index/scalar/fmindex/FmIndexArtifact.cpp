@@ -150,9 +150,9 @@ FmIndexArtifact::FmIndexArtifact(std::shared_ptr<const FmIndexStorage> storage,
 
 FmIndexArtifact::~FmIndexArtifact() = default;
 
-std::shared_ptr<storage::LoadedArtifact>
+std::unique_ptr<storage::LoadedArtifact>
 FmIndexArtifact::OpenReader() const {
-    return std::make_shared<FmIndexReader>(storage_);
+    return std::make_unique<FmIndexReader>(storage_);
 }
 
 void

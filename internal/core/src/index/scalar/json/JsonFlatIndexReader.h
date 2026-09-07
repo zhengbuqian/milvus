@@ -142,7 +142,7 @@ class JsonFlatIndexReader final : public IndexReaderBase,
     // Resolve returns null and CastTypesOf returns empty as a post-pin
     // consistency signal. The pre-pin route uses the inventory's root-path
     // metadata and applies the same rule without opening this reader.
-    std::shared_ptr<const IndexReaderBase>
+    JsonResolvedReader
     Resolve(std::string_view path, JsonCastType cast_type) const override;
 
     // Precondition: CastTypesOf(path) is non-empty. This method cannot encode

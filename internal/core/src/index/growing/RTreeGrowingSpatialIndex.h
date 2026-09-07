@@ -160,7 +160,7 @@ class RTreeGrowingSpatialIndex final : public GrowingSpatialIndex,
     std::string
     Family() const override;
 
-    IndexReaderBasePtr
+    std::shared_ptr<IndexReaderBase>
     ReaderSnapshotErased() const override;
 
  private:

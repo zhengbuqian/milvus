@@ -47,7 +47,7 @@ class MarisaIndexArtifact final : public storage::Artifact {
 
     ~MarisaIndexArtifact() override;
 
-    std::shared_ptr<storage::LoadedArtifact>
+    std::unique_ptr<storage::LoadedArtifact>
     OpenReader() const override;
 
     void

@@ -73,7 +73,7 @@ class Artifact {
     // product (§11.2 rule 1 — the same trick as the L2 type-erased base class
     // in §4.2, one layer down). At L2 the consumer downcasts to
     // `index::IndexReaderBase`.
-    virtual std::shared_ptr<LoadedArtifact>
+    virtual std::unique_ptr<LoadedArtifact>
     OpenReader() const = 0;
 
     // Hand the materialized bytes to the sink. No upload here: the sink decides

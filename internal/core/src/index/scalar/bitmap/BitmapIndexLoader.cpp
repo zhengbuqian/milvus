@@ -848,12 +848,12 @@ DecodeMmapState(const uint8_t* data,
 }
 
 template <typename T>
-std::shared_ptr<IndexReaderBase>
+std::unique_ptr<IndexReaderBase>
 OpenTypedState(BitmapLoadState<T> state) {
     if constexpr (std::is_same_v<T, std::string>) {
-        return std::make_shared<BitmapStringIndexReader>(std::move(state));
+        return std::make_unique<BitmapStringIndexReader>(std::move(state));
     } else {
-        return std::make_shared<BitmapIndexReader<T>>(std::move(state));
+        return std::make_unique<BitmapIndexReader<T>>(std::move(state));
     }
 }
 
@@ -893,7 +893,7 @@ DispatchBitmapType(DataType value_type, F&& fn) {
     }
 }
 
-std::shared_ptr<IndexReaderBase>
+std::unique_ptr<IndexReaderBase>
 DispatchOpen(DataType value_type,
              const uint8_t* data,
              size_t size,
@@ -902,7 +902,7 @@ DispatchOpen(DataType value_type,
              TargetBitmap validity,
              bool rebuild_validity,
              BitmapLayout layout) {
-    return DispatchBitmapType<std::shared_ptr<IndexReaderBase>>(
+    return DispatchBitmapType<std::unique_ptr<IndexReaderBase>>(
         value_type, [&]<typename T>() {
             return OpenTypedState<T>(DecodeState<T>(data,
                                                     size,
@@ -914,7 +914,7 @@ DispatchOpen(DataType value_type,
         });
 }
 
-std::shared_ptr<IndexReaderBase>
+std::unique_ptr<IndexReaderBase>
 DispatchMmapOpen(DataType value_type,
                  const uint8_t* data,
                  size_t size,
@@ -923,7 +923,7 @@ DispatchMmapOpen(DataType value_type,
                  TargetBitmap validity,
                  bool rebuild_validity,
                  const std::string& mmap_dir_path) {
-    return DispatchBitmapType<std::shared_ptr<IndexReaderBase>>(
+    return DispatchBitmapType<std::unique_ptr<IndexReaderBase>>(
         value_type, [&]<typename T>() {
             return OpenTypedState<T>(DecodeMmapState<T>(data,
                                                         size,
@@ -1077,7 +1077,7 @@ BitmapIndexLoader::DeriveCaps(const Config& index_meta) const {
             .exact = !params.nested});
 }
 
-std::shared_ptr<IndexReaderBase>
+std::unique_ptr<IndexReaderBase>
 BitmapIndexLoader::OpenIndex(storage::FileSource& source,
                              const storage::LoadOptions& opts) {
     auto projection = PrepareJsonProjectedOpen(families::kBitmap, source, opts);
@@ -1087,7 +1087,7 @@ BitmapIndexLoader::OpenIndex(storage::FileSource& source,
         ThrowInfo(DataTypeInvalid,
                   "bitmap loader requires value_type or array_element_type");
     }
-    auto inner = LoadBitmapPayload<std::shared_ptr<IndexReaderBase>>(
+    auto inner = LoadBitmapPayload<std::unique_ptr<IndexReaderBase>>(
         source, opts, params, DispatchOpen, DispatchMmapOpen);
     return FinishJsonProjectedOpen(
         std::move(projection), source, std::move(inner));
