@@ -27,11 +27,14 @@ import "C"
 
 import (
 	"context"
+	"runtime"
 	"unsafe"
 
 	"google.golang.org/protobuf/proto"
 
+	"github.com/milvus-io/milvus/pkg/v3/mlog"
 	"github.com/milvus-io/milvus/pkg/v3/proto/cgopb"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
 )
 
 // LoadIndexInfo is a wrapper of the underlying C-structure C.CLoadIndexInfo
@@ -42,24 +45,44 @@ type LoadIndexInfo struct {
 // newLoadIndexInfo returns a new LoadIndexInfo and error
 func newLoadIndexInfo(ctx context.Context) (*LoadIndexInfo, error) {
 	var cLoadIndexInfo C.CLoadIndexInfo
-
 	var status C.CStatus
-	GetDynamicPool().Submit(func() (any, error) {
+	_, awaitErr := GetDynamicPool().Submit(func() (any, error) {
 		status = C.NewLoadIndexInfo(&cLoadIndexInfo)
 		return nil, nil
 	}).Await()
+	loadIndexInfo := &LoadIndexInfo{cLoadIndexInfo: cLoadIndexInfo}
+	if awaitErr != nil {
+		deleteLoadIndexInfo(loadIndexInfo)
+		return nil, merr.Wrap(awaitErr, "execute NewLoadIndexInfo on dynamic pool")
+	}
 	if err := HandleCStatus(ctx, &status, "NewLoadIndexInfo failed"); err != nil {
+		deleteLoadIndexInfo(loadIndexInfo)
 		return nil, err
 	}
-	return &LoadIndexInfo{cLoadIndexInfo: cLoadIndexInfo}, nil
+	return loadIndexInfo, nil
 }
 
 // deleteLoadIndexInfo would delete C.CLoadIndexInfo
 func deleteLoadIndexInfo(info *LoadIndexInfo) {
-	GetDynamicPool().Submit(func() (any, error) {
-		C.DeleteLoadIndexInfo(info.cLoadIndexInfo)
-		return nil, nil
+	if info == nil || info.cLoadIndexInfo == nil {
+		return
+	}
+	handle := info.cLoadIndexInfo
+	info.cLoadIndexInfo = nil
+	completed, awaitErr := GetDynamicPool().Submit(func() (any, error) {
+		C.DeleteLoadIndexInfo(handle)
+		return true, nil
 	}).Await()
+	if deleted, ok := completed.(bool); ok && deleted {
+		return
+	}
+	if awaitErr != nil {
+		err := merr.Wrap(awaitErr, "execute DeleteLoadIndexInfo on dynamic pool")
+		mlog.Warn(context.TODO(),
+			"failed to delete load index info on dynamic pool, deleting synchronously",
+			mlog.Err(err))
+	}
+	C.DeleteLoadIndexInfo(handle)
 }
 
 func (li *LoadIndexInfo) appendLoadIndexInfo(ctx context.Context, info *cgopb.LoadIndexInfo) error {
@@ -68,20 +91,29 @@ func (li *LoadIndexInfo) appendLoadIndexInfo(ctx context.Context, info *cgopb.Lo
 		return err
 	}
 
+	var data *C.uint8_t
+	if len(marshaled) > 0 {
+		data = (*C.uint8_t)(unsafe.Pointer(&marshaled[0]))
+	}
+	length := C.uint64_t(len(marshaled))
 	var status C.CStatus
-	_, _ = GetDynamicPool().Submit(func() (any, error) {
-		status = C.FinishLoadIndexInfo(li.cLoadIndexInfo, (*C.uint8_t)(unsafe.Pointer(&marshaled[0])), (C.uint64_t)(len(marshaled)))
+	_, awaitErr := GetDynamicPool().Submit(func() (any, error) {
+		status = C.FinishLoadIndexInfo(li.cLoadIndexInfo, data, length)
 		return nil, nil
 	}).Await()
-
+	runtime.KeepAlive(marshaled)
+	if awaitErr != nil {
+		return merr.Wrap(awaitErr, "execute FinishLoadIndexInfo on dynamic pool")
+	}
 	return HandleCStatus(ctx, &status, "FinishLoadIndexInfo failed")
 }
 
-func (li *LoadIndexInfo) setShard(shard string) {
+func (li *LoadIndexInfo) setShard(ctx context.Context, shard string) error {
 	if shard == "" {
-		return
+		return nil
 	}
 	cShard := C.CString(shard)
 	defer C.free(unsafe.Pointer(cShard))
-	C.SetLoadIndexInfoShard(li.cLoadIndexInfo, cShard)
+	status := C.SetLoadIndexInfoShard(li.cLoadIndexInfo, cShard)
+	return HandleCStatus(ctx, &status, "SetLoadIndexInfoShard failed")
 }

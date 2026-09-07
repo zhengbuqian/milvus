@@ -29,10 +29,6 @@
 #include "common/Types.h"
 #include "common/Utils.h"
 #include "geos_c.h"
-#include "index/Index.h"
-#include "index/Meta.h"
-#include "index/ScalarIndex.h"
-#include "knowhere/dataset.h"
 #include "pb/plan.pb.h"
 #include "pb/schema.pb.h"
 #include "storage/MmapManager.h"
@@ -194,14 +190,13 @@ namespace exec {
 
 void
 PhyGISFunctionFilterExpr::DetermineExecPath() {
-    SegmentExpr::DetermineExecPath();
-    if (exec_path_ != ExprExecPath::ScalarIndex) {
-        return;
-    }
-    // STIsValid operation cannot use index
     if (expr_->op_ == proto::plan::GISFunctionFilterExpr_GISOp_STIsValid) {
         exec_path_ = ExprExecPath::RawData;
+        return;
     }
+    auto req = MakeIndexRequirement(RequiredReader::Spatial);
+    req.value_type = DataType::GEOMETRY;
+    SelectAndPinIndex(req);
 }
 
 void
@@ -438,37 +433,37 @@ PhyGISFunctionFilterExpr::EvalForIndexSegment() {
     int processed_rows = 0;
 
     if (!coarse_cached_) {
-        using Index = index::ScalarIndex<std::string>;
-
-        // Prepare shared dataset for index query (coarse candidate set by R-Tree)
-        auto ds = std::make_shared<milvus::Dataset>();
-        ds->Set(milvus::index::OPERATOR_TYPE, expr_->op_);
+        AssertInfo(spatial_reader_ != nullptr && null_reader_ != nullptr,
+                   "selected geometry index has no spatial/null reader");
 
         // For range_within operations, use bounding box for coarse filtering
         if (expr_->op_ == proto::plan::GISFunctionFilterExpr_GISOp_DWithin) {
-            // Create bounding box geometry for index coarse filtering
-            Geometry bbox_geometry = create_bounding_box_for_dwithin(
+            auto candidate_geometry = create_bounding_box_for_dwithin(
                 ctx, query_geometry, expr_->distance_);
-
-            ds->Set(milvus::index::MATCH_VALUE, bbox_geometry);
-
-            // Note: Distance is not used for bounding box intersection query
+            coarse_global_ = spatial_reader_->Candidates(
+                gis_detail::ToSpatialOp(expr_->op_), candidate_geometry);
         } else {
-            // For other operations, use original geometry
-            ds->Set(milvus::index::MATCH_VALUE, query_geometry);
+            coarse_global_ = spatial_reader_->Candidates(
+                gis_detail::ToSpatialOp(expr_->op_), query_geometry);
         }
-
-        // Query segment-level R-Tree index **once** since each chunk shares the same index
-        auto scalar_index = dynamic_cast<const Index*>(pinned_index_[0].get());
-        auto* idx_ptr = const_cast<Index*>(scalar_index);
-
-        {
-            auto tmp = idx_ptr->Query(ds);
-            coarse_global_ = std::move(tmp);
-        }
-        {
-            auto tmp_valid = idx_ptr->IsNotNull();
-            coarse_valid_global_ = std::move(tmp_valid);
+        const auto covered = selected_covered_row_end_;
+        AssertInfo(coarse_global_.size() >= static_cast<size_t>(covered),
+                   "spatial candidates cover {} rows, snapshot requires {}",
+                   coarse_global_.size(),
+                   covered);
+        coarse_global_.resize(covered);
+        coarse_valid_global_ = null_reader_->IsNotNull();
+        AssertInfo(coarse_valid_global_.size() >=
+                       static_cast<size_t>(covered),
+                   "spatial validity does not cover snapshot prefix");
+        coarse_valid_global_.resize(covered);
+        if (covered < active_count_) {
+            coarse_global_.resize(active_count_, true);
+            const auto field_valid = GetFieldRowValidity(active_count_);
+            coarse_valid_global_.resize(active_count_, false);
+            for (int64_t i = covered; i < active_count_; ++i) {
+                coarse_valid_global_[i] = field_valid[i];
+            }
         }
 
         coarse_cached_ = true;
