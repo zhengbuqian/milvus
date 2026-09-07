@@ -16,69 +16,57 @@
 
 #pragma once
 
-#include <algorithm>
-#include <cctype>
 #include <cstdint>
 #include <initializer_list>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
 
 #include "common/EasyAssert.h"
+#include "common/Types.h"
+#include "index/Utils.h"
 #include "nlohmann/json.hpp"
 
 namespace milvus::index {
 
-// Missing/null handling and rejection diagnostics belong to the caller.
-// This decoder accepts only booleans and the exact strings "true"/"false".
-inline std::optional<bool>
-TryParseBooleanLiteral(const nlohmann::json& value) {
-    if (value.is_boolean()) {
-        return value.get<bool>();
-    }
-    if (value.is_string()) {
-        const auto text = value.get<std::string>();
-        if (text == "true") {
-            return true;
+// Internal build/load configuration uses the numeric DataType enum.
+// External spellings are normalized before family configuration is parsed.
+// Missing/null/default policy and supported-type checks belong to the caller.
+inline DataType
+ParseDataTypeValue(const nlohmann::json& value, std::string_view key) {
+    int64_t encoded;
+    if (value.is_number_unsigned()) {
+        const auto unsigned_encoded = value.get<uint64_t>();
+        if (unsigned_encoded >
+            static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
+            ThrowInfo(DataTypeInvalid,
+                      "data type parameter {} is out of int32 range",
+                      key);
         }
-        if (text == "false") {
-            return false;
+        encoded = static_cast<int64_t>(unsigned_encoded);
+    } else if (value.is_number_integer()) {
+        encoded = value.get<int64_t>();
+        if (encoded < std::numeric_limits<int32_t>::min() ||
+            encoded > std::numeric_limits<int32_t>::max()) {
+            ThrowInfo(DataTypeInvalid,
+                      "data type parameter {} is out of int32 range",
+                      key);
         }
+    } else {
+        ThrowInfo(DataTypeInvalid,
+                  "data type parameter {} must use the integer enum encoding",
+                  key);
     }
-    return std::nullopt;
+    return static_cast<DataType>(static_cast<int32_t>(encoded));
 }
 
-// The broader scalar encoding also accepts integer 0/1, strings "0"/"1",
-// and case-insensitive boolean strings. It does not accept floating point.
-inline std::optional<bool>
-TryParseBooleanWithNumericStrings(const nlohmann::json& value) {
-    if (value.is_boolean()) {
-        return value.get<bool>();
+inline std::optional<DataType>
+ReadDataTypeParam(const Config& params, std::string_view key) {
+    if (!params.is_object() || !params.contains(key)) {
+        return std::nullopt;
     }
-    if (value.is_number_unsigned()) {
-        const auto encoded = value.get<uint64_t>();
-        if (encoded == 0 || encoded == 1) {
-            return encoded != 0;
-        }
-    } else if (value.is_number_integer()) {
-        const auto encoded = value.get<int64_t>();
-        if (encoded == 0 || encoded == 1) {
-            return encoded != 0;
-        }
-    } else if (value.is_string()) {
-        auto text = value.get<std::string>();
-        std::transform(text.begin(), text.end(), text.begin(), [](char ch) {
-            return static_cast<char>(
-                std::tolower(static_cast<unsigned char>(ch)));
-        });
-        if (text == "true" || text == "1") {
-            return true;
-        }
-        if (text == "false" || text == "0") {
-            return false;
-        }
-    }
-    return std::nullopt;
+    return ParseDataTypeValue(params.at(key), key);
 }
 
 // These string parameters default only when absent, not when explicitly null.
@@ -101,7 +89,7 @@ ReadStringParam(const nlohmann::json& params,
     }
 }
 
-inline constexpr std::initializer_list<std::string_view> kNestedParamKeys = {
+inline const std::initializer_list<std::string_view> kNestedParamKeys = {
     "nested", "is_nested", "is_nested_index"};
 
 // The caller controls decoding and whether null counts as missing. Visit keys
@@ -141,6 +129,30 @@ ReadNestedParam(Read&& read, std::string_view context) {
                       first,
                       second);
         });
+}
+
+inline std::optional<bool>
+ReadNestedConfigParam(const Config& params, std::string_view context) {
+    return ReadNestedParam(
+        [&](std::string_view key) {
+            return GetValueFromConfig<bool>(params, std::string(key));
+        },
+        context);
+}
+
+// Production load boundaries restore this canonical runtime parameter from
+// schema metadata before invoking a loader. Missing old persisted aliases are
+// accepted there; absence here means the normalized internal contract was not
+// satisfied.
+inline bool
+ReadRequiredNestedParam(const Config& params, std::string_view context) {
+    const auto nested = ReadNestedConfigParam(params, context);
+    if (!nested.has_value()) {
+        ThrowInfo(DataTypeInvalid,
+                  "{} requires an explicit normalized nested parameter",
+                  context);
+    }
+    return *nested;
 }
 
 }  // namespace milvus::index

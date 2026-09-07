@@ -16,6 +16,11 @@
 
 #pragma once
 
+// Shared index helpers. Vector-specific range-search configuration belongs in
+// vector/RangeSearchParams.h; index family names live in Families.h.
+// TODO: common/Types.h still brings transitive knowhere dependencies into shared
+// types. Avoid adding direct vector configuration includes here.
+
 #include <unordered_map>
 #include <vector>
 #include <stdio.h>
@@ -28,13 +33,11 @@
 #include <string>
 #include <boost/algorithm/string.hpp>
 
+#include "nlohmann/json.hpp"
+
 #include "common/Common.h"
 #include "common/Types.h"
 #include "common/FieldData.h"
-#include "common/QueryInfo.h"
-#include "common/RangeSearchHelper.h"
-#include "index/IndexInfo.h"
-#include "index/ScalarIndex.h"
 #include "storage/Types.h"
 #include "storage/DataCodec.h"
 #include "log/Log.h"
@@ -44,44 +47,14 @@ namespace milvus::index {
 size_t
 get_file_size(int fd);
 
-std::vector<IndexType>
-NM_List();
-
-std::vector<IndexType>
-BIN_List();
-
-std::vector<std::tuple<IndexType, MetricType>>
-unsupported_index_combinations();
-
-bool
-is_in_bin_list(const IndexType& index_type);
-
-bool
-is_in_nm_list(const IndexType& index_type);
-
-bool
-is_unsupported(const IndexType& index_type, const MetricType& metric_type);
+// Vector index/metric support checks belong to the vector family, not these
+// shared scalar helpers.
 
 bool
 CheckKeyInConfig(const Config& cfg, const std::string& key);
 
 void
 ParseFromString(google::protobuf::Message& params, const std::string& str);
-
-template <typename T>
-void inline CheckParameter(Config& conf,
-                           const std::string& key,
-                           std::function<T(std::string)> fn,
-                           std::optional<T> default_v) {
-    if (!conf.contains(key)) {
-        if (default_v.has_value()) {
-            conf[key] = default_v.value();
-        }
-    } else {
-        auto value = conf[key];
-        conf[key] = fn(value);
-    }
-}
 
 template <typename T>
 inline std::optional<T>
@@ -135,9 +108,11 @@ GetValueFromConfig(const Config& cfg, const std::string& key) {
 }
 
 template <typename T>
-inline void
-SetValueToConfig(Config& cfg, const std::string& key, const T value) {
-    cfg[key] = value;
+inline T
+GetValueFromConfigOrFallback(const Config& cfg,
+                             const std::string& key,
+                             T fallback) {
+    return GetValueFromConfig<T>(cfg, key).value_or(fallback);
 }
 
 template <typename T>
@@ -171,17 +146,14 @@ GetIndexEngineVersionFromConfig(const Config& config);
 int32_t
 GetBitmapCardinalityLimitFromConfig(const Config& config);
 
-ScalarIndexType
-GetHybridLowCardinalityIndexTypeFromConfig(const Config& config);
+// Return a registry family while accepting the legacy HYBRID internal-type
+// spellings. The HYBRID artifact still persists its established one-byte
+// ScalarIndexType selector; these helpers only normalize runtime config.
+std::string
+GetLowCardinalityFamilyFromConfig(const Config& config);
 
-ScalarIndexType
-GetHybridHighCardinalityIndexTypeFromConfig(const Config& config);
-
-storage::FieldDataMeta
-GetFieldDataMetaFromConfig(const Config& config);
-
-storage::IndexMeta
-GetIndexMetaFromConfig(const Config& config);
+std::string
+GetHighCardinalityFamilyFromConfig(const Config& config);
 
 Config
 ParseConfigFromIndexParams(
@@ -225,11 +197,9 @@ AssembleIndexDatas(std::map<std::string, FieldDataChannelPtr>& index_datas,
 void
 ReadDataFromFD(int fd, void* buf, size_t size, size_t chunk_size = 0x7ffff000);
 
-bool
-CheckAndUpdateKnowhereRangeSearchParam(const SearchInfo& search_info,
-                                       const int64_t topk,
-                                       const MetricType& metric_type,
-                                       knowhere::Json& search_config);
+// Vector range-search parameter preparation is declared in
+// index/vector/RangeSearchParams.h, keeping SearchInfo and knowhere query
+// configuration out of this shared helper interface.
 
 // for unused
 void inline SetBitsetUnused(void* bitset, const uint32_t* doc_id, uintptr_t n) {
