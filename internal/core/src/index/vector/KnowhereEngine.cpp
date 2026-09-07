@@ -16,109 +16,479 @@
 
 #include "index/vector/KnowhereEngine.h"
 
-// SKELETON. Bodies are the re-homing map, not the implementation: every TODO
-// names the file and lines the logic moves from, VERBATIM (§11.3 — re-homing,
-// not redesign; the knowhere interaction does not change and the benchmarks are
-// expected to be unchanged).
-//
-// !! LINE REFERENCES POINT AT THE TREE BEFORE REFACTOR PHASE 1 (master
-// e255009e01) !! `index/VectorIndex.h`, `index/VectorMemIndex.{h,cpp}` and
-// `index/VectorDiskIndex.{h,cpp}` are deleted by this change — that IS the
-// re-homing. Retrieve a cited body with
-//   git show e255009e01:internal/core/src/index/VectorMemIndex.cpp
+#include <limits>
+#include <string>
+#include <utility>
+
+#include "common/EasyAssert.h"
+#include "common/FastMem.h"
+#include "knowhere/index/index_factory.h"
+#include "knowhere/segcore_error_code.h"
 
 namespace milvus::index {
 
-KnowhereEngine::KnowhereEngine(DataType elem_type,
+namespace {
+
+void
+ValidatePhysicalTypes(DataType physical_type, DataType elem_type) {
+    switch (physical_type) {
+        case DataType::VECTOR_FLOAT:
+        case DataType::VECTOR_BINARY:
+        case DataType::VECTOR_FLOAT16:
+        case DataType::VECTOR_BFLOAT16:
+        case DataType::VECTOR_INT8:
+        case DataType::VECTOR_SPARSE_U32_F32:
+            break;
+        default:
+            ThrowInfo(DataTypeInvalid,
+                      "invalid physical vector data type {}",
+                      physical_type);
+    }
+
+    if (elem_type != DataType::NONE && elem_type != physical_type) {
+        ThrowInfo(DataTypeInvalid,
+                  "embedding-list element type {} disagrees with physical "
+                  "vector type {}",
+                  elem_type,
+                  physical_type);
+    }
+    if (elem_type == DataType::VECTOR_SPARSE_U32_F32) {
+        ThrowInfo(Unsupported,
+                  "sparse vectors are not supported as embedding-list "
+                  "elements");
+    }
+}
+
+template <typename T>
+void
+ValidateMetricType(const MetricType& metric_type) {
+    bool supported = false;
+    if constexpr (std::is_same_v<T, bin1>) {
+        supported = IsBinaryVectorMetricType(metric_type);
+    } else if constexpr (std::is_same_v<T, int8>) {
+        supported = IsIntVectorMetricType(metric_type);
+    } else {
+        supported = IsFloatVectorMetricType(metric_type);
+    }
+    if (!supported) {
+        ThrowInfo(MetricTypeInvalid,
+                  "physical vector type {} does not support metric {}",
+                  PhysicalVectorDataType<T>(),
+                  metric_type);
+    }
+}
+
+bool
+IsUnsupportedMemoryCombination(const IndexType& index_type,
+                               const MetricType& metric_type) {
+    if (index_type == knowhere::IndexEnum::INDEX_FAISS_BIN_IVFFLAT &&
+        metric_type == knowhere::metric::L2) {
+        return true;
+    }
+    if (index_type != knowhere::IndexEnum::INDEX_SPARSE_INVERTED_INDEX &&
+        index_type != knowhere::IndexEnum::INDEX_SPARSE_WAND) {
+        return false;
+    }
+    return metric_type == knowhere::metric::L2 ||
+           metric_type == knowhere::metric::COSINE ||
+           metric_type == knowhere::metric::HAMMING ||
+           metric_type == knowhere::metric::JACCARD ||
+           metric_type == knowhere::metric::SUBSTRUCTURE ||
+           metric_type == knowhere::metric::SUPERSTRUCTURE;
+}
+
+void
+ValidateVersion(IndexVersion version) {
+    const auto current = knowhere::Version::GetCurrentVersion().VersionNumber();
+    AssertInfo(knowhere::Version::VersionSupport(knowhere::Version(version)),
+               "version not support : {} , knowhere current version {}",
+               version,
+               current);
+}
+
+template <typename T>
+knowhere::Index<knowhere::IndexNode>
+CreateTypedIndex(const IndexType& index_type,
+                 const MetricType& metric_type,
+                 IndexVersion version,
+                 const knowhere::Object* engine_object,
+                 bool reject_memory_combination) {
+    ValidateMetricType<T>(metric_type);
+    if (reject_memory_combination &&
+        IsUnsupportedMemoryCombination(index_type, metric_type)) {
+        ThrowInfo(MetricTypeInvalid,
+                  "{} does not support metric {}",
+                  index_type,
+                  metric_type);
+    }
+
+    auto created =
+        engine_object == nullptr
+            ? knowhere::IndexFactory::Instance().Create<T>(index_type, version)
+            : knowhere::IndexFactory::Instance().Create<T>(
+                  index_type, version, *engine_object);
+    if (!created.has_value()) {
+        const auto status = created.error();
+        const auto error_code = status == knowhere::Status::invalid_index_error
+                                    ? ErrorCode::Unsupported
+                                    : knowhere::ToSegcoreErrorCode(status);
+        ThrowInfo(error_code,
+                  "failed to create knowhere index {}: status {} ({}), "
+                  "detail: {}",
+                  index_type,
+                  static_cast<int>(status),
+                  knowhere::Status2String(status),
+                  created.what());
+    }
+    if (created.value().Node() == nullptr) {
+        // knowhere::Index<T>::Create uses new (std::nothrow), and the factory
+        // returns that handle as a successful expected value without checking
+        // its node. Preserve the allocation category at this source boundary.
+        ThrowInfo(ErrorCode::MemAllocateFailed,
+                  "failed to create knowhere index {}: allocation returned a "
+                  "null node",
+                  index_type);
+    }
+    return std::move(created.value());
+}
+
+knowhere::Index<knowhere::IndexNode>
+CreateIndex(DataType physical_type,
+            DataType elem_type,
+            const IndexType& index_type,
+            const MetricType& metric_type,
+            IndexVersion version,
+            const knowhere::Object* engine_object,
+            bool reject_memory_combination,
+            bool check_compatible) {
+    ValidatePhysicalTypes(physical_type, elem_type);
+    if (check_compatible) {
+        ValidateVersion(version);
+    }
+
+    switch (physical_type) {
+        case DataType::VECTOR_FLOAT:
+            return CreateTypedIndex<float>(index_type,
+                                           metric_type,
+                                           version,
+                                           engine_object,
+                                           reject_memory_combination);
+        case DataType::VECTOR_BINARY:
+            return CreateTypedIndex<bin1>(index_type,
+                                          metric_type,
+                                          version,
+                                          engine_object,
+                                          reject_memory_combination);
+        case DataType::VECTOR_FLOAT16:
+            return CreateTypedIndex<float16>(index_type,
+                                             metric_type,
+                                             version,
+                                             engine_object,
+                                             reject_memory_combination);
+        case DataType::VECTOR_BFLOAT16:
+            return CreateTypedIndex<bfloat16>(index_type,
+                                              metric_type,
+                                              version,
+                                              engine_object,
+                                              reject_memory_combination);
+        case DataType::VECTOR_INT8:
+            return CreateTypedIndex<int8>(index_type,
+                                          metric_type,
+                                          version,
+                                          engine_object,
+                                          reject_memory_combination);
+        case DataType::VECTOR_SPARSE_U32_F32:
+            return CreateTypedIndex<sparse_u32_f32>(index_type,
+                                                    metric_type,
+                                                    version,
+                                                    engine_object,
+                                                    reject_memory_combination);
+        default:
+            ThrowInfo(DataTypeInvalid,
+                      "invalid physical vector data type {}",
+                      physical_type);
+    }
+}
+
+knowhere::Index<knowhere::IndexNode>
+CreateDataViewIndex(DataType physical_type,
+                    DataType elem_type,
+                    const IndexType& index_type,
+                    const MetricType& metric_type,
+                    IndexVersion version,
+                    knowhere::ViewDataOp view_data) {
+    auto view_data_pack = knowhere::Pack(std::move(view_data));
+    return CreateIndex(physical_type,
+                       elem_type,
+                       index_type,
+                       metric_type,
+                       version,
+                       &view_data_pack,
+                       true,
+                       false);
+}
+
+size_t
+CheckedElementCount(int64_t count, const char* label) {
+    if (count < 0 ||
+        static_cast<uint64_t>(count) >
+            static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+        ThrowInfo(
+            KnowhereError, "knowhere {} count {} is invalid", label, count);
+    }
+    return static_cast<size_t>(count);
+}
+
+template <typename T>
+size_t
+CheckedVectorRowBytes(int64_t dim) {
+    const auto dimension = CheckedElementCount(dim, "vector dimension");
+    if constexpr (std::is_same_v<T, bin1>) {
+        if (dimension % 8 != 0) {
+            ThrowInfo(KnowhereError,
+                      "knowhere binary vector dimension {} is not divisible "
+                      "by 8",
+                      dimension);
+        }
+        return dimension / 8;
+    } else {
+        if (dimension > std::numeric_limits<size_t>::max() / sizeof(T)) {
+            ThrowInfo(KnowhereError, "knowhere vector row byte size overflows");
+        }
+        return dimension * sizeof(T);
+    }
+}
+
+size_t
+CheckedPayloadBytes(size_t row_bytes, size_t rows) {
+    if (row_bytes != 0 &&
+        rows > std::numeric_limits<size_t>::max() / row_bytes) {
+        ThrowInfo(KnowhereError, "knowhere vector payload size overflows");
+    }
+    return row_bytes * rows;
+}
+
+}  // namespace
+
+KnowhereEngine::KnowhereEngine(DataType physical_type,
+                               DataType elem_type,
                                IndexType index_type,
                                MetricType metric_type,
                                IndexVersion version,
                                bool use_knowhere_build_pool)
-    : index_type_(std::move(index_type)),
+    : index_(CreateIndex(physical_type,
+                         elem_type,
+                         index_type,
+                         metric_type,
+                         version,
+                         nullptr,
+                         true,
+                         true)),
+      index_type_(std::move(index_type)),
       metric_type_(std::move(metric_type)),
       version_(version),
+      physical_type_(physical_type),
       elem_type_(elem_type),
       use_knowhere_build_pool_(use_knowhere_build_pool) {
-    // TODO: move existing logic here (see VectorMemIndex.cpp:168-202 for the
-    // in-memory families and VectorDiskIndex.cpp:263-300 for DiskANN). Both
-    // bodies do the same three things: CheckCompatible(version), then
-    // `knowhere::IndexFactory::Instance().Create<T>(index_type, version, ...)`,
-    // then stash the file manager — and THE THIRD ONE DOES NOT COME ALONG
-    // (§3 principle 6: no `FileManagerContext` on a builder/reader).
 }
 
-KnowhereEngine::KnowhereEngine(DataType elem_type,
+KnowhereEngine::KnowhereEngine(DataType physical_type,
+                               DataType elem_type,
                                IndexType index_type,
                                MetricType metric_type,
                                IndexVersion version,
                                knowhere::ViewDataOp view_data,
                                bool use_knowhere_build_pool)
-    : index_type_(std::move(index_type)),
+    : index_(CreateDataViewIndex(physical_type,
+                                 elem_type,
+                                 index_type,
+                                 metric_type,
+                                 version,
+                                 std::move(view_data))),
+      index_type_(std::move(index_type)),
       metric_type_(std::move(metric_type)),
       version_(version),
+      physical_type_(physical_type),
       elem_type_(elem_type),
       use_knowhere_build_pool_(use_knowhere_build_pool) {
-    // TODO: move existing logic here (see VectorMemIndex.cpp:203-233) — the
-    // DataView variant: pack `view_data` into a knowhere Object and create the
-    // index through it. This is the ctor the interim/growing path uses, which is
-    // why `index/growing/KnowhereGrowingVectorIndex.h` composes this engine
-    // rather than re-deriving one.
+}
+
+KnowhereEngine::KnowhereEngine(
+    DataType physical_type,
+    DataType elem_type,
+    IndexType index_type,
+    MetricType metric_type,
+    IndexVersion version,
+    const knowhere::Pack<std::shared_ptr<milvus::FileManager>>& engine_object,
+    bool use_knowhere_build_pool)
+    : index_(CreateIndex(physical_type,
+                         elem_type,
+                         index_type,
+                         metric_type,
+                         version,
+                         &engine_object,
+                         false,
+                         true)),
+      index_type_(std::move(index_type)),
+      metric_type_(std::move(metric_type)),
+      version_(version),
+      physical_type_(physical_type),
+      elem_type_(elem_type),
+      use_knowhere_build_pool_(use_knowhere_build_pool) {
+}
+
+KnowhereEngine&
+KnowhereEngine::operator=(KnowhereEngine&& other) {
+    if (this != &other) {
+        // Explicit rvalue assignment selects knowhere::Index's templated
+        // operator=(Index<T2>&&), including for T2 == IndexNode. That overload
+        // releases the old intrusive node before transferring the new one.
+        index_ = std::move(other.index_);
+        index_type_ = std::move(other.index_type_);
+        metric_type_ = std::move(other.metric_type_);
+        dim_ = other.dim_;
+        version_ = other.version_;
+        physical_type_ = other.physical_type_;
+        elem_type_ = other.elem_type_;
+        use_knowhere_build_pool_ = other.use_knowhere_build_pool_;
+        empty_emb_list_offsets_ = std::move(other.empty_emb_list_offsets_);
+    }
+    return *this;
 }
 
 knowhere::Json
 KnowhereEngine::PrepareSearchParams(const VectorSearchParams& params) const {
-    // TODO: move existing logic here (see VectorIndex.h:171-190). Verbatim, with
-    // `SearchInfo` swapped for the narrow §12.1(a) type — the body only ever
-    // read `search_params_`, `metric_type_`, `topk_` and `trace_ctx_`, which is
-    // precisely the audit that closed §12.1(a).
-    return {};
+    auto search_config = params.search_params_;
+    search_config[knowhere::meta::METRIC_TYPE] = params.metric_type_;
+    search_config[knowhere::meta::TOPK] = params.topk_;
+    if (params.trace_ctx_.traceID != nullptr &&
+        params.trace_ctx_.spanID != nullptr) {
+        search_config[knowhere::meta::TRACE_ID] =
+            tracer::GetTraceIDAsHexStr(&params.trace_ctx_);
+        search_config[knowhere::meta::SPAN_ID] =
+            tracer::GetSpanIDAsHexStr(&params.trace_ctx_);
+        search_config[knowhere::meta::TRACE_FLAGS] =
+            params.trace_ctx_.traceFlags;
+    }
+    return search_config;
 }
 
 bool
 KnowhereEngine::MmapSupported() const {
-    // TODO: move existing logic here (see VectorIndex.h:165-169).
-    return false;
+    return knowhere::IndexFactory::Instance().FeatureCheck(
+        index_type_, knowhere::feature::MMAP);
 }
 
 void
 KnowhereEngine::CheckCompatible(IndexVersion version) const {
-    // TODO: move existing logic here (see VectorIndex.h:153-163).
+    ValidateVersion(version);
 }
 
 int64_t
 KnowhereEngine::RawCount() const {
-    // TODO: move existing logic here (see VectorMemIndex.h:85-95 /
-    // VectorDiskIndex.h:217-227), minus the two zero-cases that belong to the
-    // caller (all-null nullable field; empty embedding-list index).
-    return 0;
+    return index_.Count();
 }
 
 bool
 KnowhereEngine::HasRawData() const {
-    // TODO: move existing logic here (see VectorMemIndex.cpp:816-825 /
-    // VectorDiskIndex.cpp:822-831).
-    return false;
+    return index_.HasRawData(metric_type_);
 }
 
 bool
 KnowhereEngine::RefineEnabled() const {
-    // TODO: move existing logic here (see VectorMemIndex.cpp:826-835 /
-    // VectorDiskIndex.cpp:832-841) — today's `IsIndexRefineEnabled`.
-    return false;
+    return index_.IsIndexRefineEnabled();
 }
 
 template <typename T>
 std::vector<uint8_t>
 DecodeVectorByIdsResult(const knowhere::DataSetPtr& result) {
-    // TODO: move existing logic here (see VectorIndex.h:244-255).
-    return {};
+    if (result == nullptr) {
+        ThrowInfo(KnowhereError, "knowhere returned a null vector dataset");
+    }
+    const auto rows = CheckedElementCount(result->GetRows(), "vector row");
+    const auto row_bytes = CheckedVectorRowBytes<T>(result->GetDim());
+    const auto data_size = CheckedPayloadBytes(row_bytes, rows);
+    const auto* tensor = result->GetTensor();
+    if (data_size > 0 && tensor == nullptr) {
+        ThrowInfo(KnowhereError,
+                  "knowhere returned a null vector tensor for {} bytes",
+                  data_size);
+    }
+
+    std::vector<uint8_t> raw_data(data_size);
+    if (data_size > 0) {
+        milvus::fastmem::FastMemcpy(raw_data.data(), tensor, data_size);
+    }
+    return raw_data;
 }
 
 template <typename T>
 std::pair<std::vector<uint8_t>, std::vector<size_t>>
 DecodeEmbListByIdsResult(const knowhere::DataSetPtr& result) {
-    // TODO: move existing logic here (see VectorIndex.h:257-276).
-    return {};
+    if (result == nullptr) {
+        ThrowInfo(KnowhereError,
+                  "knowhere returned a null embedding-list dataset");
+    }
+    const auto list_count =
+        CheckedElementCount(result->GetRows(), "embedding-list row");
+    if (list_count == std::numeric_limits<size_t>::max()) {
+        ThrowInfo(KnowhereError, "knowhere embedding-list count overflows");
+    }
+    const auto* offsets_ptr =
+        result->Get<const size_t*>(knowhere::meta::EMB_LIST_OFFSET);
+    if (offsets_ptr == nullptr) {
+        ThrowInfo(KnowhereError,
+                  "knowhere embedding-list result has no offsets");
+    }
+
+    std::vector<size_t> offsets(offsets_ptr, offsets_ptr + list_count + 1);
+    if (offsets.front() != 0) {
+        ThrowInfo(KnowhereError,
+                  "knowhere embedding-list offsets do not start at zero");
+    }
+    for (size_t i = 1; i < offsets.size(); ++i) {
+        if (offsets[i] < offsets[i - 1]) {
+            ThrowInfo(KnowhereError,
+                      "knowhere embedding-list offsets are not monotonic");
+        }
+    }
+
+    const auto row_bytes = CheckedVectorRowBytes<T>(result->GetDim());
+    const auto data_size = CheckedPayloadBytes(row_bytes, offsets.back());
+    const auto* tensor = result->GetTensor();
+    if (data_size > 0 && tensor == nullptr) {
+        ThrowInfo(KnowhereError,
+                  "knowhere returned a null embedding-list tensor for {} "
+                  "bytes",
+                  data_size);
+    }
+    std::vector<uint8_t> raw_data(data_size);
+    if (data_size > 0) {
+        milvus::fastmem::FastMemcpy(raw_data.data(), tensor, data_size);
+    }
+    return {std::move(raw_data), std::move(offsets)};
 }
+
+template std::vector<uint8_t>
+DecodeVectorByIdsResult<float>(const knowhere::DataSetPtr& result);
+template std::vector<uint8_t>
+DecodeVectorByIdsResult<bin1>(const knowhere::DataSetPtr& result);
+template std::vector<uint8_t>
+DecodeVectorByIdsResult<float16>(const knowhere::DataSetPtr& result);
+template std::vector<uint8_t>
+DecodeVectorByIdsResult<bfloat16>(const knowhere::DataSetPtr& result);
+template std::vector<uint8_t>
+DecodeVectorByIdsResult<int8>(const knowhere::DataSetPtr& result);
+
+template std::pair<std::vector<uint8_t>, std::vector<size_t>>
+DecodeEmbListByIdsResult<float>(const knowhere::DataSetPtr& result);
+template std::pair<std::vector<uint8_t>, std::vector<size_t>>
+DecodeEmbListByIdsResult<bin1>(const knowhere::DataSetPtr& result);
+template std::pair<std::vector<uint8_t>, std::vector<size_t>>
+DecodeEmbListByIdsResult<float16>(const knowhere::DataSetPtr& result);
+template std::pair<std::vector<uint8_t>, std::vector<size_t>>
+DecodeEmbListByIdsResult<bfloat16>(const knowhere::DataSetPtr& result);
+template std::pair<std::vector<uint8_t>, std::vector<size_t>>
+DecodeEmbListByIdsResult<int8>(const knowhere::DataSetPtr& result);
 
 }  // namespace milvus::index

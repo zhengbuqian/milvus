@@ -16,14 +16,15 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "common/Types.h"
 #include "storage/artifact/Artifact.h"
 #include "storage/artifact/FileSink.h"
-#include "tantivy-wrapper.h"
 
 // The ARTIFACT of the ngram family (§6). Like the other tantivy families it is
 // file-shaped; the one extra thing it persists is the average row size that the
@@ -31,15 +32,50 @@
 
 namespace milvus::index {
 
+// A family-created child directory. Configured paths are parents and are never
+// removed by the index.
+class NgramIndexDirectory final {
+ public:
+    static std::shared_ptr<NgramIndexDirectory>
+    Create(const std::string& parent);
+
+    ~NgramIndexDirectory();
+
+    NgramIndexDirectory(const NgramIndexDirectory&) = delete;
+    NgramIndexDirectory&
+    operator=(const NgramIndexDirectory&) = delete;
+
+    const std::string&
+    Path() const;
+
+    size_t
+    ByteSize() const;
+
+    size_t
+    HeapBytes() const;
+
+ private:
+    explicit NgramIndexDirectory(std::string path);
+
+    std::string path_;
+    bool created_{false};
+};
+
 class NgramIndexArtifact final : public storage::Artifact {
  public:
-    NgramIndexArtifact(
-        std::shared_ptr<milvus::tantivy::TantivyIndexWrapper> engine,
-        std::string local_dir,
-        std::vector<size_t> null_offsets,
-        uintptr_t min_gram,
-        uintptr_t max_gram,
-        size_t avg_row_size);
+    NgramIndexArtifact(std::shared_ptr<NgramIndexDirectory> directory,
+                       std::vector<size_t> null_offsets,
+                       DataType value_type,
+                       uintptr_t min_gram,
+                       uintptr_t max_gram,
+                       size_t avg_row_size);
+
+    NgramIndexArtifact(std::shared_ptr<NgramIndexDirectory> directory,
+                       std::shared_ptr<const std::vector<size_t>> null_offsets,
+                       DataType value_type,
+                       uintptr_t min_gram,
+                       uintptr_t max_gram,
+                       size_t avg_row_size);
 
     ~NgramIndexArtifact() override;
 
@@ -50,9 +86,9 @@ class NgramIndexArtifact final : public storage::Artifact {
     Serialize(storage::FileSink& sink) const override;
 
  private:
-    std::shared_ptr<milvus::tantivy::TantivyIndexWrapper> engine_;
-    std::string local_dir_;
-    std::vector<size_t> null_offsets_;
+    std::shared_ptr<NgramIndexDirectory> directory_;
+    std::shared_ptr<const std::vector<size_t>> null_offsets_;
+    DataType value_type_{DataType::VARCHAR};
     uintptr_t min_gram_{0};
     uintptr_t max_gram_{0};
     size_t avg_row_size_{0};

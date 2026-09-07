@@ -34,23 +34,13 @@
 
 namespace milvus::index {
 
-// Moved from `index/VectorIndexValidDataUtils.h` with the rest of the vector
-// family (core_refactor/01-scalar-index.md §11.3). Two edits, no logic change:
+// Sealed vector-validity wire helpers. The legacy entries remain an exact
+// native uint64 row count plus an LSB-first bitmap. Readers accept trailing
+// bitmap bytes for compatibility but require the count entry to be exact and
+// validate the coordinate domain before allocating the decoded bool array.
 //
-//  1. The two keys below used to live on the retired base class
-//     (`index/VectorIndex.h:45-46`). They are pure vector-family vocabulary —
-//     the entry names a nullable vector artifact carries — so they land next to
-//     the code that reads and writes them.
-//  2. `BuildValidDataFromBitmap` / `LoadValidDataFromBinarySet` took a
-//     `VectorIndex*` purely to call `BuildValidData` on it. There is no
-//     `VectorIndex` any more (§11.2 rule 3), and the state they mutate is
-//     `VectorValidData` (VectorValidData.h), so they take that instead. This
-//     also puts them on the right side of the interface split: both are
-//     BUILDER / LOADER helpers, never reader ones.
-//
-// `index/Utils.h` is no longer included: it pulls `common/QueryInfo.h` ->
-// `knowhere/config.h`, which is the include chain §12.1(a) identifies as the
-// real reason the scalar families compile knowhere today. Nothing here needs it.
+// The stateful part lives in VectorValidData. These helpers never expose the
+// mutable SealedOffsetMapping used during construction.
 
 // Entry names of the valid-data payload inside a nullable vector artifact.
 constexpr const char* VALID_DATA_KEY = "valid_data";
@@ -122,23 +112,50 @@ IsAllNullNullable(const OffsetMapping& offset_mapping) {
 
 inline size_t
 GetValidDataBitmapSize(size_t count) {
-    return (count + 7) / 8;
+    return count / 8 + (count % 8 != 0);
+}
+
+inline void
+ValidatePersistedValidDataCount(size_t count) {
+    constexpr size_t max_count =
+        static_cast<size_t>(std::numeric_limits<int32_t>::max()) + 1;
+    if (count > max_count) {
+        ThrowInfo(DataFormatBroken,
+                  "nullable vector valid_data count {} exceeds offset mapping "
+                  "domain",
+                  count);
+    }
 }
 
 inline uint64_t
 ToValidDataCount(size_t count) {
+    AssertInfo(
+        count <= static_cast<size_t>(std::numeric_limits<int32_t>::max()) + 1,
+        "nullable vector valid_data count exceeds offset mapping domain");
     return static_cast<uint64_t>(count);
 }
 
 inline size_t
 FromValidDataCount(uint64_t count) {
-    AssertInfo(count <= std::numeric_limits<size_t>::max(),
-               "nullable vector valid_data count is too large");
+    constexpr uint64_t max_count =
+        static_cast<uint64_t>(std::numeric_limits<int32_t>::max()) + 1;
+    if (count > std::numeric_limits<size_t>::max() || count > max_count) {
+        ThrowInfo(DataFormatBroken,
+                  "nullable vector valid_data count {} exceeds offset mapping "
+                  "domain",
+                  count);
+    }
     return static_cast<size_t>(count);
 }
 
 inline size_t
 CountValidDataBitmap(size_t count, const uint8_t* bitmap) {
+    ValidatePersistedValidDataCount(count);
+    if (count > 0 && bitmap == nullptr) {
+        ThrowInfo(DataFormatBroken,
+                  "nullable vector valid_data bitmap is null for {} rows",
+                  count);
+    }
     size_t valid_count = 0;
     for (size_t i = 0; i < count; ++i) {
         if ((bitmap[i / 8] >> (i % 8)) & 1) {
@@ -165,19 +182,16 @@ NeedOffsetMappingMmap(const OffsetMappingBuildOptions& options,
            (options.enable_mmap_i2o_map && valid_count > 0);
 }
 
-inline OffsetMappingBuildOptions
-GetOffsetMappingMmapOptions(const Config& config) {
-    OffsetMappingBuildOptions options;
-    options.enable_mmap_i2o_map =
-        GetValueFromConfig<bool>(config, ENABLE_MMAP_I2O_MAP).value_or(false);
-    options.enable_mmap_o2i_map =
-        GetValueFromConfig<bool>(config, ENABLE_MMAP_O2I_MAP).value_or(false);
-    return options;
-}
+OffsetMappingBuildOptions
+GetOffsetMappingMmapOptions(const Config& config);
 
 inline std::vector<uint8_t>
 PackValidDataBitmap(const OffsetMapping& offset_mapping) {
-    auto count = static_cast<size_t>(offset_mapping.GetTotalCount());
+    const auto total_count = offset_mapping.GetTotalCount();
+    AssertInfo(total_count >= 0,
+               "nullable vector offset mapping has a negative row count");
+    const auto count = static_cast<size_t>(total_count);
+    (void)ToValidDataCount(count);
     std::vector<uint8_t> data(GetValidDataBitmapSize(count), 0);
     for (size_t i = 0; i < count; ++i) {
         if (offset_mapping.IsValid(i)) {
@@ -192,11 +206,18 @@ BuildValidDataFromBitmap(VectorValidData& valid,
                          size_t count,
                          const uint8_t* bitmap,
                          const OffsetMappingBuildOptions& options = {}) {
-    std::unique_ptr<bool[]> valid_data(new bool[count]);
+    ValidatePersistedValidDataCount(count);
+    if (count > 0 && bitmap == nullptr) {
+        ThrowInfo(DataFormatBroken,
+                  "nullable vector valid_data bitmap is null for {} rows",
+                  count);
+    }
+
+    std::unique_ptr<bool[]> valid_data(count == 0 ? nullptr : new bool[count]);
     for (size_t i = 0; i < count; ++i) {
         valid_data[i] = (bitmap[i / 8] >> (i % 8)) & 1;
     }
-    valid.Build(valid_data.get(), count, options);
+    valid.Build(valid_data.get(), static_cast<int64_t>(count), options);
 }
 
 inline void
@@ -230,21 +251,29 @@ LoadValidDataFromBinarySet(const BinarySet& binary_set,
     if (!has_count && !has_data) {
         return false;
     }
-    AssertInfo(has_count && has_data,
-               "nullable vector index valid_data files are incomplete");
+    if (!has_count || !has_data) {
+        ThrowInfo(DataFormatBroken,
+                  "nullable vector index valid_data files are incomplete");
+    }
 
     auto count_ptr = binary_set.GetByName(VALID_DATA_COUNT_KEY);
-    AssertInfo(count_ptr != nullptr && count_ptr->size == sizeof(uint64_t),
-               "nullable vector index valid_data count file is invalid");
+    if (count_ptr == nullptr || count_ptr->size != sizeof(uint64_t) ||
+        count_ptr->data == nullptr) {
+        ThrowInfo(DataFormatBroken,
+                  "nullable vector index valid_data count file is invalid");
+    }
     uint64_t wire_count = 0;
     milvus::fastmem::FastMemcpy(
         &wire_count, count_ptr->data.get(), sizeof(uint64_t));
     auto count = FromValidDataCount(wire_count);
 
     auto data_ptr = binary_set.GetByName(VALID_DATA_KEY);
-    AssertInfo(
-        data_ptr != nullptr && data_ptr->size >= GetValidDataBitmapSize(count),
-        "nullable vector index valid_data bitmap file is invalid");
+    const auto required_bytes = GetValidDataBitmapSize(count);
+    if (data_ptr == nullptr || data_ptr->size < required_bytes ||
+        (required_bytes > 0 && data_ptr->data == nullptr)) {
+        ThrowInfo(DataFormatBroken,
+                  "nullable vector index valid_data bitmap file is invalid");
+    }
     BuildValidDataFromBitmap(valid, count, data_ptr->data.get(), options);
     return true;
 }

@@ -16,14 +16,20 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
+#include "common/Types.h"
 #include "storage/artifact/Artifact.h"
 #include "storage/artifact/FileSink.h"
-#include "tantivy-wrapper.h"
+
+namespace milvus::tantivy {
+struct TantivyIndexWrapper;
+}
 
 // The ARTIFACT of the text family: what `TextIndexBuilder::Seal()` produces.
 //
@@ -31,21 +37,67 @@
 // a symmetric codec) and §11.2 rule 1 (the artifact pipeline sinks to L1, which
 // is why the base class is `storage::Artifact` and not an `IndexArtifact`).
 //
-// Text is a FILE-SHAPED family: the tantivy writer has already put bytes into a
-// local directory by the time `Seal()` returns, so `Serialize` is not an
-// encoding step — it hands the existing file set to the sink. §6 reason 2 says
-// exactly this: "for file-shaped families the write direction cannot be split
-// one layer further; inventing a codec there would be a fictional abstraction".
+// Persisted text indexes are FILE-SHAPED: the tantivy writer has already put
+// bytes into a local directory by the time `Seal()` returns, so `Serialize` is
+// not an encoding step — it hands the existing file set to the sink. The
+// sealed RAM interim mode is intentionally reader-only and cannot be exported.
 
 namespace milvus::index {
+
+// Owns one unique child below a caller-supplied parent. The parent is borrowed
+// and is never removed. Artifact and mmap reader share this object so Tantivy's
+// mapped files outlive every reader handle.
+class TextIndexDirectory final {
+ public:
+    static std::shared_ptr<TextIndexDirectory>
+    Create(const std::string& parent, std::string_view unique_id);
+
+    ~TextIndexDirectory();
+
+    TextIndexDirectory(const TextIndexDirectory&) = delete;
+    TextIndexDirectory&
+    operator=(const TextIndexDirectory&) = delete;
+
+    const std::string&
+    Path() const;
+
+    size_t
+    ByteSize() const;
+
+    // Known C++ heap ownership only: this object plus any non-SSO path
+    // allocation. Tantivy's reader/analyzer heap remains engine-owned and is
+    // not exposed exactly by the wrapper.
+    size_t
+    HeapBytes() const;
+
+ private:
+    explicit TextIndexDirectory(std::string path);
+
+    std::string path_;
+    bool created_{false};
+};
 
 class TextIndexArtifact final : public storage::Artifact {
  public:
     TextIndexArtifact(
+        std::shared_ptr<TextIndexDirectory> directory,
         std::shared_ptr<milvus::tantivy::TantivyIndexWrapper> engine,
-        std::string local_dir,
-        std::vector<int64_t> null_offsets,
-        int64_t count);
+        std::vector<size_t> null_offsets,
+        int64_t count,
+        DataType value_type,
+        bool reader_file_backed,
+        size_t payload_bytes);
+
+    // Loaded rewrite path. null_offsets must already have been validated
+    // against count by TextIndexLoader; this overload does not rescan them.
+    TextIndexArtifact(
+        std::shared_ptr<TextIndexDirectory> directory,
+        std::shared_ptr<milvus::tantivy::TantivyIndexWrapper> engine,
+        std::shared_ptr<const std::vector<size_t>> null_offsets,
+        int64_t count,
+        DataType value_type,
+        bool reader_file_backed,
+        size_t payload_bytes);
 
     ~TextIndexArtifact() override;
 
@@ -61,10 +113,19 @@ class TextIndexArtifact final : public storage::Artifact {
     Serialize(storage::FileSink& sink) const override;
 
  private:
+    // Declared before engine_ so the engine is destroyed before its backing
+    // directory when this artifact is the last owner.
+    std::shared_ptr<TextIndexDirectory> directory_;
     std::shared_ptr<milvus::tantivy::TantivyIndexWrapper> engine_;
-    std::string local_dir_;
-    std::vector<int64_t> null_offsets_;
+    std::shared_ptr<const std::vector<size_t>> null_offsets_;
     int64_t count_{0};
+    DataType value_type_{DataType::NONE};
+    // Whether readers depend on directory_. A loaded RAM rewrite keeps the
+    // directory only for publication while its readers share the RAM engine.
+    bool reader_file_backed_{false};
+    // Managed Tantivy payload bytes. File-backed payload is charged to the
+    // file tier; RAM-directory payload is charged to the memory tier.
+    size_t payload_bytes_{0};
 };
 
 }  // namespace milvus::index

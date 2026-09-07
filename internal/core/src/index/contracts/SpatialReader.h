@@ -24,20 +24,18 @@
 //
 // See core_refactor/01-scalar-index.md §5.6.
 //
-// GEOMETRY IS A SCALAR FAMILY, NOT A SEPARATE COMPONENT. `RTreeIndex` already
-// sits under `ScalarIndex<T>`; the only difference from the other scalar
-// families is the OPERATOR (spatial relations instead of point/range
+// GEOMETRY IS A SCALAR FAMILY, NOT A SEPARATE COMPONENT. Its difference from
+// other scalar families is the OPERATOR (spatial relations instead of point/range
 // comparisons). Lifecycle, build, persistence and pin are identical. Splitting
 // a component out by operator would be the wrong interface split — "one narrow
 // contract per family" is this document's method, and one more spatial family
 // is not an exception (§1).
 //
-// RTree's interfaces are exactly `SpatialReader` + `NullReader`. Everything it
-// was forced to implement — In / NotIn / Range x2 / InApplyFilter /
-// InApplyCallback / Reverse_Lookup / Query(DatasetPtr) — is removed: all seven
-// are `ThrowInfo(NotImplemented)` shells with zero implementations and zero
-// production callers (`RTreeIndex.cpp:462,515,525,534,542`,
-// `RTreeIndex.h:187`). `IsNull`/`IsNotNull` are NOT removed — they are real
+// RTree's interfaces are exactly `SpatialReader` + `NullReader`. The live
+// `Query(DatasetPtr)` wrapper (`RTreeIndex.cpp:521-543`) decodes the geometry
+// and operation and delegates to candidate generation, so that behavior lands
+// in `Candidates`. The unrelated In / NotIn / Range x2 / InApplyFilter /
+// InApplyCallback / Reverse_Lookup shells are removed. `IsNull`/`IsNotNull` are real
 // (`RTreeIndex.cpp:469,491`, derived from `null_offset_`) and `geo_field IS
 // NULL` reaches the index through `PhyNullExpr`. They belong to the
 // unconditional `NullReader` interface (§5).

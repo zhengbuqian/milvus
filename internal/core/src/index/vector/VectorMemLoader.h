@@ -45,16 +45,12 @@
 //       valid-data entries are pulled out and decoded rather than concatenated.
 //       Maps to `LoadOptions::enable_mmap` + `mmap_dir_path`.
 //
-// !! ACCEPTANCE FINDING (b) DOES NOT FIT `FileSource` AS WRITTEN.
-// The mmap path needs "materialize entries e1..ek into ONE local file, in this
-// order" — the merged file IS the unit knowhere mmaps. `FileSource` offers
-// `ReadEntry` (one entry -> memory), `ReadEntryToLocalFile` (one entry -> one
-// file) and `ReadEntriesToLocalDir` (n entries -> n files). None of them is
-// n -> 1. It fits only if the SLICE LAYER MOVES INSIDE the source, so that one
-// LOGICAL entry (already the concatenation of its slices) can be requested with
-// `ReadEntryToLocalFile`. That is the same choice VectorMemArtifact.h flags on
-// the write side, and the two must be decided together. Reported, not patched
-// around.
+// FileSource owns slice assembly and provides ReadEntriesToLocalFile for the
+// ordered concatenation of logical engine entries into the mmap file. The
+// loader must keep embedding-list sidecars in separate files and decode
+// validity/empty-list metadata separately. Local files must remain owned for
+// the reader's lifetime; the source itself is borrowed only during either open
+// call.
 
 namespace milvus::index {
 
@@ -62,11 +58,9 @@ class VectorMemLoader final : public IndexLoader {
  public:
     ~VectorMemLoader() override = default;
 
-    // Registry key. Vector families are keyed by the knowhere index type
-    // ("HNSW", "IVF_FLAT", "SPARSE_INVERTED_INDEX", ...) rather than by one
-    // "vector" bucket, because that is what the persisted metadata carries and
-    // what decides which reader to build (contracts/Registry.h explains why the
-    // key is a string and not `knowhere::IndexType`).
+    // Canonical registry key `families::kVectorMem`. The concrete knowhere
+    // index type remains runtime load metadata parsed by this stateless loader;
+    // it is not a dynamic registry family and is not persisted under a new key.
     std::string
     Family() const override;
 
@@ -91,6 +85,10 @@ class VectorMemLoader final : public IndexLoader {
     std::shared_ptr<IndexReaderBase>
     OpenIndex(storage::FileSource& source,
               const storage::LoadOptions& opts) override;
+
+    RehydratedIndex
+    OpenForRewrite(storage::FileSource& source,
+                   const storage::LoadOptions& opts) override;
 };
 
 }  // namespace milvus::index

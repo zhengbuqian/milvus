@@ -19,10 +19,13 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <string>
+#include <variant>
 
 #include <roaring/roaring.hh>
 
 #include "common/Types.h"
+#include "index/scalar/bitmap/BitmapIndexReader.h"
 #include "storage/artifact/Artifact.h"
 #include "storage/artifact/FileSink.h"
 
@@ -32,13 +35,30 @@
 namespace milvus::index {
 
 template <typename T>
+struct BitmapRewriteStateType {
+    using type = typename BitmapIndexReader<T>::OpenArgs;
+};
+
+template <>
+struct BitmapRewriteStateType<std::string> {
+    using type = BitmapStringIndexReader::OpenArgs;
+};
+
+template <typename T>
 class BitmapIndexArtifact final : public storage::Artifact {
  public:
+    using RewriteState = typename BitmapRewriteStateType<T>::type;
+
     BitmapIndexArtifact(std::map<T, roaring::Roaring> postings,
                         TargetBitmap valid_bitset,
                         size_t total_num_rows,
                         DataType value_type,
-                        bool nested);
+                        bool nested,
+                        bool nullable,
+                        bool value_lookup,
+                        bool offset_cache);
+
+    explicit BitmapIndexArtifact(RewriteState state);
 
     ~BitmapIndexArtifact() override;
 
@@ -49,11 +69,18 @@ class BitmapIndexArtifact final : public storage::Artifact {
     Serialize(storage::FileSink& sink) const override;
 
  private:
-    std::map<T, roaring::Roaring> postings_;
-    TargetBitmap valid_bitset_;
-    size_t total_num_rows_{0};
-    DataType value_type_{DataType::NONE};
-    bool nested_{false};
+    struct BuilderState {
+        std::map<T, roaring::Roaring> postings;
+        TargetBitmap valid_bitset;
+        size_t total_num_rows{0};
+        DataType value_type{DataType::NONE};
+        bool nested{false};
+        bool nullable{false};
+        bool value_lookup{true};
+        bool offset_cache{false};
+    };
+
+    std::variant<BuilderState, RewriteState> state_;
 };
 
 }  // namespace milvus::index

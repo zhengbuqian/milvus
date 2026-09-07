@@ -25,58 +25,24 @@
 #include "index/contracts/IndexBuilder.h"
 #include "index/contracts/IndexLoader.h"
 
-// Family-level loader / builder registries.
-//
-// See core_refactor/01-scalar-index.md §11.2 rule 4: "SPLIT THE FACTORY BY
-// FAMILY: break `CreateIndexInfo` apart, and let family-level loader/builder
-// registries replace `IndexFactory`'s God switch."
-//
-// WHAT IS BEING REPLACED. `index/IndexFactory.h` today is a singleton with ~15
-// `Create*` methods (`CreateIndex`, `CreateVectorIndex`,
-// `CreatePrimitiveScalarIndex`, `CreateNgramIndex`,
-// `CreateCompositeScalarIndex`, `CreateComplexScalarIndex`, `CreateJsonIndex`,
-// `CreateGeometryIndex`, `CreateNestedIndex` + four nested variants,
-// `CreateScalarIndex`) plus six `*LoadResource` overloads, EVERY ONE of which
-// takes a `storage::FileManagerContext&` and returns an `IndexBasePtr`. Three
-// things are wrong with it and each maps onto a rule:
-//   - one dispatch point that must know every family (a God switch): fixed by
-//     registration, so adding a family touches only that family's directory;
-//   - `CreateIndexInfo` is a mixed parameter bag — field type, index type,
-//     metric, dim, tantivy version, json cast type, json path, ngram params,
-//     fmindex params, is_text_match, analyzer info — where MOST FIELDS ARE
-//     MEANINGLESS FOR MOST FAMILIES;
-//   - it hands `FileManagerContext` to every index class, which §10 rule 2
-//     forbids: IO reaches a family only as an injected `storage::FileSink` /
-//     `storage::FileSource`.
-//
-// HOW `CreateIndexInfo` IS BROKEN APART. The parameters that SELECT an
-// implementation become the registry key; everything else belongs to the family
-// and never appears in a shared struct. The registry does not interpret the
-// family's own knobs — each family's factory parses them into its own typed
-// params struct, which for two families ALREADY EXISTS in the current code
-// (`NgramParams`, `FMIndexParams` in `index/IndexInfo.h`).
+// Family-level loader / builder registries. Selection parameters identify a
+// family; the selected implementation parses its own remaining parameters.
 
 namespace milvus::index {
 
 // "inverted" / "bitmap" / "stl_sort" / "marisa" / "text" / "ngram" /
 // "json_flat" / "rtree" / "fmindex" / vector families...
 //
-// A string, matching `IndexLoader::Family()`, because the family tag is
-// PERSISTED (it comes back off disk and out of the index metadata) and a
-// persisted vocabulary that a closed enum would have to be recompiled to extend
-// is the wrong shape for a registry key. It is NOT `knowhere::IndexType` — that
-// alias is a knowhere type and §10 rule 6 keeps knowhere out of the shared base
-// class.
+// A string matching `IndexLoader::Family()`. Load planning derives it from
+// runtime parameters and, for HYBRID/AUTO, the format's existing selector.
 using IndexFamily = std::string;
 
 // Family-specific build/load knobs, opaque to the registry.
 //
 // `Config` is `nlohmann::json` (`common/Types.h:673`). This is deliberately a
 // bag AT THE REGISTRY BOUNDARY ONLY: the registry's job is to find the right
-// factory, not to understand the knobs, and the factory's first act is to parse
-// this into the family's own typed struct. It is NOT a revival of
-// `CreateIndexInfo` — the difference is that no field here is read by anyone but
-// the one family it belongs to, so no family carries fields meant for another.
+// factory, not to understand the knobs. Each factory parses its own typed
+// parameters immediately.
 using BuildParams = Config;
 
 // ---------------------------------------------------------------------------
@@ -117,12 +83,9 @@ class LoaderRegistry {
 // type erasure only on the management interface. Registration is per `(T,
 // family)`; the registry itself never sees a type-erased builder.
 //
-// This is also where §6.3's hybrid strategy lands on the BUILD side: "pick
-// bitmap or inverted by cardinality" is a build-time decision made by the hybrid
-// family's own builder, which records the choice in the artifact metadata. The
-// LOAD side then resolves through `LoaderRegistry` to the CHOSEN CONCRETE
-// FAMILY's loader — the runtime forwarding class `HybridScalarIndex` disappears
-// and never appears in either registry as a reader.
+// The HYBRID build chooses bitmap or inverted by cardinality and writes the
+// existing one-byte selector. Load planning reads only that selector and then
+// resolves through `LoaderRegistry` to the concrete family's loader.
 template <typename T>
 class BuilderRegistry {
  public:
@@ -149,16 +112,7 @@ class BuilderRegistry {
     BuilderRegistry() = default;
 };
 
-// NOTE — WHAT IS *NOT* IN THIS FILE.
-//
-// `IndexFactory`'s six `*LoadResource` overloads (`IndexLoadResource`,
-// `VecIndexLoadResource`, `ScalarIndexLoadResource`, ...) are not re-homed here.
-// They answer "how much memory/disk will loading this cost", which is the LOAD
-// SIDE'S BUDGETING question, not an index self-description — §4.2 and §12.3
-// both put pre-load estimation in the segcore load translator's input metadata
-// ("`EstimateBytes(load_meta)` as a free function on the translator side, not on
-// the index object"). Their landing place is decided together with §12.3's
-// definition of `cell_size_`, which must be closed BEFORE the artifact pipeline
-// sinks to L1. Deliberately left open here rather than silently placed.
+// Pre-load resource estimation is implemented by the free functions in
+// index/LoadResource.h; it is not registry or reader state.
 
 }  // namespace milvus::index

@@ -52,7 +52,6 @@
 #include "common/protobuf_utils.h"
 #include "folly/FBVector.h"
 #include "glog/logging.h"
-#include "index/IndexStats.h"
 #include "index/Meta.h"
 #include "index/SkipIndex.h"
 #include "segcore/json_stats/bson_inverted.h"
@@ -66,6 +65,7 @@
 #include "storage/DiskFileManagerImpl.h"
 #include "storage/FileManager.h"
 #include "storage/MemFileManagerImpl.h"
+#include "storage/artifact/ArtifactStats.h"
 
 class CollectSingleJsonStatsInfoAccessor;
 // Forward declaration of test accessor in global namespace for friend declaration
@@ -167,7 +167,7 @@ class JsonKeyStats {
     BinarySet
     Serialize(const Config& config);
 
-    IndexStatsPtr
+    storage::ArtifactStats
     Upload(const Config& config = {});
 
     // ---- Self-description ----------------------------------------------------

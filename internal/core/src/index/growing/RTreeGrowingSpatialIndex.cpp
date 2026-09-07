@@ -25,7 +25,7 @@ RTreeGrowingSnapshot::RTreeGrowingSnapshot(int64_t covered_rows)
     : covered_rows_(covered_rows) {
 }
 
-milvus::ResourceUsage
+cachinglayer::ResourceUsage
 RTreeGrowingSnapshot::CellByteSize() const {
     // §12.3 / §13.3.
     return {};

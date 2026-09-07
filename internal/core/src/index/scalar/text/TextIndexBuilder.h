@@ -23,9 +23,13 @@
 #include <string_view>
 #include <vector>
 
+#include "common/Types.h"
 #include "index/contracts/IndexBuilder.h"
 #include "storage/artifact/Artifact.h"
-#include "tantivy-wrapper.h"
+
+namespace milvus::tantivy {
+struct TantivyIndexWrapper;
+}
 
 // The BUILDER of the text family — `IndexBuilder<std::string_view>`.
 //
@@ -46,7 +50,7 @@
 //     enable_background_merge = false` — i.e. a sealed interim build wearing the
 //     growing constructor's clothes.
 //
-// THE THREE DIFFERED ONLY IN WHERE THE BYTES LAND. That is now `local_dir_`
+// THE THREE DIFFERED ONLY IN WHERE THE BYTES LAND. That is now `local_dir`
 // (empty => tantivy RAM directory) plus the `storage::FileSink` handed to
 // `TextIndexArtifact::Serialize` — NOT three constructors, and NOT a
 // `FileManagerContext` member (§3 principle 6, §10 rule 2).
@@ -59,12 +63,19 @@
 
 namespace milvus::index {
 
+class TextIndexDirectory;
+
 // Family-specific build parameters. §6.1: "the tokenizer configuration of the
 // text family and the path configuration of the json family are CONSTRUCTOR
 // ARGUMENTS" — they never become extra methods on the builder interface.
 struct TextIndexBuildParams {
-    std::string analyzer_name;
-    std::string analyzer_params;
+    // Build-service text indexes use the decimal FIELD_ID. Sealed in-place and
+    // RAM builds historically use unique_id as the Tantivy schema field name.
+    // The registry parser selects that existing spelling at the boundary.
+    std::string field_name;
+    DataType value_type{DataType::VARCHAR};
+    std::string analyzer_name{"milvus_tokenizer"};
+    std::string analyzer_params{"{}"};
     // Only the build service ever had this one (`TextMatchIndex.h:47`).
     std::string analyzer_extra_info;
     uint32_t tantivy_index_version{0};
@@ -105,10 +116,15 @@ class TextIndexBuilder final : public IndexBuilder<std::string_view> {
     // `&&`-qualified: the builder is one-shot and terminates here (§3
     // principle 1, "one-shot, finished by Seal()").
     storage::ArtifactPtr
-    Seal() && override;
+        Seal() &&
+        override;
 
  private:
     TextIndexBuildParams params_;
+
+    // Declared before engine_ so the writer is destroyed before its owned
+    // on-disk child on constructor failure and ordinary destruction.
+    std::shared_ptr<TextIndexDirectory> directory_;
 
     // The engine, composed. Writer-mode wrapper; see
     // `TextMatchIndex.cpp:79-104` for how it is configured today.
@@ -116,9 +132,13 @@ class TextIndexBuilder final : public IndexBuilder<std::string_view> {
 
     // Row offsets whose value was null. Serialized as a side entry named
     // `INDEX_NULL_OFFSET_FILE_NAME` (`InvertedIndexTantivy.h:49`).
-    std::vector<int64_t> null_offsets_;
+    std::vector<size_t> null_offsets_;
 
-    int64_t count_{0};
+    size_t count_{0};
+    // Tantivy mutations cannot be rolled back. Once an append reports failure,
+    // the writer is poisoned and must never accept more rows or be published.
+    bool failed_{false};
+    bool sealed_{false};
 };
 
 }  // namespace milvus::index

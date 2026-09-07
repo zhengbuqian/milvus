@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <memory>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 #include "common/Types.h"
@@ -29,58 +30,51 @@
 #include "index/contracts/ScalarPredicateReader.h"
 #include "tantivy-wrapper.h"
 
-// The READER of the inverted (tantivy) family.
-//
-// See 01-scalar-index.md §5.1, §5.2, and §8's first mapping row:
-//   | `InvertedIndexTantivy<T>` | `ScalarPredicateReader<T>` + `PatternMatchReader` |
-//   | the tantivy wrapper drops to an internal engine, no longer a base class |
-//
-// THIS CLASS IS NO LONGER A BASE CLASS. Today three families inherit it —
-// `TextMatchIndex`, `NgramInvertedIndex`, `JsonFlatIndex` (and, through
-// `JsonScalarIndexWrapper`, the JSON path indexes) — purely to reuse the
-// tantivy plumbing, and each inherits `In`/`Range`/`Reverse_Lookup` it must
-// never answer. Every one of them now COMPOSES `milvus::tantivy::
-// TantivyIndexWrapper` directly, exactly as `BsonInvertedIndex`
-// (`json_stats/bson_inverted.h:42`) already does. §10 rule 3 lints for it.
-//
-// INTERFACES: `ScalarPredicateReader<T>` + `PatternMatchReader` + `NullReader`.
-// NOT `ScalarValueReader<T>` — this family cannot produce values:
-// `HasRawData()` is hardcoded false (`InvertedIndexTantivy.h:204-206`) and
-// `Reverse_Lookup` is a `ThrowInfo(NotImplemented)` shell (`.h:209-212`).
-//
-//   > A LATENT INCONSISTENCY WORTH FIXING WHILE MOVING: the class does not
-//   > override `SupportFastReverseLookup()`, whose base default is `true`
-//   > (`ScalarIndex.h:171-174`) — so today it ADVERTISES cheap reverse lookup
-//   > while throwing on it. Consumers of that predicate
-//   > (`exec/expression/BloomFilterExpr.h:398`,
-//   > `exec/expression/RoaringFilterExpr.h:179`) are protected only because
-//   > they check `HasRawData()` too. In the new shape the contradiction cannot
-//   > be written: no value interface, no `cheap_value_lookup` bit.
-
 namespace milvus::index {
 
+class InvertedIndexDirectory;
+
+template <typename Derived, bool Enabled>
+class InvertedPatternReader {};
+
+template <typename Derived>
+class InvertedPatternReader<Derived, true> : public PatternMatchReader {
+ public:
+    bool
+    ShouldUseForOp(PatternOp op, std::string_view pattern) const override {
+        return static_cast<const Derived*>(this)->ShouldUseForOpImpl(op,
+                                                                     pattern);
+    }
+
+    TargetBitmap
+    PatternMatch(std::string_view pattern, PatternOp op) const override {
+        return static_cast<const Derived*>(this)->PatternMatchImpl(pattern, op);
+    }
+};
+
 template <typename T>
-class InvertedIndexReader final : public IndexReaderBase,
-                                  public ScalarPredicateReader<T>,
-                                  public PatternMatchReader,
-                                  public NullReader {
+class InvertedIndexReader final
+    : public IndexReaderBase,
+      public ScalarPredicateReader<T>,
+      public InvertedPatternReader<InvertedIndexReader<T>,
+                                   std::is_same_v<T, std::string_view>>,
+      public NullReader {
  public:
     InvertedIndexReader(
+        std::shared_ptr<InvertedIndexDirectory> directory,
         std::shared_ptr<milvus::tantivy::TantivyIndexWrapper> engine,
-        std::vector<size_t> null_offsets,
-        bool is_nested_index);
+        std::shared_ptr<const std::vector<size_t>> null_offsets,
+        DataType value_type,
+        bool nested,
+        bool mmap,
+        size_t engine_bytes,
+        size_t engine_path_bytes);
 
     ~InvertedIndexReader() override;
-
-    // ---- IndexReaderBase (§4.2) ----------------------------------------
 
     ReaderCaps
     Caps() const override;
 
-    // Element when this index was built over ARRAY elements rather than rows
-    // (today's `is_nested_index_`, `InvertedIndexTantivy.h:410`). §5.8: nested
-    // is not a family, it is a mode bit, and its only outward expression is
-    // this coordinate system. The index NEVER folds elements to rows.
     Domain
     CoordDomain() const override;
 
@@ -93,10 +87,8 @@ class InvertedIndexReader final : public IndexReaderBase,
     int64_t
     MemoryUsage() const override;
 
-    ResourceUsage
+    cachinglayer::ResourceUsage
     CellByteSize() const override;
-
-    // ---- ScalarPredicateReader<T> (§5.1) -------------------------------
 
     TargetBitmap
     In(size_t n, const T* values) const override;
@@ -104,27 +96,11 @@ class InvertedIndexReader final : public IndexReaderBase,
     TargetBitmap
     NotIn(size_t n, const T* values) const override;
 
-    // `CompareOp` is the contract layer's NATIVE enum, not `milvus::OpType`.
-    // That alias is `proto::plan::OpType` (`common/Types.h:106`), and README §5
-    // rule 2 keeps protobuf off contract signatures. Watch out for the name
-    // collision while moving: `Range(const T&, OpType)` and
-    // `PatternMatch(..., proto::plan::OpType)` in the same class today refer to
-    // the SAME enum under two spellings.
     TargetBitmap
     Range(const T& value, CompareOp op) const override;
 
     TargetBitmap
     Range(const T& lo, bool lo_inc, const T& hi, bool hi_inc) const override;
-
-    // ---- PatternMatchReader (§5.2) -------------------------------------
-
-    // `RegexMatch` really does arrive here (`InvertedIndexTantivy.h:261-276`),
-    // which is why the contract's `PatternOp` carries it even though §5.2's
-    // prose lists only four operators.
-    TargetBitmap
-    PatternMatch(std::string_view pattern, PatternOp op) const override;
-
-    // ---- NullReader (§5) -----------------------------------------------
 
     TargetBitmap
     IsNull() const override;
@@ -133,26 +109,36 @@ class InvertedIndexReader final : public IndexReaderBase,
     IsNotNull() const override;
 
  private:
-    // Internal helper behind PatternMatch; was the protected virtual
-    // `PatternQuery` (`ScalarIndex.h:283-286`), which existed only so that
-    // subclasses could override one half of pattern matching. With no
-    // subclasses it is a private detail.
+    template <typename Derived, bool Enabled>
+    friend class InvertedPatternReader;
+
+    bool
+    ShouldUseForOpImpl(PatternOp op, std::string_view pattern) const;
+
+    TargetBitmap
+    PatternMatchImpl(std::string_view pattern, PatternOp op) const;
+
     TargetBitmap
     PatternQuery(std::string_view pattern) const;
 
+    // The engine is destroyed before the directory owner, so mapped files stay
+    // alive through the Tantivy reader's entire lifetime.
+    std::shared_ptr<InvertedIndexDirectory> directory_;
     std::shared_ptr<milvus::tantivy::TantivyIndexWrapper> engine_;
-
-    std::vector<size_t> null_offsets_;
-
-    bool is_nested_index_{false};
-
-    // GONE, and worth naming: `folly::SharedMutexWritePriority mutex_`
-    // (`InvertedIndexTantivy.h:379`) and `bool is_growing_` (`:406`). The mutex
-    // guarded `null_offset_` against concurrent growing appends, and
-    // `is_growing_` selected whether `IsNull`/`IsNotNull`/`NotIn` took it
-    // (`InvertedIndexTantivy.cpp:370,403,456`). A sealed reader is immutable
-    // (§5), so both disappear — the growing writer is a different object
-    // (`GrowingTextIndex` / the growing scalar appender), not a mode of this one.
+    std::shared_ptr<const std::vector<size_t>> null_offsets_;
+    DataType value_type_{DataType::NONE};
+    bool nested_{false};
+    bool mmap_{false};
+    // Exact staged file bytes on mmap, or the file payload bytes copied into
+    // Tantivy's RamDirectory. Tantivy exposes no measurement for its reader,
+    // hash-map, Arc, or allocator overhead; that narrow engine accounting gap
+    // is not replaced with an admission estimate here.
+    size_t engine_bytes_{0};
+    // Heap bytes for the path string copied into TantivyIndexWrapper. The
+    // wrapper exposes no accessor, so its source directory measures the copy
+    // before heap-mode staging is released.
+    size_t engine_path_bytes_{0};
+    uint32_t count_{0};
 };
 
 }  // namespace milvus::index

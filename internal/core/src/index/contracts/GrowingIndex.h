@@ -88,14 +88,14 @@
 
 namespace milvus::index {
 
+class VectorSearchReader;
+
 // Declared, not included, ON PURPOSE. `VectorSearchReader` lives in
 // VectorReaders.h, which legitimately includes knowhere headers (§12.1(c) rules
 // that knowhere types may appear in the vector contract). §10 rule 6 requires
 // SCALAR-family contracts to include zero knowhere, and `GrowingScalarIndex<T>`
 // lives in this header — so the vector appender's return type is forward
 // declared here, and only vector implementations include VectorReaders.h.
-class VectorSearchReader;
-
 // The scalar appender.
 template <typename T>
 class GrowingScalarIndex {
@@ -147,8 +147,8 @@ class GrowingTextIndex {
 // (`:171,177`). What is wrong today is the SHARED BASE CLASS: `FieldIndexing`
 // (`:51`) is the UNION of both families' interfaces — 3 of its 5 pure virtuals
 // are vector-only, 2 are scalar-only, and each subclass throws away the other
-// half (`:152,161,183` and `:294,303`). That is the same Liskov violation as
-// `IndexBase`, on the growing side.
+// half (`:152,161,183` and `:294,303`). That is the growing-side shared-base
+// Liskov violation.
 //
 // The rule this pins down: THE FOUR INTERFACES ARE UNIFIED ACROSS BOTH
 // FAMILIES; THE METHOD SETS INSIDE EACH INTERFACE ARE SPLIT BY FAMILY.
@@ -205,11 +205,10 @@ class GrowingVectorIndex {
     CommittedRows() const = 0;
 };
 
-// RETIRING `IndexBase` MUST INCLUDE THE GROWING SIDE (§7.1, §11.2 rule 3).
+// Retiring the legacy shared base must include the growing side (§7.1, §11.2
+// rule 3).
 // `FieldIndexing::get_chunk_indexing` / `get_segment_indexing`
-// (`FieldIndexing.h:128,131`) also return `PinWrapper<index::IndexBase*>` — the
-// growing side uses `IndexBase` as its type-erased handle too. Those two exits
-// are part of the refactor phase 1 exit checklist; cleaning only the sealed
-// side leaves a reference behind. The handle becomes `IndexReaderBase`.
+// also return the legacy type-erased handle. Those two exits are part of the
+// phase 1 checklist; the handle becomes `IndexReaderBase`.
 
 }  // namespace milvus::index

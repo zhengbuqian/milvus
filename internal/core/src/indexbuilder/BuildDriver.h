@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <memory>
 #include <string>
 
@@ -59,24 +60,36 @@
 
 namespace milvus::indexbuilder {
 
+enum class FeedControl {
+    Continue,
+    PassComplete,
+};
+
 class BuildDriver {
  public:
     virtual ~BuildDriver() = default;
 
-    // Static self-description; the caller decides HOW to feed from it (§6.1.2:
+    // Per-pass self-description; the caller decides HOW to feed from it (§6.1.2:
     // "the interface is unified, the differences move into a declaration"). The
     // five input forms of §6.1.1 (A streaming / B resident / B+ contiguous /
     // C needs-a-first-pass / D local file) cut ACROSS the two families —
     // scalar alone occupies three of them — which is why splitting the Builder
     // interface by family would be the wrong cut and declaring the form is the
-    // right one.
+    // right one. Multi-pass drivers refresh this value after FinishPass().
     virtual const index::BuilderInputSpec&
     InputSpec() const = 0;
 
-    // One decoded batch, pushed. The driver forwards the batch's raw pointers
-    // to `index::IndexBuilder<T>::Add(n, values, valid)`.
-    virtual void
+    // One decoded batch, pushed. Fixed-width values are forwarded directly;
+    // owning strings and arrays are exposed as callback-scoped views before the
+    // driver calls `index::IndexBuilder<T>::Add(n, values, valid)`.
+    virtual FeedControl
     Feed(const FieldDataPtr& batch) = 0;
+
+    // End the current probe pass. Valid only when InputSpec initially declared
+    // needs_second_pass; implementations refresh InputSpec after the builder
+    // selects its concrete delegate.
+    virtual void
+    FinishPass() = 0;
 
     // Only for `InputSpec().form == LocalFile` (form D, DiskANN): the data was
     // materialised to a local file by the shared materialiser and is handed
@@ -97,44 +110,72 @@ using BuildDriverPtr = std::unique_ptr<BuildDriver>;
 // The concrete driver for one value type. Holds the family's
 // `index::IndexBuilder<T>` obtained from `index::BuilderRegistry<T>`.
 //
-// TODO: move existing logic here — the per-type dispatch that today lives in
-// `index::IndexFactory::CreateIndex`'s switch and in
-// `indexbuilder::IndexFactory::CreateIndex` (indexbuilder/IndexFactory.h:46-83).
-// §11.2 item 4: the God switch is replaced by per-family loader/builder
-// registries, and `CreateIndexInfo` is broken up.
+// This is the one management-plane type-erasure point. Family construction is
+// still registry-driven; this class only adapts decoded `FieldData` into the
+// builder's typed raw-array currency.
 template <typename T>
 class TypedBuildDriver : public BuildDriver {
  public:
-    TypedBuildDriver(std::unique_ptr<index::IndexBuilder<T>> builder);
+    TypedBuildDriver(std::unique_ptr<index::IndexBuilder<T>> builder,
+                     DataType source_type,
+                     DataType array_element_type = DataType::NONE);
 
     const index::BuilderInputSpec&
     InputSpec() const override;
 
-    void
+    FeedControl
     Feed(const FieldDataPtr& batch) override;
+
+    void
+    FinishPass() override;
 
     void
     SetSourceFile(const std::string& path) override;
 
     storage::ArtifactPtr
-    Seal() && override;
+        Seal() &&
+        override;
+
+ protected:
+    FeedControl
+    AddProjected(size_t n, const T* values, const bool* valid);
+
+    void
+    ValidateFeed(const FieldDataPtr& batch) const;
+
+    const bool*
+    UnpackValidity(const FieldDataPtr& batch);
+
+    void
+    MarkFailed() noexcept;
+
+    void
+    MarkSourceSet();
+
+    void
+    AssertOpen(const char* operation) const;
+
+    DataType
+    ArrayElementType() const {
+        return array_element_type_;
+    }
 
  private:
+    enum class State { Open, Failed, Consumed };
+
     std::unique_ptr<index::IndexBuilder<T>> builder_;
     index::BuilderInputSpec spec_;
+    DataType source_type_{DataType::NONE};
+    DataType array_element_type_{DataType::NONE};
+    std::unique_ptr<bool[]> validity_scratch_;
+    size_t validity_capacity_{0};
+    State state_{State::Open};
+    bool fed_{false};
+    bool source_set_{false};
 };
 
-// Picks `T` from the field's `DataType` and asks
+// Validates the normalized outer/value/element types, picks `T`, and asks
 // `index::BuilderRegistry<T>::Create(family, params)`.
-//
-// NOTE ON HYBRID (§6.3): "pick bitmap or inverted by cardinality" is a BUILD
-// TIME decision, so it is a Builder strategy, not a runtime forwarding class.
-// The builder chooses at `Seal()` and records the choice in the artifact's
-// metadata; `IndexLoader::Open` then returns the chosen concrete reader
-// directly. `index::HybridScalarIndex` disappears — the caller here never sees
-// the choice. Its two-pass need (scan for cardinality, with an early exit once
-// the distinct count hits its cap, index/HybridScalarIndex.cpp:167) is what
-// `BuilderInputSpec::needs_second_pass` exists to declare (form C).
 //
 // NOTE ON `side_inputs`: not a placeholder. `VectorMemIndex::Build` reads
 // `VEC_OPT_FIELDS` and calls `CacheOptFieldToMemory`

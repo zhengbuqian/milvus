@@ -22,18 +22,12 @@
 #include <vector>
 
 #include "common/Types.h"
-#include "index/scalar/sort/IndexStructure.h"
+#include "index/scalar/sort/SortedIndexReader.h"
 #include "storage/artifact/Artifact.h"
 #include "storage/artifact/FileSink.h"
 
-// The ARTIFACTS of the sorted family (§6). Memory-shaped.
-//
-// Two artifacts for the same reason there are two readers: the numeric and
-// string on-disk formats genuinely differ — the string one carries a magic
-// number and a format version (`StringIndexSort.h:45-47`, validated in
-// `ParseBinaryData`, `.cpp:86-139`) and the numeric one carries neither.
-// Unifying the FORMATS is a follow-up; unifying the CLASSES without unifying
-// the formats would only hide the difference behind a branch.
+// Numeric and string artifacts remain separate because their persisted layouts
+// differ.
 
 namespace milvus::index {
 
@@ -42,9 +36,13 @@ class SortedIndexArtifact final : public storage::Artifact {
  public:
     SortedIndexArtifact(std::vector<IndexStructure<T>> data,
                         TargetBitmap valid_bitset,
+                        std::vector<int32_t> idx_to_offsets,
                         size_t total_num_rows,
                         DataType value_type,
-                        bool nested);
+                        bool nested,
+                        bool value_lookup);
+
+    explicit SortedIndexArtifact(typename SortedIndexReader<T>::OpenArgs state);
 
     ~SortedIndexArtifact() override;
 
@@ -55,11 +53,7 @@ class SortedIndexArtifact final : public storage::Artifact {
     Serialize(storage::FileSink& sink) const override;
 
  private:
-    std::vector<IndexStructure<T>> data_;
-    TargetBitmap valid_bitset_;
-    size_t total_num_rows_{0};
-    DataType value_type_{DataType::NONE};
-    bool nested_{false};
+    typename SortedIndexReader<T>::OpenArgs state_;
 };
 
 class SortedStringIndexArtifact final : public storage::Artifact {
@@ -67,8 +61,13 @@ class SortedStringIndexArtifact final : public storage::Artifact {
     SortedStringIndexArtifact(std::vector<std::string> unique_values,
                               std::vector<std::vector<uint32_t>> posting_lists,
                               TargetBitmap valid_bitset,
+                              std::vector<int32_t> idx_to_offsets,
                               size_t total_num_rows,
-                              bool nested);
+                              DataType value_type,
+                              bool nested,
+                              bool value_lookup);
+
+    explicit SortedStringIndexArtifact(SortedStringIndexReader::OpenArgs state);
 
     ~SortedStringIndexArtifact() override;
 
@@ -79,11 +78,7 @@ class SortedStringIndexArtifact final : public storage::Artifact {
     Serialize(storage::FileSink& sink) const override;
 
  private:
-    std::vector<std::string> unique_values_;
-    std::vector<std::vector<uint32_t>> posting_lists_;
-    TargetBitmap valid_bitset_;
-    size_t total_num_rows_{0};
-    bool nested_{false};
+    SortedStringIndexReader::OpenArgs state_;
 };
 
 }  // namespace milvus::index

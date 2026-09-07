@@ -34,12 +34,23 @@ class JsonFlatIndexLoader final : public IndexLoader {
     std::string
     Family() const override;
 
+    // JSON field/value/cast, row domain, root path and engine version are
+    // runtime-only normalized parameters. The historical Tantivy directory
+    // format does not persist them, so caps are derived without payload I/O.
     ReaderCaps
     DeriveCaps(const Config& index_meta) const override;
 
     std::shared_ptr<IndexReaderBase>
     OpenIndex(storage::FileSource& source,
               const storage::LoadOptions& opts) override;
+
+    RehydratedIndex
+    OpenForRewrite(storage::FileSource& source,
+                   const storage::LoadOptions& opts) override;
 };
+
+// V1/V2 callers must construct FileSource with V1SourceLayout::DiskFiles:
+// Tantivy files use the legacy directory-slice convention rather than the
+// named-buffer SLICE_META convention. V3 uses typed file_names/has_null meta.
 
 }  // namespace milvus::index

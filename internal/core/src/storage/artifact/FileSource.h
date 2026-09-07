@@ -17,10 +17,15 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include "nlohmann/json_fwd.hpp"
+#include "storage/artifact/FileSink.h"
+#include "storage/artifact/LoadOptions.h"
 
 // The narrow read side of the artifact pipeline.
 //
@@ -32,17 +37,30 @@
 // storage component's one-line definition (README §4).
 //
 // The three materialization forms of §11.2 map onto the three read shapes here:
-//   - in-memory blob set (knowhere `BinarySet`, bitmap/sort/marisa) -> ReadEntry
-//   - local big file, streamed (DiskANN)                            -> ReadEntryToLocalFile
-//   - mmap (and the tantivy directory families)                     -> ReadEntriesToLocalDir
+//   - neutral named in-memory buffers (bitmap/sort/marisa) -> ReadEntry
+//   - local big file, streamed (DiskANN)                   -> ReadEntryToLocalFile
+//   - mmap (and tantivy directory families)                -> ReadEntriesToLocalDir
 //
-// Naming provisional, see §12.2.
-
 namespace milvus::storage {
+
+struct FileManagerContext;
+
+// V1/V2 has two physical conventions. Legacy named-buffer objects use
+// SLICE_META to identify slices. Directory artifacts name every
+// physical slice `<basename>_<N>` without SLICE_META. The caller knows the
+// family and must select the convention; guessing from a numeric suffix would
+// reinterpret legitimate named-buffer entry names.
+enum class V1SourceLayout {
+    MemoryEntries,
+    DiskFiles,
+};
 
 class FileSource {
  public:
     virtual ~FileSource() = default;
+
+    virtual Generation
+    Gen() const = 0;
 
     virtual std::vector<std::string>
     EntryNames() const = 0;
@@ -50,6 +68,9 @@ class FileSource {
     virtual bool
     HasEntry(std::string_view name) const = 0;
 
+    // Returns a known logical length when the transport carries one. On legacy
+    // layouts without length metadata this may materialize exactly this entry
+    // as load-time I/O. It is not a metadata-only caps/admission API.
     virtual int64_t
     EntrySize(std::string_view name) const = 0;
 
@@ -58,15 +79,35 @@ class FileSource {
     ReadEntry(std::string_view name) = 0;
 
     // Materialize one entry as a local file without a full in-memory copy.
-    // This is the DiskANN path.
+    // This is the DiskANN path. Publication uses a checked same-directory
+    // staging file and atomic replacement, so failure preserves an existing
+    // destination.
     virtual void
     ReadEntryToLocalFile(std::string_view name,
                          const std::string& local_path) = 0;
 
-    // Materialize a set of entries into a local directory, returning their local
-    // paths in the order requested. This is the mmap path and the tantivy
-    // directory path: `Open` under mmap does not deserialize anything (§6.2), it
-    // maps these files.
+    // Copy one exact physical V1/V2 DiskFiles object to a local file without
+    // applying the named-entry codec. This is deliberately narrower than
+    // ReadEntryToLocalFile: grouped slices and logical sidecars must continue
+    // through the decoded entry path. Implementations that do not expose the
+    // legacy raw-file transport reject this operation. Publication is staged
+    // beside the destination and atomic, so failure preserves an existing
+    // destination.
+    virtual void
+    ReadRawEntryToLocalFile(std::string_view name,
+                            const std::string& local_path) = 0;
+
+    // Materialize several logical entries into one file in exactly the order
+    // supplied. This is the vector mmap concatenation contract.
+    virtual void
+    ReadEntriesToLocalFile(const std::vector<std::string>& names,
+                           const std::string& local_path) = 0;
+
+    // Materialize a set of entries into a local directory, returning their
+    // local paths in the order requested. This is the mmap path and the tantivy
+    // directory path. Destinations must have no concurrent writers; all entries
+    // are staged before publication and existing files are restored if the
+    // publication fails.
     virtual std::vector<std::string>
     ReadEntriesToLocalDir(const std::vector<std::string>& names,
                           const std::string& local_dir) = 0;
@@ -75,8 +116,142 @@ class FileSource {
     // payload entry — this is what lets a Loader decide which concrete reader to
     // build (§6.3 hybrid) and what lets the inventory derive `ReaderCaps` from
     // load-time metadata alone, before anything is pinned (§4.1/§4.3).
-    virtual std::optional<std::string>
+    virtual std::optional<nlohmann::json>
     GetMeta(std::string_view key) const = 0;
+
+    // Position-bearing access for DiskANN streaming. The loader may pass the
+    // FileManager context to knowhere without copying index bytes.
+    virtual const FileManagerContext&
+    Context() const = 0;
+
+    virtual const std::vector<std::string>&
+    RemotePaths() const = 0;
+};
+
+class V1RemoteSource final : public FileSource {
+ public:
+    V1RemoteSource(
+        const FileManagerContext& context,
+        std::vector<std::string> remote_paths,
+        LoadOptions options = {},
+        ArtifactStoragePath storage_path = ArtifactStoragePath::Index,
+        V1SourceLayout layout = V1SourceLayout::MemoryEntries);
+    ~V1RemoteSource() override;
+
+    Generation
+    Gen() const override;
+    std::vector<std::string>
+    EntryNames() const override;
+    bool
+    HasEntry(std::string_view name) const override;
+    int64_t
+    EntrySize(std::string_view name) const override;
+    std::vector<uint8_t>
+    ReadEntry(std::string_view name) override;
+    void
+    ReadEntryToLocalFile(std::string_view name,
+                         const std::string& local_path) override;
+    void
+    ReadRawEntryToLocalFile(std::string_view name,
+                            const std::string& local_path) override;
+    void
+    ReadEntriesToLocalFile(const std::vector<std::string>& names,
+                           const std::string& local_path) override;
+    std::vector<std::string>
+    ReadEntriesToLocalDir(const std::vector<std::string>& names,
+                          const std::string& local_dir) override;
+    std::optional<nlohmann::json>
+    GetMeta(std::string_view key) const override;
+    const FileManagerContext&
+    Context() const override;
+    const std::vector<std::string>&
+    RemotePaths() const override;
+
+ private:
+    class Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+class V3PackedSource final : public FileSource {
+ public:
+    V3PackedSource(
+        const FileManagerContext& context,
+        std::vector<std::string> remote_paths,
+        LoadOptions options = {},
+        ArtifactStoragePath storage_path = ArtifactStoragePath::Index);
+    ~V3PackedSource() override;
+
+    Generation
+    Gen() const override;
+    std::vector<std::string>
+    EntryNames() const override;
+    bool
+    HasEntry(std::string_view name) const override;
+    int64_t
+    EntrySize(std::string_view name) const override;
+    std::vector<uint8_t>
+    ReadEntry(std::string_view name) override;
+    void
+    ReadEntryToLocalFile(std::string_view name,
+                         const std::string& local_path) override;
+    void
+    ReadRawEntryToLocalFile(std::string_view name,
+                            const std::string& local_path) override;
+    void
+    ReadEntriesToLocalFile(const std::vector<std::string>& names,
+                           const std::string& local_path) override;
+    std::vector<std::string>
+    ReadEntriesToLocalDir(const std::vector<std::string>& names,
+                          const std::string& local_dir) override;
+    std::optional<nlohmann::json>
+    GetMeta(std::string_view key) const override;
+    const FileManagerContext&
+    Context() const override;
+    const std::vector<std::string>&
+    RemotePaths() const override;
+
+ private:
+    class Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+class NamedBufferSource final : public FileSource {
+ public:
+    explicit NamedBufferSource(const NamedBufferSet& buffers);
+    ~NamedBufferSource() override;
+
+    Generation
+    Gen() const override;
+    std::vector<std::string>
+    EntryNames() const override;
+    bool
+    HasEntry(std::string_view name) const override;
+    int64_t
+    EntrySize(std::string_view name) const override;
+    std::vector<uint8_t>
+    ReadEntry(std::string_view name) override;
+    void
+    ReadEntryToLocalFile(std::string_view name,
+                         const std::string& local_path) override;
+    void
+    ReadRawEntryToLocalFile(std::string_view name,
+                            const std::string& local_path) override;
+    void
+    ReadEntriesToLocalFile(const std::vector<std::string>& names,
+                           const std::string& local_path) override;
+    std::vector<std::string>
+    ReadEntriesToLocalDir(const std::vector<std::string>& names,
+                          const std::string& local_dir) override;
+    std::optional<nlohmann::json>
+    GetMeta(std::string_view key) const override;
+    const FileManagerContext&
+    Context() const override;
+    const std::vector<std::string>&
+    RemotePaths() const override;
+
+ private:
+    class Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
 }  // namespace milvus::storage

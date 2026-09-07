@@ -17,9 +17,9 @@
 #pragma once
 
 #include <cstddef>
-#include <functional>
+#include <cstdint>
 #include <string>
-#include <utility>
+#include <variant>
 #include <vector>
 
 #include "common/Types.h"
@@ -48,29 +48,55 @@
 
 namespace milvus::segcore {
 
-// Addresses one index inside the segment's inventory.
-//
-// Whole-field indexes (inverted / bitmap / sort / marisa / fmindex / rtree /
-// text / json flat) leave `json_path` empty. Per-path JSON cast indexes are
-// registered under `(field, path)` — §5.7: "the per-path cast index needs no
-// dedicated contract: it is an ordinary `ScalarPredicateReader<T>` registered
-// in the inventory keyed by `(field, path)`".
+// Distinguishes persisted indexes from segment-local registrations without
+// borrowing one integer namespace for both. The variant preserves the complete
+// signed persisted id and unsigned local registration id ranges.
+class IndexIdentity {
+ public:
+    enum class Kind : uint8_t {
+        Persisted,
+        Local,
+    };
+
+    static IndexIdentity
+    Persisted(int64_t index_id);
+
+    static IndexIdentity
+    Local(uint64_t registration_id);
+
+    Kind
+    kind() const;
+
+    bool
+    operator==(const IndexIdentity& other) const;
+
+    bool
+    operator<(const IndexIdentity& other) const;
+
+ private:
+    explicit IndexIdentity(std::variant<int64_t, uint64_t> value);
+
+    std::variant<int64_t, uint64_t> value_;
+
+    friend struct IndexKeyHash;
+};
+
+// Addresses one index inside the segment's inventory. JSON path is capability
+// metadata, not identity: a persisted index keeps its catalog id across reload,
+// while a built-in/interim index receives a segment-local registration id.
 struct IndexKey {
     FieldId field_id;
-    std::string json_path;
+    IndexIdentity identity;
 
     bool
     operator==(const IndexKey& other) const {
-        return field_id == other.field_id && json_path == other.json_path;
+        return field_id == other.field_id && identity == other.identity;
     }
 };
 
 struct IndexKeyHash {
     size_t
-    operator()(const IndexKey& key) const {
-        return std::hash<int64_t>()(key.field_id.get()) ^
-               (std::hash<std::string>()(key.json_path) << 1);
-    }
+    operator()(const IndexKey& key) const;
 };
 
 // One inventory entry's capability record. Built at LOAD time from load
@@ -78,6 +104,10 @@ struct IndexKeyHash {
 // — never by touching the index object.
 struct IndexCapabilityEntry {
     IndexKey key;
+
+    // Empty for whole-field indexes. For a per-path JSON cast index this is
+    // the selected path; it never substitutes for the stable inventory key.
+    std::string json_path;
 
     // "inverted" / "bitmap" / "sort" / "marisa" / "fmindex" / "text" /
     // "ngram" / "rtree" / "json_flat" ... — `index::IndexLoader::Family()`.
@@ -95,10 +125,12 @@ struct IndexCapabilityEntry {
 
 class FieldIndexCapability {
  public:
-    FieldIndexCapability() = default;
+    explicit FieldIndexCapability(
+        FieldId field_id, std::vector<IndexCapabilityEntry> entries = {});
 
-    explicit FieldIndexCapability(std::vector<IndexCapabilityEntry> entries)
-        : entries_(std::move(entries)) {
+    FieldId
+    field_id() const {
+        return field_id_;
     }
 
     bool
@@ -111,47 +143,14 @@ class FieldIndexCapability {
         return entries_;
     }
 
-    // Reader-interface lookups. Each returns the first entry whose caps
-    // advertise the interface, or null when no index on this field can serve it
-    // — in which case exec falls back to a column scan (§4.1: "if there is a
-    // usable index, use the index; only otherwise fall back to a column scan").
-    //
-    // TODO: move existing logic here — today these questions are answered by
-    // `SegmentExpr::HasCompatibleScalarIndex()` (exec/expression/Expr.h:2573)
-    // plus `SegmentInternalInterface::HasIndex()` / `HasJsonIndex()`, and the
-    // per-op refinement is a `dynamic_cast` + `ShouldUseOp()` on the PINNED
-    // index (`Expr.h:2702` `CanUseIndexForOp`). Both collapse into caps reads.
+    // Returns the exact entry, or null when `key` names another field or is not
+    // registered. The pointer refers to `entries_`: it remains valid until this
+    // capability object is destroyed, moved from, or assigned.
     const IndexCapabilityEntry*
-    Predicate() const;
-
-    const IndexCapabilityEntry*
-    PatternMatch() const;
-
-    const IndexCapabilityEntry*
-    TextMatch() const;
-
-    // Candidate family (`caps.exact == false`): exec must re-evaluate on the
-    // original values (§5.4).
-    const IndexCapabilityEntry*
-    Ngram() const;
-
-    // Candidate family (`caps.exact == false`): MBR coarse filter, exec
-    // refines (§5.6).
-    const IndexCapabilityEntry*
-    Spatial() const;
-
-    const IndexCapabilityEntry*
-    ValueLookup() const;
-
-    // Path-addressed composite index (`JsonFlatIndex`). §5.7.
-    const IndexCapabilityEntry*
-    JsonPaths() const;
-
-    // Per-path cast index registered as `(field, path)`.
-    const IndexCapabilityEntry*
-    PredicateAtPath(const std::string& json_path) const;
+    Find(const IndexKey& key) const;
 
  private:
+    FieldId field_id_;
     std::vector<IndexCapabilityEntry> entries_;
 };
 

@@ -16,15 +16,65 @@
 
 #include "index/scalar/text/TextIndexReader.h"
 
+#include <limits>
+#include <string>
+#include <utility>
+
+#include "common/EasyAssert.h"
+#include "index/scalar/text/TextIndexArtifact.h"
+#include "tantivy-wrapper.h"
+
 namespace milvus::index {
+namespace {
+
+bool
+IsTextValueType(DataType type) {
+    return type == DataType::STRING || type == DataType::VARCHAR ||
+           type == DataType::TEXT;
+}
+
+int64_t
+ToUsageBytes(size_t bytes) {
+    if (bytes > static_cast<size_t>(std::numeric_limits<int64_t>::max())) {
+        ThrowInfo(DataFormatBroken,
+                  "text reader resource size exceeds int64 domain");
+    }
+    return static_cast<int64_t>(bytes);
+}
+
+std::string
+OwnString(std::string_view value) {
+    return value.empty() ? std::string{}
+                         : std::string(value.data(), value.size());
+}
+
+}  // namespace
 
 TextIndexReader::TextIndexReader(
+    std::shared_ptr<TextIndexDirectory> directory,
     std::shared_ptr<milvus::tantivy::TantivyIndexWrapper> engine,
     int64_t count,
-    bool mmap_enabled)
-    : engine_(std::move(engine)), count_(count), mmap_enabled_(mmap_enabled) {
-    // TODO: move existing logic here (see TextMatchIndex.cpp:370 CreateReader,
-    // which today installs the set-bitset callback on the wrapper).
+    DataType value_type,
+    bool file_backed,
+    size_t payload_bytes)
+    : directory_(std::move(directory)),
+      engine_(std::move(engine)),
+      count_(count),
+      value_type_(value_type),
+      file_backed_(file_backed),
+      payload_bytes_(payload_bytes) {
+    AssertInfo(engine_ != nullptr, "text reader requires an engine");
+    AssertInfo(count_ >= 0, "text reader count must be non-negative");
+    AssertInfo(IsTextValueType(value_type_),
+               "text reader requires a string value type, got {}",
+               static_cast<int>(value_type_));
+    AssertInfo(!file_backed_ || directory_ != nullptr,
+               "file-backed text reader requires a directory owner");
+    const auto engine_count = static_cast<int64_t>(engine_->count());
+    AssertInfo(engine_count == count_,
+               "text reader count {} disagrees with Tantivy count {}",
+               count_,
+               engine_count);
 }
 
 TextIndexReader::~TextIndexReader() = default;
@@ -48,54 +98,64 @@ TextIndexReader::Count() const {
 
 DataType
 TextIndexReader::ValueType() const {
-    return DataType::VARCHAR;
+    return value_type_;
 }
 
 int64_t
 TextIndexReader::MemoryUsage() const {
-    // TODO: move existing logic here (see InvertedIndexTantivy's
-    // ComputeByteSize; the engine reports `index_size_bytes()`).
+    // Tantivy exposes managed-directory payload bytes but not an exact Rust
+    // reader/analyzer heap census. Count the known C++ ownership explicitly;
+    // for RAM indexes, also count the RAM-backed managed payload.
+    constexpr size_t kKnownMetadataBytes =
+        sizeof(TextIndexReader) + sizeof(milvus::tantivy::TantivyIndexWrapper);
+    size_t total = kKnownMetadataBytes;
+    if (directory_ != nullptr) {
+        const auto directory_bytes = directory_->HeapBytes();
+        if (directory_bytes > std::numeric_limits<size_t>::max() - total) {
+            ThrowInfo(DataFormatBroken, "text reader memory size overflows");
+        }
+        total += directory_bytes;
+    }
+    if (!file_backed_) {
+        if (payload_bytes_ > std::numeric_limits<size_t>::max() - total) {
+            ThrowInfo(DataFormatBroken, "text reader memory size overflows");
+        }
+        total += payload_bytes_;
+    }
+    return ToUsageBytes(total);
 }
 
-ResourceUsage
+cachinglayer::ResourceUsage
 TextIndexReader::CellByteSize() const {
-    // TODO: move existing logic here (see TextMatchIndex.h:119-152
-    // `TextMatchIndexHolder`, which charges the cache with
-    // `ResourceUsage(ByteSize(), 0)` or `(0, ByteSize())` depending on mmap).
-    //
-    // NOTE — THE HOLDER ITSELF DOES NOT COME ALONG. `TextMatchIndexHolder`
-    // calls `cachinglayer::Manager::ChargeLoadedResource` from inside index/,
-    // which §10 rule 5 forbids (accounting and pinning are the load-side
-    // translator's). The reader only REPORTS its size; segcore charges it.
-    //
-    // OPEN QUESTION §12.3: text and FMIndex report MEASURED RESIDENT MEMORY
-    // here while every other family reports the UNCOMPRESSED FILE SIZE. The
-    // unit of this number is undefined today and must be defined before the
-    // artifact pipeline sinks to L1. Do not "fix" it locally per family.
+    return {MemoryUsage(), file_backed_ ? ToUsageBytes(payload_bytes_) : 0};
 }
 
 TargetBitmap
 TextIndexReader::PrepareBitset() const {
-    // TODO: move existing logic here (see TextMatchIndex.cpp:383-391).
+    return TargetBitmap(static_cast<size_t>(count_));
 }
 
 TargetBitmap
 TextIndexReader::MatchQuery(std::string_view query,
                             uint32_t min_should_match) const {
-    // TODO: move existing logic here (see TextMatchIndex.cpp:392-400).
-    // Signature change: `const std::string&` -> `std::string_view` (§5.1's
-    // view decision applies to every INPUT side).
+    auto bitset = PrepareBitset();
+    engine_->match_query(OwnString(query), min_should_match, &bitset);
+    return bitset;
 }
 
 TargetBitmap
 TextIndexReader::PhraseMatchQuery(std::string_view query, uint32_t slop) const {
-    // TODO: move existing logic here (see TextMatchIndex.cpp:401-409).
+    auto bitset = PrepareBitset();
+    engine_->phrase_match_query(OwnString(query), slop, &bitset);
+    return bitset;
 }
 
 TargetBitmap
 TextIndexReader::FuzzyMatchQuery(std::string_view query,
                                  uint32_t max_edit_distance) const {
-    // TODO: move existing logic here (see TextMatchIndex.cpp:410-419).
+    auto bitset = PrepareBitset();
+    engine_->fuzzy_match_query(OwnString(query), max_edit_distance, &bitset);
+    return bitset;
 }
 
 }  // namespace milvus::index

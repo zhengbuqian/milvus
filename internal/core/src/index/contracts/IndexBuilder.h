@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include "common/EasyAssert.h"
 #include "common/Types.h"
 #include "storage/artifact/Artifact.h"
 
@@ -72,7 +73,9 @@
 
 namespace milvus::index {
 
-// Static self-description: how this family wants to be fed (§6.1.2).
+// Per-pass self-description: how this family wants to be fed (§6.1.2). It is
+// stable during a pass. A multi-pass builder may change it in FinishPass(), so
+// callers must fetch it again before starting the next pass.
 //
 // The trick is the same one `ReaderCaps` plays on the query side — MOVE THE
 // DIFFERENCE OUT OF THE INTERFACE AND INTO DATA. There is no per-family Builder
@@ -115,11 +118,11 @@ struct BuilderInputSpec {
     // because the caller drives the feeding.
     bool needs_second_pass = false;
 
-    // NOT A PLACEHOLDER. `VectorMemIndex::Build` reads `VEC_OPT_FIELDS` and calls
-    // `CacheOptFieldToMemory` (`VectorMemIndex.cpp:539-547`): partition-key
-    // isolation needs ANOTHER FIELD's data as a build input. A single-cursor
-    // signature cannot express that — a builder's input is not always "this
-    // column".
+    // Other fields that the shared build service must fetch before feeding this
+    // builder. This is a materialization declaration, not the values themselves:
+    // family-specific shapes still travel through typed/configured inputs after
+    // the declared fields have been fetched. Partition-isolated vector optional
+    // fields are the existing production case (§6.1.2).
     std::vector<FieldId> side_inputs;
 };
 
@@ -141,6 +144,21 @@ class IndexBuilder {
     virtual void
     Add(size_t n, const T* values, const bool* valid) = 0;
 
+    // Multi-pass builders use this as a successful early-stop signal for the
+    // current pass. Ordinary one-pass builders never complete a probe pass.
+    virtual bool
+    CurrentPassComplete() const {
+        return false;
+    }
+
+    // Ends the probe pass and prepares the builder for the real build pass.
+    // Calling it on a one-pass builder is a protocol error, not a capability
+    // fallback.
+    virtual void
+    FinishPass() {
+        AssertInfo(false, "FinishPass called on a one-pass index builder");
+    }
+
     // Only for families whose form == LocalFile (DiskANN): the data has already
     // been materialized to a local file by the shared materializer.
     //
@@ -159,15 +177,13 @@ class IndexBuilder {
     // Returns `storage::ArtifactPtr`, not an `IndexArtifactPtr`: §11.2 rule 1
     // sinks the artifact pipeline to L1 and drops the `Index` prefix, because
     // nothing in "serialize -> upload -> download -> open -> account" is
-    // index-specific (naming provisional, §12.2).
+    // index-specific.
     // `storage::Artifact::OpenReader()` returns the L1 type-erased base class;
     // index consumers downcast to `IndexReaderBase`.
     //
-    // §6.3: HYBRID BECOMES A BUILD-TIME STRATEGY. "Pick bitmap or inverted by
-    // cardinality" is a build-time decision — the builder chooses at `Seal()`
-    // and records the choice in the artifact metadata, and `IndexLoader::Open`
-    // returns the chosen concrete reader directly. The runtime forwarding class
-    // `HybridScalarIndex` is deleted.
+    // §6.3: HYBRID BECOMES A BUILD-TIME STRATEGY. The probe completion chooses
+    // bitmap or inverted; `Seal()` emits the format's existing `index_type`
+    // selector. Load planning reads that selector and opens the concrete reader.
     virtual storage::ArtifactPtr
     Seal() && = 0;
 };

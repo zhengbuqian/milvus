@@ -16,15 +16,17 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "common/Types.h"
 #include "index/contracts/IndexReader.h"
 #include "index/contracts/NullReader.h"
 #include "index/contracts/PatternMatchReader.h"
-#include "index/fmindex/FMIndex.h"
 
 // The READER of the FM-index family.
 //
@@ -44,18 +46,111 @@
 
 namespace milvus::index {
 
+namespace fmindex {
+class FMIndex;
+}
+
+// Owns the family-private mmap and its unique staging directory. The engine
+// stores views into Data(), so readers retain this object for their lifetime.
+class FmIndexMappedFile final {
+ public:
+    FmIndexMappedFile(void* data,
+                      size_t mapped_bytes,
+                      std::string staging_directory);
+    FmIndexMappedFile(const FmIndexMappedFile&) = delete;
+    FmIndexMappedFile&
+    operator=(const FmIndexMappedFile&) = delete;
+    ~FmIndexMappedFile();
+
+    const uint8_t*
+    Data() const;
+
+    size_t
+    MappedBytes() const;
+
+    size_t
+    HeapBytes() const;
+
+ private:
+    void* data_{nullptr};
+    size_t mapped_bytes_{0};
+    std::string staging_directory_;
+};
+
+enum class FmIndexStateOrigin {
+    Builder,
+    Persisted,
+};
+
+// Immutable owner/state bundle shared by readers and a rewrite artifact.
+// mapped_file precedes engine so the FM-index view is destroyed before its
+// backing mapping is unmapped.
+class FmIndexStorage final {
+ public:
+    static std::shared_ptr<const FmIndexStorage>
+    Create(std::shared_ptr<const FmIndexMappedFile> mapped_file,
+           std::shared_ptr<const fmindex::FMIndex> engine,
+           TargetBitmap null_bitmap,
+           int64_t total_rows,
+           DataType value_type,
+           bool nullable,
+           FmIndexStateOrigin origin);
+
+    const fmindex::FMIndex&
+    Engine() const;
+
+    const TargetBitmap&
+    NullBitmap() const;
+
+    int64_t
+    Count() const;
+
+    int64_t
+    TotalTokens() const;
+
+    DataType
+    ValueType() const;
+
+    bool
+    Nullable() const;
+
+    int64_t
+    MemoryUsage() const;
+
+    int64_t
+    FileBytes() const;
+
+ private:
+    FmIndexStorage(std::shared_ptr<const FmIndexMappedFile> mapped_file,
+                   std::shared_ptr<const fmindex::FMIndex> engine,
+                   TargetBitmap null_bitmap,
+                   int64_t total_rows,
+                   int64_t total_tokens,
+                   DataType value_type,
+                   bool nullable,
+                   int64_t memory_usage,
+                   int64_t file_bytes);
+
+    std::shared_ptr<const FmIndexMappedFile> mapped_file_;
+    std::shared_ptr<const fmindex::FMIndex> engine_;
+    TargetBitmap null_bitmap_;
+    int64_t total_rows_{0};
+    int64_t total_tokens_{0};
+    DataType value_type_{DataType::VARCHAR};
+    bool nullable_{false};
+    int64_t memory_usage_{0};
+    int64_t file_bytes_{0};
+};
+
 class FmIndexReader final : public IndexReaderBase,
                             public PatternMatchReader,
                             public NullReader {
  public:
-    // `cost_ratio` — see `ShouldUsePattern` below. INJECTED, not read from a
+    // `cost_ratio` — see `ShouldUseForOp` below. Injected rather than read from a
     // global (§8's mapping-table note for this row: "the `SegcoreConfig`
     // dependency becomes a constructor parameter").
-    FmIndexReader(fmindex::FMIndex engine,
-                  TargetBitmap null_bitmap,
-                  int64_t total_rows,
-                  int64_t total_tokens,
-                  double cost_ratio);
+    FmIndexReader(std::shared_ptr<const FmIndexStorage> storage,
+                  double cost_ratio = 0.001);
 
     ~FmIndexReader() override;
 
@@ -76,15 +171,18 @@ class FmIndexReader final : public IndexReaderBase,
     int64_t
     MemoryUsage() const override;
 
-    ResourceUsage
+    cachinglayer::ResourceUsage
     CellByteSize() const override;
 
     // ---- PatternMatchReader (§5.2) -------------------------------------
 
     // Only PrefixMatch / PostfixMatch / InnerMatch ever arrive; `Match` and
-    // `RegexMatch` are declined by `ShouldUsePattern` below.
+    // `RegexMatch` are declined by `ShouldUseForOp` below.
     TargetBitmap
     PatternMatch(std::string_view pattern, PatternOp op) const override;
+
+    bool
+    ShouldUseForOp(PatternOp op, std::string_view pattern) const override;
 
     // ---- NullReader (§5) -----------------------------------------------
 
@@ -94,25 +192,6 @@ class FmIndexReader final : public IndexReaderBase,
     TargetBitmap
     IsNotNull() const override;
 
-    // ---- A PER-CALL ROUTING GATE THAT THE CONTRACT LAYER DOES NOT YET HAVE --
-    //
-    // This is today's `ScalarIndex<T>::ShouldUseOp(op, pattern)`
-    // (`ScalarIndex.h:227-240`, overridden at `FMIndex.h:199-244`), consumed by
-    // exec at `exec/expression/Expr.h:2716`. It answers: "for THIS literal,
-    // is the index cheaper than a raw scan?" — FMIndex counts occurrences in
-    // O(|pattern|) and declines degenerate high-hit literals like `%a%`.
-    //
-    // IT CANNOT LIVE IN `ReaderCaps`: caps are per-index static data readable
-    // WITHOUT a pin (§4.1), while this answer depends on the query literal.
-    // The contract layer already has exactly this shape for the other candidate
-    // family — `NgramReader::CanHandle(literal, op)` (§5.4) — and the design
-    // document does not carry it over to `PatternMatchReader`, which is a GAP,
-    // not a decision (see the report accompanying this skeleton). Declared here
-    // as a family method so the live behaviour is not silently dropped; it
-    // should be hoisted into `PatternMatchReader` alongside `CanHandle`.
-    bool
-    ShouldUsePattern(std::string_view pattern, PatternOp op) const;
-
  private:
     // O(|pattern|) occurrence count; -1 means "unknown, accept".
     int64_t
@@ -121,13 +200,7 @@ class FmIndexReader final : public IndexReaderBase,
     TargetBitmap
     DocsToBitmap(const std::vector<uint64_t>& docs) const;
 
-    // The ENGINE, composed (§3 principle 2). `fmindex::FMIndex` is a vendored
-    // libsais-backed structure under index/fmindex/, not a base class.
-    fmindex::FMIndex engine_;
-
-    TargetBitmap null_bitmap_;
-    int64_t total_rows_{0};
-    int64_t total_tokens_{0};
+    std::shared_ptr<const FmIndexStorage> storage_;
 
     // WAS: `segcore::SegcoreConfig::default_config().get_fmindex_cost_ratio()`
     // read inline at `FMIndex.h:226-228`, the single `index/ -> segcore/`

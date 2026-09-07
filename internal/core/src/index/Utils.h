@@ -34,9 +34,8 @@
 //     `common/QueryInfo.h` nor `index/Utils.h` needs knowhere". It is removed
 //     from here; see the handoff note where it used to be declared.
 //
-// (b) `index/ -> index/ScalarIndex.h` for the single enum `ScalarIndexType`.
-//     `ScalarIndex<T>` is retired (§11.2 rule 3), and the two config getters
-//     that returned that enum now return FAMILY NAMES (index/Families.h).
+// (b) the legacy scalar base include used only for its internal-type enum. The
+//     enum now lives in Families.h and config getters return family names.
 //
 // A THIRD CHAIN IS NOT CUT AND CANNOT BE CUT HERE: `common/Types.h` itself
 // includes four knowhere headers (`common/Types.h:43-46`) and defines
@@ -58,10 +57,11 @@
 #include <string>
 #include <boost/algorithm/string.hpp>
 
+#include "nlohmann/json.hpp"
+
 #include "common/Common.h"
 #include "common/Types.h"
 #include "common/FieldData.h"
-#include "index/IndexInfo.h"
 #include "storage/Types.h"
 #include "storage/DataCodec.h"
 #include "log/Log.h"
@@ -171,10 +171,9 @@ GetIndexEngineVersionFromConfig(const Config& config);
 int32_t
 GetBitmapCardinalityLimitFromConfig(const Config& config);
 
-// Return a FAMILY NAME (index/Families.h), not a `ScalarIndexType`.
-// The enum lived on the retired `ScalarIndex<T>` header, and persisting its
-// ORDINAL is exactly the fragility the `auto` family removes — see
-// `index/scalar/auto/AutoIndexBuilder.cpp`. Consumed by `AutoBuildParams`.
+// Return a registry family while accepting the legacy HYBRID internal-type
+// spellings. The HYBRID artifact still persists its established one-byte
+// ScalarIndexType selector; these helpers only normalize runtime config.
 std::string
 GetLowCardinalityFamilyFromConfig(const Config& config);
 

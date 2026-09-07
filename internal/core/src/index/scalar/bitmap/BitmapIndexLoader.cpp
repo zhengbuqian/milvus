@@ -16,11 +16,1046 @@
 
 #include "index/scalar/bitmap/BitmapIndexLoader.h"
 
+#include <cerrno>
+#include <cstring>
+#include <fcntl.h>
+#include <filesystem>
+#include <limits>
+#include <map>
+#include <optional>
+#include <string_view>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <type_traits>
+#include <unistd.h>
+#include <utility>
+#include <vector>
+
+#include <yaml-cpp/yaml.h>
+
+#include "common/Consts.h"
+#include "common/EasyAssert.h"
 #include "index/Families.h"
+#include "index/Meta.h"
+#include "index/Utils.h"
 #include "index/contracts/Registry.h"
+#include "index/scalar/bitmap/BitmapIndexArtifact.h"
 #include "index/scalar/bitmap/BitmapIndexReader.h"
+#include "index/scalar/json/JsonProjectedIndexLoad.h"
+#include "nlohmann/json.hpp"
 
 namespace milvus::index {
+namespace {
+
+constexpr size_t kFrozenAlignment = 32;
+constexpr uint64_t kMaxCoordinateCount =
+    static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) + 1;
+constexpr std::string_view kLegacyNestedKey = "is_nested_index";
+constexpr std::string_view kV3NestedKey = "is_nested";
+
+bool
+IsStringType(DataType type) {
+    return type == DataType::STRING || type == DataType::VARCHAR;
+}
+
+DataType
+ParseDataType(const Config& params, std::string_view key, DataType fallback) {
+    if (!params.contains(key)) {
+        return fallback;
+    }
+    const auto& value = params.at(key);
+    if (value.is_number_integer() || value.is_number_unsigned()) {
+        return static_cast<DataType>(value.get<int>());
+    }
+    if (!value.is_string()) {
+        ThrowInfo(
+            DataTypeInvalid, "bitmap parameter {} must be a data type", key);
+    }
+    const auto text = value.get<std::string>();
+    try {
+        size_t parsed = 0;
+        const auto numeric = std::stoi(text, &parsed);
+        if (parsed == text.size()) {
+            return static_cast<DataType>(numeric);
+        }
+    } catch (const std::exception&) {
+        // Continue with human-readable spellings.
+    }
+    static const std::map<std::string, DataType> kNames = {
+        {"BOOL", DataType::BOOL},
+        {"INT8", DataType::INT8},
+        {"INT16", DataType::INT16},
+        {"INT32", DataType::INT32},
+        {"INT64", DataType::INT64},
+        {"FLOAT", DataType::FLOAT},
+        {"DOUBLE", DataType::DOUBLE},
+        {"STRING", DataType::STRING},
+        {"VARCHAR", DataType::VARCHAR},
+        {"ARRAY", DataType::ARRAY},
+    };
+    auto it = kNames.find(text);
+    if (it == kNames.end()) {
+        ThrowInfo(DataTypeInvalid,
+                  "unsupported bitmap data type {} for parameter {}",
+                  text,
+                  key);
+    }
+    return it->second;
+}
+
+bool
+ReadBool(const Config& params, std::string_view key, bool fallback = false) {
+    return GetValueFromConfig<bool>(params, std::string(key))
+        .value_or(fallback);
+}
+
+bool
+ReadRequiredNested(const Config& params) {
+    std::optional<bool> nested;
+    std::string_view first_key;
+    for (const auto key : {std::string_view("nested"),
+                           std::string_view("is_nested"),
+                           std::string_view("is_nested_index")}) {
+        const auto value = GetValueFromConfig<bool>(params, std::string(key));
+        if (!value.has_value()) {
+            continue;
+        }
+        if (nested.has_value() && *nested != *value) {
+            ThrowInfo(DataTypeInvalid,
+                      "bitmap nested parameters {} and {} disagree",
+                      first_key,
+                      key);
+        }
+        if (!nested.has_value()) {
+            nested = *value;
+            first_key = key;
+        }
+    }
+    if (!nested.has_value()) {
+        ThrowInfo(DataTypeInvalid,
+                  "bitmap loader requires an explicit normalized nested "
+                  "parameter");
+    }
+    return *nested;
+}
+
+struct RuntimeParams {
+    DataType field_type{DataType::NONE};
+    DataType value_type{DataType::NONE};
+    bool nullable{false};
+    bool nested{false};
+    bool value_lookup{true};
+    bool offset_cache{false};
+};
+
+RuntimeParams
+ParseRuntimeParams(const Config& params) {
+    RuntimeParams result;
+    result.field_type = ParseDataType(params, "field_type", DataType::NONE);
+    const auto array_element_type =
+        ParseDataType(params, "array_element_type", DataType::NONE);
+    const auto configured_value_type =
+        ParseDataType(params, "value_type", DataType::NONE);
+    if (result.field_type == DataType::NONE &&
+        array_element_type != DataType::NONE) {
+        result.field_type = DataType::ARRAY;
+    }
+    result.value_type = result.field_type == DataType::ARRAY &&
+                                array_element_type != DataType::NONE
+                            ? array_element_type
+                            : configured_value_type;
+    if ((result.value_type == DataType::NONE ||
+         result.value_type == DataType::ARRAY) &&
+        result.field_type != DataType::ARRAY) {
+        result.value_type = result.field_type;
+    }
+    result.nullable = ReadBool(params, "nullable");
+    result.nested = ReadRequiredNested(params);
+    result.value_lookup = result.field_type != DataType::ARRAY || result.nested;
+    result.offset_cache = ReadBool(params, ENABLE_OFFSET_CACHE);
+    return result;
+}
+
+struct BitmapMeta {
+    size_t index_length{0};
+    size_t count{0};
+    bool nested{false};
+    bool has_nested{false};
+};
+
+BitmapMeta
+ParseLegacyMeta(const std::vector<uint8_t>& encoded) {
+    const std::string text(encoded.begin(), encoded.end());
+    try {
+        const auto json = nlohmann::json::parse(text);
+        BitmapMeta result{
+            .index_length = json.at(BITMAP_INDEX_LENGTH).get<size_t>(),
+            .count = json.at(BITMAP_INDEX_NUM_ROWS).get<size_t>()};
+        if (json.contains(kLegacyNestedKey)) {
+            result.nested = json.at(kLegacyNestedKey).get<bool>();
+            result.has_nested = true;
+        }
+        return result;
+    } catch (const nlohmann::json::parse_error&) {
+        try {
+            const auto yaml = YAML::Load(text);
+            BitmapMeta result{
+                .index_length = yaml[BITMAP_INDEX_LENGTH].as<size_t>(),
+                .count = yaml[BITMAP_INDEX_NUM_ROWS].as<size_t>()};
+            const auto nested = yaml[std::string(kLegacyNestedKey)];
+            if (nested) {
+                result.nested = nested.as<bool>();
+                result.has_nested = true;
+            }
+            return result;
+        } catch (const YAML::Exception& error) {
+            ThrowInfo(DataFormatBroken,
+                      "invalid bitmap V1/V2 metadata: {}",
+                      error.what());
+        }
+    } catch (const nlohmann::json::exception& error) {
+        ThrowInfo(DataFormatBroken,
+                  "invalid bitmap V1/V2 metadata: {}",
+                  error.what());
+    }
+}
+
+template <typename T>
+T
+GetRequiredMeta(storage::FileSource& source, std::string_view key) {
+    auto value = source.GetMeta(key);
+    if (!value.has_value()) {
+        ThrowInfo(DataFormatBroken, "bitmap V3 metadata {} is missing", key);
+    }
+    try {
+        return value->get<T>();
+    } catch (const nlohmann::json::exception& error) {
+        ThrowInfo(DataFormatBroken,
+                  "invalid bitmap V3 metadata {}: {}",
+                  key,
+                  error.what());
+    }
+}
+
+BitmapMeta
+ReadMeta(storage::FileSource& source) {
+    if (source.Gen() == storage::Generation::V1V2) {
+        auto encoded = source.ReadEntry(BITMAP_INDEX_META);
+        return ParseLegacyMeta(encoded);
+    }
+    BitmapMeta result{
+        .index_length = GetRequiredMeta<size_t>(source, BITMAP_INDEX_LENGTH),
+        .count = GetRequiredMeta<size_t>(source, BITMAP_INDEX_NUM_ROWS)};
+    if (const auto nested = source.GetMeta(kV3NestedKey); nested.has_value()) {
+        try {
+            result.nested = nested->get<bool>();
+            result.has_nested = true;
+        } catch (const nlohmann::json::exception& error) {
+            ThrowInfo(DataFormatBroken,
+                      "invalid bitmap V3 metadata {}: {}",
+                      kV3NestedKey,
+                      error.what());
+        }
+    }
+    return result;
+}
+
+void
+ValidateMeta(const BitmapMeta& meta, const RuntimeParams& params) {
+    if (meta.count == 0 || meta.count > kMaxCoordinateCount) {
+        ThrowInfo(DataFormatBroken,
+                  "bitmap coordinate count {} is outside [1, {}]",
+                  meta.count,
+                  kMaxCoordinateCount);
+    }
+    if (params.value_lookup && meta.index_length > meta.count) {
+        ThrowInfo(DataFormatBroken,
+                  "bitmap scalar posting count {} exceeds coordinate count "
+                  "{}",
+                  meta.index_length,
+                  meta.count);
+    }
+}
+
+size_t
+PackedValidityBytes(size_t count) {
+    return count / 8 + static_cast<size_t>(count % 8 != 0);
+}
+
+TargetBitmap
+DecodeValidity(const std::vector<uint8_t>& encoded, size_t count) {
+    const auto expected = PackedValidityBytes(count);
+    if (encoded.size() != expected) {
+        ThrowInfo(DataFormatBroken,
+                  "bitmap validity size mismatch: expected {}, got {}",
+                  expected,
+                  encoded.size());
+    }
+    TargetBitmap result(count, false);
+    for (size_t i = 0; i < count; ++i) {
+        if ((encoded[i / 8] & static_cast<uint8_t>(1U << (i % 8))) != 0) {
+            result.set(i);
+        }
+    }
+    return result;
+}
+
+TargetBitmap
+ToBitset(const roaring::Roaring& posting, size_t count) {
+    TargetBitmap result(count, false);
+    for (auto coordinate : posting) {
+        if (coordinate >= count) {
+            ThrowInfo(DataFormatBroken,
+                      "bitmap posting coordinate {} exceeds count {}",
+                      coordinate,
+                      count);
+        }
+        result.set(coordinate);
+    }
+    return result;
+}
+
+template <typename T>
+T
+ReadKey(const uint8_t*& cursor, const uint8_t* end) {
+    if constexpr (std::is_same_v<T, std::string>) {
+        if (static_cast<size_t>(end - cursor) < sizeof(size_t)) {
+            ThrowInfo(DataFormatBroken, "truncated bitmap string key length");
+        }
+        size_t length = 0;
+        std::memcpy(&length, cursor, sizeof(length));
+        cursor += sizeof(length);
+        if (length > static_cast<size_t>(end - cursor)) {
+            ThrowInfo(DataFormatBroken,
+                      "truncated bitmap string key: expected {} bytes, got {}",
+                      length,
+                      end - cursor);
+        }
+        std::string result(reinterpret_cast<const char*>(cursor), length);
+        cursor += length;
+        return result;
+    } else {
+        if (static_cast<size_t>(end - cursor) < sizeof(T)) {
+            ThrowInfo(DataFormatBroken, "truncated bitmap numeric key");
+        }
+        T result;
+        std::memcpy(&result, cursor, sizeof(T));
+        cursor += sizeof(T);
+        return result;
+    }
+}
+
+template <typename T>
+roaring::Roaring
+ReadPosting(const uint8_t*& cursor,
+            const uint8_t* end,
+            size_t ordinal,
+            size_t count) {
+    if (cursor == end) {
+        ThrowInfo(DataFormatBroken, "truncated bitmap posting {}", ordinal);
+    }
+    roaring::Roaring posting;
+    try {
+        posting = roaring::Roaring::readSafe(
+            reinterpret_cast<const char*>(cursor), end - cursor);
+    } catch (const std::bad_alloc&) {
+        ThrowInfo(MemAllocateFailed,
+                  "failed to allocate while decoding bitmap posting");
+    } catch (const std::exception& error) {
+        ThrowInfo(DataFormatBroken,
+                  "invalid bitmap posting {}: {}",
+                  ordinal,
+                  error.what());
+    }
+    const auto consumed = posting.getSizeInBytes(true);
+    if (consumed > static_cast<size_t>(end - cursor)) {
+        ThrowInfo(DataFormatBroken,
+                  "bitmap posting {} exceeds serialized entry",
+                  ordinal);
+    }
+    for (auto coordinate : posting) {
+        if (coordinate >= count) {
+            ThrowInfo(DataFormatBroken,
+                      "bitmap posting coordinate {} exceeds count {}",
+                      coordinate,
+                      count);
+        }
+    }
+    cursor += consumed;
+    return posting;
+}
+
+template <typename T>
+std::map<T, roaring::Roaring>
+DecodePostings(const uint8_t* data,
+               size_t size,
+               size_t index_length,
+               size_t count) {
+    if (size == 0) {
+        if (index_length != 0) {
+            ThrowInfo(DataFormatBroken,
+                      "bitmap data is empty for {} postings",
+                      index_length);
+        }
+        return {};
+    }
+    const auto* cursor = data;
+    const auto* end = data + size;
+    std::map<T, roaring::Roaring> postings;
+    for (size_t i = 0; i < index_length; ++i) {
+        auto key = ReadKey<T>(cursor, end);
+        auto posting = ReadPosting<T>(cursor, end, i, count);
+        const auto inserted =
+            postings.emplace(std::move(key), std::move(posting)).second;
+        if (!inserted) {
+            ThrowInfo(DataFormatBroken,
+                      "bitmap data contains duplicate key at posting {}",
+                      i);
+        }
+    }
+    if (cursor != end) {
+        ThrowInfo(DataFormatBroken,
+                  "bitmap data has {} trailing bytes",
+                  end - cursor);
+    }
+    return postings;
+}
+
+template <typename T>
+void
+ValidateCoordinateOwnership(const std::map<T, roaring::Roaring>& postings,
+                            bool one_value_per_coordinate) {
+    if (!one_value_per_coordinate) {
+        return;
+    }
+    roaring::Roaring occupied;
+    for (const auto& [_, posting] : postings) {
+        if (occupied.intersect(posting)) {
+            ThrowInfo(DataFormatBroken,
+                      "bitmap scalar postings contain an overlapping "
+                      "coordinate");
+        }
+        occupied |= posting;
+    }
+}
+
+class TemporaryFileGuard {
+ public:
+    explicit TemporaryFileGuard(std::string path) : path_(std::move(path)) {
+    }
+
+    TemporaryFileGuard(const TemporaryFileGuard&) = delete;
+    TemporaryFileGuard&
+    operator=(const TemporaryFileGuard&) = delete;
+
+    TemporaryFileGuard(TemporaryFileGuard&& other) noexcept
+        : path_(std::move(other.path_)),
+          fd_(std::exchange(other.fd_, -1)),
+          owns_path_(std::exchange(other.owns_path_, false)) {
+    }
+
+    TemporaryFileGuard&
+    operator=(TemporaryFileGuard&& other) noexcept {
+        if (this != &other) {
+            Cleanup();
+            path_ = std::move(other.path_);
+            fd_ = std::exchange(other.fd_, -1);
+            owns_path_ = std::exchange(other.owns_path_, false);
+        }
+        return *this;
+    }
+
+    ~TemporaryFileGuard() {
+        Cleanup();
+    }
+
+    void
+    Create() {
+        AssertInfo(fd_ == -1 && !owns_path_,
+                   "bitmap temporary file was already created");
+        fd_ = mkstemp(path_.data());
+        if (fd_ == -1) {
+            ThrowInfo(FileCreateFailed,
+                      "failed to create bitmap mmap file {}: {}",
+                      path_,
+                      std::strerror(errno));
+        }
+        owns_path_ = true;
+    }
+
+    int
+    Fd() const {
+        AssertInfo(fd_ != -1, "bitmap temporary file is closed");
+        return fd_;
+    }
+
+    void
+    Close() {
+        AssertInfo(fd_ != -1, "bitmap temporary file is already closed");
+        const auto fd = std::exchange(fd_, -1);
+        if (close(fd) != 0) {
+            ThrowInfo(FileWriteFailed,
+                      "failed to close bitmap mmap file {}: {}",
+                      path_,
+                      std::strerror(errno));
+        }
+    }
+
+    const std::string&
+    Path() const {
+        return path_;
+    }
+
+    std::string
+    ReleasePath() {
+        AssertInfo(fd_ == -1 && owns_path_,
+                   "bitmap temporary path cannot be released while open");
+        owns_path_ = false;
+        return std::move(path_);
+    }
+
+ private:
+    void
+    Cleanup() noexcept {
+        if (fd_ != -1) {
+            close(fd_);
+            fd_ = -1;
+        }
+        if (owns_path_) {
+            unlink(path_.c_str());
+            owns_path_ = false;
+        }
+    }
+
+    std::string path_;
+    int fd_{-1};
+    bool owns_path_{false};
+};
+
+TemporaryFileGuard
+CreateTemporaryFile(const std::string& directory, std::string_view prefix) {
+    if (directory.empty()) {
+        ThrowInfo(FileCreateFailed, "bitmap mmap directory must not be empty");
+    }
+    std::error_code error;
+    std::filesystem::create_directories(directory, error);
+    if (error) {
+        ThrowInfo(FileCreateFailed,
+                  "failed to create bitmap mmap directory {}: {}",
+                  directory,
+                  error.message());
+    }
+    TemporaryFileGuard file(
+        (std::filesystem::path(directory) / (std::string(prefix) + "_XXXXXX"))
+            .string());
+    file.Create();
+    return file;
+}
+
+size_t
+FileSize(const std::string& path) {
+    std::error_code error;
+    const auto size = std::filesystem::file_size(path, error);
+    if (error) {
+        ThrowInfo(FileReadFailed,
+                  "failed to size bitmap mmap input {}: {}",
+                  path,
+                  error.message());
+    }
+    if constexpr (sizeof(size) > sizeof(size_t)) {
+        if (size > std::numeric_limits<size_t>::max()) {
+            ThrowInfo(FileReadFailed,
+                      "bitmap mmap input {} exceeds addressable size",
+                      path);
+        }
+    }
+    return static_cast<size_t>(size);
+}
+
+class ReadOnlyMapping {
+ public:
+    ReadOnlyMapping(const std::string& path, size_t size) : size_(size) {
+        const auto fd = open(path.c_str(), O_RDONLY);
+        if (fd == -1) {
+            ThrowInfo(FileOpenFailed,
+                      "failed to open bitmap file {}: {}",
+                      path,
+                      std::strerror(errno));
+        }
+        data_ = static_cast<char*>(
+            mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0));
+        const auto saved_errno = errno;
+        close(fd);
+        if (data_ == MAP_FAILED) {
+            data_ = nullptr;
+            ThrowInfo(MmapError,
+                      "failed to map bitmap file {}: {}",
+                      path,
+                      std::strerror(saved_errno));
+        }
+    }
+
+    ReadOnlyMapping(const ReadOnlyMapping&) = delete;
+    ReadOnlyMapping&
+    operator=(const ReadOnlyMapping&) = delete;
+
+    ~ReadOnlyMapping() {
+        if (data_ != nullptr) {
+            munmap(data_, size_);
+        }
+    }
+
+    const uint8_t*
+    Data() const {
+        return reinterpret_cast<const uint8_t*>(data_);
+    }
+
+ private:
+    char* data_{nullptr};
+    size_t size_{0};
+};
+
+void
+WriteAll(int fd, const void* data, size_t size, const std::string& path) {
+    const auto* cursor = static_cast<const uint8_t*>(data);
+    while (size != 0) {
+        const auto written = write(fd, cursor, size);
+        if (written < 0 && errno == EINTR) {
+            continue;
+        }
+        if (written <= 0) {
+            ThrowInfo(FileWriteFailed,
+                      "failed to write bitmap mmap file {}: {}",
+                      path,
+                      std::strerror(errno));
+        }
+        cursor += written;
+        size -= static_cast<size_t>(written);
+    }
+}
+
+size_t
+AlignFrozenSize(size_t size) {
+    if (size > std::numeric_limits<size_t>::max() - (kFrozenAlignment - 1)) {
+        ThrowInfo(DataFormatBroken, "bitmap frozen posting size overflows");
+    }
+    return (size + kFrozenAlignment - 1) & ~(kFrozenAlignment - 1);
+}
+
+template <typename T>
+struct FrozenPostings {
+    // Declared first so the posting views are destroyed before their mapping.
+    std::shared_ptr<BitmapMmapOwner> owner;
+    std::map<T, roaring::Roaring> postings;
+};
+
+template <typename T>
+FrozenPostings<T>
+FinishFrozenFile(TemporaryFileGuard file,
+                 size_t file_size,
+                 const std::map<T, std::pair<size_t, size_t>>& locations) {
+    file.Close();
+    AssertInfo(file_size != 0,
+               "bitmap mmap requires at least one non-empty posting file");
+
+    const auto map_fd = open(file.Path().c_str(), O_RDONLY);
+    if (map_fd == -1) {
+        ThrowInfo(FileOpenFailed,
+                  "failed to open bitmap mmap file {}: {}",
+                  file.Path(),
+                  std::strerror(errno));
+    }
+    auto* mapped = static_cast<char*>(
+        mmap(nullptr, file_size, PROT_READ, MAP_PRIVATE, map_fd, 0));
+    const auto saved_errno = errno;
+    close(map_fd);
+    if (mapped == MAP_FAILED) {
+        ThrowInfo(MmapError,
+                  "failed to map bitmap frozen file {}: {}",
+                  file.Path(),
+                  std::strerror(saved_errno));
+    }
+
+    FrozenPostings<T> result;
+    auto owned_path = file.ReleasePath();
+    try {
+        result.owner =
+            std::make_shared<BitmapMmapOwner>(mapped, file_size, owned_path);
+    } catch (...) {
+        munmap(mapped, file_size);
+        unlink(owned_path.c_str());
+        throw;
+    }
+    for (const auto& [key, location] : locations) {
+        result.postings.emplace(
+            key,
+            roaring::Roaring::frozenView(result.owner->Data() + location.first,
+                                         location.second));
+    }
+    return result;
+}
+
+template <typename T>
+FrozenPostings<T>
+DecodeFrozenPostings(const uint8_t* data,
+                     size_t size,
+                     size_t index_length,
+                     size_t count,
+                     TargetBitmap& validity,
+                     bool rebuild_validity,
+                     const std::string& directory) {
+    if (size == 0) {
+        ThrowInfo(DataFormatBroken,
+                  "bitmap mmap data is empty for {} postings",
+                  index_length);
+    }
+    const auto* cursor = data;
+    const auto* end = data + size;
+    auto file = CreateTemporaryFile(directory, "bitmap_frozen");
+    std::map<T, std::pair<size_t, size_t>> locations;
+    std::vector<uint8_t> frozen_buffer;
+    size_t file_offset = 0;
+    for (size_t i = 0; i < index_length; ++i) {
+        auto key = ReadKey<T>(cursor, end);
+        if (locations.find(key) != locations.end()) {
+            ThrowInfo(DataFormatBroken,
+                      "bitmap data contains duplicate key at posting {}",
+                      i);
+        }
+        {
+            // Keep only one decoded portable posting resident at a time.
+            // The mapped reader later points at the frozen output file.
+            auto posting = ReadPosting<T>(cursor, end, i, count);
+            if (rebuild_validity) {
+                for (auto coordinate : posting) {
+                    validity.set(coordinate);
+                }
+            }
+            const auto frozen_size = posting.getFrozenSizeInBytes();
+            const auto aligned_size = AlignFrozenSize(frozen_size);
+            if (aligned_size >
+                std::numeric_limits<size_t>::max() - file_offset) {
+                ThrowInfo(DataFormatBroken,
+                          "bitmap frozen file size overflows");
+            }
+            frozen_buffer.assign(aligned_size, 0);
+            posting.writeFrozen(reinterpret_cast<char*>(frozen_buffer.data()));
+            WriteAll(file.Fd(),
+                     frozen_buffer.data(),
+                     frozen_buffer.size(),
+                     file.Path());
+            locations.emplace(std::move(key),
+                              std::make_pair(file_offset, frozen_size));
+            file_offset += aligned_size;
+        }
+    }
+    if (cursor != end) {
+        ThrowInfo(DataFormatBroken,
+                  "bitmap data has {} trailing bytes",
+                  end - cursor);
+    }
+    return FinishFrozenFile<T>(std::move(file), file_offset, locations);
+}
+
+template <typename T>
+void
+RebuildValidity(const std::map<T, roaring::Roaring>& postings,
+                TargetBitmap& validity) {
+    for (const auto& [_, posting] : postings) {
+        for (auto coordinate : posting) {
+            validity.set(coordinate);
+        }
+    }
+}
+
+template <typename T>
+using BitmapLoadState = typename BitmapIndexArtifact<T>::RewriteState;
+
+template <typename T>
+BitmapLoadState<T>
+MakeTypedState(std::map<T, roaring::Roaring> postings,
+               TargetBitmap validity,
+               BitmapLayout layout,
+               const BitmapMeta& meta,
+               const RuntimeParams& params,
+               std::shared_ptr<BitmapMmapOwner> mmap_owner = nullptr) {
+    auto storage = std::make_shared<BitmapPostingStorage<T>>();
+    storage->mmap_owner = std::move(mmap_owner);
+    storage->layout = layout;
+    if (layout == BitmapLayout::Roaring) {
+        storage->roaring_postings = std::move(postings);
+    } else {
+        for (const auto& [key, posting] : postings) {
+            storage->bitset_postings.emplace(key,
+                                             ToBitset(posting, meta.count));
+        }
+    }
+
+    BitmapLoadState<T> args;
+    args.postings = std::move(storage);
+    args.valid_bitset = std::make_shared<TargetBitmap>(std::move(validity));
+    args.total_num_rows = meta.count;
+    args.nested = meta.nested;
+    args.nullable = params.nullable;
+    args.value_lookup = params.value_lookup;
+    args.value_type = params.value_type;
+    args.offset_cache = params.offset_cache;
+    return args;
+}
+
+template <typename T>
+BitmapLoadState<T>
+DecodeState(const uint8_t* data,
+            size_t size,
+            const BitmapMeta& meta,
+            const RuntimeParams& params,
+            TargetBitmap validity,
+            bool rebuild_validity,
+            BitmapLayout layout) {
+    auto postings =
+        DecodePostings<T>(data, size, meta.index_length, meta.count);
+    ValidateCoordinateOwnership(postings, params.value_lookup);
+    if (rebuild_validity) {
+        RebuildValidity(postings, validity);
+    }
+    return MakeTypedState<T>(
+        std::move(postings), std::move(validity), layout, meta, params);
+}
+
+template <typename T>
+BitmapLoadState<T>
+DecodeMmapState(const uint8_t* data,
+                size_t size,
+                const BitmapMeta& meta,
+                const RuntimeParams& params,
+                TargetBitmap validity,
+                bool rebuild_validity,
+                const std::string& mmap_dir_path) {
+    auto frozen = DecodeFrozenPostings<T>(data,
+                                          size,
+                                          meta.index_length,
+                                          meta.count,
+                                          validity,
+                                          rebuild_validity,
+                                          mmap_dir_path);
+    ValidateCoordinateOwnership(frozen.postings, params.value_lookup);
+    return MakeTypedState<T>(std::move(frozen.postings),
+                             std::move(validity),
+                             BitmapLayout::Roaring,
+                             meta,
+                             params,
+                             frozen.owner);
+}
+
+template <typename T>
+std::shared_ptr<IndexReaderBase>
+OpenTypedState(BitmapLoadState<T> state) {
+    if constexpr (std::is_same_v<T, std::string>) {
+        return std::make_shared<BitmapStringIndexReader>(std::move(state));
+    } else {
+        return std::make_shared<BitmapIndexReader<T>>(std::move(state));
+    }
+}
+
+template <typename T>
+RehydratedIndex
+RewriteTypedState(BitmapLoadState<T> state) {
+    auto artifact = std::make_unique<BitmapIndexArtifact<T>>(state);
+    auto reader = OpenTypedState<T>(std::move(state));
+    return {.artifact = std::move(artifact), .reader = std::move(reader)};
+}
+
+template <typename Result, typename F>
+Result
+DispatchBitmapType(DataType value_type, F&& fn) {
+    switch (value_type) {
+        case DataType::BOOL:
+            return fn.template operator()<bool>();
+        case DataType::INT8:
+            return fn.template operator()<int8_t>();
+        case DataType::INT16:
+            return fn.template operator()<int16_t>();
+        case DataType::INT32:
+            return fn.template operator()<int32_t>();
+        case DataType::INT64:
+            return fn.template operator()<int64_t>();
+        case DataType::FLOAT:
+            return fn.template operator()<float>();
+        case DataType::DOUBLE:
+            return fn.template operator()<double>();
+        case DataType::STRING:
+        case DataType::VARCHAR:
+            return fn.template operator()<std::string>();
+        default:
+            ThrowInfo(DataTypeInvalid,
+                      "unsupported bitmap value type {}",
+                      static_cast<int>(value_type));
+    }
+}
+
+std::shared_ptr<IndexReaderBase>
+DispatchOpen(DataType value_type,
+             const uint8_t* data,
+             size_t size,
+             const BitmapMeta& meta,
+             const RuntimeParams& params,
+             TargetBitmap validity,
+             bool rebuild_validity,
+             BitmapLayout layout) {
+    return DispatchBitmapType<std::shared_ptr<IndexReaderBase>>(
+        value_type, [&]<typename T>() {
+            return OpenTypedState<T>(DecodeState<T>(data,
+                                                    size,
+                                                    meta,
+                                                    params,
+                                                    std::move(validity),
+                                                    rebuild_validity,
+                                                    layout));
+        });
+}
+
+std::shared_ptr<IndexReaderBase>
+DispatchMmapOpen(DataType value_type,
+                 const uint8_t* data,
+                 size_t size,
+                 const BitmapMeta& meta,
+                 const RuntimeParams& params,
+                 TargetBitmap validity,
+                 bool rebuild_validity,
+                 const std::string& mmap_dir_path) {
+    return DispatchBitmapType<std::shared_ptr<IndexReaderBase>>(
+        value_type, [&]<typename T>() {
+            return OpenTypedState<T>(DecodeMmapState<T>(data,
+                                                        size,
+                                                        meta,
+                                                        params,
+                                                        std::move(validity),
+                                                        rebuild_validity,
+                                                        mmap_dir_path));
+        });
+}
+
+RehydratedIndex
+DispatchRewrite(DataType value_type,
+                const uint8_t* data,
+                size_t size,
+                const BitmapMeta& meta,
+                const RuntimeParams& params,
+                TargetBitmap validity,
+                bool rebuild_validity,
+                BitmapLayout layout) {
+    return DispatchBitmapType<RehydratedIndex>(value_type, [&]<typename T>() {
+        return RewriteTypedState<T>(DecodeState<T>(data,
+                                                   size,
+                                                   meta,
+                                                   params,
+                                                   std::move(validity),
+                                                   rebuild_validity,
+                                                   layout));
+    });
+}
+
+RehydratedIndex
+DispatchMmapRewrite(DataType value_type,
+                    const uint8_t* data,
+                    size_t size,
+                    const BitmapMeta& meta,
+                    const RuntimeParams& params,
+                    TargetBitmap validity,
+                    bool rebuild_validity,
+                    const std::string& mmap_dir_path) {
+    return DispatchBitmapType<RehydratedIndex>(value_type, [&]<typename T>() {
+        return RewriteTypedState<T>(DecodeMmapState<T>(data,
+                                                       size,
+                                                       meta,
+                                                       params,
+                                                       std::move(validity),
+                                                       rebuild_validity,
+                                                       mmap_dir_path));
+    });
+}
+
+template <typename Result>
+Result
+LoadBitmapPayload(storage::FileSource& source,
+                  const storage::LoadOptions& opts,
+                  const RuntimeParams& params,
+                  Result (*open_heap)(DataType,
+                                      const uint8_t*,
+                                      size_t,
+                                      const BitmapMeta&,
+                                      const RuntimeParams&,
+                                      TargetBitmap,
+                                      bool,
+                                      BitmapLayout),
+                  Result (*open_mmap)(DataType,
+                                      const uint8_t*,
+                                      size_t,
+                                      const BitmapMeta&,
+                                      const RuntimeParams&,
+                                      TargetBitmap,
+                                      bool,
+                                      const std::string&)) {
+    auto meta = ReadMeta(source);
+    if (meta.has_nested && meta.nested != params.nested) {
+        ThrowInfo(DataFormatBroken,
+                  "bitmap persisted nested value {} disagrees with runtime "
+                  "value {}",
+                  meta.nested,
+                  params.nested);
+    }
+    // Old artifacts may lack this metadata. The adapter-supplied runtime
+    // value is mandatory, so capability derivation and opening still use the
+    // same coordinate domain without eagerly reading artifact metadata.
+    meta.nested = params.nested;
+    ValidateMeta(meta, params);
+
+    TargetBitmap validity(meta.count, meta.nested || !params.nullable);
+    bool rebuild_validity = params.nullable && !meta.nested;
+    if (source.HasEntry(BITMAP_INDEX_VALID_BITSET)) {
+        auto encoded = source.ReadEntry(BITMAP_INDEX_VALID_BITSET);
+        validity = DecodeValidity(encoded, meta.count);
+        rebuild_validity = false;
+    }
+
+    const auto layout =
+        meta.index_length <=
+                static_cast<size_t>(DEFAULT_BITMAP_INDEX_BUILD_MODE_BOUND)
+            ? BitmapLayout::Bitset
+            : BitmapLayout::Roaring;
+    if (opts.enable_mmap && layout == BitmapLayout::Roaring) {
+        auto portable_file =
+            CreateTemporaryFile(opts.mmap_dir_path, "bitmap_portable");
+        portable_file.Close();
+        source.ReadEntryToLocalFile(BITMAP_INDEX_DATA, portable_file.Path());
+        const auto size = FileSize(portable_file.Path());
+        if (size == 0) {
+            ThrowInfo(DataFormatBroken,
+                      "bitmap data is empty for non-empty mmap index");
+        }
+        ReadOnlyMapping mapping(portable_file.Path(), size);
+        return open_mmap(params.value_type,
+                         mapping.Data(),
+                         size,
+                         meta,
+                         params,
+                         std::move(validity),
+                         rebuild_validity,
+                         opts.mmap_dir_path);
+    }
+
+    auto data = source.ReadEntry(BITMAP_INDEX_DATA);
+    return open_heap(params.value_type,
+                     data.data(),
+                     data.size(),
+                     meta,
+                     params,
+                     std::move(validity),
+                     rebuild_validity,
+                     layout);
+}
+
+}  // namespace
 
 std::string
 BitmapIndexLoader::Family() const {
@@ -29,41 +1064,49 @@ BitmapIndexLoader::Family() const {
 
 ReaderCaps
 BitmapIndexLoader::DeriveCaps(const Config& index_meta) const {
-    // TODO: from families::kValueTypeMetaKey and kCoordDomainMetaKey:
-    //   predicate          = true
-    //   pattern_match      = (value type is VARCHAR)   <- see the §8 deviation
-    //                                                     noted in the reader
-    //   value_lookup       = (indexed field is not ARRAY)
-    //   cheap_value_lookup = (offset cache enabled for this load)
-    //   nested             = (coord domain is element)
-    return ReaderCaps{.predicate = true, .value_lookup = true};
+    const auto params = ParseRuntimeParams(index_meta);
+    return DeriveJsonProjectedCaps(
+        families::kBitmap,
+        index_meta,
+        ReaderCaps{
+            .predicate = true,
+            .pattern_match = IsStringType(params.value_type),
+            .nested = params.nested,
+            .value_lookup = params.value_lookup,
+            .cheap_value_lookup = params.value_lookup && params.offset_cache,
+            .exact = !params.nested});
 }
 
 std::shared_ptr<IndexReaderBase>
 BitmapIndexLoader::OpenIndex(storage::FileSource& source,
                              const storage::LoadOptions& opts) {
-    // TODO: move existing logic here (see BitmapIndex.cpp:1444-1550
-    // LoadEntries, the V3 shape) plus its helpers: DeserializeIndexMeta
-    // (:407-432, JSON with a YAML fallback), DeserializeIndexData (:446-472,
-    // +string spec :509-539), DeserializeValidBitsetData (:329-345),
-    // ParseKey (:541-562), ChooseIndexLoadMode (:434-444) and MMapIndexData
-    // (:564-628).
-    //
-    // `ChooseIndexLoadMode` becomes an honest loader decision: it picks the
-    // BitmapLayout and whether the postings are mapped or heap-backed, from
-    // `opts` plus the persisted length — and hands the reader the result. The
-    // reader has no mmap state and no layout branch beyond which posting map is
-    // populated.
-    //
-    // KEEP OR RETIRE DELIBERATELY, do not transcribe blindly:
-    //   - the YAML V2 meta fallback (:422-431);
-    //   - `rebuild_validity_from_postings` (:644-652, :1458-1469), documented
-    //     as LOSSY for empty ARRAY rows at BitmapIndex.h:363-373.
-    //
-    // Superseded: `Load(BinarySet)` (:389-394), `Load(TraceContext, Config)`
-    // (:699-718) and `LoadWithoutAssemble` (:630-697) — three entry points for
-    // one operation.
-    return nullptr;
+    auto projection = PrepareJsonProjectedOpen(families::kBitmap, source, opts);
+    const auto params = ParseRuntimeParams(opts.params);
+    if (params.value_type == DataType::NONE ||
+        params.value_type == DataType::ARRAY) {
+        ThrowInfo(DataTypeInvalid,
+                  "bitmap loader requires value_type or array_element_type");
+    }
+    auto inner = LoadBitmapPayload<std::shared_ptr<IndexReaderBase>>(
+        source, opts, params, DispatchOpen, DispatchMmapOpen);
+    return FinishJsonProjectedOpen(
+        std::move(projection), source, std::move(inner));
+}
+
+RehydratedIndex
+BitmapIndexLoader::OpenForRewrite(storage::FileSource& source,
+                                  const storage::LoadOptions& opts) {
+    auto projection = PrepareJsonProjectedOpen(families::kBitmap, source, opts);
+    const auto params = ParseRuntimeParams(opts.params);
+    if (params.value_type == DataType::NONE ||
+        params.value_type == DataType::ARRAY) {
+        ThrowInfo(DataTypeInvalid,
+                  "bitmap loader requires value_type or array_element_type");
+    }
+    auto inner = LoadBitmapPayload<RehydratedIndex>(
+        source, opts, params, DispatchRewrite, DispatchMmapRewrite);
+    return FinishJsonProjectedRewrite(
+        std::move(projection), source, std::move(inner));
 }
 
 namespace {

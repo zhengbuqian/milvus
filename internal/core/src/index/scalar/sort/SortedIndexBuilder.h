@@ -18,26 +18,26 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "common/Array.h"
 #include "common/Types.h"
 #include "index/contracts/IndexBuilder.h"
 #include "index/scalar/sort/IndexStructure.h"
 #include "storage/artifact/Artifact.h"
 
-// The BUILDER of the sorted family. §6.1, §6.1.1 (form **B, fully resident** —
-// the array must be complete before it can be sorted), §8.
-
 namespace milvus::index {
 
 struct SortedBuildParams {
     bool nested{false};
+    DataType field_type{DataType::NONE};
     DataType value_type{DataType::NONE};
 };
 
-// Numeric / bool. Was `ScalarIndexSort<T>`'s build half.
 template <typename T>
 class SortedIndexBuilder final : public IndexBuilder<T> {
  public:
@@ -48,24 +48,21 @@ class SortedIndexBuilder final : public IndexBuilder<T> {
     BuilderInputSpec
     InputSpec() const override;
 
-    // Replaces `Build(n, values, valid)` (ScalarIndexSort.cpp:114-147),
-    // `Build(Config)` (:100-112), `BuildWithFieldData` (:149-198) and
-    // `BuildWithArrayDataNested` (:200-251).
     void
     Add(size_t n, const T* values, const bool* valid) override;
 
     storage::ArtifactPtr
-    Seal() && override;
+        Seal() &&
+        override;
 
  private:
     SortedBuildParams params_;
     std::vector<IndexStructure<T>> data_;
-    TargetBitmap valid_bitset_;
+    std::vector<uint8_t> validity_;
     size_t total_num_rows_{0};
+    bool sealed_{false};
 };
 
-// VARCHAR. Was `StringIndexSort`'s build half (see SortedIndexReader.h for why
-// the two are not one class).
 class SortedStringIndexBuilder final : public IndexBuilder<std::string_view> {
  public:
     explicit SortedStringIndexBuilder(SortedBuildParams params);
@@ -79,18 +76,45 @@ class SortedStringIndexBuilder final : public IndexBuilder<std::string_view> {
     Add(size_t n, const std::string_view* values, const bool* valid) override;
 
     storage::ArtifactPtr
-    Seal() && override;
+        Seal() &&
+        override;
 
  private:
     SortedBuildParams params_;
 
-    // value -> row (or element) ids, built up before the sort. Was
-    // `std::map<std::string, PostingList>` inside
-    // `StringIndexSortMemoryImpl::BuildFromMap` (StringIndexSort.cpp:769-794).
-    std::vector<std::string> unique_values_;
-    std::vector<std::vector<uint32_t>> posting_lists_;
-    TargetBitmap valid_bitset_;
+    std::map<std::string, std::vector<uint32_t>> postings_;
+    std::vector<uint8_t> validity_;
     size_t total_num_rows_{0};
+    bool sealed_{false};
+};
+
+// Ordinary ARRAY input keeps row coordinates: every element in one ArrayView
+// points to the same row, while valid empty rows, null rows, and duplicate
+// elements still preserve that row's validity/identity. Nested callers flatten
+// first and use the typed builders above.
+class SortedArrayIndexBuilder final : public IndexBuilder<ArrayView> {
+ public:
+    class Impl;
+
+    explicit SortedArrayIndexBuilder(SortedBuildParams params);
+    ~SortedArrayIndexBuilder() override;
+
+    BuilderInputSpec
+    InputSpec() const override;
+
+    void
+    Add(size_t n, const ArrayView* values, const bool* valid) override;
+
+    storage::ArtifactPtr
+        Seal() &&
+        override;
+
+ private:
+    SortedBuildParams params_;
+    std::unique_ptr<Impl> impl_;
+    std::vector<uint8_t> validity_;
+    size_t total_num_rows_{0};
+    bool sealed_{false};
 };
 
 }  // namespace milvus::index

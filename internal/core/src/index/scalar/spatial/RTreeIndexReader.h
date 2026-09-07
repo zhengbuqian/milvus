@@ -50,13 +50,45 @@
 
 namespace milvus::index {
 
+// Immutable, fully validated query state. A loaded rewrite Artifact and its
+// Reader share this object so neither the Boost tree nor row-sized NULL state
+// is copied. Builder artifacts create it lazily only when OpenReader is called.
+class RTreeIndexState final {
+ public:
+    static std::shared_ptr<const RTreeIndexState>
+    Create(std::shared_ptr<const RTreeQueryEngine> engine,
+           std::shared_ptr<const std::vector<size_t>> null_offsets,
+           int64_t total_num_rows);
+
+    const RTreeQueryEngine&
+    Engine() const;
+
+    const std::vector<size_t>&
+    NullOffsets() const;
+
+    int64_t
+    Count() const;
+
+    int64_t
+    MemoryUsage() const;
+
+ private:
+    RTreeIndexState(std::shared_ptr<const RTreeQueryEngine> engine,
+                    std::shared_ptr<const std::vector<size_t>> null_offsets,
+                    int64_t total_num_rows,
+                    int64_t memory_usage);
+
+    std::shared_ptr<const RTreeQueryEngine> engine_;
+    std::shared_ptr<const std::vector<size_t>> null_offsets_;
+    int64_t total_num_rows_{0};
+    int64_t memory_usage_{0};
+};
+
 class RTreeIndexReader final : public IndexReaderBase,
                                public SpatialReader,
                                public NullReader {
  public:
-    RTreeIndexReader(std::unique_ptr<RTreeQueryEngine> engine,
-                     std::vector<size_t> null_offsets,
-                     int64_t total_num_rows);
+    explicit RTreeIndexReader(std::shared_ptr<const RTreeIndexState> state);
 
     ~RTreeIndexReader() override;
 
@@ -77,7 +109,7 @@ class RTreeIndexReader final : public IndexReaderBase,
     int64_t
     MemoryUsage() const override;
 
-    ResourceUsage
+    cachinglayer::ResourceUsage
     CellByteSize() const override;
 
     // ---- SpatialReader (§5.6) ------------------------------------------
@@ -109,20 +141,7 @@ class RTreeIndexReader final : public IndexReaderBase,
     IsNotNull() const override;
 
  private:
-    std::unique_ptr<RTreeQueryEngine> engine_;
-
-    // Sorted ascending. THE SORTEDNESS IS AN UNSTATED INVARIANT TODAY that
-    // `IsNull`'s `std::lower_bound` (RTreeIndex.cpp:437-438) silently depends
-    // on: every writer happens to append in order, and nothing asserts it. A
-    // reader built once by a builder or a loader can and should assert it at
-    // construction.
-    //
-    // Also gone with immutability: the `folly::SharedMutexWritePriority`
-    // (RTreeIndex.h:217) that guarded this vector. It existed because the same
-    // object was written by the growing path while being read by queries.
-    std::vector<size_t> null_offsets_;
-
-    int64_t total_num_rows_{0};
+    std::shared_ptr<const RTreeIndexState> state_;
 };
 
 }  // namespace milvus::index

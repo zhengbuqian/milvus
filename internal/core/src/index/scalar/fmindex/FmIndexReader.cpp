@@ -6,7 +6,7 @@
 // "License"); you may not use this file except in compliance
 // with the License. You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,35 +16,258 @@
 
 #include "index/scalar/fmindex/FmIndexReader.h"
 
+#include <cmath>
+#include <filesystem>
+#include <limits>
+#include <mutex>
+#include <sys/mman.h>
 #include <utility>
 
-namespace milvus::index {
+#include "common/EasyAssert.h"
+#include "index/fmindex/FMIndex.h"
 
-FmIndexReader::FmIndexReader(fmindex::FMIndex engine,
-                             TargetBitmap null_bitmap,
-                             int64_t total_rows,
-                             int64_t total_tokens,
-                             double cost_ratio)
-    : engine_(std::move(engine)),
+namespace milvus::index {
+namespace {
+
+bool
+IsStringType(DataType type) {
+    return type == DataType::STRING || type == DataType::VARCHAR ||
+           type == DataType::TEXT;
+}
+
+int64_t
+SaturatingSize(size_t value) {
+    return value > static_cast<size_t>(std::numeric_limits<int64_t>::max())
+               ? std::numeric_limits<int64_t>::max()
+               : static_cast<int64_t>(value);
+}
+
+void
+SaturatingAdd(size_t& total, size_t value) {
+    if (value > std::numeric_limits<size_t>::max() - total) {
+        total = std::numeric_limits<size_t>::max();
+    } else {
+        total += value;
+    }
+}
+
+const uint8_t*
+Bytes(std::string_view value) {
+    return reinterpret_cast<const uint8_t*>(value.data());
+}
+
+}  // namespace
+
+FmIndexMappedFile::FmIndexMappedFile(void* data,
+                                     size_t mapped_bytes,
+                                     std::string staging_directory)
+    : data_(data),
+      mapped_bytes_(mapped_bytes),
+      staging_directory_(std::move(staging_directory)) {
+    AssertInfo(data_ != nullptr && data_ != MAP_FAILED,
+               "FM-index mapping must have a valid address");
+    AssertInfo(mapped_bytes_ != 0, "FM-index mapping must not be empty");
+    AssertInfo(!staging_directory_.empty(),
+               "FM-index mapping must own a staging directory");
+}
+
+FmIndexMappedFile::~FmIndexMappedFile() {
+    if (data_ != nullptr && data_ != MAP_FAILED && mapped_bytes_ != 0) {
+        ::munmap(data_, mapped_bytes_);
+    }
+    if (!staging_directory_.empty()) {
+        std::error_code ignored;
+        std::filesystem::remove_all(staging_directory_, ignored);
+    }
+}
+
+const uint8_t*
+FmIndexMappedFile::Data() const {
+    return static_cast<const uint8_t*>(data_);
+}
+
+size_t
+FmIndexMappedFile::MappedBytes() const {
+    return mapped_bytes_;
+}
+
+size_t
+FmIndexMappedFile::HeapBytes() const {
+    size_t total = sizeof(FmIndexMappedFile);
+    const auto inline_capacity = std::string{}.capacity();
+    if (staging_directory_.capacity() > inline_capacity) {
+        const auto path_bytes =
+            staging_directory_.capacity() == std::numeric_limits<size_t>::max()
+                ? std::numeric_limits<size_t>::max()
+                : staging_directory_.capacity() + 1;
+        SaturatingAdd(total, path_bytes);
+    }
+    return total;
+}
+
+FmIndexStorage::FmIndexStorage(
+    std::shared_ptr<const FmIndexMappedFile> mapped_file,
+    std::shared_ptr<const fmindex::FMIndex> engine,
+    TargetBitmap null_bitmap,
+    int64_t total_rows,
+    int64_t total_tokens,
+    DataType value_type,
+    bool nullable,
+    int64_t memory_usage,
+    int64_t file_bytes)
+    : mapped_file_(std::move(mapped_file)),
+      engine_(std::move(engine)),
       null_bitmap_(std::move(null_bitmap)),
       total_rows_(total_rows),
       total_tokens_(total_tokens),
-      cost_ratio_(cost_ratio) {
+      value_type_(value_type),
+      nullable_(nullable),
+      memory_usage_(memory_usage),
+      file_bytes_(file_bytes) {
 }
 
-FmIndexReader::~FmIndexReader() {
-    // TODO: move existing logic here (see FMIndex.h:56-71 — the mmap teardown.
-    // The `munmap` half belongs to whatever owns the mapping produced by
-    // `FmIndexLoader`; `disk_file_manager_->RemoveIndexFiles()` does NOT come
-    // along, §10 rule 2).
+std::shared_ptr<const FmIndexStorage>
+FmIndexStorage::Create(std::shared_ptr<const FmIndexMappedFile> mapped_file,
+                       std::shared_ptr<const fmindex::FMIndex> engine,
+                       TargetBitmap null_bitmap,
+                       int64_t total_rows,
+                       DataType value_type,
+                       bool nullable,
+                       FmIndexStateOrigin origin) {
+    const auto persisted = origin == FmIndexStateOrigin::Persisted;
+    if (engine == nullptr || !engine->valid()) {
+        if (persisted) {
+            ThrowInfo(DataFormatBroken,
+                      "FM-index blob failed structural validation");
+        }
+        AssertInfo(false, "FM-index state requires a valid engine");
+    }
+    if (total_rows < 0) {
+        if (persisted) {
+            ThrowInfo(DataFormatBroken,
+                      "FM-index row count must not be negative");
+        }
+        AssertInfo(false, "FM-index state row count must not be negative");
+    }
+    if (engine->document_count() != static_cast<size_t>(total_rows)) {
+        if (persisted) {
+            ThrowInfo(DataFormatBroken,
+                      "FM-index metadata rows {} disagree with blob documents "
+                      "{}",
+                      total_rows,
+                      engine->document_count());
+        }
+        AssertInfo(false,
+                   "FM-index state row/document counts disagree: {} vs {}",
+                   total_rows,
+                   engine->document_count());
+    }
+    if (null_bitmap.size() != static_cast<size_t>(total_rows)) {
+        if (persisted) {
+            ThrowInfo(DataFormatBroken,
+                      "FM-index null bitmap has {} rows; expected {}",
+                      null_bitmap.size(),
+                      total_rows);
+        }
+        AssertInfo(false,
+                   "FM-index state null bitmap size disagrees with row count");
+    }
+    if (!nullable && !null_bitmap.none()) {
+        if (persisted) {
+            ThrowInfo(DataFormatBroken,
+                      "non-nullable FM-index contains null rows");
+        }
+        AssertInfo(false, "non-nullable FM-index state contains null rows");
+    }
+    AssertInfo(IsStringType(value_type),
+               "FM-index state requires a string value type");
+    if (engine->bwt_size() == 0 ||
+        engine->bwt_size() - 1 < static_cast<size_t>(total_rows)) {
+        if (persisted) {
+            ThrowInfo(DataFormatBroken,
+                      "FM-index internal text is shorter than its document "
+                      "count");
+        }
+        AssertInfo(false,
+                   "FM-index internal text is shorter than its document count");
+    }
+
+    const auto tokens =
+        engine->bwt_size() - 1 - static_cast<size_t>(total_rows);
+    size_t heap_bytes = sizeof(FmIndexStorage);
+    SaturatingAdd(heap_bytes, sizeof(fmindex::FMIndex));
+    SaturatingAdd(heap_bytes, sizeof(std::once_flag));
+    SaturatingAdd(heap_bytes, engine->resident_heap_bytes());
+    SaturatingAdd(heap_bytes, null_bitmap.size_in_bytes());
+    int64_t file_bytes = 0;
+    if (mapped_file != nullptr) {
+        SaturatingAdd(heap_bytes, mapped_file->HeapBytes());
+        file_bytes = SaturatingSize(mapped_file->MappedBytes());
+    }
+    return std::shared_ptr<const FmIndexStorage>(
+        new FmIndexStorage(std::move(mapped_file),
+                           std::move(engine),
+                           std::move(null_bitmap),
+                           total_rows,
+                           SaturatingSize(tokens),
+                           value_type,
+                           nullable,
+                           SaturatingSize(heap_bytes),
+                           file_bytes));
 }
+
+const fmindex::FMIndex&
+FmIndexStorage::Engine() const {
+    return *engine_;
+}
+
+const TargetBitmap&
+FmIndexStorage::NullBitmap() const {
+    return null_bitmap_;
+}
+
+int64_t
+FmIndexStorage::Count() const {
+    return total_rows_;
+}
+
+int64_t
+FmIndexStorage::TotalTokens() const {
+    return total_tokens_;
+}
+
+DataType
+FmIndexStorage::ValueType() const {
+    return value_type_;
+}
+
+bool
+FmIndexStorage::Nullable() const {
+    return nullable_;
+}
+
+int64_t
+FmIndexStorage::MemoryUsage() const {
+    return memory_usage_;
+}
+
+int64_t
+FmIndexStorage::FileBytes() const {
+    return file_bytes_;
+}
+
+FmIndexReader::FmIndexReader(std::shared_ptr<const FmIndexStorage> storage,
+                             double cost_ratio)
+    : storage_(std::move(storage)), cost_ratio_(cost_ratio) {
+    AssertInfo(storage_ != nullptr, "FM-index reader requires shared storage");
+    AssertInfo(std::isfinite(cost_ratio_) && cost_ratio_ >= 0,
+               "FM-index cost ratio must be finite and non-negative");
+}
+
+FmIndexReader::~FmIndexReader() = default;
 
 ReaderCaps
 FmIndexReader::Caps() const {
-    // No `predicate` bit: In/NotIn/Range are throw shells today
-    // (FMIndex.cpp:379,386; FMIndex.h:148,156) and are deleted outright.
-    // No `value_lookup`: `HasRawData()` is false (FMIndex.h:261-264) and
-    // `Reverse_Lookup` throws (FMIndex.h:268).
     return ReaderCaps{.pattern_match = true};
 }
 
@@ -55,66 +278,142 @@ FmIndexReader::CoordDomain() const {
 
 int64_t
 FmIndexReader::Count() const {
-    return total_rows_;
+    return storage_->Count();
 }
 
 DataType
 FmIndexReader::ValueType() const {
-    return DataType::VARCHAR;
+    return storage_->ValueType();
 }
 
 int64_t
 FmIndexReader::MemoryUsage() const {
-    // TODO: move existing logic here (see FMIndex.cpp:283-294 ComputeByteSize:
-    // engine resident heap + null bitmap bytes, saturating).
+    size_t total = sizeof(FmIndexReader);
+    SaturatingAdd(total, static_cast<size_t>(storage_->MemoryUsage()));
+    return SaturatingSize(total);
 }
 
-ResourceUsage
+cachinglayer::ResourceUsage
 FmIndexReader::CellByteSize() const {
-    // TODO: move existing logic here (see FMIndex.cpp:708-715, which re-measures
-    // after load and overwrites the memory half of the estimate).
-    // FMIndex is one of only two families that report MEASURED memory instead of
-    // file size — the inconsistency §12.3 is about. Do not resolve it per family.
+    return {MemoryUsage(), storage_->FileBytes()};
 }
 
 TargetBitmap
 FmIndexReader::PatternMatch(std::string_view pattern, PatternOp op) const {
-    // TODO: move existing logic here (see FMIndex.cpp:315-368):
-    //   empty pattern      -> IsNotNull()                 (FMIndex.cpp:326-335)
-    //   PrefixMatch        -> engine_.LocatePrefixDocs    (:339-341)
-    //   PostfixMatch       -> engine_.LocateSuffixDocs    (:342-344)
-    //   InnerMatch         -> engine_.VisitMatchingDocs   (:345-357)
-    // The `default:` throw at :358-366 becomes unreachable-by-construction:
-    // `Match` / `RegexMatch` are declined by `ShouldUsePattern`, so if one still
-    // arrives that is a caller bug and an AssertInfo, not an `Unsupported`.
+    if (pattern.empty()) {
+        switch (op) {
+            case PatternOp::PrefixMatch:
+            case PatternOp::PostfixMatch:
+            case PatternOp::InnerMatch:
+                return IsNotNull();
+            default:
+                break;
+        }
+    }
+
+    switch (op) {
+        case PatternOp::PrefixMatch:
+            return DocsToBitmap(storage_->Engine().LocatePrefixDocs(
+                Bytes(pattern), pattern.size()));
+        case PatternOp::PostfixMatch:
+            return DocsToBitmap(storage_->Engine().LocateSuffixDocs(
+                Bytes(pattern), pattern.size()));
+        case PatternOp::InnerMatch: {
+            TargetBitmap result(static_cast<size_t>(storage_->Count()), false);
+            const auto rows = static_cast<uint64_t>(storage_->Count());
+            storage_->Engine().VisitMatchingDocs(
+                Bytes(pattern), pattern.size(), [&](uint64_t document) {
+                    if (document < rows) {
+                        result.set(static_cast<size_t>(document));
+                    }
+                });
+            return result;
+        }
+        case PatternOp::Match:
+        case PatternOp::RegexMatch:
+            ThrowInfo(Unsupported,
+                      "FM-index does not support general LIKE or regex");
+        default:
+            ThrowInfo(UnexpectedError,
+                      "invalid FM-index pattern operation {}",
+                      static_cast<int>(op));
+    }
+}
+
+bool
+FmIndexReader::ShouldUseForOp(PatternOp op, std::string_view pattern) const {
+    switch (op) {
+        case PatternOp::PrefixMatch:
+        case PatternOp::PostfixMatch:
+        case PatternOp::InnerMatch:
+            break;
+        case PatternOp::Match:
+        case PatternOp::RegexMatch:
+            return false;
+        default:
+            return false;
+    }
+    if (pattern.empty()) {
+        return true;
+    }
+    const auto occurrences = PatternCount(pattern, op);
+    if (occurrences < 0) {
+        return true;
+    }
+    if (occurrences == 0) {
+        return true;
+    }
+    return static_cast<double>(occurrences) *
+               static_cast<double>(storage_->Engine().sa_sample_rate()) <
+           cost_ratio_ * static_cast<double>(storage_->TotalTokens());
 }
 
 TargetBitmap
 FmIndexReader::IsNull() const {
-    // TODO: move existing logic here (see FMIndex.cpp:391-395).
+    return storage_->NullBitmap().clone();
 }
 
 TargetBitmap
 FmIndexReader::IsNotNull() const {
-    // TODO: move existing logic here (see FMIndex.cpp:397-403).
-}
-
-bool
-FmIndexReader::ShouldUsePattern(std::string_view pattern, PatternOp op) const {
-    // TODO: move existing logic here (see FMIndex.h:199-244), replacing the
-    // `SegcoreConfig::default_config().get_fmindex_cost_ratio()` read at
-    // FMIndex.h:226-228 with `cost_ratio_`. That single substitution is what
-    // erases the `index/ -> segcore/` header edge (§10 rule 1).
+    auto result = storage_->NullBitmap().clone();
+    result.flip();
+    return result;
 }
 
 int64_t
 FmIndexReader::PatternCount(std::string_view pattern, PatternOp op) const {
-    // TODO: move existing logic here (see FMIndex.h:279-294).
+    size_t count = 0;
+    switch (op) {
+        case PatternOp::PrefixMatch:
+            count = storage_->Engine().CountPrefixDocs(Bytes(pattern),
+                                                       pattern.size());
+            break;
+        case PatternOp::PostfixMatch:
+            count = storage_->Engine().CountSuffixDocs(Bytes(pattern),
+                                                       pattern.size());
+            break;
+        case PatternOp::InnerMatch:
+            count = storage_->Engine().Count(Bytes(pattern), pattern.size());
+            break;
+        case PatternOp::Match:
+        case PatternOp::RegexMatch:
+            return -1;
+        default:
+            return -1;
+    }
+    return SaturatingSize(count);
 }
 
 TargetBitmap
 FmIndexReader::DocsToBitmap(const std::vector<uint64_t>& docs) const {
-    // TODO: move existing logic here (see FMIndex.cpp:296-313).
+    TargetBitmap result(static_cast<size_t>(storage_->Count()), false);
+    const auto rows = static_cast<uint64_t>(storage_->Count());
+    for (const auto document : docs) {
+        if (document < rows) {
+            result.set(static_cast<size_t>(document));
+        }
+    }
+    return result;
 }
 
 }  // namespace milvus::index

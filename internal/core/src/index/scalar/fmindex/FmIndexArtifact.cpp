@@ -6,7 +6,7 @@
 // "License"); you may not use this file except in compliance
 // with the License. You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,49 +16,179 @@
 
 #include "index/scalar/fmindex/FmIndexArtifact.h"
 
+#include <cerrno>
+#include <cstring>
+#include <filesystem>
+#include <limits>
+#include <unistd.h>
 #include <utility>
+#include <vector>
 
-#include "index/Families.h"
+#include "common/EasyAssert.h"
+#include "index/fmindex/FMIndex.h"
 #include "index/scalar/fmindex/FmIndexReader.h"
+#include "nlohmann/json.hpp"
 
 namespace milvus::index {
+namespace {
+
+constexpr std::string_view kBlobEntry = "fm_index.bin";
+constexpr std::string_view kNullBitmapEntry = "fm_index_null_bitmap";
+constexpr std::string_view kTotalRowsMeta = "total_rows";
+constexpr std::string_view kNullableMeta = "nullable";
+
+bool
+IsStringType(DataType type) {
+    return type == DataType::STRING || type == DataType::VARCHAR ||
+           type == DataType::TEXT;
+}
+
+class TempFile final {
+ public:
+    explicit TempFile(const std::string& configured_parent) {
+        std::error_code error;
+        const auto directory = configured_parent.empty()
+                                   ? std::filesystem::temp_directory_path(error)
+                                   : std::filesystem::path(configured_parent);
+        if (error) {
+            ThrowInfo(FileCreateFailed,
+                      "failed to locate FM-index temporary directory: {}",
+                      error.message());
+        }
+        std::filesystem::create_directories(directory, error);
+        if (error) {
+            ThrowInfo(FileCreateFailed,
+                      "failed to create FM-index staging parent {}: {}",
+                      directory.string(),
+                      error.message());
+        }
+        auto pattern = (directory / "milvus-fmindex-XXXXXX").string();
+        std::vector<char> mutable_pattern(pattern.begin(), pattern.end());
+        mutable_pattern.push_back('\0');
+        const auto fd = ::mkstemp(mutable_pattern.data());
+        if (fd < 0) {
+            ThrowInfo(FileCreateFailed,
+                      "failed to create FM-index temporary file: {}",
+                      std::strerror(errno));
+        }
+        if (::close(fd) != 0) {
+            const auto saved_errno = errno;
+            ::unlink(mutable_pattern.data());
+            ThrowInfo(FileWriteFailed,
+                      "failed to close FM-index temporary file {}: {}",
+                      mutable_pattern.data(),
+                      std::strerror(saved_errno));
+        }
+        try {
+            path_ = mutable_pattern.data();
+        } catch (...) {
+            ::unlink(mutable_pattern.data());
+            throw;
+        }
+    }
+
+    TempFile(const TempFile&) = delete;
+    TempFile&
+    operator=(const TempFile&) = delete;
+
+    ~TempFile() {
+        if (!path_.empty()) {
+            ::unlink(path_.c_str());
+        }
+    }
+
+    const std::string&
+    Path() const {
+        return path_;
+    }
+
+ private:
+    std::string path_;
+};
+
+std::vector<uint8_t>
+PackNullBitmap(const TargetBitmap& null_bitmap, int64_t total_rows) {
+    const auto packed_size = static_cast<size_t>(total_rows / 8) +
+                             static_cast<size_t>(total_rows % 8 != 0);
+    std::vector<uint8_t> packed(packed_size, 0);
+    for (int64_t row = 0; row < total_rows; ++row) {
+        if (null_bitmap[static_cast<size_t>(row)]) {
+            packed[static_cast<size_t>(row) >> 3] |=
+                static_cast<uint8_t>(1u << (row & 0x07));
+        }
+    }
+    return packed;
+}
+
+}  // namespace
 
 FmIndexArtifact::FmIndexArtifact(fmindex::FMIndex engine,
                                  TargetBitmap null_bitmap,
                                  int64_t total_rows,
-                                 int64_t total_tokens)
-    : engine_(std::move(engine)),
-      null_bitmap_(std::move(null_bitmap)),
-      total_rows_(total_rows),
-      total_tokens_(total_tokens) {
+                                 DataType value_type,
+                                 bool nullable,
+                                 std::string local_dir)
+    : storage_(FmIndexStorage::Create(
+          {},
+          std::make_shared<const fmindex::FMIndex>(std::move(engine)),
+          std::move(null_bitmap),
+          total_rows,
+          value_type,
+          nullable,
+          FmIndexStateOrigin::Builder)),
+      local_dir_(std::move(local_dir)) {
+    AssertInfo(IsStringType(storage_->ValueType()),
+               "FM-index artifact requires a string value type");
+}
+
+FmIndexArtifact::FmIndexArtifact(std::shared_ptr<const FmIndexStorage> storage,
+                                 std::string local_dir)
+    : storage_(std::move(storage)), local_dir_(std::move(local_dir)) {
+    AssertInfo(storage_ != nullptr,
+               "FM-index artifact requires shared storage");
 }
 
 FmIndexArtifact::~FmIndexArtifact() = default;
 
 std::shared_ptr<storage::LoadedArtifact>
 FmIndexArtifact::OpenReader() const {
-    // NOTE: FM has no in-place-build call site today (unlike text and the
-    // interim vector indexes) — every FM index is built offline and then
-    // loaded. The entry point still exists because §6 pairs it with
-    // `IndexLoader::OpenIndex` for every family, and because the round-trip
-    // test ("open in place == open from bytes") needs both sides.
-    return nullptr;
+    return std::make_shared<FmIndexReader>(storage_);
 }
 
 void
 FmIndexArtifact::Serialize(storage::FileSink& sink) const {
-    // TODO: move existing logic here (see FMIndex.cpp:427-529 WriteEntries):
-    //   - FMINDEX_BLOB_FILE_NAME entry, streamed from the engine's
-    //     `SerializeToFile` (FMIndex.cpp:444-499) or from memory (:500-506);
-    //   - FMINDEX_NULL_BITMAP_FILE_NAME entry, only when the field is nullable
-    //     (:514-518);
-    //   - meta FMINDEX_META_TOTAL_ROWS / FMINDEX_META_NULLABLE (:520-521), via
-    //     `sink.PutMeta`, plus the families::k*MetaKey set that every family
-    //     writes so `DeriveCaps` can work without opening the index (§4.1).
-    //
-    // DEAD ON ARRIVAL, do not port: `FMIndex::Serialize(Config)`
-    // (FMIndex.cpp:405-412) returns an EMPTY BinarySet — the V1 path was never
-    // used for this family. Its disappearance is a deletion, not a migration.
+    if (sink.Gen() != storage::Generation::V3) {
+        ThrowInfo(UnexpectedError,
+                  "FM-index has no V1/V2 artifact representation");
+    }
+    AssertInfo(storage_ != nullptr,
+               "cannot serialize an FM-index artifact without storage");
+
+    TempFile blob_file(local_dir_);
+    errno = 0;
+    const auto status = storage_->Engine().SerializeToFile(blob_file.Path());
+    const auto saved_errno = errno;
+    if (status == fmindex::FMIndex::SerializeFileStatus::OpenFailed) {
+        ThrowInfo(FileOpenFailed,
+                  "failed to open FM-index temporary blob {}: {}",
+                  blob_file.Path(),
+                  std::strerror(saved_errno));
+    }
+    if (status == fmindex::FMIndex::SerializeFileStatus::WriteFailed) {
+        ThrowInfo(FileWriteFailed,
+                  "failed to write FM-index temporary blob {}: {}",
+                  blob_file.Path(),
+                  std::strerror(saved_errno));
+    }
+    sink.WriteEntryFromLocalFile(kBlobEntry, blob_file.Path());
+
+    if (storage_->Nullable()) {
+        const auto packed =
+            PackNullBitmap(storage_->NullBitmap(), storage_->Count());
+        sink.WriteEntry(kNullBitmapEntry, packed.data(), packed.size());
+    }
+    sink.PutMeta(kTotalRowsMeta, nlohmann::json(storage_->Count()));
+    sink.PutMeta(kNullableMeta, nlohmann::json(storage_->Nullable()));
 }
 
 }  // namespace milvus::index

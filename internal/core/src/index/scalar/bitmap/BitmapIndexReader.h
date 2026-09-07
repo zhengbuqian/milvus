@@ -20,8 +20,11 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
+#include <vector>
 
 #include <roaring/roaring.hh>
 
@@ -73,6 +76,41 @@ enum class BitmapLayout {
     Bitset,
 };
 
+// Owns the local frozen-Roaring file and its mapping. BitmapPostingStorage
+// declares this before the posting maps so the maps (whose frozen views point
+// into the mapping) are destroyed first.
+class BitmapMmapOwner final {
+ public:
+    BitmapMmapOwner(char* data, size_t size, std::string path);
+    ~BitmapMmapOwner();
+
+    BitmapMmapOwner(const BitmapMmapOwner&) = delete;
+    BitmapMmapOwner&
+    operator=(const BitmapMmapOwner&) = delete;
+
+    const char*
+    Data() const;
+
+    size_t
+    Size() const;
+
+ private:
+    char* data_{nullptr};
+    size_t size_{0};
+    std::string path_;
+};
+
+// The maps are declared after the mapping owner, so the last shared storage
+// release destroys frozen Roaring views before unmapping their backing file.
+// A map cannot be retained independently of this bundle.
+template <typename T>
+struct BitmapPostingStorage {
+    std::shared_ptr<BitmapMmapOwner> mmap_owner;
+    BitmapLayout layout{BitmapLayout::Roaring};
+    std::map<T, roaring::Roaring> roaring_postings;
+    std::map<T, TargetBitmap> bitset_postings;
+};
+
 template <typename T>
 class BitmapIndexReader final : public IndexReaderBase,
                                 public ScalarPredicateReader<T>,
@@ -80,12 +118,13 @@ class BitmapIndexReader final : public IndexReaderBase,
                                 public NullReader {
  public:
     struct OpenArgs {
-        BitmapLayout layout{BitmapLayout::Roaring};
-        std::map<T, roaring::Roaring> roaring_postings;
-        std::map<T, TargetBitmap> bitset_postings;
-        TargetBitmap valid_bitset;
+        std::shared_ptr<const BitmapPostingStorage<T>> postings;
+        std::shared_ptr<const TargetBitmap> valid_bitset;
         size_t total_num_rows{0};
         bool nested{false};
+        bool nullable{false};
+        bool value_lookup{true};
+        DataType value_type{DataType::NONE};
         // When true the reader keeps the sorted-iterator vector that makes
         // per-row reverse lookup O(1) instead of O(cardinality). Was
         // `use_offset_cache_` (`BitmapIndex.h:455`), driven by the
@@ -111,10 +150,13 @@ class BitmapIndexReader final : public IndexReaderBase,
     DataType
     ValueType() const override;
 
+    // Heap-resident bytes owned by this reader. Frozen Roaring payload bytes
+    // are intentionally excluded and reported by CellByteSize() as file
+    // usage.
     int64_t
     MemoryUsage() const override;
 
-    ResourceUsage
+    cachinglayer::ResourceUsage
     CellByteSize() const override;
 
     // ---- ScalarPredicateReader<T> (§5.1) --------------------------------
@@ -156,13 +198,11 @@ class BitmapIndexReader final : public IndexReaderBase,
     ShouldSkip(const T& lower, const T& upper, CompareOp op) const;
 
     OpenArgs data_;
+    std::vector<const T*> offset_cache_;
 
-    // GONE: `is_mmap_`, `mmap_data_`, `mmap_size_`, `bitmap_info_map_` and
-    // `MMapIndexData` / `UnmapIndexData` (`BitmapIndex.h:448-452`,
-    // `.cpp:564-628`, `:70-81`). Whether the postings are mapped or heap-backed
-    // is decided by the LOADER from `storage::LoadOptions` and expressed to the
-    // reader as the postings it is handed. That is §3 principle 6 (IO is
-    // injected) and §10 rule 2 applied to mmap.
+    // There is no mmap decision or IO in this reader. The loader may hand it
+    // frozen Roaring views plus their lifetime owner; query code uses the same
+    // roaring_postings map for heap and mmap layouts.
 };
 
 // The string bitmap reader. Same interfaces plus `PatternMatchReader`.
@@ -174,12 +214,13 @@ class BitmapStringIndexReader final
       public NullReader {
  public:
     struct OpenArgs {
-        BitmapLayout layout{BitmapLayout::Roaring};
-        std::map<std::string, roaring::Roaring> roaring_postings;
-        std::map<std::string, TargetBitmap> bitset_postings;
-        TargetBitmap valid_bitset;
+        std::shared_ptr<const BitmapPostingStorage<std::string>> postings;
+        std::shared_ptr<const TargetBitmap> valid_bitset;
         size_t total_num_rows{0};
         bool nested{false};
+        bool nullable{false};
+        bool value_lookup{true};
+        DataType value_type{DataType::VARCHAR};
         bool offset_cache{false};
     };
 
@@ -199,10 +240,12 @@ class BitmapStringIndexReader final
     DataType
     ValueType() const override;
 
+    // Heap-resident bytes only; mapped frozen payload is reported separately
+    // by CellByteSize().
     int64_t
     MemoryUsage() const override;
 
-    ResourceUsage
+    cachinglayer::ResourceUsage
     CellByteSize() const override;
 
     TargetBitmap
@@ -247,6 +290,7 @@ class BitmapStringIndexReader final
     PatternQuery(std::string_view pattern) const;
 
     OpenArgs data_;
+    std::vector<const std::string*> offset_cache_;
 };
 
 }  // namespace milvus::index

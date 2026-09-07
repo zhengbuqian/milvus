@@ -37,10 +37,8 @@
 // break a live path; keeping them on the typed predicate interface would keep
 // RTree tied to a predicate family it does not have.
 //
-// The signal was already visible in the current code: `IsNull` / `IsNotNull`
-// are THE ONLY TWO methods of `ScalarIndex<T>` (`ScalarIndex.h:132,135`) that
-// do not mention `T`. A method that does not take `T` living on an interface
-// templated on `T` is itself an interface-split error.
+// `IsNull` / `IsNotNull` do not mention the value type, so they belong on this
+// cross-family interface rather than a typed predicate interface.
 //
 // ALL SEVEN scalar families implement these for real, zero throws
 // (`BitmapIndex.cpp:816`, `FMIndex.cpp:392`, `RTreeIndex.cpp:469`,

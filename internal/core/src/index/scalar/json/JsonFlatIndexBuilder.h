@@ -26,20 +26,27 @@
 #include "common/JsonCastType.h"
 #include "index/contracts/IndexBuilder.h"
 #include "storage/artifact/Artifact.h"
-#include "tantivy-wrapper.h"
 
 // The BUILDER of the JSON flat family. §6.1, §6.1.1 (form **A, truly
 // streaming** — tantivy), §8.
 //
-// `T = std::string_view`: the input is raw JSON documents. Path extraction
-// happens inside, through JsonValueProjection.h, because the flat index indexes
-// EVERY path of the field in one tantivy index. (A per-path CAST index is the
-// other shape: there the projection runs in front of an ordinary
-// inverted/bitmap/sorted builder and this class is not involved — §5.7.)
+// `T = std::string_view`: the input is raw JSON documents. This family copies
+// each input into padded owned storage before parsing and, when rooted below
+// the document, indexes that JSON subtree. It does not use the typed
+// JsonValueProjection path: that belongs in front of ordinary per-path
+// inverted/bitmap/sorted builders (§5.7).
+
+namespace milvus::tantivy {
+struct TantivyIndexWrapper;
+}
 
 namespace milvus::index {
 
+class JsonFlatIndexDirectory;
+
 struct JsonFlatBuildParams {
+    // Tantivy field name. Registry construction derives this from FIELD_ID.
+    std::string field_name;
     // Empty means "the whole document"; otherwise the JSON-pointer sub-path
     // this index is rooted at. Was `JsonFlatIndex::nested_path_`
     // (JsonFlatIndex.h:787).
@@ -71,13 +78,20 @@ class JsonFlatIndexBuilder final : public IndexBuilder<std::string_view> {
     Add(size_t n, const std::string_view* values, const bool* valid) override;
 
     storage::ArtifactPtr
-    Seal() && override;
+        Seal() &&
+        override;
 
  private:
     JsonFlatBuildParams params_;
+    // Declaration order is intentional: the writer is destroyed before the
+    // directory it writes to.
+    std::shared_ptr<JsonFlatIndexDirectory> directory_;
     std::shared_ptr<milvus::tantivy::TantivyIndexWrapper> engine_;
+    std::vector<std::string> path_tokens_;
     std::vector<size_t> null_offsets_;
-    int64_t count_{0};
+    size_t count_{0};
+    bool sealed_{false};
+    bool failed_{false};
 };
 
 }  // namespace milvus::index

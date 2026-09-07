@@ -22,6 +22,7 @@
 
 #include <marisa.h>
 
+#include "common/Types.h"
 #include "storage/artifact/Artifact.h"
 #include "storage/artifact/FileSink.h"
 
@@ -31,12 +32,18 @@
 
 namespace milvus::index {
 
+struct MarisaIndexStorage;
+
 class MarisaIndexArtifact final : public storage::Artifact {
  public:
-    MarisaIndexArtifact(marisa::Trie trie,
+    MarisaIndexArtifact(std::shared_ptr<marisa::Trie> trie,
                         std::vector<int64_t> str_ids,
                         std::vector<uint32_t> csr_index,
-                        std::vector<uint32_t> csr_offsets);
+                        std::vector<uint32_t> csr_offsets,
+                        DataType value_type);
+
+    explicit MarisaIndexArtifact(
+        std::shared_ptr<const MarisaIndexStorage> storage);
 
     ~MarisaIndexArtifact() override;
 
@@ -47,10 +54,7 @@ class MarisaIndexArtifact final : public storage::Artifact {
     Serialize(storage::FileSink& sink) const override;
 
  private:
-    marisa::Trie trie_;
-    std::vector<int64_t> str_ids_;
-    std::vector<uint32_t> csr_index_;
-    std::vector<uint32_t> csr_offsets_;
+    std::shared_ptr<const MarisaIndexStorage> storage_;
 };
 
 }  // namespace milvus::index

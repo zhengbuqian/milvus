@@ -19,10 +19,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
+#include <string_view>
+#include <type_traits>
+#include <vector>
 
 #include <roaring/roaring.hh>
 
+#include "common/Array.h"
 #include "common/Types.h"
 #include "index/contracts/IndexBuilder.h"
 #include "storage/artifact/Artifact.h"
@@ -35,8 +40,27 @@ namespace milvus::index {
 struct BitmapBuildParams {
     // Build over ARRAY elements rather than rows (§5.8). Persisted.
     bool nested{false};
+    bool nullable{false};
+    bool value_lookup{true};
+    // Runtime-only reader policy. It is carried through the in-memory
+    // artifact so Seal()->OpenReader() and Loader::OpenIndex() expose the
+    // same lookup capability, but it is never serialized.
+    bool offset_cache{false};
     DataType value_type{DataType::NONE};
 };
+
+template <typename T>
+struct BitmapStoredType {
+    using type = T;
+};
+
+template <>
+struct BitmapStoredType<std::string_view> {
+    using type = std::string;
+};
+
+template <typename T>
+using bitmap_stored_t = typename BitmapStoredType<T>::type;
 
 template <typename T>
 class BitmapIndexBuilder final : public IndexBuilder<T> {
@@ -48,22 +72,15 @@ class BitmapIndexBuilder final : public IndexBuilder<T> {
     BuilderInputSpec
     InputSpec() const override;
 
-    // Replaces `Build(n, values, valid)` (BitmapIndex.cpp:95-127),
-    // `Build(Config)` (:83-93), `BuildWithFieldData` (:147-192),
-    // `BuildPrimitiveField` (:129-145), `BuildArrayField` (:194-213) and
-    // `BuildArrayFieldNested` (:215-246).
-    //
-    // The array variants disappear for the same reason as in the inverted
-    // family: flattening ARRAY rows into element values is the CALLER's
-    // projection. What the builder must still be told is whether those values
-    // are elements or rows, because that decides the coordinate system it
-    // records in the artifact — and that is `params_.nested`, one bit, not
-    // three methods.
+    // Replaces primitive Build and the already-flattened nested ARRAY path.
+    // Ordinary ARRAY rows use BitmapArrayIndexBuilder below because flattening
+    // them here would lose the many-elements-to-one-row coordinate mapping.
     void
     Add(size_t n, const T* values, const bool* valid) override;
 
     storage::ArtifactPtr
-    Seal() && override;
+        Seal() &&
+        override;
 
     // Cardinality observed so far. The `auto` family's selection strategy
     // (§6.3) reads it to choose between bitmap and inverted at Seal() time, and
@@ -74,9 +91,43 @@ class BitmapIndexBuilder final : public IndexBuilder<T> {
     DistinctCount() const;
 
  private:
+    using StoredT = bitmap_stored_t<T>;
+
     BitmapBuildParams params_;
-    std::map<T, roaring::Roaring> postings_;
-    TargetBitmap valid_bitset_;
+    std::map<StoredT, roaring::Roaring> postings_;
+    std::vector<uint8_t> validity_;
+    size_t total_num_rows_{0};
+};
+
+// Ordinary ARRAY indexes consume one ArrayView per source row. This keeps the
+// posting coordinate in the row domain: every element of one array points to
+// the same row, while empty and null arrays still advance the row coordinate.
+// Nested ARRAY indexes use the typed builders above after caller-side
+// flattening, so their coordinates are consecutive element offsets.
+class BitmapArrayIndexBuilder final : public IndexBuilder<ArrayView> {
+ public:
+    class Impl;
+
+    explicit BitmapArrayIndexBuilder(BitmapBuildParams params);
+    ~BitmapArrayIndexBuilder() override;
+
+    BuilderInputSpec
+    InputSpec() const override;
+
+    void
+    Add(size_t n, const ArrayView* values, const bool* valid) override;
+
+    storage::ArtifactPtr
+        Seal() &&
+        override;
+
+    size_t
+    DistinctCount() const;
+
+ private:
+    BitmapBuildParams params_;
+    std::unique_ptr<Impl> impl_;
+    std::vector<uint8_t> validity_;
     size_t total_num_rows_{0};
 };
 

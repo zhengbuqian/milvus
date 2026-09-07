@@ -108,6 +108,19 @@ pub extern "C" fn tantivy_create_reader_from_writer(
     }
 }
 
+#[no_mangle]
+pub extern "C" fn tantivy_create_snapshot_reader_from_writer(
+    ptr: *mut c_void,
+    set_bitset: SetBitsetFn,
+) -> RustResult {
+    let writer = ptr as *mut IndexWriterWrapper;
+    let reader = unsafe { (*writer).create_snapshot_reader(set_bitset) };
+    match reader {
+        Ok(r) => RustResult::from_ptr(create_binding(r)),
+        Err(e) => RustResult::from_error(e.to_string()),
+    }
+}
+
 // -------------------------build--------------------
 fn execute<T: Copy, I>(
     arr: I,

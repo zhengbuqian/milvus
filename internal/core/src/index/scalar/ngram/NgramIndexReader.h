@@ -26,7 +26,6 @@
 #include "index/contracts/IndexReader.h"
 #include "index/contracts/NgramReader.h"
 #include "index/contracts/NullReader.h"
-#include "tantivy-wrapper.h"
 
 // The READER of the ngram family.
 //
@@ -63,18 +62,28 @@
 // its answer is a SUPERSET (`caps.exact = false`), and conflating it with an
 // exact LIKE interface is what would let a caller skip the refine step.
 
+namespace milvus::tantivy {
+struct TantivyIndexWrapper;
+}
+
 namespace milvus::index {
+
+class NgramIndexDirectory;
 
 class NgramIndexReader final : public IndexReaderBase,
                                public NgramReader,
                                public NullReader {
  public:
-    NgramIndexReader(std::shared_ptr<milvus::tantivy::TantivyIndexWrapper> engine,
-                     std::vector<size_t> null_offsets,
-                     uintptr_t min_gram,
-                     uintptr_t max_gram,
-                     size_t avg_row_size,
-                     std::string nested_path);
+    NgramIndexReader(
+        std::shared_ptr<NgramIndexDirectory> directory,
+        std::shared_ptr<milvus::tantivy::TantivyIndexWrapper> engine,
+        std::shared_ptr<const std::vector<size_t>> null_offsets,
+        DataType value_type,
+        uintptr_t min_gram,
+        uintptr_t max_gram,
+        size_t avg_row_size,
+        bool mmap,
+        size_t engine_bytes);
 
     ~NgramIndexReader() override;
 
@@ -95,7 +104,7 @@ class NgramIndexReader final : public IndexReaderBase,
     int64_t
     MemoryUsage() const override;
 
-    ResourceUsage
+    cachinglayer::ResourceUsage
     CellByteSize() const override;
 
     // ---- NgramReader (§5.4) --------------------------------------------
@@ -133,8 +142,12 @@ class NgramIndexReader final : public IndexReaderBase,
                               size_t total_count,
                               TargetBitmap& bitset) const;
 
+    // Mmap readers keep the unique materialized directory alive. Heap readers
+    // own a Tantivy RamDirectory copy and therefore leave this null.
+    std::shared_ptr<NgramIndexDirectory> directory_;
     std::shared_ptr<milvus::tantivy::TantivyIndexWrapper> engine_;
-    std::vector<size_t> null_offsets_;
+    std::shared_ptr<const std::vector<size_t>> null_offsets_;
+    DataType value_type_{DataType::VARCHAR};
 
     uintptr_t min_gram_{0};
     uintptr_t max_gram_{0};
@@ -143,8 +156,12 @@ class NgramIndexReader final : public IndexReaderBase,
     // NgramInvertedIndex.cpp:55) and used only by the cost policy above.
     size_t avg_row_size_{0};
 
-    // Non-empty when the index is built on a JSON path rather than a column.
-    std::string nested_path_;
+    bool mmap_{false};
+    // Exact retained staged bytes on mmap, or the managed-file payload copied
+    // into Tantivy's RamDirectory. Rust reader/allocator overhead is not
+    // exposed by the binding and is intentionally not replaced by an estimate.
+    size_t engine_bytes_{0};
+    uint32_t count_{0};
 };
 
 }  // namespace milvus::index

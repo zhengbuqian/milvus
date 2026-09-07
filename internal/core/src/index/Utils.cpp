@@ -129,20 +129,40 @@ GetBitmapCardinalityLimitFromConfig(const Config& config) {
 
 std::string
 GetLowCardinalityFamilyFromConfig(const Config& config) {
-    // TODO: move existing logic here (see the pre-refactor
-    // Utils.cpp:201-211 GetHybridLowCardinalityIndexTypeFromConfig), returning
-    // `families::kBitmap` in place of `ScalarIndexType::BITMAP`.
+    auto type = GetValueFromConfig<std::string>(
+        config, HYBRID_LOW_CARDINALITY_INDEX_TYPE);
+    if (!type.has_value()) {
+        return families::kBitmap;
+    }
+    if (*type == "BITMAP") {
+        return families::kBitmap;
+    }
+    if (*type == "STLSORT" || *type == ASCENDING_SORT) {
+        return families::kSort;
+    }
+    if (*type == "MARISA" || *type == MARISA_TRIE ||
+        *type == MARISA_TRIE_UPPER) {
+        return families::kMarisa;
+    }
+    if (*type == "INVERTED" || *type == INVERTED_INDEX_TYPE) {
+        return families::kInverted;
+    }
+    AssertInfo(false, "unsupported hybrid scalar index type: {}", *type);
     return {};
 }
 
 std::string
 GetHighCardinalityFamilyFromConfig(const Config& config) {
-    // TODO: move existing logic here (see the pre-refactor
-    // Utils.cpp:212-222 GetHybridHighCardinalityIndexTypeFromConfig).
-    return {};
+    auto type = GetValueFromConfig<std::string>(
+        config, HYBRID_HIGH_CARDINALITY_INDEX_TYPE);
+    if (!type.has_value()) {
+        return families::kSort;
+    }
+    Config copy = config;
+    copy[HYBRID_LOW_CARDINALITY_INDEX_TYPE] = *type;
+    return GetLowCardinalityFamilyFromConfig(copy);
 }
 
-// TODO :: too ugly
 Config
 ParseConfigFromIndexParams(
     const std::map<std::string, std::string>& index_params) {
@@ -367,6 +387,5 @@ ReadDataFromFD(int fd, void* buf, size_t size, size_t chunk_size) {
         size -= static_cast<std::size_t>(size_read);
     }
 }
-
 
 }  // namespace milvus::index

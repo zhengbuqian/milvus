@@ -21,7 +21,9 @@
 
 #include "index/contracts/IndexLoader.h"
 
-// The LOADER of the spatial family (§6.2).
+// The LOADER of the spatial family (§6.2). The legacy wire has no row-count
+// field, so OpenIndex requires authoritative runtime `num_rows` (or the
+// existing `index_num_rows` alias) in LoadOptions::params.
 
 namespace milvus::index {
 
@@ -40,6 +42,10 @@ class RTreeIndexLoader final : public IndexLoader {
     std::shared_ptr<IndexReaderBase>
     OpenIndex(storage::FileSource& source,
               const storage::LoadOptions& opts) override;
+
+    RehydratedIndex
+    OpenForRewrite(storage::FileSource& source,
+                   const storage::LoadOptions& opts) override;
 };
 
 }  // namespace milvus::index

@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <optional>
 #include <string>
 
 #include "common/Types.h"
@@ -117,17 +118,17 @@ struct ExprIndexRequirement {
     // expression this is the element type, not `DataType::ARRAY`.
     DataType value_type{DataType::NONE};
 
-    // Empty unless the expression addresses a JSON path. A per-path cast index
-    // is registered in the inventory as `(field, path)` (§5.7).
+    // Empty unless the expression addresses a JSON path. The path selects among
+    // capability metadata; inventory identity is `(field, persisted/local id)`.
     std::string json_path;
 
     // True when the expression evaluates per array element rather than per row.
     bool element_level{false};
 
-    // False when exec is willing to take a candidate superset and refine it
+    // True when exec is willing to take a candidate superset and refine it
     // itself (the normal case for the ngram / spatial / nested-ARRAY-equality
-    // family, §5.6 "the shared shape of the candidate family"). True only where
-    // no refine step exists downstream, in which case an index with
+    // family, §5.6 "the shared shape of the candidate family"). False where no
+    // refine step exists downstream, in which case an index with
     // `caps.exact == false` is unusable and the answer is `RawData`.
     bool accepts_candidates{true};
 
@@ -148,10 +149,10 @@ struct ExprIndexRequirement {
 struct ExecPathDecision {
     ExprExecPath path{ExprExecPath::RawData};
 
-    // Which inventory entry to pin, valid when `path != RawData` and the path
-    // is index-backed. The caller passes this straight to
+    // Which inventory entry to pin. Present exactly when the selected path is
+    // index-backed. The caller passes this straight to
     // `segcore::IndexInventory::Pin*` — ONCE, for the whole expression node.
-    segcore::IndexKey key;
+    std::optional<segcore::IndexKey> key;
 
     // Mirrors the chosen entry's `caps.exact == false`. The consumer MUST run
     // the refine step (see CandidateRefine.h) when this is set; the index

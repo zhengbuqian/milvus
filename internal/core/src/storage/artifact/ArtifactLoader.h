@@ -31,17 +31,16 @@
 // Builder writes what its Loader reads. That coupling is held by "same family,
 // same directory" plus round-trip tests, not by sharing a class (§6).
 //
-// Naming provisional, see §12.2.
-
 namespace milvus::storage {
 
 class ArtifactLoader {
  public:
     virtual ~ArtifactLoader() = default;
 
-    // `Open`, not `Deserialize`: under mmap nothing is deserialized (the artifact
-    // is never fully materialized), and `Open` pairs with `Artifact::OpenReader()`
-    // so the two entrances to a reader read as the isomorphism they are (§6.2).
+    // `Open`, not `Deserialize`: mmap loaders may parse or convert bounded
+    // chunks and build auxiliary metadata, but final bulk ownership is
+    // file-backed. `Open` also pairs with `Artifact::OpenReader()` so the two
+    // entrances to a reader read as the isomorphism they are (§6.2).
     //
     // Returns the type-erased L1 base class; each layer downcasts its own
     // product (§11.2 rule 1). `index::IndexLoader` narrows this to

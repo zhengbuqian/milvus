@@ -80,11 +80,8 @@ class VectorDiskReader final : public IndexReaderBase,
     // not a shared parameter bag (§11.2 rule 4).
     VectorDiskReader(KnowhereEngine engine,
                      VectorValidData valid,
-                     uint32_t search_beamwidth)
-        : engine_(std::move(engine)),
-          valid_(std::move(valid)),
-          search_beamwidth_(search_beamwidth) {
-    }
+                     uint32_t search_beamwidth,
+                     std::shared_ptr<const void> staging_owner = nullptr);
 
     ~VectorDiskReader() override = default;
 
@@ -94,7 +91,7 @@ class VectorDiskReader final : public IndexReaderBase,
     // on-disk artifact the "memory vs file" split of `ResourceUsage` is the whole
     // question, and today it is decided by an `enable_mmap` branch in the
     // translator rather than by the family.
-    milvus::ResourceUsage
+    cachinglayer::ResourceUsage
     CellByteSize() const override;
 
     // --- IndexReaderBase ----------------------------------------------------
@@ -195,6 +192,9 @@ class VectorDiskReader final : public IndexReaderBase,
                     const std::string& metric_type) const override;
 
  private:
+    // Declared before the engine so the engine is destroyed before any local
+    // files or FileManager generation retained by this opaque owner.
+    std::shared_ptr<const void> staging_owner_;
     KnowhereEngine engine_;
     VectorValidData valid_;
     uint32_t search_beamwidth_{8};

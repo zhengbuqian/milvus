@@ -51,7 +51,7 @@
 // OBJECT MODEL (§4.3's table). THREE THINGS WITH THREE DIFFERENT LIFETIMES:
 //
 //   implementation instance (`InvertedIndex<int64_t>` ...)
-//       created by  : `index::IndexLoader::Open()`, i.e. AT INDEX LOAD TIME
+//       created by  : a cold slot's `index::IndexLoader::Open()` translator
 //       lives       : long; rebuilt only when cachinglayer evicts it and it is
 //                     loaded again
 //       cost        : one load
@@ -101,8 +101,8 @@ namespace milvus::segcore {
 
 class IndexInventory {
  public:
-    using RootSlot =
-        std::shared_ptr<milvus::cachinglayer::CacheSlot<index::IndexReaderBase>>;
+    using RootSlot = std::shared_ptr<
+        milvus::cachinglayer::CacheSlot<index::IndexReaderBase>>;
 
     struct Entry {
         // Pure data, readable without a pin.
@@ -116,9 +116,10 @@ class IndexInventory {
     };
 
     // ---- Build side (load) --------------------------------------------------
-    // Called by segcore's load path once per index, after
-    // `index::IndexLoader::Open()` produced the reader and
-    // `index::IndexLoader::DeriveCaps()` produced the caps.
+    // Called by segcore's load-planning path once per index. The concrete family
+    // and caps are derived from selector/runtime metadata before payload open;
+    // registration installs that metadata with a cold slot whose translator
+    // opens the reader only when the slot is pinned.
     //
     // TODO: move existing logic here — the registration sites today are
     // `ChunkedSegmentSealedImpl::LoadIndex` / `LoadScalarIndex` filling

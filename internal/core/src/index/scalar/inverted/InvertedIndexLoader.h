@@ -34,17 +34,20 @@ class InvertedIndexLoader final : public IndexLoader {
     std::string
     Family() const override;
 
-    // Derived from LOAD-TIME METADATA ONLY — the persisted value type decides
-    // `pattern_match` (§4.1's worked example is literally "inverted on a
-    // VARCHAR => predicate + pattern_match"), and the persisted nested bit
-    // decides `nested`. No index object is opened, so a cold cell under tiered
-    // storage stays cold while exec picks its path (§4.3 step 1, §10 rule 3b).
+    // Inverted's historical wire format stores neither logical value type nor
+    // nested mode. Both are normalized runtime parameters, so caps remain
+    // available without opening a payload while the persisted bytes stay
+    // unchanged.
     ReaderCaps
     DeriveCaps(const Config& index_meta) const override;
 
     std::shared_ptr<IndexReaderBase>
     OpenIndex(storage::FileSource& source,
               const storage::LoadOptions& opts) override;
+
+    RehydratedIndex
+    OpenForRewrite(storage::FileSource& source,
+                   const storage::LoadOptions& opts) override;
 };
 
 }  // namespace milvus::index

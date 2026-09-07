@@ -48,17 +48,17 @@
 //
 // DESIGN ACCEPTANCE CRITERION (§11.2 rule 1): all three materialized forms must
 // fit through this interface without special-casing —
-//   - knowhere `BinarySet`: a set of named in-memory blobs        -> FileSink::WriteEntry
+//   - neutral named buffers: a set of named in-memory blobs       -> FileSink::WriteEntry
 //   - DiskANN: a large local file, streamed, never fully resident -> FileSink::WriteEntryFromLocalFile
-//   - mmap: opened by mapping, nothing deserialized               -> ArtifactLoader::Open + LoadOptions::enable_mmap
+//   - mmap: final bulk ownership is file-backed; bounded parsing,
+//           format conversion, or heap auxiliary metadata is allowed
+//                                                               -> ArtifactLoader::Open + LoadOptions::enable_mmap
 // If a first implementation finds that the pipeline must know "this is a tantivy
-// directory / a knowhere BinarySet / a DiskANN big file" in order to work, then
+// directory / a named-buffer set / a DiskANN big file" in order to work, then
 // it is not a resident of the pure byte world and the landing place has to move
 // (§12.2, option 2: a separate L1 component instead of `storage/`). That check
 // is meant to be run on the day this interface is first implemented.
 //
-// Naming provisional, see §12.2.
-
 namespace milvus::storage {
 
 class Artifact {
@@ -77,8 +77,7 @@ class Artifact {
     OpenReader() const = 0;
 
     // Hand the materialized bytes to the sink. No upload here: the sink decides
-    // where bytes go, and upload orchestration is the indexbuilder service's
-    // (§6.2). `IndexBase::Upload` / `UploadUnified` disappear with this.
+    // where bytes go, and upload orchestration is the indexbuilder service's.
     virtual void
     Serialize(FileSink& sink) const = 0;
 };

@@ -19,8 +19,10 @@
 #include <memory>
 #include <string>
 
+#include "common/EasyAssert.h"
 #include "index/contracts/IndexReader.h"
 #include "index/contracts/ReaderCaps.h"
+#include "storage/artifact/Artifact.h"
 #include "storage/artifact/ArtifactLoader.h"
 #include "storage/artifact/FileSource.h"
 #include "storage/artifact/LoadOptions.h"
@@ -46,6 +48,11 @@
 
 namespace milvus::index {
 
+struct RehydratedIndex {
+    storage::ArtifactPtr artifact;
+    std::shared_ptr<IndexReaderBase> reader;
+};
+
 class IndexLoader : public storage::ArtifactLoader {
  public:
     ~IndexLoader() override = default;
@@ -65,18 +72,18 @@ class IndexLoader : public storage::ArtifactLoader {
     // stores the result as pure data. `IndexReaderBase::Caps()` is then only a
     // consistency check against this value (§4.1, §4.3, §10 rule 3b).
     //
-    // `index_meta` is the family-specific metadata bag; see `BuildParams` in
-    // Registry.h for why it is not a shared struct.
+    // `params` is the family-specific runtime parameter bag. It is not new
+    // persisted metadata.
     virtual ReaderCaps
-    DeriveCaps(const Config& index_meta) const = 0;
+    DeriveCaps(const Config& params) const = 0;
 
     // Open persisted bytes into a reader.
     //
-    // NAMING: `Open`, not `Deserialize` — under mmap nothing is deserialized
-    // (the artifact is never fully materialized), and it pairs with
-    // `storage::Artifact::OpenReader()`, making the two entrances to a reader
-    // (from persisted bytes / from a freshly built artifact) read as the
-    // isomorphism they are (§6.2).
+    // NAMING: `Open`, not `Deserialize` — mmap loaders may parse or convert
+    // bounded chunks and build auxiliary metadata while final bulk ownership
+    // remains file-backed. It pairs with `storage::Artifact::OpenReader()`,
+    // making the two entrances to a reader (persisted bytes / freshly built
+    // artifact) read as the isomorphism they are (§6.2).
     //
     // !! SPELLED `OpenIndex`, NOT `Open`, FOR A C++ REASON, NOT A DESIGN ONE.
     // §6.2's signature is `Open(storage::FileSource&, const LoadOptions&) ->
@@ -91,11 +98,21 @@ class IndexLoader : public storage::ArtifactLoader {
     OpenIndex(storage::FileSource& source,
               const storage::LoadOptions& opts) = 0;
 
+    // Reopen persisted bytes for publication through another sink generation.
+    // Query loading remains on OpenIndex and must not pay for an Artifact.
+    // Families override this only when they can return a native immutable
+    // Artifact and a Reader that share their column-sized state.
+    virtual RehydratedIndex
+    OpenForRewrite(storage::FileSource&, const storage::LoadOptions&) {
+        ThrowInfo(Unsupported,
+                  "index family {} cannot yet reopen an artifact for rewrite",
+                  Family());
+    }
+
     // Implemented once, here, in terms of `OpenIndex`. Families override
     // `OpenIndex`.
     std::shared_ptr<storage::LoadedArtifact>
-    Open(storage::FileSource& source,
-         const storage::LoadOptions& opts) final {
+    Open(storage::FileSource& source, const storage::LoadOptions& opts) final {
         return OpenIndex(source, opts);
     }
 };

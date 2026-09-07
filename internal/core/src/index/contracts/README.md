@@ -55,7 +55,7 @@ nested（元素级）不是独立的查询接口，是**实现类上的一个模
 | `IndexLoader.h` | §6.2、§11.2 第 1 条 | `IndexLoader : storage::ArtifactLoader`，`Family()` + `DeriveCaps()` + 打开 |
 | `GrowingIndex.h` | §7、§7.1、§11.3、§13.1、§13.3 | `GrowingScalarIndex<T>` / `GrowingTextIndex` / `GrowingVectorIndex` |
 | `VectorReaders.h` | §11.3、§12.1(a)(b)(c) | `VectorSearchParams` / `VectorSearchReader` / `VectorValueReader` |
-| `Registry.h` | §11.2 第 4 条 | 按索引类型划分的 loader / builder registry，取代 `IndexFactory` 的巨型分派 switch |
+| `Registry.h` | §11.2 第 4 条 | 按索引类型划分的 loader / builder registry |
 
 ## 3. 不变式
 
@@ -74,8 +74,10 @@ nested（元素级）不是独立的查询接口，是**实现类上的一个模
    `VectorReaders.h` 及 vector 索引类型的实现里（§12.1(c) 已决定允许）。
    → 因此 `GrowingIndex.h` 对 `VectorSearchReader` 用的是**前向声明**而不是 include。
 8. **pb 类型不进接口定义**（README §5 规则 2）。native 枚举在本层定义，proto→native 的映射在 plan/exec 侧。
-9. **cachinglayer 类型不进接口签名**（README §5 规则 4、§10 规则 5）。
-   `LoadOptions::warmup` 用本层的 native `WarmupPolicy`，不是 `CacheWarmupPolicy`。
+9. index 各索引类型与 contracts 不直接依赖 cachinglayer。storage/artifact 作为
+   L1 边界例外，直接使用现有 `cachinglayer::ResourceUsage`，不复制第二个类型。
+10. `LoadedArtifact::CellByteSize()` 只报告已打开对象实际拥有的资源：堆结构计入 memory，
+    mmap/文件后备字节计入 file。`LoadOptions::estimated_bytes` 只用于加载前准入，不能代替 reader 计费。
 
 ## 4. 接口框架实现时与文档的偏离
 
@@ -91,6 +93,9 @@ nested（元素级）不是独立的查询接口，是**实现类上的一个模
 | `IndexLoader::DeriveCaps` | 文档无此方法 | 新增 | §4.1 要求 `ReaderCaps`"由加载期元数据算出、不 pin 就能读"，而按索引类型划分的知识只有 Loader 有。这是 §4.1 的直接后果，不是新增设计 |
 | `SpatialOp` 取值集 | §5.6 未列举 | `GISOp` 去掉 `Invalid` 与 `STIsValid`、保留 `DWithin` | `STIsValid` 现状明确不走索引（`GISFunctionFilterExpr.cpp:201-202`）；`DWithin` 走索引但 distance 在 exec 侧先转成 bbox（`:448-455`），所以本接口不需要 distance 参数 |
 | `ScalarValueReader` 的 `owned_t<T>` | 直接使用 | 在本文件里定义 | 仓库里没有这个 trait；按 §5.5 原话（`owned_t<string_view> = string`，其余 = `T`）实现，不多不少 |
+| `FileSink::PutMeta` / `FileSource::GetMeta` | string | `nlohmann::json` | V3 meta 的 bool/integer/array/string 类型是现有字节合同，不能字符串化或推测 |
+| `LoadOptions` | mmap/warmup | 增加 `estimated_bytes` 与运行时 `params` | `estimated_bytes` 仅用于加载前准入；无状态 singleton loader 按次解析 family 参数，storage 不持久化也不解读 |
+| DiskANN 流式加载 | source 搬字节 | `FileSource::Context/RemotePaths` 搬位置 | 与旧 `LoadIndexWithStream` 一致，只下载 valid-data，索引字节由 knowhere 经 FileManager 读取 |
 
 **未采用的方案**：在 `IndexBuilder.h` 里声明 `ScalarIndexBuilder<T>` / `TextIndexBuilder` /
 `JsonIndexBuilder` 三个接口。理由：§6.1 的 C++ 片段与正文明确写的是**标量与向量共用一个
@@ -109,15 +114,8 @@ Builder 一行标为"接口统一"。另：`index/JsonIndexBuilder.h` 这个文�
 | `ReaderCaps` 的 segment 级聚合（`FieldIndexCapability`） | segcore | §4.1 |
 | 元素到行的聚合算子 | exec（阶段 4，可能提前，见 §12.5） | §5.8 |
 
-## 6. 已知待定项（接口框架里以注释形式标注在原地）
+## 6. 已知待定项
 
-- **§12.3 `cell_size_` 的计量方式没有定义**。`storage::LoadedArtifact::CellByteSize()` 负责它，
-  但今天同一个字段被不同索引类型按两种计量方式填（压缩前文件大小 vs 实测常驻内存），而缓存层拿它做准入与淘汰。
-  §12.3 要求**先于产物的构建与加载流程移到 L1** 定义完。接口框架只记录这个问题。
-- **§12.2 放在哪个组件与命名待定**。`Artifact` / `ArtifactLoader` / `ArtifactStats` / `LoadedArtifact`
-  是暂定名；`storage/` 里既有的 `IndexData` / `IndexEntry*` 命名系列要连带处理。
-- **跨仓前置**：`ResourceUsage` 今天在 milvus-common 的 `cachinglayer/Utils.h`，
-  §11.2 要求先移到 `common/ResourceUsage.h`（`namespace milvus`），否则硬规则 4 与本设计自相矛盾。
 - **§12.6 growing 已提交行数滞后策略的索引类型清单**：`NgramReader` 与 `JsonFlatIndex` 归哪边待定。
   索引侧不设任何表示该策略的位，所以不影响本层接口。
 - **§13.1**：实现 `GrowingScalarIndex` 会直接触发 `size_per_chunk_` 越界（`Expr.h:2240-2252` 的注释

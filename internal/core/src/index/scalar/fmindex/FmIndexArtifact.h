@@ -18,9 +18,9 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 
 #include "common/Types.h"
-#include "index/fmindex/FMIndex.h"
 #include "storage/artifact/Artifact.h"
 #include "storage/artifact/FileSink.h"
 
@@ -33,12 +33,23 @@
 
 namespace milvus::index {
 
+namespace fmindex {
+class FMIndex;
+}
+
+class FmIndexStorage;
+
 class FmIndexArtifact final : public storage::Artifact {
  public:
     FmIndexArtifact(fmindex::FMIndex engine,
                     TargetBitmap null_bitmap,
                     int64_t total_rows,
-                    int64_t total_tokens);
+                    DataType value_type,
+                    bool nullable,
+                    std::string local_dir);
+
+    FmIndexArtifact(std::shared_ptr<const FmIndexStorage> storage,
+                    std::string local_dir);
 
     ~FmIndexArtifact() override;
 
@@ -49,10 +60,10 @@ class FmIndexArtifact final : public storage::Artifact {
     Serialize(storage::FileSink& sink) const override;
 
  private:
-    fmindex::FMIndex engine_;
-    TargetBitmap null_bitmap_;
-    int64_t total_rows_{0};
-    int64_t total_tokens_{0};
+    std::shared_ptr<const FmIndexStorage> storage_;
+    // Configured parent path is borrowed storage policy. Serialization owns
+    // only the unique temporary file it creates below this directory.
+    std::string local_dir_;
 };
 
 }  // namespace milvus::index

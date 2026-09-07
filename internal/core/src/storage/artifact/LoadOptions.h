@@ -16,7 +16,10 @@
 
 #pragma once
 
+#include <cstdint>
 #include <string>
+
+#include "nlohmann/json.hpp"
 
 namespace milvus {
 struct OpContext;
@@ -27,8 +30,6 @@ struct OpContext;
 // See core_refactor/01-scalar-index.md §6.2 (`Open(FileSource&, const
 // LoadOptions&)`) and §11.2 rule 1.
 //
-// Naming provisional, see §12.2.
-
 namespace milvus::storage {
 
 // NATIVE ENUM ON PURPOSE.
@@ -46,15 +47,28 @@ enum class WarmupPolicy {
 };
 
 struct LoadOptions {
-    // Open the artifact by mapping its files rather than materializing them.
-    // Under mmap `ArtifactLoader::Open` does not deserialize anything — that is
-    // exactly why the method is named `Open` and not `Deserialize` (§6.2).
+    // Open with file-backed bulk ownership. A family may stream format
+    // conversion or build heap auxiliary metadata within its declared load
+    // budget; mmap does not mean zero parsing and legacy families may still
+    // have known full-materialization gaps.
     bool enable_mmap{false};
 
     // Where mmap-able / streamed entries are materialized locally.
     std::string mmap_dir_path;
 
     WarmupPolicy warmup{WarmupPolicy::Sync};
+
+    // Remote artifact payload bytes supplied by load metadata. This is a
+    // pre-load admission estimate only; opened artifacts report owned heap and
+    // file-backed bytes through LoadedArtifact::CellByteSize(). -1 means the
+    // caller did not provide an estimate; zero is a valid empty artifact.
+    int64_t estimated_bytes{-1};
+
+    // Runtime-only family parameters. Storage transports neither interpret nor
+    // persist this bag; IndexLoader implementations immediately parse their
+    // own typed settings from it. Keeping it per-open makes singleton loaders
+    // stateless.
+    nlohmann::json params = nlohmann::json::object();
 
     // Per-operation context: cancellation token, runtime load priority, cold-byte
     // accounting. Borrowed, never owned; may be null.

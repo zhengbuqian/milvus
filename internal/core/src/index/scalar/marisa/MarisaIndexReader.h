@@ -16,8 +16,10 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -52,25 +54,68 @@
 
 namespace milvus::index {
 
+// Owns the loader-created mappings and their local staging files. marisa owns
+// the trie mapping itself; this object owns the separate row-id/CSR mappings
+// and keeps every backing path alive until the reader is destroyed.
+class MarisaMmapOwner final {
+ public:
+    MarisaMmapOwner(char* str_ids_data,
+                    size_t str_ids_bytes,
+                    char* csr_data,
+                    size_t csr_bytes,
+                    std::vector<std::string> paths,
+                    std::string staging_dir);
+
+    ~MarisaMmapOwner();
+
+    MarisaMmapOwner(const MarisaMmapOwner&) = delete;
+    MarisaMmapOwner&
+    operator=(const MarisaMmapOwner&) = delete;
+
+    const int64_t*
+    StrIds() const;
+
+    const uint32_t*
+    Csr() const;
+
+ private:
+    char* str_ids_data_{nullptr};
+    size_t str_ids_bytes_{0};
+    char* csr_data_{nullptr};
+    size_t csr_bytes_{0};
+    std::vector<std::string> paths_;
+    std::string staging_dir_;
+};
+
+// Immutable owner/view bundle shared by a reader and a rewrite artifact. Owner
+// fields precede the trie so the trie is destroyed before mapped paths are
+// removed by MarisaMmapOwner.
+struct MarisaIndexStorage final {
+    std::shared_ptr<MarisaMmapOwner> mmap_owner;
+    std::shared_ptr<const std::vector<int64_t>> str_ids_owner;
+    std::shared_ptr<const std::vector<uint32_t>> csr_index_owner;
+    std::shared_ptr<const std::vector<uint32_t>> csr_offsets_owner;
+    std::shared_ptr<const marisa::Trie> trie;
+    // row -> trie key id. Heap-owned or a view over mapped bytes.
+    const int64_t* str_ids{nullptr};
+    size_t str_ids_size{0};
+    // CSR: key id -> the rows holding it.
+    const uint32_t* csr_index{nullptr};
+    const uint32_t* csr_offsets{nullptr};
+    size_t csr_num_keys{0};
+    DataType value_type{DataType::VARCHAR};
+    // Exact bytes owned through mmap-backed staging files.
+    size_t file_backed_bytes{0};
+};
+
 class MarisaIndexReader final : public IndexReaderBase,
                                 public ScalarPredicateReader<std::string_view>,
                                 public ScalarValueReader<std::string_view>,
                                 public PatternMatchReader,
                                 public NullReader {
  public:
-    struct OpenArgs {
-        marisa::Trie trie;
-        // row -> trie key id. Heap-owned or a view over mapped bytes; the
-        // loader decides (§3 principle 6).
-        const int64_t* str_ids{nullptr};
-        size_t str_ids_size{0};
-        // CSR: key id -> the rows holding it.
-        const uint32_t* csr_index{nullptr};
-        const uint32_t* csr_offsets{nullptr};
-        size_t csr_num_keys{0};
-    };
-
-    explicit MarisaIndexReader(OpenArgs args);
+    explicit MarisaIndexReader(
+        std::shared_ptr<const MarisaIndexStorage> storage);
 
     ~MarisaIndexReader() override;
 
@@ -89,7 +134,7 @@ class MarisaIndexReader final : public IndexReaderBase,
     int64_t
     MemoryUsage() const override;
 
-    ResourceUsage
+    cachinglayer::ResourceUsage
     CellByteSize() const override;
 
     TargetBitmap
@@ -147,7 +192,7 @@ class MarisaIndexReader final : public IndexReaderBase,
     bool
     InLexicographicOrder() const;
 
-    OpenArgs data_;
+    std::shared_ptr<const MarisaIndexStorage> storage_;
 };
 
 }  // namespace milvus::index

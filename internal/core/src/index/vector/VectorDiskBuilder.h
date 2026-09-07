@@ -18,6 +18,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -55,6 +57,9 @@
 
 namespace milvus::index {
 
+class VectorDiskBuildFileManager;
+class VectorDiskLocalFiles;
+
 template <typename T>
 class VectorDiskBuilder final : public IndexBuilder<T> {
  public:
@@ -63,7 +68,8 @@ class VectorDiskBuilder final : public IndexBuilder<T> {
                       MetricType metric_type,
                       IndexVersion version,
                       int64_t dim,
-                      knowhere::Json build_params);
+                      knowhere::Json build_params,
+                      std::string local_dir);
 
     ~VectorDiskBuilder() override = default;
 
@@ -81,7 +87,8 @@ class VectorDiskBuilder final : public IndexBuilder<T> {
     SetSourceFile(const std::string& path) override;
 
     storage::ArtifactPtr
-    Seal() && override;
+        Seal() &&
+        override;
 
     // Embedding-list builds additionally need an offsets FILE next to the raw
     // data file (`EMB_LIST_OFFSETS_PATH`, `VectorDiskIndex.cpp:425-427`), and
@@ -96,13 +103,37 @@ class VectorDiskBuilder final : public IndexBuilder<T> {
     void
     SetValidDataFile(const std::string& path);
 
+    // Atomically adopts one completed service-owned input generation. Empty
+    // validity/offset paths mean the corresponding sidecar is absent.
+    // scalar_info_path uses nullopt for not delivered, empty for delivered
+    // without a file, and a non-empty path for the legacy v0 payload.
+    void
+    SetMaterializedInputs(std::shared_ptr<VectorDiskLocalFiles> owner,
+                          std::string raw_path,
+                          std::string valid_path,
+                          std::string offsets_path,
+                          std::optional<std::string> scalar_info_path);
+
  private:
-    KnowhereEngine engine_;
+    void
+    EnsureOpen(const char* operation) const;
+
+    // Both owners precede the manager and engine. Destruction therefore closes
+    // the engine before either unique staging tree is removed. input_files_
+    // owns service materialization only; local_files_ owns artifact output.
+    std::shared_ptr<VectorDiskLocalFiles> input_files_;
+    std::shared_ptr<VectorDiskLocalFiles> local_files_;
+    std::shared_ptr<VectorDiskBuildFileManager> file_manager_;
+    std::unique_ptr<KnowhereEngine> engine_;
+    IndexVersion version_{0};
     knowhere::Json build_params_;
     std::string raw_data_path_;
     std::string emb_list_offsets_path_;
     std::string valid_data_path_;
+    std::optional<std::string> scalar_info_path_;
     VectorValidData valid_data_;
+    bool failed_{false};
+    bool sealed_{false};
 };
 
 }  // namespace milvus::index

@@ -45,11 +45,11 @@ class TextIndexLoader final : public IndexLoader {
     std::string
     Family() const override;
 
-    // Pure data, from metadata only. For text this is a constant
-    // (`{.text_match = true}`) — but it still goes through the loader because
-    // FAMILY KNOWLEDGE IS THE LOADER'S, and the caller (segcore's inventory)
-    // must be able to answer `Capability(field_id)` without touching a cold
-    // cell (§4.1, §4.3 step 1, §10 rule 3b).
+    // Pure data, from runtime metadata only. Text always exposes
+    // `{.text_match = true}`, after validating the normalized string value
+    // type and row coordinate domain. The caller can therefore answer
+    // `Capability(field_id)` without touching a cold cell (§4.1, §4.3 step
+    // 1, §10 rule 3b).
     ReaderCaps
     DeriveCaps(const Config& index_meta) const override;
 
@@ -59,6 +59,10 @@ class TextIndexLoader final : public IndexLoader {
     std::shared_ptr<IndexReaderBase>
     OpenIndex(storage::FileSource& source,
               const storage::LoadOptions& opts) override;
+
+    RehydratedIndex
+    OpenForRewrite(storage::FileSource& source,
+                   const storage::LoadOptions& opts) override;
 };
 
 }  // namespace milvus::index

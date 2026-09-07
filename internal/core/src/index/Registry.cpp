@@ -16,27 +16,18 @@
 
 #include "index/contracts/Registry.h"
 
+#include <algorithm>
 #include <mutex>
 #include <string>
 #include <unordered_map>
 
+#include "common/Array.h"
 #include "common/EasyAssert.h"
 
-// Implementation of the contract-layer registries (index/contracts/Registry.h).
-//
-// See 01-scalar-index.md §11.2 rule 4: "factory split per family: a
-// family-level loader/builder registry replaces `IndexFactory`'s God switch".
-//
-// WHY THIS FILE LIVES HERE AND NOT IN contracts/: contracts/ is interface-only
-// by construction (see its README). The registry is the one contract type that
-// needs a definition somewhere, and the top level of index/ is the only place
-// that is above every family and below nothing.
-//
-// WHAT REPLACED WHAT: `IndexFactory::CreateScalarIndex` / `CreateVectorIndex`
-// (IndexFactory.cpp) was a single `switch` over `DataType` x index-type-string
-// that had to name every concrete class, i.e. the top level of index/ had a
-// compile-time edge to every family. Now each family registers itself from its
-// own .cpp and the top level knows nobody.
+// Implementation of the contract-layer registries. Each family registers from
+// its own implementation translation unit, so this file has no concrete-family
+// implementation dependency. The explicit-instantiation list may name opaque
+// family-local input shapes; it neither includes nor calls their family.
 //
 // STATIC-REGISTRATION HAZARD, stated once here so no family has to repeat it:
 // self-registration lives in a namespace-scope object in each family's .cpp.
@@ -49,6 +40,8 @@
 
 namespace milvus::index {
 
+struct JsonProjectedString;
+
 namespace {
 
 template <typename Value>
@@ -56,24 +49,28 @@ class RegistryTable {
  public:
     void
     Put(const IndexFamily& family, Value value) {
-        // TODO: insert under `mu_`, and AssertInfo the family is not already
-        // registered — a duplicate family name is a build-configuration bug,
-        // not a runtime condition.
+        std::lock_guard lock(mu_);
+        auto [_, inserted] = table_.emplace(family, std::move(value));
+        AssertInfo(inserted, "duplicate index family registration: {}", family);
     }
 
     Value
     Get(const IndexFamily& family) const {
-        // TODO: lookup under `mu_`; return a default-constructed Value when
-        // absent. NOT a throw: "no loader for this family" is answered by the
-        // caller (segcore load), which has the context to report it.
-        return Value{};
+        std::lock_guard lock(mu_);
+        auto it = table_.find(family);
+        return it == table_.end() ? Value{} : it->second;
     }
 
     std::vector<IndexFamily>
     Keys() const {
-        // TODO: snapshot of the key set, for tests and for the round-trip
-        // matrix ("every registered family has both a loader and a builder").
-        return {};
+        std::lock_guard lock(mu_);
+        std::vector<IndexFamily> keys;
+        keys.reserve(table_.size());
+        for (const auto& [family, _] : table_) {
+            keys.push_back(family);
+        }
+        std::sort(keys.begin(), keys.end());
+        return keys;
     }
 
  private:
@@ -83,6 +80,19 @@ class RegistryTable {
 
 }  // namespace
 
+RegistryTable<IndexLoaderPtr>&
+LoaderTable() {
+    static RegistryTable<IndexLoaderPtr> table;
+    return table;
+}
+
+template <typename T>
+RegistryTable<typename BuilderRegistry<T>::Factory>&
+BuilderTable() {
+    static RegistryTable<typename BuilderRegistry<T>::Factory> table;
+    return table;
+}
+
 LoaderRegistry&
 LoaderRegistry::Instance() {
     static LoaderRegistry instance;
@@ -91,22 +101,18 @@ LoaderRegistry::Instance() {
 
 void
 LoaderRegistry::Register(IndexFamily family, IndexLoaderPtr loader) {
-    // TODO: delegate to the file-local RegistryTable<IndexLoaderPtr>.
+    AssertInfo(loader != nullptr, "cannot register null loader for {}", family);
+    LoaderTable().Put(family, std::move(loader));
 }
 
 IndexLoaderPtr
 LoaderRegistry::Lookup(const IndexFamily& family) const {
-    // TODO: delegate to the file-local RegistryTable<IndexLoaderPtr>.
-    //
-    // Loaders are STATELESS (§3 principle 1, "Loader: stateless, one per
-    // family"), so a single shared instance per family is returned to every
-    // caller; there is no per-load state to keep apart.
-    return nullptr;
+    return LoaderTable().Get(family);
 }
 
 std::vector<IndexFamily>
 LoaderRegistry::Families() const {
-    return {};
+    return LoaderTable().Keys();
 }
 
 template <typename T>
@@ -119,28 +125,30 @@ BuilderRegistry<T>::Instance() {
 template <typename T>
 void
 BuilderRegistry<T>::Register(IndexFamily family, Factory factory) {
-    // TODO: delegate to the file-local RegistryTable<Factory>.
+    AssertInfo(static_cast<bool>(factory),
+               "cannot register null builder factory for {}",
+               family);
+    BuilderTable<T>().Put(family, std::move(factory));
 }
 
 template <typename T>
 bool
 BuilderRegistry<T>::Supports(const IndexFamily& family) const {
-    return false;
+    return static_cast<bool>(BuilderTable<T>().Get(family));
 }
 
 template <typename T>
 std::unique_ptr<IndexBuilder<T>>
 BuilderRegistry<T>::Create(const IndexFamily& family,
                            const BuildParams& params) const {
-    // TODO: look the factory up and invoke it with `params`.
-    //
-    // `params` is the whole build config; each family's factory picks the keys
-    // it understands out of it (tokenizer json for text, min/max gram for
-    // ngram, cardinality limit for auto, ...). This is §6.1's "each family's
-    // builder is an IMPLEMENTATION of the one builder interface, not a new
-    // interface": the per-family parameters are constructor arguments, not
-    // extra methods.
-    return nullptr;
+    auto factory = BuilderTable<T>().Get(family);
+    return factory ? factory(params) : nullptr;
+}
+
+template <typename T>
+std::vector<IndexFamily>
+BuilderRegistry<T>::Families() const {
+    return BuilderTable<T>().Keys();
 }
 
 // The value types a scalar builder can be instantiated on. Variable-length
@@ -157,6 +165,12 @@ INSTANTIATE_BUILDER_REGISTRY(int64_t)
 INSTANTIATE_BUILDER_REGISTRY(float)
 INSTANTIATE_BUILDER_REGISTRY(double)
 INSTANTIATE_BUILDER_REGISTRY(std::string_view)
+INSTANTIATE_BUILDER_REGISTRY(ArrayView)
+INSTANTIATE_BUILDER_REGISTRY(JsonProjectedString)
+INSTANTIATE_BUILDER_REGISTRY(float16)
+INSTANTIATE_BUILDER_REGISTRY(bfloat16)
+INSTANTIATE_BUILDER_REGISTRY(bin1)
+INSTANTIATE_BUILDER_REGISTRY(sparse_u32_f32)
 #undef INSTANTIATE_BUILDER_REGISTRY
 
 }  // namespace milvus::index

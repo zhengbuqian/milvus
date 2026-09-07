@@ -18,10 +18,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <string_view>
 #include <vector>
-
-#include <marisa.h>
 
 #include "index/contracts/IndexBuilder.h"
 #include "storage/artifact/Artifact.h"
@@ -43,7 +42,7 @@ namespace milvus::index {
 
 class MarisaIndexBuilder final : public IndexBuilder<std::string_view> {
  public:
-    MarisaIndexBuilder();
+    explicit MarisaIndexBuilder(DataType value_type);
 
     ~MarisaIndexBuilder() override;
 
@@ -54,15 +53,18 @@ class MarisaIndexBuilder final : public IndexBuilder<std::string_view> {
     Add(size_t n, const std::string_view* values, const bool* valid) override;
 
     storage::ArtifactPtr
-    Seal() && override;
+        Seal() &&
+        override;
 
  private:
-    marisa::Keyset keyset_;
-    // Buffered values, needed for the post-build pass that fills the row->key
-    // mapping.
+    DataType value_type_;
+    bool sealed_{false};
+
+    // Keep an owning, row-aligned copy. In particular, never retain a view into
+    // an input batch until Seal(): callers are allowed to recycle that batch as
+    // soon as Add() returns.
     std::vector<std::string> buffered_;
-    std::vector<bool> valid_;
-    size_t total_num_rows_{0};
+    std::vector<uint8_t> valid_;
 };
 
 }  // namespace milvus::index

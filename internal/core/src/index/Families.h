@@ -16,16 +16,11 @@
 
 #pragma once
 
-// Canonical family names.
-//
-// See 01-scalar-index.md §6.2 (`IndexLoader::Family()`) and §11.2 rule 4
-// ("factory split per family: a family-level loader/builder registry replaces
-// `IndexFactory`'s God switch").
-//
-// A family name is the KEY OF THE REGISTRY and the value persisted in the
-// artifact metadata under `kFamilyMetaKey`. It is the only thing that decides
-// which `IndexLoader` reopens a set of bytes, so it is a stable on-disk
-// contract: never rename one of these strings without a format migration.
+#include <cstdint>
+#include <string>
+
+// Canonical registry family names. They are selected from runtime configuration
+// and existing format selectors; they are not written as new artifact metadata.
 //
 // These are NOT the same vocabulary as `index/Meta.h`'s user-facing index type
 // names ("INVERTED", "STL_SORT", "Trie", "AUTOINDEX", ...). The user-facing
@@ -44,24 +39,57 @@ inline constexpr const char* kText = "text";
 inline constexpr const char* kNgram = "ngram";
 inline constexpr const char* kRTree = "rtree";
 inline constexpr const char* kJsonFlat = "json_flat";
+inline constexpr const char* kVectorMem = "vector_mem";
+inline constexpr const char* kVectorDisk = "vector_disk";
 
-// Not a family with a reader of its own: `auto` is a BUILD-TIME choice between
-// `bitmap` and `inverted` made at `Seal()` from the observed cardinality
-// (§6.3). Its artifact records the family that was actually chosen, and
-// `AutoLoader` simply forwards to that family's loader. See
-// index/scalar/auto/AutoBuilder.h.
+// Not a family with a reader of its own. The builder emits the existing HYBRID
+// selector, and the loader resolves that selector before choosing a reader.
 inline constexpr const char* kAuto = "auto";
 
-// Metadata keys written by every family's `Artifact::Serialize` into the
-// `storage::FileSink` and read back by `IndexLoader::OpenIndex` /
-// `IndexLoader::DeriveCaps`.
-//
-// `DeriveCaps` must be answerable from LOAD-TIME METADATA ALONE, without
-// opening (let alone pinning) the index — §4.1's hard constraint. That is what
-// these keys are for.
-inline constexpr const char* kFamilyMetaKey = "index.family";
-inline constexpr const char* kValueTypeMetaKey = "index.value_type";
-inline constexpr const char* kCoordDomainMetaKey = "index.coord_domain";
-inline constexpr const char* kCountMetaKey = "index.count";
-
 }  // namespace milvus::index::families
+
+namespace milvus::index {
+
+// Persisted by the legacy HYBRID format as one byte. Ordinals are part of the
+// wire format and must not change.
+enum class ScalarIndexType : uint8_t {
+    NONE = 0,
+    BITMAP,
+    STLSORT,
+    MARISA,
+    INVERTED,
+    HYBRID,
+    JSONSTATS,
+    RTREE,
+    NGRAM,
+    FMINDEX,
+};
+
+inline std::string
+ToString(ScalarIndexType type) {
+    switch (type) {
+        case ScalarIndexType::NONE:
+            return "NONE";
+        case ScalarIndexType::BITMAP:
+            return "BITMAP";
+        case ScalarIndexType::STLSORT:
+            return "STLSORT";
+        case ScalarIndexType::MARISA:
+            return "MARISA";
+        case ScalarIndexType::INVERTED:
+            return "INVERTED";
+        case ScalarIndexType::HYBRID:
+            return "HYBRID";
+        case ScalarIndexType::JSONSTATS:
+            return "JSONSTATS";
+        case ScalarIndexType::RTREE:
+            return "RTREE";
+        case ScalarIndexType::NGRAM:
+            return "NGRAM";
+        case ScalarIndexType::FMINDEX:
+            return "FMINDEX";
+    }
+    return "UNKNOWN";
+}
+
+}  // namespace milvus::index

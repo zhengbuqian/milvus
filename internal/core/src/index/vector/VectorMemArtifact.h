@@ -25,7 +25,7 @@
 #include "storage/artifact/FileSink.h"
 #include "storage/artifact/LoadedArtifact.h"
 
-// ARTIFACT — the knowhere `BinarySet` materialization form.
+// ARTIFACT — the legacy knowhere `BinarySet` materialization form.
 //
 // See core_refactor/01-scalar-index.md §6 (why `Serialize` lives on the artifact
 // and `Open` on the loader), §11.2 rule 1 (the pipeline sinks to L1 and the
@@ -43,22 +43,18 @@
 //                                            into `name_0..name_k` plus an
 //                                            INDEX_FILE_SLICE_META entry
 //
-// !! WHERE THE SLICE LAYER GOES IS A REAL DECISION, NOT A DETAIL.
 // `Disassemble`/`Assemble` (`common/Utils.h`) are a pure byte-level concern —
-// nothing about them is index-specific — so they belong INSIDE the sink and the
-// source, and the artifact should write ONE LOGICAL ENTRY PER BLOB. If instead
-// the slicing stays here, every family re-implements it (the scalar families
-// call the same pair today) and `FileSource::EntryNames()` starts returning
-// `name_0..name_k` plus a meta entry, i.e. leaking the physical layout into the
-// loader. The contract permits either; only the first one is consistent with
-// "storage is the world of bytes and does not know what an index is"
-// (README §4). Recorded here because the first `Serialize` implementation has to
-// choose. See the report.
+// nothing about them is index-specific — so they live inside the sink and the
+// source. The artifact writes one logical entry per blob and never exposes
+// `name_0..name_k` or the slice-meta entry. The baseline has no packed V3 vector
+// format, so this artifact rejects a V3 sink instead of inventing one.
 //
 // !! Line references point at the tree before refactor phase 1 (master
 // e255009e01).
 
 namespace milvus::index {
+
+class VectorMemLocalFiles;
 
 template <typename T>
 class VectorMemArtifact final : public storage::Artifact {
@@ -66,6 +62,13 @@ class VectorMemArtifact final : public storage::Artifact {
     VectorMemArtifact(KnowhereEngine engine,
                       VectorValidData valid,
                       std::vector<size_t> empty_emb_list_offsets = {});
+
+    // Rehydrates an already validated loader generation. The knowhere handle,
+    // validity mapping and optional mmap files are immutable shared state; no
+    // vector payload or offset array is copied here.
+    VectorMemArtifact(KnowhereEngine engine,
+                      VectorValidData valid,
+                      std::shared_ptr<VectorMemLocalFiles> local_files);
 
     ~VectorMemArtifact() override = default;
 
@@ -87,14 +90,18 @@ class VectorMemArtifact final : public storage::Artifact {
     Serialize(storage::FileSink& sink) const override;
 
  private:
+    // Declared before engine_ so the final knowhere handle is destroyed before
+    // the loader-created mmap directory is removed.
+    std::shared_ptr<VectorMemLocalFiles> local_files_;
     KnowhereEngine engine_;
     VectorValidData valid_;
     // The all-null-nullable and empty-embedding-list artifacts have NO knowhere
     // index inside at all — only the validity mapping and/or the offsets. Both
     // are real, serialized states today (`VectorMemIndex.cpp:306-316`), and both
     // must survive as artifacts, which is a useful check on the model: an
-    // artifact is not required to contain an engine.
-    std::vector<size_t> empty_emb_list_offsets_;
+    // artifact is not required to contain an engine. The offsets live in the
+    // engine's immutable shared generation so every reader opened from this
+    // artifact observes the same state without an O(rows) copy.
 };
 
 }  // namespace milvus::index

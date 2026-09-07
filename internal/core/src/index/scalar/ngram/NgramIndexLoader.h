@@ -21,7 +21,9 @@
 
 #include "index/contracts/IndexLoader.h"
 
-// The LOADER of the ngram family (§6.2).
+// The LOADER of the ngram family (§6.2). The historical wire carries neither
+// gram bounds nor JSON path/type, so every open and metadata-only capability
+// derivation validates the normalized runtime parameters that supply them.
 
 namespace milvus::index {
 
@@ -40,6 +42,10 @@ class NgramIndexLoader final : public IndexLoader {
     std::shared_ptr<IndexReaderBase>
     OpenIndex(storage::FileSource& source,
               const storage::LoadOptions& opts) override;
+
+    RehydratedIndex
+    OpenForRewrite(storage::FileSource& source,
+                   const storage::LoadOptions& opts) override;
 };
 
 }  // namespace milvus::index

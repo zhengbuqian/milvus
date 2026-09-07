@@ -21,11 +21,7 @@
 
 #include "index/contracts/IndexLoader.h"
 
-// The LOADER of the sorted family (§6.2). ONE loader for both readers: the
-// family name on disk is the same ("STL_SORT" / `ScalarIndexType::STLSORT` for
-// both `ScalarIndexSort` and `StringIndexSort`), and the persisted value type
-// decides which reader comes back. That dispatch used to live in
-// `IndexFactory`'s switch (`IndexFactory.cpp:357` vs `:393`).
+// The runtime value type selects the numeric or string wire format.
 
 namespace milvus::index {
 
@@ -44,6 +40,10 @@ class SortedIndexLoader final : public IndexLoader {
     std::shared_ptr<IndexReaderBase>
     OpenIndex(storage::FileSource& source,
               const storage::LoadOptions& opts) override;
+
+    RehydratedIndex
+    OpenForRewrite(storage::FileSource& source,
+                   const storage::LoadOptions& opts) override;
 };
 
 }  // namespace milvus::index

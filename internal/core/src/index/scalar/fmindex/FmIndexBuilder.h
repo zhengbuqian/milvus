@@ -24,7 +24,6 @@
 
 #include "common/Types.h"
 #include "index/contracts/IndexBuilder.h"
-#include "index/fmindex/FMIndex.h"
 #include "storage/artifact/Artifact.h"
 
 // The BUILDER of the FM-index family. See §6.1, §6.1.1 (form **B, fully
@@ -43,6 +42,11 @@ namespace milvus::index {
 struct FmIndexBuildParams {
     uint32_t sa_sample_rate{8};
     uint32_t block_bytes{64};
+    DataType value_type{DataType::VARCHAR};
+    bool nullable{false};
+    // Borrowed staging parent used only while Artifact::Serialize runs. The
+    // family creates and removes one unique child file, never this directory.
+    std::string local_dir;
 };
 
 class FmIndexBuilder final : public IndexBuilder<std::string_view> {
@@ -60,15 +64,21 @@ class FmIndexBuilder final : public IndexBuilder<std::string_view> {
     Add(size_t n, const std::string_view* values, const bool* valid) override;
 
     storage::ArtifactPtr
-    Seal() && override;
+        Seal() &&
+        override;
 
  private:
     FmIndexBuildParams params_;
 
-    // Accumulated documents + separators, fed to libsais in `Seal()`.
+    // `Add` receives borrowed views whose lifetime ends with the call. Keep one
+    // contiguous owned corpus plus row boundaries until the engine build; the
+    // engine itself injects the out-of-alphabet separators.
     std::vector<uint8_t> corpus_;
+    std::vector<size_t> document_offsets_{0};
     TargetBitmap null_bitmap_;
     int64_t total_rows_{0};
+    bool sealed_{false};
+    bool failed_{false};
 };
 
 }  // namespace milvus::index

@@ -40,7 +40,8 @@
 // interfaces need none of the base class's metadata anyway (the inventory holds
 // that, §4.3). §10 rule 3 lints this.
 //
-// WHAT IS NOT HERE, compared with today's `IndexBase`:
+// The legacy shared base's build, serialization, upload, and load methods are
+// not reader operations:
 //   - `Serialize` / `Load` x2 / `Upload` / `LoadUnified` / `UploadUnified`:
 //     serialization is `storage::Artifact`, opening is `IndexLoader`, upload is
 //     the indexbuilder service, load orchestration is segcore load (§6.2).
@@ -84,9 +85,8 @@ class IndexReaderBase : public storage::LoadedArtifact {
     virtual DataType
     ValueType() const = 0;
 
-    // Pure self-description. Cache accounting is the load-side translator's job
-    // — see `storage::LoadedArtifact::CellByteSize()` and the open question in
-    // §12.3 about what that number even means today.
+    // Heap-resident bytes owned by this reader. File-backed ownership is
+    // reported separately by `LoadedArtifact::CellByteSize()`.
     virtual int64_t
     MemoryUsage() const = 0;
 };

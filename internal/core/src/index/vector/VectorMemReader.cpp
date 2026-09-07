@@ -16,6 +16,20 @@
 
 #include "index/vector/VectorMemReader.h"
 
+#include <limits>
+#include <memory>
+#include <type_traits>
+#include <utility>
+
+#include "common/Consts.h"
+#include "common/EasyAssert.h"
+#include "common/FastMem.h"
+#include "common/RangeSearchHelper.h"
+#include "common/Utils.h"
+#include "index/vector/RangeSearchParams.h"
+#include "index/vector/VectorReaderValidation.h"
+#include "knowhere/segcore_error_code.h"
+
 // SKELETON — the bodies are the re-homing map (§11.3: move verbatim, do not
 // redesign). Line references are to the tree before refactor phase 1 (master
 // e255009e01).
@@ -23,7 +37,7 @@
 namespace milvus::index {
 
 template <typename T>
-milvus::ResourceUsage
+cachinglayer::ResourceUsage
 VectorMemReader<T>::CellByteSize() const {
     // TODO: this is NOT a move of `IndexBase::CellByteSize`. §12.3 says the
     // yardstick must be defined first and every family made to fill it the same
@@ -64,11 +78,7 @@ VectorMemReader<T>::Count() const {
 template <typename T>
 DataType
 VectorMemReader<T>::ValueType() const {
-    // The vector element type this reader was built for (VECTOR_FLOAT,
-    // VECTOR_FLOAT16, ..., VECTOR_SPARSE_U32_F32). Today this is not stored on
-    // the index at all; it is implied by the template argument and rediscovered
-    // from the field schema at every call site.
-    return DataType::NONE;
+    return engine_.PhysicalType();
 }
 
 template <typename T>
@@ -88,10 +98,75 @@ VectorMemReader<T>::Search(const DatasetPtr& dataset,
                            const BitsetView& bitset,
                            milvus::OpContext* op_ctx,
                            SearchResult& result) const {
-    // TODO: move existing logic here (see VectorMemIndex.cpp:721-815 —
-    // `VectorMemIndex<T>::Query`). Verbatim, with `SearchInfo` replaced by the
-    // narrow §12.1(a) type: the body reads only search_params_/metric_type_/
-    // topk_/trace_ctx_, which is what the audit found.
+    const auto shape = detail::ValidateQueryDataset(
+        dataset, engine_.PhysicalType(), engine_.Dim());
+    const auto topk = params.topk_;
+    const auto result_count = detail::CheckedResultCount(shape, topk);
+    auto search_conf = engine_.PrepareSearchParams(params);
+
+    const bool all_null = valid_.Enabled() && valid_.ValidCount() == 0;
+    if (all_null || engine_.IsEmptyEmbListIndex()) {
+        result.seg_offsets_.assign(result_count, INVALID_SEG_OFFSET);
+        result.distances_.assign(result_count, 0.0F);
+        result.total_nq_ = shape.logical_nq;
+        result.unity_topK_ = topk;
+        return;
+    }
+
+    auto final = [&] {
+        if (CheckAndUpdateKnowhereRangeSearchParam(
+                params, topk, engine_.Metric(), search_conf)) {
+            milvus::tracer::AddEvent("start_knowhere_index_range_search");
+            auto search =
+                engine_.Raw().RangeSearch(dataset, search_conf, bitset, op_ctx);
+            milvus::tracer::AddEvent("finish_knowhere_index_range_search");
+            if (!search.has_value()) {
+                const auto status = search.error();
+                ThrowInfo(knowhere::ToSegcoreErrorCode(status),
+                          "failed to range search: status {} ({}), detail: {}",
+                          static_cast<int>(status),
+                          knowhere::Status2String(status),
+                          search.what());
+            }
+            auto regenerated = milvus::ReGenRangeSearchResult(
+                search.value(), topk, shape.logical_nq, engine_.Metric());
+            milvus::tracer::AddEvent("finish_ReGenRangeSearchResult");
+            return regenerated;
+        }
+
+        milvus::tracer::AddEvent("start_knowhere_index_search");
+        auto search =
+            engine_.Raw().Search(dataset, search_conf, bitset, op_ctx);
+        milvus::tracer::AddEvent("finish_knowhere_index_search");
+        if (!search.has_value()) {
+            const auto status = search.error();
+            ThrowInfo(knowhere::ToSegcoreErrorCode(status),
+                      "failed to search: config={} status {} ({}), detail: {}",
+                      milvus::EscapeBraces(search_conf.dump()),
+                      static_cast<int>(status),
+                      knowhere::Status2String(status),
+                      search.what());
+        }
+        return search.value();
+    }();
+
+    detail::ValidateRegularSearchResult(final, shape, topk, result_count);
+    const auto* ids = final->GetIds();
+    const auto* distances = final->GetDistance();
+    const auto id_bytes =
+        detail::CheckedSystemBytes(result_count, sizeof(int64_t), "search id");
+    const auto distance_bytes = detail::CheckedSystemBytes(
+        result_count, sizeof(float), "search distance");
+
+    result.seg_offsets_.resize(result_count);
+    result.distances_.resize(result_count);
+    result.total_nq_ = shape.logical_nq;
+    result.unity_topK_ = topk;
+    if (result_count > 0) {
+        milvus::fastmem::FastMemcpy(result.seg_offsets_.data(), ids, id_bytes);
+        milvus::fastmem::FastMemcpy(
+            result.distances_.data(), distances, distance_bytes);
+    }
 }
 
 template <typename T>
@@ -100,49 +175,112 @@ VectorMemReader<T>::Iterators(const DatasetPtr& dataset,
                               const knowhere::Json& json,
                               const BitsetView& bitset,
                               milvus::OpContext* op_ctx) const {
-    // TODO: move existing logic here (see VectorMemIndex.cpp:234-291 —
-    // `VectorIterators`). SHAPE UNCHANGED ON PURPOSE (§12.1(b)).
-    return knowhere::expected<
-        std::vector<knowhere::IndexNode::IteratorPtr>>::Err(
-        knowhere::Status::not_implemented, "skeleton");
+    const auto shape = detail::ValidateQueryDataset(
+        dataset, engine_.PhysicalType(), engine_.Dim());
+    const bool all_null = valid_.Enabled() && valid_.ValidCount() == 0;
+    if (all_null || engine_.IsEmptyEmbListIndex()) {
+        return detail::MakeEmptyVectorIterators(shape.logical_nq_size);
+    }
+    return engine_.Raw().AnnIterator(dataset, json, bitset, false, op_ctx);
 }
 
 template <typename T>
 bool
 VectorMemReader<T>::RefineEnabled() const {
-    // TODO: move existing logic here (see VectorMemIndex.cpp:826-835).
+    const bool all_null = valid_.Enabled() && valid_.ValidCount() == 0;
+    if (all_null || engine_.IsEmptyEmbListIndex()) {
+        return false;
+    }
     return engine_.RefineEnabled();
 }
 
 template <typename T>
 bool
 VectorMemReader<T>::HasRawData() const {
-    // TODO: move existing logic here (see VectorMemIndex.cpp:816-825).
+    const bool all_null = valid_.Enabled() && valid_.ValidCount() == 0;
+    if (all_null || engine_.IsEmptyEmbListIndex()) {
+        return true;
+    }
     return engine_.HasRawData();
 }
 
 template <typename T>
 std::vector<uint8_t>
 VectorMemReader<T>::GetVector(const DatasetPtr& dataset) const {
-    // TODO: move existing logic here (see VectorMemIndex.cpp:836-858).
-    return {};
+    if constexpr (std::is_same_v<T, sparse_u32_f32>) {
+        ThrowInfo(Unsupported,
+                  "dense vector retrieval is not supported for a sparse "
+                  "index");
+    } else {
+        const auto request = detail::ValidateIdRequest(dataset, "get vector");
+        if (request.rows_size == 0) {
+            return {};
+        }
+
+        auto retrieved = engine_.Raw().GetVectorByIds(dataset);
+        if (!retrieved.has_value()) {
+            detail::ThrowRetrievalError("get vector", retrieved);
+        }
+        detail::ValidateDenseRetrievalResult(
+            retrieved.value(), request, engine_.Dim(), "vector retrieval");
+        return DecodeVectorByIdsResult<T>(retrieved.value());
+    }
 }
 
 template <typename T>
 std::unique_ptr<const knowhere::sparse::SparseRow<SparseValueType>[]>
 VectorMemReader<T>::GetSparseVector(const DatasetPtr& dataset) const {
-    // TODO: move existing logic here (see VectorMemIndex.cpp:889-909).
-    //
-    // CONTRACT NOTE: `VectorValueReader` bundles `GetVector` and
-    // `GetSparseVector`, so a dense-only family must still define the sparse one.
-    // The in-memory family is the lucky one — it really implements both. DiskANN
-    // is not; see VectorDiskReader.h.
-    return nullptr;
+    if constexpr (!std::is_same_v<T, sparse_u32_f32>) {
+        ThrowInfo(Unsupported,
+                  "sparse vector retrieval is not supported for a dense "
+                  "index");
+    } else {
+        const auto request =
+            detail::ValidateIdRequest(dataset, "get sparse vector");
+        if (request.rows_size == 0) {
+            return nullptr;
+        }
+
+        auto retrieved = engine_.Raw().GetVectorByIds(dataset);
+        if (!retrieved.has_value()) {
+            detail::ThrowRetrievalError("get sparse vector", retrieved);
+        }
+        const auto& result = retrieved.value();
+        if (result == nullptr) {
+            ThrowInfo(KnowhereError,
+                      "knowhere returned a null sparse-vector dataset");
+        }
+        if (result->GetRows() != request.rows) {
+            ThrowInfo(KnowhereError,
+                      "knowhere sparse-vector row count {} disagrees with "
+                      "requested count {}",
+                      result->GetRows(),
+                      request.rows);
+        }
+        if (!result->GetIsSparse()) {
+            ThrowInfo(KnowhereError,
+                      "knowhere sparse-vector result is not marked sparse");
+        }
+        const auto* tensor =
+            static_cast<const knowhere::sparse::SparseRow<SparseValueType>*>(
+                result->GetTensor());
+        if (tensor == nullptr) {
+            ThrowInfo(KnowhereError,
+                      "knowhere sparse-vector result has no tensor");
+        }
+
+        // The successful SPARSE_*_CC producer owns a SparseRow[] tensor and no
+        // other raw buffers. Detach only that entry: if SetTensor throws, the
+        // dataset still owns it; after it succeeds, unique_ptr construction is
+        // non-throwing and the dataset continues to own any other entries.
+        result->SetTensor(nullptr);
+        return std::unique_ptr<
+            const knowhere::sparse::SparseRow<SparseValueType>[]>(tensor);
+    }
 }
 
 template <typename T>
-MetricType
-VectorMemReader<T>::Metric() const {
+MetricType VectorMemReader<T>::Metric() const {
     return engine_.Metric();
 }
 
@@ -209,17 +347,63 @@ VectorMemReader<T>::CalcDistByIDs(const knowhere::DataSetPtr& query_dataset,
                                   size_t labels_len,
                                   bool is_cosine,
                                   milvus::OpContext* op_ctx) const {
-    // TODO: move existing logic here (see VectorMemIndex.cpp:1191-...).
-    return knowhere::expected<knowhere::DataSetPtr>::Err(
-        knowhere::Status::not_implemented, "skeleton");
+    return engine_.Raw().CalcDistByIDs(
+        query_dataset, bitset, labels, labels_len, is_cosine, op_ctx);
 }
 
 template <typename T>
 std::pair<std::vector<uint8_t>, std::vector<size_t>>
 VectorMemReader<T>::GetEmbListByIds(const DatasetPtr& dataset,
                                     const std::string& metric_type) const {
-    // TODO: move existing logic here (see VectorMemIndex.cpp:859-888).
-    return {};
+    if constexpr (std::is_same_v<T, sparse_u32_f32>) {
+        ThrowInfo(Unsupported,
+                  "sparse vectors are not supported as embedding-list "
+                  "elements");
+    } else {
+        if (engine_.ElemType() == DataType::NONE) {
+            ThrowInfo(Unsupported,
+                      "embedding-list retrieval requires an embedding-list "
+                      "index");
+        }
+
+        const auto request =
+            detail::ValidateIdRequest(dataset, "get embedding list");
+        if (request.rows_size == 0) {
+            return {{}, {0}};
+        }
+
+        if (engine_.IsEmptyEmbListIndex()) {
+            const auto& offsets = engine_.EmptyEmbListOffsets();
+            const auto emb_list_count = offsets.size() - 1;
+            for (size_t i = 0; i < request.rows_size; ++i) {
+                if (request.ids[i] < 0 ||
+                    static_cast<uint64_t>(request.ids[i]) >= emb_list_count) {
+                    ThrowInfo(ConfigInvalid,
+                              "embedding-list id {} is out of range [0, {})",
+                              request.ids[i],
+                              emb_list_count);
+                }
+            }
+            if (request.rows_size == std::numeric_limits<size_t>::max()) {
+                ThrowInfo(ConfigInvalid,
+                          "embedding-list result offset count overflows");
+            }
+            const auto offset_count = request.rows_size + 1;
+            detail::CheckedInputProduct(
+                offset_count, sizeof(size_t), "embedding-list result offset");
+            return {{}, std::vector<size_t>(offset_count, 0)};
+        }
+
+        auto retrieved = engine_.Raw().GetEmbListByIds(dataset, metric_type);
+        if (!retrieved.has_value()) {
+            detail::ThrowRetrievalError("get embedding list", retrieved);
+        }
+        detail::ValidateDenseRetrievalResult(retrieved.value(),
+                                             request,
+                                             engine_.Dim(),
+                                             "embedding-list retrieval");
+        return DecodeEmbListByIdsResult<T>(retrieved.value());
+    }
 }
 
 // Same instantiation set as today's `VectorMemIndex<T>`

@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -32,41 +33,42 @@
 #include "index/contracts/ScalarValueReader.h"
 #include "index/scalar/sort/IndexStructure.h"
 
-// The READERS of the sorted family ("STL_SORT").
-//
-// See 01-scalar-index.md §5.1, §5.5, §5.8 and §8.
-//
-// ==========================================================================
-// TWO READERS, BECAUSE THERE ARE TWO IMPLEMENTATIONS — AND §8 IS WRONG ABOUT
-// THAT ROW.
-//
-// §8 lists `StringIndexSort` under "`StringIndexSort` / `BoolIndex` — thin
-// aliases, migrate along". `BoolIndex` genuinely is one: `BoolIndex.h` is 32
-// lines with no class at all, just `using BoolIndexPtr =
-// shared_ptr<ScalarIndexSort<bool>>` and a factory (`BoolIndex.h:25-31`). That
-// file disappears entirely; `bool` is simply an instantiation.
-//
-// `StringIndexSort` is NOT an alias. It is 576 header lines plus 1860
-// implementation lines with its OWN pImpl hierarchy
-// (`StringIndexSortImpl` -> `StringIndexSortMemoryImpl` /
-// `StringIndexSortMmapImpl`, `StringIndexSort.h:187-564`), its own binary
-// format with a magic number and version (`StringIndexSort.h:45-47`), and
-// `PatternMatch` support that `ScalarIndexSort` does not have
-// (`StringIndexSort.h:130-133`, `.cpp:498-521`). It exists at all because
-// `ScalarIndexSort<T>` is `static_assert(std::is_arithmetic_v<T>)`
-// (`ScalarIndexSort.h:54-55`).
-//
-// The two duplicate about a dozen members and diverge on the meaning of
-// `idx_to_offsets_` (sorted-array offset vs unique-value index,
-// `ScalarIndexSort.h:259-260` vs `StringIndexSort.h:166-167`). MERGING THEM IS
-// A REAL PIECE OF WORK, NOT A RENAME, and it is not attempted here — the
-// skeleton keeps them as two readers of one family and records the duplication
-// rather than hiding it behind a shared name.
-// ==========================================================================
+// Numeric and string readers remain separate because their persisted layouts
+// and reverse-offset semantics differ.
 
 namespace milvus::index {
 
-// Numeric / bool. Was `ScalarIndexSort<T>`.
+// Owns one loader-created local file and its read-only mapping. Readers retain
+// this object through type-erased/shared layout ownership; destruction unmaps
+// before unlinking the file.
+class SortedMmapOwner final {
+ public:
+    SortedMmapOwner(char* data,
+                    size_t mapped_size,
+                    size_t logical_size,
+                    std::string path);
+    ~SortedMmapOwner();
+
+    SortedMmapOwner(const SortedMmapOwner&) = delete;
+    SortedMmapOwner&
+    operator=(const SortedMmapOwner&) = delete;
+
+    const uint8_t*
+    Data() const;
+
+    size_t
+    MappedSize() const;
+
+    size_t
+    LogicalSize() const;
+
+ private:
+    char* data_{nullptr};
+    size_t mapped_size_{0};
+    size_t logical_size_{0};
+    std::string path_;
+};
+
 template <typename T>
 class SortedIndexReader final : public IndexReaderBase,
                                 public ScalarPredicateReader<T>,
@@ -83,11 +85,19 @@ class SortedIndexReader final : public IndexReaderBase,
         // the reader has no mmap branch (§3 principle 6).
         const IndexStructure<T>* data{nullptr};
         size_t size{0};
+        std::shared_ptr<const void> data_owner;
+        size_t data_heap_bytes{0};
+        size_t data_file_bytes{0};
         const int32_t* idx_to_offsets{nullptr};
         size_t idx_to_offsets_size{0};
-        TargetBitmap valid_bitset;
+        std::shared_ptr<const void> idx_to_offsets_owner;
+        size_t idx_to_offsets_heap_bytes{0};
+        size_t idx_to_offsets_file_bytes{0};
+        std::shared_ptr<const TargetBitmap> valid_bitset;
         size_t total_num_rows{0};
+        DataType value_type{DataType::NONE};
         bool nested{false};
+        bool value_lookup{true};
     };
 
     explicit SortedIndexReader(OpenArgs args);
@@ -109,7 +119,7 @@ class SortedIndexReader final : public IndexReaderBase,
     int64_t
     MemoryUsage() const override;
 
-    ResourceUsage
+    cachinglayer::ResourceUsage
     CellByteSize() const override;
 
     TargetBitmap
@@ -144,14 +154,8 @@ class SortedIndexReader final : public IndexReaderBase,
     ShouldSkip(const T& lower, const T& upper, CompareOp op) const;
 
     OpenArgs data_;
-
-    // GONE: the zero-cost iteration API `operator[]` / `begin` / `end` /
-    // `rbegin` (`ScalarIndexSort.h:204-228`), and the dead accessors `GetData`
-    // / `IsBuilt` (`:183-191`, zero call sites in the repo). Exposing the
-    // internal sorted array is not an interface; `Gather` is (§5.5).
 };
 
-// VARCHAR. Was `StringIndexSort`.
 class SortedStringIndexReader final
     : public IndexReaderBase,
       public ScalarPredicateReader<std::string_view>,
@@ -166,11 +170,64 @@ class SortedStringIndexReader final
     // query signature.
     class Layout;
 
-    SortedStringIndexReader(std::unique_ptr<Layout> layout,
-                            TargetBitmap valid_bitset,
-                            std::vector<int32_t> idx_to_offsets,
-                            size_t total_num_rows,
-                            bool nested);
+    struct PostingView {
+        const uint8_t* data{nullptr};
+        size_t size{0};
+
+        uint32_t
+        At(size_t index) const;
+    };
+
+    class Layout {
+     public:
+        virtual ~Layout() = default;
+
+        virtual size_t
+        UniqueCount() const = 0;
+
+        virtual std::string_view
+        Value(size_t index) const = 0;
+
+        virtual PostingView
+        Posting(size_t index) const = 0;
+
+        virtual int64_t
+        MemoryUsage() const = 0;
+
+        virtual int64_t
+        FileUsage() const = 0;
+
+        std::vector<int32_t>
+        BuildOffsets(size_t total_num_rows) const;
+
+        static std::shared_ptr<const Layout>
+        FromHeap(std::vector<std::string> unique_values,
+                 std::vector<std::vector<uint32_t>> posting_lists,
+                 size_t total_num_rows);
+
+        static std::shared_ptr<const Layout>
+        FromPackedHeap(std::vector<uint8_t> packed, size_t total_num_rows);
+
+        static std::shared_ptr<const Layout>
+        FromPackedMmap(std::shared_ptr<SortedMmapOwner> owner,
+                       size_t total_num_rows);
+    };
+
+    struct OpenArgs {
+        std::shared_ptr<const Layout> layout;
+        std::shared_ptr<const TargetBitmap> valid_bitset;
+        const int32_t* idx_to_offsets{nullptr};
+        size_t idx_to_offsets_size{0};
+        std::shared_ptr<const void> idx_to_offsets_owner;
+        size_t idx_to_offsets_heap_bytes{0};
+        size_t idx_to_offsets_file_bytes{0};
+        size_t total_num_rows{0};
+        DataType value_type{DataType::VARCHAR};
+        bool nested{false};
+        bool value_lookup{true};
+    };
+
+    explicit SortedStringIndexReader(OpenArgs args);
 
     ~SortedStringIndexReader() override;
 
@@ -189,7 +246,7 @@ class SortedStringIndexReader final
     int64_t
     MemoryUsage() const override;
 
-    ResourceUsage
+    cachinglayer::ResourceUsage
     CellByteSize() const override;
 
     TargetBitmap
@@ -217,11 +274,6 @@ class SortedStringIndexReader final
                void(int64_t i, const std::string_view*, bool valid)>& out)
         const override;
 
-    // Absorbs both `PatternMatch` (StringIndexSort.cpp:498-521) and the
-    // separate `PrefixMatch` entry point (:492-496). Prefix is
-    // `PatternOp::PrefixMatch`, not a second method — the old split existed
-    // because `StringIndex::Query(DatasetPtr)` (StringIndex.h:36-44) routed
-    // prefix specially out of a knowhere dataset.
     TargetBitmap
     PatternMatch(std::string_view pattern, PatternOp op) const override;
 
@@ -232,11 +284,17 @@ class SortedStringIndexReader final
     IsNotNull() const override;
 
  private:
-    std::unique_ptr<Layout> layout_;
-    TargetBitmap valid_bitset_;
-    std::vector<int32_t> idx_to_offsets_;
+    std::shared_ptr<const Layout> layout_;
+    std::shared_ptr<const TargetBitmap> valid_bitset_;
+    const int32_t* idx_to_offsets_{nullptr};
+    size_t idx_to_offsets_size_{0};
+    std::shared_ptr<const void> idx_to_offsets_owner_;
+    size_t idx_to_offsets_heap_bytes_{0};
+    size_t idx_to_offsets_file_bytes_{0};
     size_t total_num_rows_{0};
+    DataType value_type_{DataType::VARCHAR};
     bool nested_{false};
+    bool value_lookup_{true};
 };
 
 }  // namespace milvus::index

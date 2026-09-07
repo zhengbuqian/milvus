@@ -16,8 +16,9 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
-#include <shared_mutex>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -93,6 +94,8 @@ class RTreeBuildEngine {
     rtree_detail::RTree rtree_;
     std::vector<rtree_detail::Value> values_;
     std::string index_path_;
+    GEOSContextHandle_t geos_context_{nullptr};
+    GEOSWKBReader* wkb_reader_{nullptr};
     bool finished_{false};
     uint32_t dimension_{2};
 };
@@ -109,22 +112,39 @@ class RTreeQueryEngine {
     Load();
 
     // MBR coarse filter. The exact relation is exec's job (§5.6).
-    void
+    // Returns false when the query has no usable MBR. The reader must fall
+    // back to all non-null rows in that case to preserve superset semantics.
+    bool
     QueryCandidates(const GEOSGeometry* query_geom,
                     GEOSContextHandle_t ctx,
                     std::vector<int64_t>& candidate_offsets) const;
 
+    // Allocation-free candidate traversal for sealed readers. Returns false
+    // when no usable query MBR exists and the caller must use a safe fallback.
+    bool
+    ForEachCandidate(const GEOSGeometry* query_geom,
+                     GEOSContextHandle_t ctx,
+                     const std::function<void(int64_t)>& visitor) const;
+
     int64_t
     Count() const;
 
+    // Validate the row coordinates embedded in the archive against the
+    // authoritative segment coordinate count supplied by the caller.
+    void
+    ValidateCoordinates(int64_t total_num_rows,
+                        const std::vector<size_t>& null_offsets) const;
+
+    // Heap bytes derived from the actual loaded Boost node count and node
+    // allocation type. This is not serialized/archive byte size.
     int64_t
     ByteSize() const;
 
  private:
     rtree_detail::RTree rtree_;
-    std::vector<rtree_detail::Value> values_;
     std::string index_path_;
     uint32_t dimension_{2};
+    int64_t heap_bytes_{0};
 };
 
 }  // namespace milvus::index

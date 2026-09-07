@@ -27,12 +27,7 @@ namespace milvus::index {
 
 class FmIndexLoader final : public IndexLoader {
  public:
-    // `cost_ratio` is the injected query-time policy value that used to be read
-    // from `segcore::SegcoreConfig` inside the index header
-    // (`FMIndex.h:226-228`). The loader is the natural place to hold it: it is
-    // the one family object that segcore configures, and it hands the value to
-    // every reader it opens. See FmIndexReader for the live-update caveat.
-    explicit FmIndexLoader(double cost_ratio = 0.001);
+    FmIndexLoader() = default;
 
     ~FmIndexLoader() override = default;
 
@@ -46,8 +41,9 @@ class FmIndexLoader final : public IndexLoader {
     OpenIndex(storage::FileSource& source,
               const storage::LoadOptions& opts) override;
 
- private:
-    double cost_ratio_;
+    RehydratedIndex
+    OpenForRewrite(storage::FileSource& source,
+                   const storage::LoadOptions& opts) override;
 };
 
 }  // namespace milvus::index

@@ -36,8 +36,9 @@
 namespace milvus::index {
 
 struct RTreeBuildParams {
-    // Local directory the .bgi / .meta.json pair is written into before it is
-    // handed to a `storage::FileSink`.
+    // Optional parent for an owned unique staging directory. The .bgi /
+    // .meta.json pair is written in that private child before it is handed to
+    // a `storage::FileSink`.
     std::string local_dir;
 };
 
@@ -50,20 +51,23 @@ class RTreeIndexBuilder final : public IndexBuilder<std::string_view> {
     BuilderInputSpec
     InputSpec() const override;
 
-    // WKB decoding lives here, not in the engine (see RTreeEngine.h). A row
-    // whose WKB fails to parse contributes no entry but still advances the
-    // offset — that skip is what keeps index offsets aligned with row numbers.
+    // The engine decodes WKB into its native MBR value. A row whose WKB fails
+    // to parse contributes no entry but still advances the coordinate.
     void
     Add(size_t n, const std::string_view* values, const bool* valid) override;
 
     storage::ArtifactPtr
-    Seal() && override;
+        Seal() &&
+        override;
 
  private:
     RTreeBuildParams params_;
     std::unique_ptr<RTreeBuildEngine> engine_;
     std::vector<size_t> null_offsets_;
     int64_t total_num_rows_{0};
+    bool owns_local_dir_{false};
+    bool sealed_{false};
+    bool failed_{false};
 };
 
 }  // namespace milvus::index

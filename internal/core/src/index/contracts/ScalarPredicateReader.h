@@ -80,7 +80,7 @@ class ScalarPredicateReader {
     Range(const T& lo, bool lo_inc, const T& hi, bool hi_inc) const = 0;
 };
 
-// Removed relative to today's `ScalarIndex<T>` (§5.1):
+// Removed relative to the legacy scalar interface (§5.1):
 //   - `Query(DatasetPtr)`, the knowhere-shaped catch-all entry point.
 //   - `Build` / `Size` / `GetIndexType`: not query-interface members.
 //   - `IsNull` / `IsNotNull`: moved to the cross-family `NullReader`.

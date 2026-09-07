@@ -66,6 +66,8 @@
 
 namespace milvus::index {
 
+class VectorMemLocalFiles;
+
 template <typename T>
 class VectorMemReader final : public IndexReaderBase,
                               public VectorSearchReader,
@@ -80,8 +82,12 @@ class VectorMemReader final : public IndexReaderBase,
     // Both entrances hand over a fully built engine: `VectorMemLoader::OpenIndex`
     // from persisted bytes, `VectorMemArtifact::OpenReader` from a just-sealed
     // build (§6.2).
-    VectorMemReader(KnowhereEngine engine, VectorValidData valid)
-        : engine_(std::move(engine)), valid_(std::move(valid)) {
+    VectorMemReader(KnowhereEngine engine,
+                    VectorValidData valid,
+                    std::shared_ptr<VectorMemLocalFiles> local_files = nullptr)
+        : local_files_(std::move(local_files)),
+          engine_(std::move(engine)),
+          valid_(std::move(valid)) {
     }
 
     ~VectorMemReader() override = default;
@@ -94,7 +100,7 @@ class VectorMemReader final : public IndexReaderBase,
     // are charged their measured resident footprint. §12.3 requires the
     // definition to be settled BEFORE the artifact pipeline sinks to L1. This
     // skeleton does not pick one.
-    milvus::ResourceUsage
+    cachinglayer::ResourceUsage
     CellByteSize() const override;
 
     // --- IndexReaderBase (§4.2) --------------------------------------------
@@ -206,6 +212,9 @@ class VectorMemReader final : public IndexReaderBase,
                     const std::string& metric_type) const override;
 
  private:
+    // Declared before engine_ so knowhere releases every mapping before the
+    // final owner removes its unique loader-created directory.
+    std::shared_ptr<VectorMemLocalFiles> local_files_;
     // COMPOSED, NOT INHERITED (§3 principle 2, §10 rule 3).
     KnowhereEngine engine_;
     VectorValidData valid_;

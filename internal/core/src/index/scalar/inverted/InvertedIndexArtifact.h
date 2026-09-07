@@ -16,7 +16,7 @@
 
 #pragma once
 
-#include <cstdint>
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <vector>
@@ -24,19 +24,48 @@
 #include "common/Types.h"
 #include "storage/artifact/Artifact.h"
 #include "storage/artifact/FileSink.h"
-#include "tantivy-wrapper.h"
-
-// The ARTIFACT of the inverted family (§6, §11.2 rule 1). File-shaped: tantivy
-// has already written a directory by the time `Seal()` returns.
 
 namespace milvus::index {
 
+// Shared by an artifact and any mmap reader opened from it. The path is always
+// a unique child created by this family; configured paths are only parent
+// directories and are never removed.
+class InvertedIndexDirectory final {
+ public:
+    static std::shared_ptr<InvertedIndexDirectory>
+    Create(const std::string& parent);
+
+    ~InvertedIndexDirectory();
+
+    InvertedIndexDirectory(const InvertedIndexDirectory&) = delete;
+    InvertedIndexDirectory&
+    operator=(const InvertedIndexDirectory&) = delete;
+
+    const std::string&
+    Path() const;
+
+    size_t
+    HeapBytes() const;
+
+    size_t
+    PathHeapBytes() const;
+
+ private:
+    explicit InvertedIndexDirectory(std::string path);
+
+    std::string path_;
+};
+
 class InvertedIndexArtifact final : public storage::Artifact {
  public:
+    InvertedIndexArtifact(std::shared_ptr<InvertedIndexDirectory> directory,
+                          std::vector<size_t> null_offsets,
+                          DataType value_type,
+                          bool nested);
+
     InvertedIndexArtifact(
-        std::shared_ptr<milvus::tantivy::TantivyIndexWrapper> engine,
-        std::string local_dir,
-        std::vector<size_t> null_offsets,
+        std::shared_ptr<InvertedIndexDirectory> directory,
+        std::shared_ptr<const std::vector<size_t>> null_offsets,
         DataType value_type,
         bool nested);
 
@@ -49,9 +78,8 @@ class InvertedIndexArtifact final : public storage::Artifact {
     Serialize(storage::FileSink& sink) const override;
 
  private:
-    std::shared_ptr<milvus::tantivy::TantivyIndexWrapper> engine_;
-    std::string local_dir_;
-    std::vector<size_t> null_offsets_;
+    std::shared_ptr<InvertedIndexDirectory> directory_;
+    std::shared_ptr<const std::vector<size_t>> null_offsets_;
     DataType value_type_{DataType::NONE};
     bool nested_{false};
 };

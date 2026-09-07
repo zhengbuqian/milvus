@@ -17,7 +17,9 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "common/Types.h"
@@ -56,19 +58,39 @@
 
 namespace milvus::index {
 
+template <typename T>
+constexpr DataType
+PhysicalVectorDataType() {
+    if constexpr (std::is_same_v<T, float>) {
+        return DataType::VECTOR_FLOAT;
+    } else if constexpr (std::is_same_v<T, bin1>) {
+        return DataType::VECTOR_BINARY;
+    } else if constexpr (std::is_same_v<T, float16>) {
+        return DataType::VECTOR_FLOAT16;
+    } else if constexpr (std::is_same_v<T, bfloat16>) {
+        return DataType::VECTOR_BFLOAT16;
+    } else if constexpr (std::is_same_v<T, int8>) {
+        return DataType::VECTOR_INT8;
+    } else if constexpr (std::is_same_v<T, sparse_u32_f32>) {
+        return DataType::VECTOR_SPARSE_U32_F32;
+    } else {
+        static_assert(!sizeof(T), "unsupported physical vector type");
+    }
+}
+
 class KnowhereEngine {
  public:
-    // The normal path. `elem_type` is `DataType::NONE` except for embedding-list
-    // (VECTOR_ARRAY) indexes — re-homed from `VectorMemIndex<T>`'s ctor
-    // (`index/VectorMemIndex.cpp:168-202`) and `VectorDiskAnnIndex<T>`'s
-    // (`index/VectorDiskIndex.cpp:263-300`).
+    // Plain in-memory creation. `physical_type` selects the Create<T>
+    // instantiation after template erasure. `elem_type` is NONE for ordinary
+    // vectors and equals physical_type for VECTOR_ARRAY indexes.
     //
     // NOTE WHAT IS ABSENT FROM THE SIGNATURE: `storage::FileManagerContext`.
     // Both of today's ctors take one and store it as `file_manager_`
     // (`VectorMemIndex.h:153`, `VectorDiskIndex.h:297`). §3 principle 6 and §10
     // rule 2 put IO behind an injected `storage::FileSink`/`FileSource` that only
     // the Builder/Artifact/Loader implementations see, never a reader.
-    KnowhereEngine(DataType elem_type,
+    KnowhereEngine(DataType physical_type,
+                   DataType elem_type,
                    IndexType index_type,
                    MetricType metric_type,
                    IndexVersion version,
@@ -78,25 +100,38 @@ class KnowhereEngine {
     // growing) path: it reads the caller's memory through `view_data` instead of
     // owning a copy, and has no file manager at all. Re-homed from
     // `VectorMemIndex<T>`'s second ctor (`index/VectorMemIndex.cpp:203-233`).
-    KnowhereEngine(DataType elem_type,
+    KnowhereEngine(DataType physical_type,
+                   DataType elem_type,
                    IndexType index_type,
                    MetricType metric_type,
                    IndexVersion version,
                    knowhere::ViewDataOp view_data,
                    bool use_knowhere_build_pool = true);
 
-    // COPYABLE ON PURPOSE, AND IT IS A HANDLE COPY, NOT AN INDEX COPY:
-    // `knowhere::Index<T>` is an intrusively ref-counted handle whose copy
-    // constructor does `idx.node->IncRef(); node = idx.node;`. That is what makes
-    // `storage::Artifact::OpenReader() const` implementable — the artifact keeps
-    // its handle and the reader gets one onto the same knowhere node, with no
-    // copy of the index data (§6.2's "two entrances to a reader").
+    // Disk-engine creation. `engine_object` is normally a caller-owned
+    // `knowhere::Pack<std::shared_ptr<milvus::FileManager>>` and is borrowed
+    // only for the synchronous IndexFactory::Create<T> call. This class never
+    // retains a FileManagerContext, FileSource, or runtime load context.
+    KnowhereEngine(DataType physical_type,
+                   DataType elem_type,
+                   IndexType index_type,
+                   MetricType metric_type,
+                   IndexVersion version,
+                   const knowhere::Pack<std::shared_ptr<milvus::FileManager>>&
+                       engine_object,
+                   bool use_knowhere_build_pool = true);
+
+    // COPY-CONSTRUCTIBLE ON PURPOSE: `knowhere::Index<T>` is an intrusively
+    // ref-counted handle, and embedding-list offsets are held as a shared const
+    // generation. `storage::Artifact::OpenReader() const` can therefore give a
+    // reader the same immutable index state without copying index data or its
+    // O(rows) offset array (§6.2's "two entrances to a reader").
     KnowhereEngine(const KnowhereEngine&) = default;
     KnowhereEngine&
-    operator=(const KnowhereEngine&) = default;
-    KnowhereEngine(KnowhereEngine&&) = default;
+    operator=(const KnowhereEngine&) = delete;
+    KnowhereEngine(KnowhereEngine&& other) = default;
     KnowhereEngine&
-    operator=(KnowhereEngine&&) = default;
+    operator=(KnowhereEngine&& other);
 
     // The composed handle. Interfaces reach through it; nobody inherits it.
     knowhere::Index<knowhere::IndexNode>&
@@ -134,6 +169,11 @@ class KnowhereEngine {
     DataType
     ElemType() const {
         return elem_type_;
+    }
+
+    DataType
+    PhysicalType() const {
+        return physical_type_;
     }
 
     bool
@@ -182,17 +222,25 @@ class KnowhereEngine {
     // (`VectorMemIndex.h:159`, `VectorDiskIndex.h:301`).
     bool
     IsEmptyEmbListIndex() const {
-        return elem_type_ != DataType::NONE && !empty_emb_list_offsets_.empty();
+        return elem_type_ != DataType::NONE && !EmptyEmbListOffsets().empty();
     }
 
     void
     SetEmptyEmbListOffsets(std::vector<size_t> offsets) {
+        empty_emb_list_offsets_ =
+            std::make_shared<const std::vector<size_t>>(std::move(offsets));
+    }
+
+    void
+    SetEmptyEmbListOffsets(std::shared_ptr<const std::vector<size_t>> offsets) {
         empty_emb_list_offsets_ = std::move(offsets);
     }
 
     const std::vector<size_t>&
     EmptyEmbListOffsets() const {
-        return empty_emb_list_offsets_;
+        static const std::vector<size_t> empty;
+        return empty_emb_list_offsets_ == nullptr ? empty
+                                                  : *empty_emb_list_offsets_;
     }
 
  private:
@@ -201,10 +249,14 @@ class KnowhereEngine {
     MetricType metric_type_;
     int64_t dim_{0};
     IndexVersion version_{0};
+    DataType physical_type_{DataType::NONE};
     // Non-NONE only for embedding-list (VECTOR_ARRAY) indexes.
     DataType elem_type_{DataType::NONE};
     bool use_knowhere_build_pool_{true};
-    std::vector<size_t> empty_emb_list_offsets_;
+    // One immutable generation shared by artifacts/readers that copy this
+    // engine handle. A setter publishes a fresh vector and cannot mutate a
+    // generation already observed by a reader.
+    std::shared_ptr<const std::vector<size_t>> empty_emb_list_offsets_;
 };
 
 // Two decoders shared by every interface that hands raw vectors back. Re-homed
@@ -219,5 +271,15 @@ DecodeVectorByIdsResult(const knowhere::DataSetPtr& result);
 template <typename T>
 std::pair<std::vector<uint8_t>, std::vector<size_t>>
 DecodeEmbListByIdsResult(const knowhere::DataSetPtr& result);
+
+template <>
+std::vector<uint8_t>
+DecodeVectorByIdsResult<sparse_u32_f32>(const knowhere::DataSetPtr& result) =
+    delete;
+
+template <>
+std::pair<std::vector<uint8_t>, std::vector<size_t>>
+DecodeEmbListByIdsResult<sparse_u32_f32>(const knowhere::DataSetPtr& result) =
+    delete;
 
 }  // namespace milvus::index

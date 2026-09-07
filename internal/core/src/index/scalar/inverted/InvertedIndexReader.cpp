@@ -16,157 +16,366 @@
 
 #include "index/scalar/inverted/InvertedIndexReader.h"
 
+#include <algorithm>
+#include <limits>
+#include <string>
+#include <type_traits>
 #include <utility>
 
+#include "common/EasyAssert.h"
+#include "common/RegexQuery.h"
+#include "common/Utils.h"
+#include "index/scalar/inverted/InvertedIndexArtifact.h"
+
 namespace milvus::index {
+namespace {
+
+bool
+IsStringType(DataType type) {
+    return type == DataType::STRING || type == DataType::VARCHAR ||
+           type == DataType::TEXT;
+}
+
+std::string
+OwnString(std::string_view value) {
+    return value.empty() ? std::string{}
+                         : std::string(value.data(), value.size());
+}
+
+template <typename T>
+bool
+CompatibleReaderType(DataType type) {
+    if constexpr (std::is_same_v<T, std::string_view>) {
+        return IsStringType(type);
+    } else if constexpr (std::is_same_v<T, int64_t>) {
+        return type == DataType::INT64 || type == DataType::TIMESTAMPTZ;
+    } else if constexpr (std::is_same_v<T, bool>) {
+        return type == DataType::BOOL;
+    } else if constexpr (std::is_same_v<T, int8_t>) {
+        return type == DataType::INT8;
+    } else if constexpr (std::is_same_v<T, int16_t>) {
+        return type == DataType::INT16;
+    } else if constexpr (std::is_same_v<T, int32_t>) {
+        return type == DataType::INT32;
+    } else if constexpr (std::is_same_v<T, float>) {
+        return type == DataType::FLOAT;
+    } else if constexpr (std::is_same_v<T, double>) {
+        return type == DataType::DOUBLE;
+    }
+    return false;
+}
+
+int64_t
+ToUsageBytes(size_t bytes) {
+    if (bytes > static_cast<size_t>(std::numeric_limits<int64_t>::max())) {
+        ThrowInfo(DataFormatBroken,
+                  "inverted reader resource size exceeds int64 domain");
+    }
+    return static_cast<int64_t>(bytes);
+}
+
+bool
+RegexCallback(void* context, const uint8_t* term, uintptr_t length) {
+    const auto* matcher = static_cast<const PartialRegexMatcher*>(context);
+    return (*matcher)(std::string_view(reinterpret_cast<const char*>(term),
+                                       static_cast<size_t>(length)));
+}
+
+void
+AddUsageBytes(size_t& total, size_t bytes) {
+    if (bytes > std::numeric_limits<size_t>::max() - total) {
+        ThrowInfo(DataFormatBroken, "inverted reader memory size overflows");
+    }
+    total += bytes;
+}
+
+}  // namespace
 
 template <typename T>
 InvertedIndexReader<T>::InvertedIndexReader(
+    std::shared_ptr<InvertedIndexDirectory> directory,
     std::shared_ptr<milvus::tantivy::TantivyIndexWrapper> engine,
-    std::vector<size_t> null_offsets,
-    bool is_nested_index)
-    : engine_(std::move(engine)),
+    std::shared_ptr<const std::vector<size_t>> null_offsets,
+    DataType value_type,
+    bool nested,
+    bool mmap,
+    size_t engine_bytes,
+    size_t engine_path_bytes)
+    : directory_(std::move(directory)),
+      engine_(std::move(engine)),
       null_offsets_(std::move(null_offsets)),
-      is_nested_index_(is_nested_index) {
+      value_type_(value_type),
+      nested_(nested),
+      mmap_(mmap),
+      engine_bytes_(engine_bytes),
+      engine_path_bytes_(engine_path_bytes) {
+    AssertInfo(engine_ != nullptr, "inverted reader requires an engine");
+    AssertInfo(null_offsets_ != nullptr,
+               "inverted reader requires immutable null offsets");
+    AssertInfo(CompatibleReaderType<T>(value_type_),
+               "inverted reader type {} does not match its interface",
+               static_cast<int>(value_type_));
+    AssertInfo(!mmap_ || directory_ != nullptr,
+               "mmap inverted reader requires a directory owner");
+    count_ = engine_->count();
+    size_t previous = 0;
+    bool first = true;
+    for (const auto offset : *null_offsets_) {
+        if ((!first && offset <= previous) || (!nested_ && offset >= count_)) {
+            ThrowInfo(DataFormatBroken,
+                      "invalid inverted null offset {} for count {}",
+                      offset,
+                      count_);
+        }
+        previous = offset;
+        first = false;
+    }
 }
 
 template <typename T>
-InvertedIndexReader<T>::~InvertedIndexReader() {
-    // NOTE: today's destructor (InvertedIndexTantivy.cpp:116-129) also does
-    // `LocalChunkManagerSingleton::RemoveDir(path_)`. Owning the local scratch
-    // directory is the LOADER's business (it is what materialized the files),
-    // not the reader's; §10 rule 2 keeps storage out of reader members.
-}
+InvertedIndexReader<T>::~InvertedIndexReader() = default;
 
 template <typename T>
 ReaderCaps
 InvertedIndexReader<T>::Caps() const {
-    // `pattern_match` is true only for the string instantiation — today's
-    // `SupportPatternMatch()` is `std::is_same_v<T, std::string>`
-    // (InvertedIndexTantivy.h:285-288). Must agree with
-    // InvertedIndexLoader::DeriveCaps, which derives the same thing from the
-    // persisted value type without opening the index (§4.1).
-    return ReaderCaps{};
+    return ReaderCaps{
+        .predicate = true,
+        .pattern_match = std::is_same_v<T, std::string_view>,
+        .nested = nested_,
+        .exact = !nested_,
+    };
 }
 
 template <typename T>
 Domain
 InvertedIndexReader<T>::CoordDomain() const {
-    return is_nested_index_ ? Domain::Element : Domain::Row;
+    return nested_ ? Domain::Element : Domain::Row;
 }
 
 template <typename T>
 int64_t
 InvertedIndexReader<T>::Count() const {
-    // TODO: move existing logic here (see InvertedIndexTantivy.h:145-148 —
-    // `wrapper_->count()`).
+    return static_cast<int64_t>(count_);
 }
 
 template <typename T>
 DataType
 InvertedIndexReader<T>::ValueType() const {
-    // TODO: derive from T. Today this was implicit in the tantivy data type
-    // (`get_tantivy_data_type`, InvertedIndexTantivy.h:51-87) and in the
-    // `proto::schema::FieldSchema schema_` member (:368) — a proto object held
-    // as index state, which the contract replaces with `DataType`.
+    return value_type_;
 }
 
 template <typename T>
 int64_t
 InvertedIndexReader<T>::MemoryUsage() const {
-    // TODO: move existing logic here (see InvertedIndexTantivy.h:219-231
-    // ComputeByteSize: `wrapper_->index_size_bytes()` + null-offset capacity).
-    //
-    // WHILE MOVING, note the inconsistency this replaces: `ComputeByteSize()`
-    // is called from `Load` (InvertedIndexTantivy.cpp:252),
-    // `BuildWithRawDataForUT` (:641) and `LoadEntries` (:958) — but NOT from
-    // `Build`, `BuildWithFieldData`, `Upload`, `TextMatchIndex::Load`'s V2
-    // branch, or `NgramInvertedIndex::Load`. A reader that computes its size at
-    // construction cannot have a stale one.
+    size_t total = sizeof(InvertedIndexReader<T>);
+    AddUsageBytes(total, sizeof(milvus::tantivy::TantivyIndexWrapper));
+    AddUsageBytes(total, engine_path_bytes_);
+    AddUsageBytes(total, sizeof(std::vector<size_t>));
+    if (null_offsets_->capacity() >
+        std::numeric_limits<size_t>::max() / sizeof(size_t)) {
+        ThrowInfo(DataFormatBroken, "inverted reader memory size overflows");
+    }
+    const auto offsets_bytes = null_offsets_->capacity() * sizeof(size_t);
+    AddUsageBytes(total, offsets_bytes);
+    if (directory_ != nullptr) {
+        AddUsageBytes(total, directory_->HeapBytes());
+    }
+    if (!mmap_) {
+        AddUsageBytes(total, engine_bytes_);
+    }
+    return ToUsageBytes(total);
 }
 
 template <typename T>
-ResourceUsage
+cachinglayer::ResourceUsage
 InvertedIndexReader<T>::CellByteSize() const {
-    // See §12.3: this family reports the uncompressed FILE size through the
-    // translator, while text/FM report measured memory. Unified elsewhere.
+    return {MemoryUsage(), mmap_ ? ToUsageBytes(engine_bytes_) : 0};
 }
 
 template <typename T>
 TargetBitmap
 InvertedIndexReader<T>::In(size_t n, const T* values) const {
-    // TODO: move existing logic here (see InvertedIndexTantivy.cpp:338-345).
+    AssertInfo(n == 0 || values != nullptr,
+               "inverted In received null values with non-zero count");
+    TargetBitmap result(count_);
+    if (n == 0) {
+        return result;
+    }
+    if constexpr (std::is_same_v<T, std::string_view>) {
+        std::vector<std::string> owned;
+        owned.reserve(n);
+        for (size_t i = 0; i < n; ++i) {
+            owned.push_back(OwnString(values[i]));
+        }
+        engine_->terms_query(owned.data(), owned.size(), &result);
+    } else {
+        engine_->terms_query(values, n, &result);
+    }
+    return result;
 }
 
 template <typename T>
 TargetBitmap
 InvertedIndexReader<T>::NotIn(size_t n, const T* values) const {
-    // TODO: move existing logic here (see InvertedIndexTantivy.cpp:438-464).
+    auto result = In(n, values);
+    result.flip();
+    if (!nested_) {
+        for (const auto offset : *null_offsets_) {
+            result.reset(offset);
+        }
+    }
+    return result;
 }
 
 template <typename T>
 TargetBitmap
 InvertedIndexReader<T>::Range(const T& value, CompareOp op) const {
-    // TODO: move existing logic here (see InvertedIndexTantivy.cpp:466-491),
-    // switching on the native CompareOp instead of proto::plan::OpType.
+    if (op == CompareOp::Equal) {
+        return In(1, &value);
+    }
+    if (op == CompareOp::NotEqual) {
+        return NotIn(1, &value);
+    }
+
+    TargetBitmap result(count_);
+    if constexpr (std::is_same_v<T, std::string_view>) {
+        const auto owned = OwnString(value);
+        switch (op) {
+            case CompareOp::GreaterThan:
+                engine_->lower_bound_range_query(owned, false, &result);
+                break;
+            case CompareOp::GreaterEqual:
+                engine_->lower_bound_range_query(owned, true, &result);
+                break;
+            case CompareOp::LessThan:
+                engine_->upper_bound_range_query(owned, false, &result);
+                break;
+            case CompareOp::LessEqual:
+                engine_->upper_bound_range_query(owned, true, &result);
+                break;
+            default:
+                ThrowInfo(OpTypeInvalid,
+                          "unsupported inverted comparison operator {}",
+                          static_cast<int>(op));
+        }
+    } else {
+        switch (op) {
+            case CompareOp::GreaterThan:
+                engine_->lower_bound_range_query(value, false, &result);
+                break;
+            case CompareOp::GreaterEqual:
+                engine_->lower_bound_range_query(value, true, &result);
+                break;
+            case CompareOp::LessThan:
+                engine_->upper_bound_range_query(value, false, &result);
+                break;
+            case CompareOp::LessEqual:
+                engine_->upper_bound_range_query(value, true, &result);
+                break;
+            default:
+                ThrowInfo(OpTypeInvalid,
+                          "unsupported inverted comparison operator {}",
+                          static_cast<int>(op));
+        }
+    }
+    return result;
 }
 
 template <typename T>
 TargetBitmap
-InvertedIndexReader<T>::Range(const T& lo, bool lo_inc, const T& hi,
+InvertedIndexReader<T>::Range(const T& lo,
+                              bool lo_inc,
+                              const T& hi,
                               bool hi_inc) const {
-    // TODO: move existing logic here (see InvertedIndexTantivy.cpp:493-508).
+    TargetBitmap result(count_);
+    if constexpr (std::is_same_v<T, std::string_view>) {
+        const auto owned_lo = OwnString(lo);
+        const auto owned_hi = OwnString(hi);
+        engine_->range_query(owned_lo, owned_hi, lo_inc, hi_inc, &result);
+    } else {
+        engine_->range_query(lo, hi, lo_inc, hi_inc, &result);
+    }
+    return result;
+}
+
+template <typename T>
+bool
+InvertedIndexReader<T>::ShouldUseForOpImpl(PatternOp op,
+                                           std::string_view) const {
+    switch (op) {
+        case PatternOp::Match:
+        case PatternOp::PrefixMatch:
+            return true;
+        case PatternOp::PostfixMatch:
+        case PatternOp::InnerMatch:
+        case PatternOp::RegexMatch:
+            return false;
+    }
+    return false;
 }
 
 template <typename T>
 TargetBitmap
-InvertedIndexReader<T>::PatternMatch(std::string_view pattern,
-                                     PatternOp op) const {
-    // TODO: move existing logic here (see InvertedIndexTantivy.h:244-283) —
-    // the dispatch over prefix / postfix / inner / match / regex, including the
-    // `PartialRegexMatcher` + C callback branch at :261-276, and the
-    // `PrefixMatch` implementation at InvertedIndexTantivy.cpp:510-519.
+InvertedIndexReader<T>::PatternMatchImpl(std::string_view pattern,
+                                         PatternOp op) const {
+    const auto owned = OwnString(pattern);
+    switch (op) {
+        case PatternOp::PrefixMatch: {
+            TargetBitmap result(count_);
+            engine_->prefix_query(owned, &result);
+            return result;
+        }
+        case PatternOp::PostfixMatch:
+            return PatternQuery("%" + EscapeLikePattern(owned));
+        case PatternOp::InnerMatch:
+            return PatternQuery("%" + EscapeLikePattern(owned) + "%");
+        case PatternOp::Match:
+            return PatternQuery(owned);
+        case PatternOp::RegexMatch: {
+            TargetBitmap result(count_);
+            PartialRegexMatcher matcher(owned);
+            engine_->regex_match_query(&matcher, RegexCallback, &result);
+            return result;
+        }
+    }
+    ThrowInfo(OpTypeInvalid,
+              "unsupported inverted pattern operator {}",
+              static_cast<int>(op));
 }
 
 template <typename T>
 TargetBitmap
 InvertedIndexReader<T>::PatternQuery(std::string_view pattern) const {
-    // TODO: move existing logic here (see InvertedIndexTantivy.cpp:539-549).
+    PatternMatchTranslator translator;
+    const auto regex = translator(OwnString(pattern));
+    TargetBitmap result(count_);
+    engine_->regex_query(regex, &result);
+    return result;
 }
 
 template <typename T>
 TargetBitmap
 InvertedIndexReader<T>::IsNull() const {
-    // TODO: move existing logic here (see InvertedIndexTantivy.cpp:347-378),
-    // minus the `is_growing_` lock branch at :370.
+    TargetBitmap result(count_);
+    if (!nested_) {
+        for (const auto offset : *null_offsets_) {
+            result.set(offset);
+        }
+    }
+    return result;
 }
 
 template <typename T>
 TargetBitmap
 InvertedIndexReader<T>::IsNotNull() const {
-    // TODO: move existing logic here (see InvertedIndexTantivy.cpp:380-411),
-    // minus the lock branch at :403.
+    TargetBitmap result(count_, true);
+    if (!nested_) {
+        for (const auto offset : *null_offsets_) {
+            result.reset(offset);
+        }
+    }
+    return result;
 }
-
-// GONE, NOT MOVED — deleted surface, with the paragraph of the design that
-// removes each:
-//   `InApplyFilter`  (InvertedIndexTantivy.cpp:413-424) — §5.1: zero production
-//       call sites; the only reference in the tree is JsonFlatIndexTest.cpp:799.
-//   `InApplyCallback` (:426-436) — §5.1: one consumer
-//       (`PhyUnaryRangeFilterExpr::ExecArrayEqualForIndex`, UnaryExpr.cpp:804),
-//       and the implementation materializes the full bitmap anyway before
-//       walking it, so the "avoid materializing a bitmap" rationale is void.
-//       exec does the same job with `In()` plus a bitmap intersection.
-//       Both took `index/InvertedIndexUtil.h`'s `apply_hits_with_filter` /
-//       `apply_hits_with_callback`, whose only callers these were — that header
-//       is deleted with them.
-//   `Query(const DatasetPtr&)` (:521-537) — §5.1: the knowhere-style universal
-//       entry point; typed interfaces replace it.
-//   `Reverse_Lookup` (InvertedIndexTantivy.h:209-212) — a NotImplemented shell.
-//   `ShouldUseOp` (:290-308) — this family's override ignores the literal
-//       entirely and answers on the op alone, i.e. it is static per index, so
-//       it is `ReaderCaps::pattern_match` and nothing more. (FMIndex's override
-//       is the one that genuinely needs a per-call gate; see FmIndexReader.h.)
 
 #define INSTANTIATE_INVERTED_READER(T) template class InvertedIndexReader<T>;
 INSTANTIATE_INVERTED_READER(bool)

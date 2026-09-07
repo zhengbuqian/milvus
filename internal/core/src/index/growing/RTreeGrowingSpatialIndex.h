@@ -89,7 +89,7 @@ class RTreeGrowingSnapshot final : public IndexReaderBase,
 
     ~RTreeGrowingSnapshot() override = default;
 
-    milvus::ResourceUsage
+    cachinglayer::ResourceUsage
     CellByteSize() const override;
 
     ReaderCaps

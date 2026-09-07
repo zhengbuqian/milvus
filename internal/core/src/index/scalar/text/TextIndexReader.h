@@ -17,13 +17,17 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 #include <memory>
 #include <string_view>
 
 #include "common/Types.h"
 #include "index/contracts/IndexReader.h"
 #include "index/contracts/TextMatchReader.h"
-#include "tantivy-wrapper.h"
+
+namespace milvus::tantivy {
+struct TantivyIndexWrapper;
+}
 
 // The sealed-side READER of the text family.
 //
@@ -75,15 +79,21 @@
 
 namespace milvus::index {
 
+class TextIndexDirectory;
+
 class TextIndexReader final : public IndexReaderBase, public TextMatchReader {
  public:
     // Produced by exactly two call sites: `TextIndexLoader::OpenIndex` (from
     // bytes) and `TextIndexArtifact::OpenReader` (in place, right after a
     // build). §6 states the pair explicitly. There is no other way to get one,
     // and in particular no constructor that also knows how to build.
-    TextIndexReader(std::shared_ptr<milvus::tantivy::TantivyIndexWrapper> engine,
-                    int64_t count,
-                    bool mmap_enabled);
+    TextIndexReader(
+        std::shared_ptr<TextIndexDirectory> directory,
+        std::shared_ptr<milvus::tantivy::TantivyIndexWrapper> engine,
+        int64_t count,
+        DataType value_type,
+        bool file_backed,
+        size_t payload_bytes);
 
     ~TextIndexReader() override;
 
@@ -110,7 +120,7 @@ class TextIndexReader final : public IndexReaderBase, public TextMatchReader {
 
     // ---- storage::LoadedArtifact (§11.2 rule 1) ------------------------
 
-    ResourceUsage
+    cachinglayer::ResourceUsage
     CellByteSize() const override;
 
     // ---- TextMatchReader (§5.3) ----------------------------------------
@@ -131,6 +141,9 @@ class TextIndexReader final : public IndexReaderBase, public TextMatchReader {
     TargetBitmap
     PrepareBitset() const;
 
+    // Destroy the engine before the optional mmap directory owner.
+    std::shared_ptr<TextIndexDirectory> directory_;
+
     // The ENGINE, held by composition. Immutable after construction: §5's
     // "every reader is immutable once produced by Seal()/Open(), therefore
     // thread-safe and lock-free for concurrent reads". Note what is gone with
@@ -139,7 +152,9 @@ class TextIndexReader final : public IndexReaderBase, public TextMatchReader {
     std::shared_ptr<milvus::tantivy::TantivyIndexWrapper> engine_;
 
     int64_t count_{0};
-    bool mmap_enabled_{false};
+    DataType value_type_{DataType::NONE};
+    bool file_backed_{false};
+    size_t payload_bytes_{0};
 };
 
 }  // namespace milvus::index

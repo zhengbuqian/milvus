@@ -27,8 +27,7 @@
 // Providers: tantivy inverted, marisa (prefix), and FMIndex — for FMIndex THIS
 // IS ITS ONLY PREDICATE INTERFACE. Together with the unconditional `NullReader`
 // (`FMIndex.cpp:392` is a real implementation) that is the whole of FMIndex's
-// query surface; today it is a `ScalarIndex<std::string>` carrying 20 unrelated
-// methods.
+// query surface; the legacy scalar interface carried many unrelated methods.
 
 namespace milvus::index {
 
@@ -49,20 +48,30 @@ namespace milvus::index {
 // (`FMIndex` declines both Match and RegexMatch — `FMIndexTest.cpp:143,168` —
 // but that is a per-index routing decision, not a missing operator.)
 enum class PatternOp {
-    Match,          // LIKE
-    PrefixMatch,    // startsWith
-    PostfixMatch,   // endsWith
-    InnerMatch,     // substring, "%value%"
-    RegexMatch,     // regex substring match, `=~ "pattern"`
+    Match,         // LIKE
+    PrefixMatch,   // startsWith
+    PostfixMatch,  // endsWith
+    InnerMatch,    // substring, "%value%"
+    RegexMatch,    // regex substring match, `=~ "pattern"`
 };
 
 class PatternMatchReader {
  public:
     virtual ~PatternMatchReader() = default;
 
-    // `pattern` is the raw SQL LIKE text, NOT a regex; implementations convert
-    // internally if they need to. Output is a `TargetBitmap`, 1 = hit,
-    // size == Count() (§5).
+    // Per-call routing guard. FM-index uses this to reject degenerate
+    // literals; other families can use the operation whenever their static
+    // ReaderCaps advertises pattern matching.
+    virtual bool
+    ShouldUseForOp(PatternOp op, std::string_view pattern) const {
+        return true;
+    }
+
+    // Encoding is operation-specific and matches the existing callers:
+    // Match receives raw SQL LIKE text, RegexMatch receives raw regular
+    // expression text, and Prefix/Postfix/InnerMatch receive a literal (even
+    // when it contains '%' or '_'). Implementations perform any engine-specific
+    // conversion. Output is a `TargetBitmap`, 1 = hit, size == Count() (§5).
     virtual TargetBitmap
     PatternMatch(std::string_view pattern, PatternOp op) const = 0;
 };

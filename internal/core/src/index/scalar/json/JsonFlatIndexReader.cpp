@@ -6,7 +6,7 @@
 // "License"); you may not use this file except in compliance
 // with the License. You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,154 +16,1106 @@
 
 #include "index/scalar/json/JsonFlatIndexReader.h"
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <optional>
+#include <string>
+#include <type_traits>
 #include <utility>
+#include <vector>
+
+#include "common/EasyAssert.h"
+#include "common/JsonUtils.h"
+#include "common/RegexQuery.h"
+#include "common/Utils.h"
+#include "index/contracts/NullReader.h"
+#include "index/contracts/PatternMatchReader.h"
+#include "index/contracts/ScalarPredicateReader.h"
+#include "index/scalar/json/JsonFlatIndexArtifact.h"
+#include "tantivy-wrapper.h"
 
 namespace milvus::index {
+namespace {
 
-template <typename T>
-JsonPathPredicateReader<T>::JsonPathPredicateReader(
-    std::shared_ptr<milvus::tantivy::TantivyIndexWrapper> engine,
-    std::string tantivy_path,
-    std::shared_ptr<const std::vector<size_t>> null_offsets,
-    bool comparable_value_mask)
-    : engine_(std::move(engine)),
-      tantivy_path_(std::move(tantivy_path)),
-      null_offsets_(std::move(null_offsets)),
-      comparable_value_mask_(comparable_value_mask) {
+void
+AddBytes(size_t& total, size_t bytes, std::string_view object) {
+    if (bytes > std::numeric_limits<size_t>::max() - total) {
+        ThrowInfo(DataFormatBroken, "{} memory size overflows", object);
+    }
+    total += bytes;
 }
 
-template <typename T>
-JsonPathPredicateReader<T>::~JsonPathPredicateReader() = default;
-
-template <typename T>
-ReaderCaps
-JsonPathPredicateReader<T>::Caps() const {
-    return ReaderCaps{.predicate = true};
-}
-
-template <typename T>
-Domain
-JsonPathPredicateReader<T>::CoordDomain() const {
-    return Domain::Row;
-}
-
-template <typename T>
 int64_t
-JsonPathPredicateReader<T>::Count() const {
-    // TODO: `engine_->count()`.
+ToUsageBytes(size_t bytes, std::string_view object) {
+    if (bytes > static_cast<size_t>(std::numeric_limits<int64_t>::max())) {
+        ThrowInfo(
+            DataFormatBroken, "{} resource size exceeds int64 domain", object);
+    }
+    return static_cast<int64_t>(bytes);
+}
+
+size_t
+StringHeapBytes(const std::string& value) {
+    const auto inline_capacity = std::string{}.capacity();
+    if (value.capacity() <= inline_capacity) {
+        return 0;
+    }
+    if (value.capacity() == std::numeric_limits<size_t>::max()) {
+        ThrowInfo(DataFormatBroken, "JSON path memory size overflows");
+    }
+    return value.capacity() + 1;
+}
+
+void
+ValidateJsonPointer(std::string_view path, std::string_view object) {
+    if (path.find('\0') != std::string_view::npos) {
+        ThrowInfo(DataTypeInvalid, "{} contains an embedded NUL", object);
+    }
+    if (!path.empty() && path.front() != '/') {
+        ThrowInfo(
+            DataTypeInvalid, "{} must be empty or start with '/'", object);
+    }
+    try {
+        (void)parse_json_pointer(std::string(path));
+    } catch (const std::invalid_argument& error) {
+        ThrowInfo(DataTypeInvalid, "invalid {}: {}", object, error.what());
+    }
+}
+
+// A null result means the selected JsonFlat index cannot represent this path
+// shape. It is deliberately different from a supported path that happens to
+// have no values in any row.
+std::optional<std::string>
+ResolveTantivyPath(std::string_view root, std::string_view path) {
+    ValidateJsonPointer(path, "JSON query path");
+
+    std::string_view relative;
+    if (root.empty()) {
+        relative = path;
+    } else if (path == root) {
+        relative = {};
+    } else if (path.size() > root.size() && path.starts_with(root) &&
+               path[root.size()] == '/') {
+        relative = path.substr(root.size());
+    } else {
+        return std::nullopt;
+    }
+
+    const auto tokens = parse_json_pointer(std::string(relative));
+    for (const auto& token : tokens) {
+        if (!token.empty() && milvus::IsInteger(token)) {
+            return std::nullopt;
+        }
+    }
+
+    std::string tantivy_path(relative);
+    std::replace(tantivy_path.begin(), tantivy_path.end(), '/', '.');
+    if (!tantivy_path.empty()) {
+        tantivy_path.erase(tantivy_path.begin());
+    }
+    return tantivy_path;
+}
+
+::JsonExistValueType
+ToEngineValueType(JsonValueType type) {
+    switch (type) {
+        case JsonValueType::Any:
+            return ::JsonExistValueType::Any;
+        case JsonValueType::Numeric:
+            return ::JsonExistValueType::Numeric;
+        case JsonValueType::String:
+            return ::JsonExistValueType::String;
+        case JsonValueType::Bool:
+            return ::JsonExistValueType::Bool;
+    }
+    ThrowInfo(
+        DataTypeInvalid, "unknown JSON value type {}", static_cast<int>(type));
 }
 
 template <typename T>
-DataType
-JsonPathPredicateReader<T>::ValueType() const {
-    // TODO: derive from T.
+void
+ValidateValues(size_t n, const T* values, std::string_view operation) {
+    AssertInfo(n == 0 || values != nullptr,
+               "JSON {} received null values with non-zero count",
+               operation);
 }
 
-template <typename T>
-int64_t
-JsonPathPredicateReader<T>::MemoryUsage() const {
-    // A path reader BORROWS the field-level engine; it owns no bytes of its
-    // own, so it must not report the engine's size or the same bytes would be
-    // counted once per resolved path.
-    return 0;
+std::string
+OwnString(std::string_view value) {
+    return value.empty() ? std::string{}
+                         : std::string(value.data(), value.size());
 }
 
-template <typename T>
-ResourceUsage
-JsonPathPredicateReader<T>::CellByteSize() const {
-    // Same reason as MemoryUsage: accounting belongs to the owning
-    // JsonFlatIndexReader.
-    return {};
+std::vector<std::string>
+OwnStrings(size_t n, const std::string_view* values) {
+    ValidateValues(n, values, "In");
+    std::vector<std::string> result;
+    result.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+        result.push_back(OwnString(values[i]));
+    }
+    return result;
 }
 
-template <typename T>
-TargetBitmap
-JsonPathPredicateReader<T>::In(size_t n, const T* values) const {
-    // TODO: move existing logic here (see JsonFlatIndex.h:44-50 plus
-    // TermBitset :224-230 and the u64 widening at :232-259).
-}
+}  // namespace
 
-template <typename T>
-TargetBitmap
-JsonPathPredicateReader<T>::NotIn(size_t n, const T* values) const {
-    // TODO: move existing logic here (see JsonFlatIndex.h:95-108).
-}
-
-template <typename T>
-TargetBitmap
-JsonPathPredicateReader<T>::Range(const T& value, CompareOp op) const {
-    // TODO: move existing logic here (see JsonFlatIndex.h:127-157 and the range
-    // derivation helpers :457-707).
-    //
-    // Four of those helpers end in `ThrowInfo(OpTypeInvalid)` default arms
-    // (JsonFlatIndex.h:150, :322, :505, :590) reached only if an operator
-    // outside the comparison family arrives. With `CompareOp` those arms become
-    // exhaustive switches over a six-value native enum — a compiler warning
-    // instead of a runtime throw.
-}
-
-template <typename T>
-TargetBitmap
-JsonPathPredicateReader<T>::Range(const T& lo, bool lo_inc, const T& hi,
-                                  bool hi_inc) const {
-    // TODO: move existing logic here (see JsonFlatIndex.h:164-196).
-}
-
-template <typename T>
-TargetBitmap
-JsonPathPredicateReader<T>::PatternMatch(std::string_view pattern,
-                                         PatternOp op) const {
-    // TODO: move existing logic here (see JsonFlatIndex.h:198-206 PrefixMatch
-    // and :209-218 PatternQuery -> `json_regex_query`).
-}
-
-template <typename T>
-TargetBitmap
-JsonPathPredicateReader<T>::IsNull() const {
-    // TODO: move existing logic here (see JsonFlatIndex.h:110-115).
-}
-
-template <typename T>
-TargetBitmap
-JsonPathPredicateReader<T>::IsNotNull() const {
-    // TODO: move existing logic here (see JsonFlatIndex.h:117-125 and
-    // ComparableValueBitset :709-722).
-}
-
-template <typename T>
-TargetBitmap
-JsonPathPredicateReader<T>::TermBitset(size_t n, const T* values) const {
-    // TODO: move existing logic here (see JsonFlatIndex.h:224-230).
-}
-
-template <typename T>
-TargetBitmap
-JsonPathPredicateReader<T>::ComparableValueBitset() const {
-    // TODO: move existing logic here (see JsonFlatIndex.h:709-722).
-}
-
-// DELETED, NOT MOVED (§5.1): `InApplyFilter` (JsonFlatIndex.h:72-82) and
-// `InApplyCallback` (:84-93). The former's only reference in the entire tree is
-// `JsonFlatIndexTest.cpp:799`. Also deleted: `Query(const DatasetPtr&)` (:159-162).
-
-JsonFlatIndexReader::JsonFlatIndexReader(
+JsonFlatIndexReaderState::JsonFlatIndexReaderState(
+    std::shared_ptr<JsonFlatIndexDirectory> directory,
     std::shared_ptr<milvus::tantivy::TantivyIndexWrapper> engine,
     std::string field_path_prefix,
-    std::vector<size_t> null_offsets)
-    : engine_(std::move(engine)),
+    std::shared_ptr<const std::vector<size_t>> null_offsets,
+    bool mmap,
+    size_t engine_bytes,
+    size_t engine_path_bytes)
+    : directory_(std::move(directory)),
+      engine_(std::move(engine)),
+      null_offsets_(std::move(null_offsets)),
       field_path_prefix_(std::move(field_path_prefix)),
-      null_offsets_(std::make_shared<const std::vector<size_t>>(
-          std::move(null_offsets))) {
+      mmap_(mmap),
+      engine_bytes_(engine_bytes),
+      engine_path_bytes_(engine_path_bytes) {
+    AssertInfo(engine_ != nullptr, "JSON flat reader requires an engine");
+    AssertInfo(null_offsets_ != nullptr,
+               "JSON flat reader requires null-offset state");
+    AssertInfo(!mmap_ || directory_ != nullptr,
+               "mmap JSON flat reader requires a directory owner");
+    ValidateJsonPointer(field_path_prefix_, "JSON flat root path");
+    count_ = engine_->count();
+
+    size_t previous = 0;
+    bool first = true;
+    for (const auto offset : *null_offsets_) {
+        if ((!first && offset <= previous) || offset >= count_) {
+            ThrowInfo(DataFormatBroken,
+                      "invalid JSON flat null offset {} for count {}",
+                      offset,
+                      count_);
+        }
+        previous = offset;
+        first = false;
+    }
+
+    size_t heap = sizeof(JsonFlatIndexReaderState);
+    AddBytes(
+        heap, sizeof(milvus::tantivy::TantivyIndexWrapper), "JSON flat reader");
+    AddBytes(heap, engine_path_bytes_, "JSON flat reader");
+    AddBytes(heap, StringHeapBytes(field_path_prefix_), "JSON flat reader");
+    AddBytes(heap, sizeof(std::vector<size_t>), "JSON flat null offsets");
+    if (null_offsets_->capacity() >
+        std::numeric_limits<size_t>::max() / sizeof(size_t)) {
+        ThrowInfo(DataFormatBroken,
+                  "JSON flat null-offset memory size overflows");
+    }
+    AddBytes(
+        heap, null_offsets_->capacity() * sizeof(size_t), "JSON flat reader");
+    if (directory_ != nullptr) {
+        AddBytes(heap, directory_->HeapBytes(), "JSON flat reader");
+    }
+    if (!mmap_) {
+        AddBytes(heap, engine_bytes_, "JSON flat reader");
+    }
+    heap_bytes_ = ToUsageBytes(heap, "JSON flat reader");
+    file_bytes_ = mmap_ ? ToUsageBytes(engine_bytes_, "JSON flat reader") : 0;
+}
+
+std::shared_ptr<const JsonFlatIndexReaderState>
+JsonFlatIndexReaderState::Create(
+    std::shared_ptr<JsonFlatIndexDirectory> directory,
+    std::shared_ptr<milvus::tantivy::TantivyIndexWrapper> engine,
+    std::string field_path_prefix,
+    std::shared_ptr<const std::vector<size_t>> null_offsets,
+    bool mmap,
+    size_t engine_bytes,
+    size_t engine_path_bytes) {
+    return std::shared_ptr<const JsonFlatIndexReaderState>(
+        new JsonFlatIndexReaderState(std::move(directory),
+                                     std::move(engine),
+                                     std::move(field_path_prefix),
+                                     std::move(null_offsets),
+                                     mmap,
+                                     engine_bytes,
+                                     engine_path_bytes));
+}
+
+milvus::tantivy::TantivyIndexWrapper&
+JsonFlatIndexReaderState::Engine() const {
+    return *engine_;
+}
+
+const std::string&
+JsonFlatIndexReaderState::RootPath() const {
+    return field_path_prefix_;
+}
+
+const std::vector<size_t>&
+JsonFlatIndexReaderState::NullOffsets() const {
+    return *null_offsets_;
+}
+
+uint32_t
+JsonFlatIndexReaderState::Count() const {
+    return count_;
+}
+
+int64_t
+JsonFlatIndexReaderState::HeapBytes() const {
+    return heap_bytes_;
+}
+
+int64_t
+JsonFlatIndexReaderState::FileBytes() const {
+    return file_bytes_;
+}
+
+TargetBitmap
+JsonFlatIndexReaderState::FieldIsNull() const {
+    TargetBitmap result(count_);
+    for (const auto offset : *null_offsets_) {
+        result.set(offset);
+    }
+    return result;
+}
+
+TargetBitmap
+JsonFlatIndexReaderState::FieldIsNotNull() const {
+    TargetBitmap result(count_, true);
+    for (const auto offset : *null_offsets_) {
+        result.reset(offset);
+    }
+    return result;
+}
+
+namespace {
+
+class JsonPathReaderBase : public IndexReaderBase, public NullReader {
+ public:
+    JsonPathReaderBase(std::shared_ptr<const JsonFlatIndexReaderState> state,
+                       std::string tantivy_path,
+                       JsonValueType comparable_type)
+        : state_(std::move(state)),
+          tantivy_path_(std::move(tantivy_path)),
+          comparable_type_(comparable_type) {
+        AssertInfo(state_ != nullptr,
+                   "JSON path reader requires shared field state");
+    }
+
+    Domain
+    CoordDomain() const override {
+        return Domain::Row;
+    }
+
+    int64_t
+    Count() const override {
+        return static_cast<int64_t>(state_->Count());
+    }
+
+    int64_t
+    MemoryUsage() const override {
+        // Shared engine/directory bytes belong to the root cache cell. This
+        // view still reports its own object and bound-path allocation.
+        size_t bytes = ObjectBytes();
+        AddBytes(bytes, StringHeapBytes(tantivy_path_), "JSON path reader");
+        return ToUsageBytes(bytes, "JSON path reader");
+    }
+
+    cachinglayer::ResourceUsage
+    CellByteSize() const override {
+        return {MemoryUsage(), 0};
+    }
+
+    TargetBitmap
+    IsNull() const override {
+        auto result = IsNotNull();
+        result.flip();
+        return result;
+    }
+
+    TargetBitmap
+    IsNotNull() const override {
+        TargetBitmap result(state_->Count());
+        state_->Engine().json_exist_query(
+            tantivy_path_, false, ToEngineValueType(comparable_type_), &result);
+        return result;
+    }
+
+ protected:
+    const std::shared_ptr<const JsonFlatIndexReaderState>&
+    State() const {
+        return state_;
+    }
+
+    milvus::tantivy::TantivyIndexWrapper&
+    Engine() const {
+        return state_->Engine();
+    }
+
+    const std::string&
+    Path() const {
+        return tantivy_path_;
+    }
+
+    virtual size_t
+    ObjectBytes() const = 0;
+
+ private:
+    std::shared_ptr<const JsonFlatIndexReaderState> state_;
+    std::string tantivy_path_;
+    JsonValueType comparable_type_{JsonValueType::Any};
+};
+
+template <typename Reader, typename T>
+TargetBitmap
+NotIn(const Reader& reader, size_t n, const T* values) {
+    auto result = reader.In(n, values);
+    result.flip();
+    result &= reader.IsNotNull();
+    return result;
+}
+
+class JsonBoolPathReader final : public JsonPathReaderBase,
+                                 public ScalarPredicateReader<bool> {
+ public:
+    JsonBoolPathReader(std::shared_ptr<const JsonFlatIndexReaderState> state,
+                       std::string path)
+        : JsonPathReaderBase(
+              std::move(state), std::move(path), JsonValueType::Bool) {
+    }
+
+    ReaderCaps
+    Caps() const override {
+        return ReaderCaps{.predicate = true, .exact = true};
+    }
+
+    DataType
+    ValueType() const override {
+        return DataType::BOOL;
+    }
+
+    size_t
+    ObjectBytes() const override {
+        return sizeof(JsonBoolPathReader);
+    }
+
+    TargetBitmap
+    In(size_t n, const bool* values) const override {
+        ValidateValues(n, values, "bool In");
+        TargetBitmap result(Count());
+        if (n != 0) {
+            Engine().json_terms_query(Path(), values, n, &result);
+        }
+        return result;
+    }
+
+    TargetBitmap
+    NotIn(size_t n, const bool* values) const override {
+        return milvus::index::NotIn(*this, n, values);
+    }
+
+    TargetBitmap
+    Range(const bool& value, CompareOp op) const override {
+        if (op == CompareOp::Equal) {
+            return In(1, &value);
+        }
+        if (op == CompareOp::NotEqual) {
+            return NotIn(1, &value);
+        }
+        TargetBitmap result(Count());
+        switch (op) {
+            case CompareOp::GreaterThan:
+                Engine().json_range_query(
+                    Path(), value, false, false, true, false, false, &result);
+                break;
+            case CompareOp::GreaterEqual:
+                Engine().json_range_query(
+                    Path(), value, false, false, true, true, false, &result);
+                break;
+            case CompareOp::LessThan:
+                Engine().json_range_query(
+                    Path(), false, value, true, false, false, false, &result);
+                break;
+            case CompareOp::LessEqual:
+                Engine().json_range_query(
+                    Path(), false, value, true, false, true, false, &result);
+                break;
+            case CompareOp::Equal:
+            case CompareOp::NotEqual:
+                break;
+        }
+        return result;
+    }
+
+    TargetBitmap
+    Range(const bool& lo,
+          bool lo_inc,
+          const bool& hi,
+          bool hi_inc) const override {
+        TargetBitmap result(Count());
+        Engine().json_range_query(
+            Path(), lo, hi, false, false, lo_inc, hi_inc, &result);
+        return result;
+    }
+};
+
+class NumericRange {
+ public:
+    using U64Range = std::optional<std::pair<uint64_t, uint64_t>>;
+    using I64Range = std::optional<std::pair<int64_t, int64_t>>;
+
+    template <typename Predicate>
+    static std::optional<uint64_t>
+    FirstU64Where(Predicate pred) {
+        constexpr auto min = std::numeric_limits<uint64_t>::min();
+        constexpr auto max = std::numeric_limits<uint64_t>::max();
+        if (pred(min)) {
+            return min;
+        }
+        if (!pred(max)) {
+            return std::nullopt;
+        }
+        uint64_t low = min;
+        uint64_t high = max;
+        while (low < high) {
+            const auto mid = low + (high - low) / 2;
+            if (pred(mid)) {
+                high = mid;
+            } else {
+                low = mid + 1;
+            }
+        }
+        return low;
+    }
+
+    template <typename Predicate>
+    static std::optional<uint64_t>
+    LastU64Where(Predicate pred) {
+        constexpr auto min = std::numeric_limits<uint64_t>::min();
+        constexpr auto max = std::numeric_limits<uint64_t>::max();
+        if (!pred(min)) {
+            return std::nullopt;
+        }
+        if (pred(max)) {
+            return max;
+        }
+        uint64_t low = min;
+        uint64_t high = max;
+        while (low < high) {
+            const auto mid = high - (high - low) / 2;
+            if (pred(mid)) {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+        return low;
+    }
+
+    static int64_t
+    I64FromOrdinal(uint64_t ordinal) {
+        constexpr auto sign_offset = uint64_t{1} << 63;
+        if (ordinal < sign_offset) {
+            return std::numeric_limits<int64_t>::lowest() +
+                   static_cast<int64_t>(ordinal);
+        }
+        return static_cast<int64_t>(ordinal - sign_offset);
+    }
+
+    template <typename Predicate>
+    static std::optional<int64_t>
+    FirstI64Where(Predicate pred) {
+        constexpr auto min = std::numeric_limits<uint64_t>::min();
+        constexpr auto max = std::numeric_limits<uint64_t>::max();
+        if (pred(I64FromOrdinal(min))) {
+            return I64FromOrdinal(min);
+        }
+        if (!pred(I64FromOrdinal(max))) {
+            return std::nullopt;
+        }
+        uint64_t low = min;
+        uint64_t high = max;
+        while (low < high) {
+            const auto mid = low + (high - low) / 2;
+            if (pred(I64FromOrdinal(mid))) {
+                high = mid;
+            } else {
+                low = mid + 1;
+            }
+        }
+        return I64FromOrdinal(low);
+    }
+
+    template <typename Predicate>
+    static std::optional<int64_t>
+    LastI64Where(Predicate pred) {
+        constexpr auto min = std::numeric_limits<uint64_t>::min();
+        constexpr auto max = std::numeric_limits<uint64_t>::max();
+        if (!pred(I64FromOrdinal(min))) {
+            return std::nullopt;
+        }
+        if (pred(I64FromOrdinal(max))) {
+            return I64FromOrdinal(max);
+        }
+        uint64_t low = min;
+        uint64_t high = max;
+        while (low < high) {
+            const auto mid = high - (high - low) / 2;
+            if (pred(I64FromOrdinal(mid))) {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+        return I64FromOrdinal(low);
+    }
+
+    static U64Range
+    U64ForValue(double value, CompareOp op) {
+        if (std::isnan(value)) {
+            return std::nullopt;
+        }
+        switch (op) {
+            case CompareOp::LessThan: {
+                auto upper = LastU64Where(
+                    [value](uint64_t v) { return double(v) < value; });
+                return upper ? U64Range{{0, *upper}} : std::nullopt;
+            }
+            case CompareOp::LessEqual: {
+                auto upper = LastU64Where(
+                    [value](uint64_t v) { return double(v) <= value; });
+                return upper ? U64Range{{0, *upper}} : std::nullopt;
+            }
+            case CompareOp::GreaterThan: {
+                auto lower = FirstU64Where(
+                    [value](uint64_t v) { return double(v) > value; });
+                return lower ? U64Range{{*lower,
+                                         std::numeric_limits<uint64_t>::max()}}
+                             : std::nullopt;
+            }
+            case CompareOp::GreaterEqual: {
+                auto lower = FirstU64Where(
+                    [value](uint64_t v) { return double(v) >= value; });
+                return lower ? U64Range{{*lower,
+                                         std::numeric_limits<uint64_t>::max()}}
+                             : std::nullopt;
+            }
+            case CompareOp::Equal:
+            case CompareOp::NotEqual:
+                return std::nullopt;
+        }
+        return std::nullopt;
+    }
+
+    static U64Range
+    U64ForBounds(double lo, bool lo_inc, double hi, bool hi_inc) {
+        if (std::isnan(lo) || std::isnan(hi)) {
+            return std::nullopt;
+        }
+        auto lower = FirstU64Where([lo, lo_inc](uint64_t value) {
+            const auto converted = static_cast<double>(value);
+            return lo_inc ? converted >= lo : converted > lo;
+        });
+        auto upper = LastU64Where([hi, hi_inc](uint64_t value) {
+            const auto converted = static_cast<double>(value);
+            return hi_inc ? converted <= hi : converted < hi;
+        });
+        if (!lower || !upper || *lower > *upper) {
+            return std::nullopt;
+        }
+        return std::make_pair(*lower, *upper);
+    }
+
+    static I64Range
+    I64ForValue(double value, CompareOp op) {
+        if (std::isnan(value)) {
+            return std::nullopt;
+        }
+        switch (op) {
+            case CompareOp::LessThan: {
+                auto upper = LastI64Where(
+                    [value](int64_t v) { return double(v) < value; });
+                return upper ? I64Range{{std::numeric_limits<int64_t>::lowest(),
+                                         *upper}}
+                             : std::nullopt;
+            }
+            case CompareOp::LessEqual: {
+                auto upper = LastI64Where(
+                    [value](int64_t v) { return double(v) <= value; });
+                return upper ? I64Range{{std::numeric_limits<int64_t>::lowest(),
+                                         *upper}}
+                             : std::nullopt;
+            }
+            case CompareOp::GreaterThan: {
+                auto lower = FirstI64Where(
+                    [value](int64_t v) { return double(v) > value; });
+                return lower ? I64Range{{*lower,
+                                         std::numeric_limits<int64_t>::max()}}
+                             : std::nullopt;
+            }
+            case CompareOp::GreaterEqual: {
+                auto lower = FirstI64Where(
+                    [value](int64_t v) { return double(v) >= value; });
+                return lower ? I64Range{{*lower,
+                                         std::numeric_limits<int64_t>::max()}}
+                             : std::nullopt;
+            }
+            case CompareOp::Equal:
+            case CompareOp::NotEqual:
+                return std::nullopt;
+        }
+        return std::nullopt;
+    }
+
+    static I64Range
+    I64ForBounds(double lo, bool lo_inc, double hi, bool hi_inc) {
+        if (std::isnan(lo) || std::isnan(hi)) {
+            return std::nullopt;
+        }
+        auto lower = FirstI64Where([lo, lo_inc](int64_t value) {
+            const auto converted = static_cast<double>(value);
+            return lo_inc ? converted >= lo : converted > lo;
+        });
+        auto upper = LastI64Where([hi, hi_inc](int64_t value) {
+            const auto converted = static_cast<double>(value);
+            return hi_inc ? converted <= hi : converted < hi;
+        });
+        if (!lower || !upper || *lower > *upper) {
+            return std::nullopt;
+        }
+        return std::make_pair(*lower, *upper);
+    }
+};
+
+class JsonNumericPathReader final : public JsonPathReaderBase,
+                                    public ScalarPredicateReader<int64_t>,
+                                    public ScalarPredicateReader<double> {
+ public:
+    JsonNumericPathReader(std::shared_ptr<const JsonFlatIndexReaderState> state,
+                          std::string path)
+        : JsonPathReaderBase(
+              std::move(state), std::move(path), JsonValueType::Numeric) {
+    }
+
+    ReaderCaps
+    Caps() const override {
+        return ReaderCaps{.predicate = true, .exact = true};
+    }
+
+    DataType
+    ValueType() const override {
+        // JsonCastType's numeric vocabulary is DOUBLE, while this object also
+        // exposes the int64 mixin needed for lossless integer predicates.
+        return DataType::DOUBLE;
+    }
+
+    size_t
+    ObjectBytes() const override {
+        return sizeof(JsonNumericPathReader);
+    }
+
+    TargetBitmap
+    In(size_t n, const int64_t* values) const override {
+        return InNumeric(n, values);
+    }
+
+    TargetBitmap
+    In(size_t n, const double* values) const override {
+        return InNumeric(n, values);
+    }
+
+    TargetBitmap
+    NotIn(size_t n, const int64_t* values) const override {
+        return milvus::index::NotIn(*this, n, values);
+    }
+
+    TargetBitmap
+    NotIn(size_t n, const double* values) const override {
+        return milvus::index::NotIn(*this, n, values);
+    }
+
+    TargetBitmap
+    Range(const int64_t& value, CompareOp op) const override {
+        return RangeNumeric(value, op);
+    }
+
+    TargetBitmap
+    Range(const double& value, CompareOp op) const override {
+        return RangeNumeric(value, op);
+    }
+
+    TargetBitmap
+    Range(const int64_t& lo,
+          bool lo_inc,
+          const int64_t& hi,
+          bool hi_inc) const override {
+        return RangeNumeric(lo, lo_inc, hi, hi_inc);
+    }
+
+    TargetBitmap
+    Range(const double& lo,
+          bool lo_inc,
+          const double& hi,
+          bool hi_inc) const override {
+        return RangeNumeric(lo, lo_inc, hi, hi_inc);
+    }
+
+ private:
+    void
+    OrU64(TargetBitmap& result, NumericRange::U64Range range) const {
+        if (!range) {
+            return;
+        }
+        Engine().json_range_query(Path(),
+                                  range->first,
+                                  range->second,
+                                  false,
+                                  false,
+                                  true,
+                                  true,
+                                  &result);
+    }
+
+    void
+    OrI64(TargetBitmap& result, NumericRange::I64Range range) const {
+        if (!range) {
+            return;
+        }
+        Engine().json_range_query(Path(),
+                                  range->first,
+                                  range->second,
+                                  false,
+                                  false,
+                                  true,
+                                  true,
+                                  &result);
+    }
+
+    template <typename T>
+    TargetBitmap
+    InNumeric(size_t n, const T* values) const {
+        ValidateValues(n, values, "numeric In");
+        TargetBitmap result(Count());
+        if (n == 0) {
+            return result;
+        }
+        Engine().json_terms_query(Path(), values, n, &result);
+        if constexpr (std::is_floating_point_v<T>) {
+            for (size_t i = 0; i < n; ++i) {
+                const auto range = NumericRange::U64ForBounds(
+                    values[i], true, values[i], true);
+                if (range && range->first == range->second &&
+                    std::isfinite(values[i]) &&
+                    std::floor(values[i]) == values[i] && values[i] >= 0 &&
+                    static_cast<long double>(values[i]) <=
+                        static_cast<long double>(
+                            std::numeric_limits<uint64_t>::max()) &&
+                    static_cast<uint64_t>(values[i]) == range->first) {
+                    continue;
+                }
+                OrU64(result, range);
+            }
+        }
+        return result;
+    }
+
+    template <typename T>
+    TargetBitmap
+    RangeNumeric(const T& value, CompareOp op) const {
+        if (op == CompareOp::Equal) {
+            return InNumeric(1, &value);
+        }
+        if (op == CompareOp::NotEqual) {
+            return milvus::index::NotIn(*this, 1, &value);
+        }
+
+        TargetBitmap result(Count());
+        switch (op) {
+            case CompareOp::GreaterThan:
+                Engine().json_range_query(
+                    Path(), value, T{}, false, true, false, false, &result);
+                break;
+            case CompareOp::GreaterEqual:
+                Engine().json_range_query(
+                    Path(), value, T{}, false, true, true, false, &result);
+                break;
+            case CompareOp::LessThan:
+                Engine().json_range_query(
+                    Path(), T{}, value, true, false, false, false, &result);
+                break;
+            case CompareOp::LessEqual:
+                Engine().json_range_query(
+                    Path(), T{}, value, true, false, true, false, &result);
+                break;
+            case CompareOp::Equal:
+            case CompareOp::NotEqual:
+                break;
+        }
+        if constexpr (std::is_integral_v<T>) {
+            const auto as_double = static_cast<double>(value);
+            switch (op) {
+                case CompareOp::GreaterThan:
+                    Engine().json_range_query(Path(),
+                                              as_double,
+                                              double{},
+                                              false,
+                                              true,
+                                              false,
+                                              false,
+                                              &result);
+                    break;
+                case CompareOp::GreaterEqual:
+                    Engine().json_range_query(Path(),
+                                              as_double,
+                                              double{},
+                                              false,
+                                              true,
+                                              true,
+                                              false,
+                                              &result);
+                    break;
+                case CompareOp::LessThan:
+                    Engine().json_range_query(Path(),
+                                              double{},
+                                              as_double,
+                                              true,
+                                              false,
+                                              false,
+                                              false,
+                                              &result);
+                    break;
+                case CompareOp::LessEqual:
+                    Engine().json_range_query(Path(),
+                                              double{},
+                                              as_double,
+                                              true,
+                                              false,
+                                              true,
+                                              false,
+                                              &result);
+                    break;
+                case CompareOp::Equal:
+                case CompareOp::NotEqual:
+                    break;
+            }
+        }
+        OrU64(result,
+              NumericRange::U64ForValue(static_cast<double>(value), op));
+        if constexpr (std::is_floating_point_v<T>) {
+            OrI64(result,
+                  NumericRange::I64ForValue(static_cast<double>(value), op));
+        }
+        return result;
+    }
+
+    template <typename T>
+    TargetBitmap
+    RangeNumeric(const T& lo, bool lo_inc, const T& hi, bool hi_inc) const {
+        TargetBitmap result(Count());
+        Engine().json_range_query(
+            Path(), lo, hi, false, false, lo_inc, hi_inc, &result);
+        if constexpr (std::is_integral_v<T>) {
+            Engine().json_range_query(Path(),
+                                      static_cast<double>(lo),
+                                      static_cast<double>(hi),
+                                      false,
+                                      false,
+                                      lo_inc,
+                                      hi_inc,
+                                      &result);
+        }
+        OrU64(result,
+              NumericRange::U64ForBounds(static_cast<double>(lo),
+                                         lo_inc,
+                                         static_cast<double>(hi),
+                                         hi_inc));
+        if constexpr (std::is_floating_point_v<T>) {
+            OrI64(result,
+                  NumericRange::I64ForBounds(static_cast<double>(lo),
+                                             lo_inc,
+                                             static_cast<double>(hi),
+                                             hi_inc));
+        }
+        return result;
+    }
+};
+
+class JsonStringPathReader final
+    : public JsonPathReaderBase,
+      public ScalarPredicateReader<std::string_view>,
+      public PatternMatchReader {
+ public:
+    JsonStringPathReader(std::shared_ptr<const JsonFlatIndexReaderState> state,
+                         std::string path)
+        : JsonPathReaderBase(
+              std::move(state), std::move(path), JsonValueType::String) {
+    }
+
+    ReaderCaps
+    Caps() const override {
+        return ReaderCaps{
+            .predicate = true,
+            .pattern_match = true,
+            .exact = true,
+        };
+    }
+
+    DataType
+    ValueType() const override {
+        return DataType::VARCHAR;
+    }
+
+    size_t
+    ObjectBytes() const override {
+        return sizeof(JsonStringPathReader);
+    }
+
+    TargetBitmap
+    In(size_t n, const std::string_view* values) const override {
+        auto owned = OwnStrings(n, values);
+        TargetBitmap result(Count());
+        if (!owned.empty()) {
+            Engine().json_terms_query(
+                Path(), owned.data(), owned.size(), &result);
+        }
+        return result;
+    }
+
+    TargetBitmap
+    NotIn(size_t n, const std::string_view* values) const override {
+        return milvus::index::NotIn(*this, n, values);
+    }
+
+    TargetBitmap
+    Range(const std::string_view& value, CompareOp op) const override {
+        if (op == CompareOp::Equal) {
+            return In(1, &value);
+        }
+        if (op == CompareOp::NotEqual) {
+            return NotIn(1, &value);
+        }
+        const auto owned = OwnString(value);
+        TargetBitmap result(Count());
+        switch (op) {
+            case CompareOp::GreaterThan:
+                Engine().json_range_query(Path(),
+                                          owned,
+                                          std::string{},
+                                          false,
+                                          true,
+                                          false,
+                                          false,
+                                          &result);
+                break;
+            case CompareOp::GreaterEqual:
+                Engine().json_range_query(Path(),
+                                          owned,
+                                          std::string{},
+                                          false,
+                                          true,
+                                          true,
+                                          false,
+                                          &result);
+                break;
+            case CompareOp::LessThan:
+                Engine().json_range_query(Path(),
+                                          std::string{},
+                                          owned,
+                                          true,
+                                          false,
+                                          false,
+                                          false,
+                                          &result);
+                break;
+            case CompareOp::LessEqual:
+                Engine().json_range_query(Path(),
+                                          std::string{},
+                                          owned,
+                                          true,
+                                          false,
+                                          true,
+                                          false,
+                                          &result);
+                break;
+            case CompareOp::Equal:
+            case CompareOp::NotEqual:
+                break;
+        }
+        return result;
+    }
+
+    TargetBitmap
+    Range(const std::string_view& lo,
+          bool lo_inc,
+          const std::string_view& hi,
+          bool hi_inc) const override {
+        const auto owned_lo = OwnString(lo);
+        const auto owned_hi = OwnString(hi);
+        TargetBitmap result(Count());
+        Engine().json_range_query(
+            Path(), owned_lo, owned_hi, false, false, lo_inc, hi_inc, &result);
+        return result;
+    }
+
+    bool
+    ShouldUseForOp(PatternOp op, std::string_view) const override {
+        switch (op) {
+            case PatternOp::Match:
+            case PatternOp::PrefixMatch:
+                return true;
+            case PatternOp::PostfixMatch:
+            case PatternOp::InnerMatch:
+            case PatternOp::RegexMatch:
+                return false;
+        }
+        return false;
+    }
+
+    TargetBitmap
+    PatternMatch(std::string_view pattern, PatternOp op) const override {
+        const auto owned = OwnString(pattern);
+        TargetBitmap result(Count());
+        switch (op) {
+            case PatternOp::PrefixMatch:
+                Engine().json_prefix_query(Path(), owned, &result);
+                return result;
+            case PatternOp::RegexMatch:
+                Engine().json_regex_query(Path(), owned, &result);
+                return result;
+            case PatternOp::Match:
+                return LikePattern(owned);
+            case PatternOp::PostfixMatch:
+                return LikePattern("%" + EscapeLikePattern(owned));
+            case PatternOp::InnerMatch:
+                return LikePattern("%" + EscapeLikePattern(owned) + "%");
+        }
+        ThrowInfo(OpTypeInvalid,
+                  "unknown JSON pattern operator {}",
+                  static_cast<int>(op));
+    }
+
+ private:
+    TargetBitmap
+    LikePattern(std::string_view pattern) const {
+        PatternMatchTranslator translator;
+        const auto regex = translator(OwnString(pattern));
+        TargetBitmap result(Count());
+        Engine().json_regex_query(Path(), regex, &result);
+        return result;
+    }
+};
+
+}  // namespace
+
+JsonFlatIndexReader::JsonFlatIndexReader(
+    std::shared_ptr<const JsonFlatIndexReaderState> state)
+    : state_(std::move(state)) {
+    AssertInfo(state_ != nullptr, "JSON flat reader requires shared state");
 }
 
 JsonFlatIndexReader::~JsonFlatIndexReader() = default;
 
 ReaderCaps
 JsonFlatIndexReader::Caps() const {
-    // §5.7 narrows what this bit means: "this index object is addressed by
-    // path". It no longer hints that a shredded sub-column exists — that is the
-    // COLUMN's self-description now (§4.1, §5.7).
-    return ReaderCaps{.json_paths = true};
+    return ReaderCaps{.json_paths = true, .exact = true};
 }
 
 Domain
@@ -173,7 +1125,7 @@ JsonFlatIndexReader::CoordDomain() const {
 
 int64_t
 JsonFlatIndexReader::Count() const {
-    // TODO: `engine_->count()`.
+    return static_cast<int64_t>(state_->Count());
 }
 
 DataType
@@ -183,64 +1135,73 @@ JsonFlatIndexReader::ValueType() const {
 
 int64_t
 JsonFlatIndexReader::MemoryUsage() const {
-    // TODO: engine index size + null offsets. This object owns the engine, so
-    // it is the one that reports it.
+    const auto own =
+        ToUsageBytes(sizeof(JsonFlatIndexReader), "JSON flat root reader");
+    if (state_->HeapBytes() > std::numeric_limits<int64_t>::max() - own) {
+        ThrowInfo(DataFormatBroken, "JSON flat reader memory size overflows");
+    }
+    return own + state_->HeapBytes();
 }
 
-ResourceUsage
+cachinglayer::ResourceUsage
 JsonFlatIndexReader::CellByteSize() const {
-    // See §12.3.
+    return {MemoryUsage(), state_->FileBytes()};
+}
+
+TargetBitmap
+JsonFlatIndexReader::IsNull() const {
+    return state_->FieldIsNull();
+}
+
+TargetBitmap
+JsonFlatIndexReader::IsNotNull() const {
+    return state_->FieldIsNotNull();
 }
 
 std::shared_ptr<const IndexReaderBase>
 JsonFlatIndexReader::Resolve(std::string_view path,
                              JsonCastType cast_type) const {
-    // TODO: move existing logic here (see JsonFlatIndex.h:752-764
-    // create_executor): rewrite the JSON-pointer path `/a/b/c` into tantivy's
-    // dotted `a.b.c` (`std::replace('/', '.')` at :757, strip the leading
-    // separator at :758-760), then construct the
-    // `JsonPathPredicateReader<T>` matching `cast_type`.
-    //
-    // GONE with the composition rewrite: the `friend class` grant
-    // (JsonFlatIndex.h:732-733) and the per-resolve copy of the whole
-    // null-offset vector (:798) — the readers share one immutable copy.
+    auto tantivy_path = ResolveTantivyPath(state_->RootPath(), path);
+    if (!tantivy_path) {
+        return nullptr;
+    }
+
+    switch (cast_type.element_type()) {
+        case JsonCastType::DataType::BOOL:
+            return std::make_shared<JsonBoolPathReader>(
+                state_, std::move(*tantivy_path));
+        case JsonCastType::DataType::DOUBLE:
+            return std::make_shared<JsonNumericPathReader>(
+                state_, std::move(*tantivy_path));
+        case JsonCastType::DataType::VARCHAR:
+            return std::make_shared<JsonStringPathReader>(
+                state_, std::move(*tantivy_path));
+        case JsonCastType::DataType::UNKNOWN:
+        case JsonCastType::DataType::ARRAY:
+        case JsonCastType::DataType::JSON:
+            return nullptr;
+    }
     return nullptr;
 }
 
 TargetBitmap
 JsonFlatIndexReader::Exists(std::string_view path, JsonValueType type) const {
-    // TODO: move existing logic here (see JsonFlatIndex.h:52-60 Exists and
-    // :62-70 ExactPathExists). The two differ only in the `json_subpaths`
-    // argument to `json_exist_query`: true = "this path or anything under it",
-    // false = "exactly this path, holding a value of this family". The
-    // contract's `JsonValueType` parameter carries the second case, so the two
-    // methods become one.
-    //
-    // `JsonValueType` here is the CONTRACT LAYER's native enum. Today
-    // `index::JsonValueType` is an alias for the raw tantivy FFI enum
-    // `::JsonExistValueType` (JsonFlatIndex.h:31) — an engine type on an index
-    // signature. Mapping to the FFI value happens inside this function.
+    auto tantivy_path = ResolveTantivyPath(state_->RootPath(), path);
+    AssertInfo(tantivy_path.has_value(),
+               "JSON Exists requires a path supported by CastTypesOf");
+    TargetBitmap result(Count());
+    const bool include_subpaths = type == JsonValueType::Any;
+    state_->Engine().json_exist_query(
+        *tantivy_path, include_subpaths, ToEngineValueType(type), &result);
+    return result;
 }
 
 std::vector<JsonCastType>
 JsonFlatIndexReader::CastTypesOf(std::string_view path) const {
-    // For the flat index the answer is uniform: one tantivy index covers every
-    // path of the field, so `GetCastType()` was a constant
-    // (`JsonCastType::FromString("JSON")`, JsonFlatIndex.h:766-769). Callers
-    // key off it today — `ExistsExpr.cpp:107-108` and
-    // `ChunkedSegmentSealedImpl.cpp:405-410` both branch on
-    // `cast_type == JSON` — so the constant must survive the move, just not on
-    // the shared base class: §5.7 takes `GetCastType`/`Exists` OFF `IndexBase`
-    // and puts them here, which is why `IndexReaderBase` has neither.
-    return {};
+    if (!ResolveTantivyPath(state_->RootPath(), path)) {
+        return {};
+    }
+    return {JsonCastType::FromString("JSON")};
 }
-
-#define INSTANTIATE_JSON_PATH_READER(T) \
-    template class JsonPathPredicateReader<T>;
-INSTANTIATE_JSON_PATH_READER(bool)
-INSTANTIATE_JSON_PATH_READER(int64_t)
-INSTANTIATE_JSON_PATH_READER(double)
-INSTANTIATE_JSON_PATH_READER(std::string_view)
-#undef INSTANTIATE_JSON_PATH_READER
 
 }  // namespace milvus::index

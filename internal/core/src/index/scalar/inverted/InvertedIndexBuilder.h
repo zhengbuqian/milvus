@@ -22,35 +22,23 @@
 #include <string>
 #include <vector>
 
+#include "common/Array.h"
 #include "common/Types.h"
 #include "index/contracts/IndexBuilder.h"
 #include "storage/artifact/Artifact.h"
 #include "tantivy-wrapper.h"
 
-// The BUILDER of the inverted family. §6.1, §6.1.1 (form **A, truly
-// streaming**: `wrapper_->add_data<T>(ptr, n, offset)` slice by slice,
-// `InvertedIndexTantivy.cpp:686`), §8.
-
 namespace milvus::index {
 
+class InvertedIndexDirectory;
+
 struct InvertedBuildParams {
+    std::string field_name;
+    DataType field_type{DataType::NONE};
+    DataType value_type{DataType::NONE};
     uint32_t tantivy_index_version{0};
-
-    // `scalar_index_engine_version == 0` selected tantivy's single-segment mode
-    // (IndexFactory.cpp:348).
     bool single_segment{false};
-
-    // False only for `JsonFlatIndex` (JsonFlatIndex.h:743-744), which lets
-    // tantivy assign doc ids.
-    bool user_specified_doc_id{true};
-
-    // Build over ARRAY elements rather than rows. Persisted, and surfaced by
-    // the reader as `CoordDomain() == Domain::Element` (§5.8).
     bool nested{false};
-
-    // Element type, when building over an ARRAY field.
-    DataType element_type{DataType::NONE};
-
     std::string local_dir;
 };
 
@@ -64,35 +52,58 @@ class InvertedIndexBuilder final : public IndexBuilder<T> {
     BuilderInputSpec
     InputSpec() const override;
 
-    // ONE entry point replaces the whole build family of today's class:
-    //   `Build(Config)`                       InvertedIndexTantivy.cpp:209-215
-    //   `BuildWithFieldData`                  :644-734
-    //   `BuildWithRawDataForUT`               :551-642
-    //   `build_index_for_array` (+string spec) :736-800
-    //   `build_index_for_array_nested` (+spec) :802-865
-    //   `build_index_for_json` (virtual hook)  InvertedIndexTantivy.h:340-345
-    //
-    // The array/nested variants collapse because the CALLER now flattens: a
-    // nested build is `Add` over element values with `params_.nested` set, so
-    // the builder does not need to know what an `Array` is. The json variant
-    // moves to the json family's builder, which owns its own path extraction —
-    // it was a virtual hook on this class only because inheritance was the
-    // reuse mechanism (§3 principle 2).
     void
     Add(size_t n, const T* values, const bool* valid) override;
 
+    // Nested ARRAY callers flatten only present elements into this typed
+    // builder. Each Add coordinate therefore exists: `valid` must be null or
+    // all true. Parent-row validity belongs to the separately persisted parent
+    // sidecar and must not be passed as an element mask here, since omitting a
+    // false element would renumber every later flattened coordinate.
+
     storage::ArtifactPtr
-    Seal() && override;
+        Seal() &&
+        override;
 
  private:
     InvertedBuildParams params_;
-
-    // Writer-mode engine. Was created by `InitForBuildIndex`
-    // (InvertedIndexTantivy.cpp:72-92).
+    // Declared before the engine so the engine is destroyed before its backing
+    // directory on constructor failure and ordinary destruction.
+    std::shared_ptr<InvertedIndexDirectory> directory_;
     std::shared_ptr<milvus::tantivy::TantivyIndexWrapper> engine_;
-
     std::vector<size_t> null_offsets_;
-    int64_t count_{0};
+    size_t count_{0};
+    bool sealed_{false};
+    bool failed_{false};
+};
+
+// Ordinary ARRAY inverted indexes are row-domain and add one multi-valued
+// Tantivy document per ArrayView. Nested ARRAY callers flatten to the typed
+// builder instead.
+class InvertedArrayIndexBuilder final : public IndexBuilder<ArrayView> {
+ public:
+    explicit InvertedArrayIndexBuilder(InvertedBuildParams params);
+
+    ~InvertedArrayIndexBuilder() override;
+
+    BuilderInputSpec
+    InputSpec() const override;
+
+    void
+    Add(size_t n, const ArrayView* values, const bool* valid) override;
+
+    storage::ArtifactPtr
+        Seal() &&
+        override;
+
+ private:
+    InvertedBuildParams params_;
+    std::shared_ptr<InvertedIndexDirectory> directory_;
+    std::shared_ptr<milvus::tantivy::TantivyIndexWrapper> engine_;
+    std::vector<size_t> null_offsets_;
+    size_t count_{0};
+    bool sealed_{false};
+    bool failed_{false};
 };
 
 }  // namespace milvus::index

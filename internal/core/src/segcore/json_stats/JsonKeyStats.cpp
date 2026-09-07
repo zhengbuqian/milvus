@@ -1431,7 +1431,7 @@ JsonKeyStats::Load(milvus::tracer::TraceContext ctx, const Config& config) {
         shared_key_index_files, enable_mmap, index_size, warmup_policy);
 }
 
-IndexStatsPtr
+storage::ArtifactStats
 JsonKeyStats::Upload(const Config& config) {
     // upload inverted index
     auto bson_index_stats = bson_inverted_index_->UploadIndex();
@@ -1445,13 +1445,13 @@ JsonKeyStats::Upload(const Config& config) {
 
     // upload parquet file, parquet writer has already upload file to remote
     auto shredding_remote_paths_to_size = parquet_writer_->GetPathsToSize();
-    auto shared_key_index_remote_paths_to_size =
-        bson_index_stats->GetSerializedIndexFileInfo();
+    const auto& shared_key_index_remote_paths_to_size =
+        bson_index_stats.Files();
     auto meta_remote_paths_to_size =
         disk_file_manager_->GetRemotePathsToFileSize();
 
     // get all index files for meta
-    std::vector<SerializedIndexFileInfo> index_files;
+    std::vector<storage::SerializedFileInfo> index_files;
     index_files.reserve(shredding_remote_paths_to_size.size() +
                         shared_key_index_remote_paths_to_size.size() + 1);
 
@@ -1490,15 +1490,15 @@ JsonKeyStats::Upload(const Config& config) {
         "and shredding data mem size: {} and meta file size: {} "
         "and index files size: {}",
         segment_id_,
-        bson_index_stats->GetMemSize(),
+        bson_index_stats.MemSize(),
         parquet_writer_->GetTotalSize(),
         meta_file_size_,
         index_files.size());
 
-    return IndexStats::New(bson_index_stats->GetMemSize() +
-                               parquet_writer_->GetTotalSize() +
-                               meta_file_size_,
-                           std::move(index_files));
+    return storage::ArtifactStats(bson_index_stats.MemSize() +
+                                      parquet_writer_->GetTotalSize() +
+                                      meta_file_size_,
+                                  std::move(index_files));
 }
 
 }  // namespace milvus::index

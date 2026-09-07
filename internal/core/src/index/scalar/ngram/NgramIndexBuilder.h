@@ -23,20 +23,28 @@
 #include <string_view>
 #include <vector>
 
+#include "common/Types.h"
 #include "index/contracts/IndexBuilder.h"
+#include "index/scalar/ngram/JsonProjectedString.h"
 #include "storage/artifact/Artifact.h"
-#include "tantivy-wrapper.h"
 
 // The BUILDER of the ngram family. §6.1, §6.1.1 (form **A, truly streaming** —
 // tantivy), §8.
 
+namespace milvus::tantivy {
+struct TantivyIndexWrapper;
+}
+
 namespace milvus::index {
 
+class NgramIndexDirectory;
+class NgramBuilderCore;
+
 struct NgramBuildParams {
+    std::string field_name;
+    DataType value_type{DataType::VARCHAR};
     uintptr_t min_gram{0};
     uintptr_t max_gram{0};
-    // Non-empty when building on a JSON path.
-    std::string nested_path;
     std::string local_dir;
 };
 
@@ -59,14 +67,39 @@ class NgramIndexBuilder final : public IndexBuilder<std::string_view> {
     Add(size_t n, const std::string_view* values, const bool* valid) override;
 
     storage::ArtifactPtr
-    Seal() && override;
+        Seal() &&
+        override;
 
  private:
-    NgramBuildParams params_;
-    std::shared_ptr<milvus::tantivy::TantivyIndexWrapper> engine_;
-    std::vector<size_t> null_offsets_;
-    size_t total_bytes_{0};
-    int64_t count_{0};
+    std::unique_ptr<NgramBuilderCore> core_;
+};
+
+// JSON path projection has three states that cannot be encoded by
+// IndexBuilder<string_view>'s value + validity pair: a field NULL, a present
+// row with no projected string, and a projected string (including ""). Keep
+// that shape family-local while reusing the exact same NGRAM writer core.
+class JsonNgramIndexBuilder final : public IndexBuilder<JsonProjectedString> {
+ public:
+    explicit JsonNgramIndexBuilder(NgramBuildParams params);
+
+    ~JsonNgramIndexBuilder() override;
+
+    BuilderInputSpec
+    InputSpec() const override;
+
+    // `values[i].state` is the only null/presence source. `valid` must be null;
+    // supplying a second validity channel is a protocol error.
+    void
+    Add(size_t n,
+        const JsonProjectedString* values,
+        const bool* valid) override;
+
+    storage::ArtifactPtr
+        Seal() &&
+        override;
+
+ private:
+    std::unique_ptr<NgramBuilderCore> core_;
 };
 
 }  // namespace milvus::index

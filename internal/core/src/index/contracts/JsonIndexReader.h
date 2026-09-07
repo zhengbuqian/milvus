@@ -45,8 +45,8 @@
 // and `a.c` a string one. So this family defines no new query semantics — only
 // ROUTING.
 //
-// `IndexBase::GetCastType` / `Exists` come off the shared base class and land
-// here.
+// Cast-type and existence routing belong here instead of on the shared reader
+// base.
 
 namespace milvus::index {
 
@@ -102,7 +102,8 @@ class JsonIndexReader {
     // own (`json_exist_query`) with no read-back of the column — that is exactly
     // what distinguishes it from the BSON locator inverted index, which must
     // re-read the blob (`ExistsExpr.cpp:264-270`) and is therefore column
-    // layout, not an index (§1).
+    // layout, not an index (§1). The path must first have produced a non-empty
+    // `CastTypesOf` result; see that method's routing contract below.
     virtual TargetBitmap
     Exists(std::string_view path,
            JsonValueType type = JsonValueType::Any) const = 0;
@@ -110,6 +111,14 @@ class JsonIndexReader {
     // See the `Resolve` comment for why the vocabulary is `JsonCastType`; §5.7
     // writes `std::vector<DataType>` here for the same reason it writes
     // `DataType` there, and it is changed for the same reason.
+    //
+    // An empty result means this reader cannot answer the SHAPE of the path
+    // (for example, JsonFlat cannot distinguish a positional array segment).
+    // It does not mean that no row contains the path.  Callers must use this
+    // answer before `Exists`: `Exists` is defined only for a path whose
+    // `CastTypesOf` result is non-empty.  A supported path that happens to be
+    // absent from every row still reports its available cast type here and
+    // returns an all-zero bitmap from `Exists`.
     virtual std::vector<JsonCastType>
     CastTypesOf(std::string_view path) const = 0;
 };

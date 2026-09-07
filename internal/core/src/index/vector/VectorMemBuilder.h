@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -64,6 +65,16 @@
 
 namespace milvus::index {
 
+// One valid VECTOR_ARRAY parent row, borrowed for the synchronous duration of
+// AddEmbeddingBatch. The driver supplies compact valid-parent views; this
+// family copies their payload directly into its single final contiguous build
+// buffer and never retains these pointers.
+struct EmbeddingListValueView {
+    const void* data{nullptr};
+    size_t byte_size{0};
+    size_t vector_count{0};
+};
+
 template <typename T>
 class VectorMemBuilder final : public IndexBuilder<T> {
  public:
@@ -93,12 +104,24 @@ class VectorMemBuilder final : public IndexBuilder<T> {
     BuilderInputSpec
     InputSpec() const override;
 
-    // Appends into the contiguous buffer. For the sparse family `T` is the
-    // sparse-row view type and the rows are deep-copied, as today
-    // (`VectorMemIndex.cpp:673-687` — the TODO there about giving up ownership
-    // survives the move unchanged).
+    // Ordinary-vector input only. n is the logical row count. For nullable
+    // vectors, values holds only count_true(valid) compact physical rows;
+    // without valid it holds n. Sparse values use the same compact rule and are
+    // deep-copied into owning SparseRow objects, as today
+    // (`VectorMemIndex.cpp:673-687`). No borrowed values survive this call.
     void
     Add(size_t n, const T* values, const bool* valid) override;
+
+    // VECTOR_ARRAY's family-local primary input. `logical_rows` and `valid`
+    // describe parent rows, while `compact_values` contains exactly the valid
+    // parents in logical order. Multiple batches append to one global prefix
+    // sum; repeated offsets preserve valid empty lists. No FieldData or storage
+    // object crosses this builder boundary.
+    void
+    AddEmbeddingBatch(size_t logical_rows,
+                      const EmbeddingListValueView* compact_values,
+                      size_t compact_count,
+                      const bool* valid);
 
     // `Seal()` is rvalue-qualified in the interface: sealing CONSUMES the
     // builder (§3 principle 1 — the Builder is one-shot). Produces a
@@ -106,45 +129,55 @@ class VectorMemBuilder final : public IndexBuilder<T> {
     // serialize itself (§6 reason 3) and how to open a reader in place
     // (§6.2 — the two entrances to a reader).
     storage::ArtifactPtr
-    Seal() && override;
+        Seal() &&
+        override;
 
-    // !! CONTRACT GAP — SIDE INPUTS ARE DECLARED BUT CANNOT BE DELIVERED.
-    // `BuilderInputSpec::side_inputs` (contracts/IndexBuilder.h) names the
-    // extra FieldIds a builder needs, but the interface has exactly two data
-    // entrances: `Add(n, values, valid)` for the primary column and
-    // `SetSourceFile(path)` for form LocalFile. NOTHING carries the side-input
-    // VALUES. Today they arrive as a `std::unordered_map<int64_t,
-    // std::vector<std::vector<uint32_t>>>` straight out of
-    // `MemFileManagerImpl::CacheOptFieldToMemory` (`VectorMemIndex.cpp:522`)
-    // and are attached to the dataset as `knowhere::meta::SCALAR_INFO`
-    // (`VectorMemIndex.cpp:648`). Declared family-locally here so the skeleton
-    // is honest; the fix belongs in the contract (a third `Add`-like entrance
-    // keyed by FieldId). See the report.
+    // Ordinary-vector optional scalar input, delivered once by the
+    // family-local VectorBuildDriver bridge after the primary source has been
+    // exhausted. Row ids are already compact physical engine coordinates. A
+    // V1 source with no paths uses an empty outer map; V2/V3 missing fields and
+    // complete fields with at most one category retain the field key with an
+    // empty group list.
     void
-    SetSideInput(
-        std::unordered_map<int64_t, std::vector<std::vector<uint32_t>>>
-            scalar_info);
-
-    // Embedding-list (VECTOR_ARRAY) builds carry an offsets array alongside the
-    // vectors — `dataset->Set(knowhere::meta::EMB_LIST_OFFSET, ...)`
-    // (`VectorMemIndex.cpp:650-653`). Same gap as `SetSideInput`: the interface
-    // has no channel for a second, differently shaped input stream.
-    void
-    SetEmbListOffsets(std::vector<size_t> offsets);
+    SetSideInput(std::unordered_map<int64_t, std::vector<std::vector<uint32_t>>>
+                     scalar_info);
 
  private:
+    void
+    EnsureOpen(const char* operation) const;
+
+    void
+    EnsureValidityCapacity(size_t required);
+
+    void
+    AppendValidity(size_t logical_rows, const bool* valid, int64_t next_rows);
+
+    void
+    ReleaseStaging() noexcept;
+
     KnowhereEngine engine_;
     knowhere::Json build_params_;
 
     // Form B+ : ONE contiguous block, assembled here, handed to knowhere once.
     std::vector<uint8_t> buffer_;
+    using SparseRow = knowhere::sparse::SparseRow<sparse_u32_f32::ValueType>;
+    std::vector<SparseRow> sparse_rows_;
+    std::unique_ptr<bool[]> validity_;
+    size_t validity_capacity_{0};
     int64_t rows_{0};
-    int64_t valid_rows_{0};
+    int64_t valid_parent_rows_{0};
+    int64_t physical_vectors_{0};
+    int64_t sparse_dim_{0};
+    std::optional<int64_t> expected_rows_;
+    bool saw_validity_{false};
+    bool add_called_{false};
+    bool side_input_set_{false};
+    bool sealed_{false};
+    bool failed_{false};
 
     // Validity accumulates while feeding and is sealed into the artifact next to
     // the index — today `Build` builds it at the very end via `BuildValidData`
     // (`VectorMemIndex.cpp:655-657,700-702`).
-    std::vector<bool> valid_;
     VectorValidData valid_data_;
 
     std::unordered_map<int64_t, std::vector<std::vector<uint32_t>>>

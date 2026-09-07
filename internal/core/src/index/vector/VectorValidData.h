@@ -18,79 +18,57 @@
 
 #include <cstdint>
 #include <memory>
-#include <utility>
-
-#include "common/GrowingOffsetMapping.h"
 #include "common/OffsetMapping.h"
-#include "common/SealedOffsetMapping.h"
-
-// The nullable-vector offset mapping, HELD BY COMPOSITION.
-//
-// See core_refactor/01-scalar-index.md §11.3 (re-homing) and §3 principle 2.
-//
-// A nullable vector field does not hand its null rows to knowhere, so the index
-// numbers rows in a denser PHYSICAL space and every consumer of a hit has to map
-// back. Today this state (`offset_mapping_` plus six accessors and two mutators)
-// sits on the shared base class `VectorIndex` (`index/VectorIndex.h:192-241,278`)
-// and is therefore inherited by both index families. `IndexBase` retires and
-// implementation classes may not inherit each other (§10 rule 3), so it becomes
-// a member.
-//
-// THE MUTATORS AND THE ACCESSORS BELONG TO DIFFERENT INTERFACES, and separating
-// them is most of the value of moving this out of a base class:
-//   - `Append` (today `VectorIndex::UpdateValidData`) is the APPENDER's
-//     (`segcore/FieldIndexing.cpp:333,409,486,562` call it per batch);
-//   - `Build` (today `VectorIndex::BuildValidData`) is the BUILDER's
-//     (`indexbuilder/VecIndexCreator.cpp:78,82`,
-//     `segcore/storagev1translator/InterimSealedIndexTranslator.cpp:202,237`);
-//   - everything else is the READER's, exposed through
-//     `VectorNullableReader` (VectorFamilyReaders.h).
-// On today's class all eight are public on every vector index at every stage.
 
 namespace milvus::index {
 
+class VectorValidDataDirectory;
+
+// Immutable nullable-vector row mapping used by sealed vector artifacts and
+// readers. Nullable vectors are compacted before they reach knowhere, so this
+// maps between the segment's logical row coordinates and knowhere's dense
+// physical coordinates.
+//
+// Build is transactional: it constructs a fresh SealedOffsetMapping and only
+// replaces this handle after the complete build succeeds. Copies therefore
+// keep observing the generation they were given even if another copy is
+// rebuilt later. Growing append state deliberately does not belong here; a
+// growing index must publish an immutable snapshot instead of sharing its live
+// mutable mapping with a reader.
 class VectorValidData {
  public:
-    // Starts in growing shape, matching today's `VectorIndex` ctor
-    // (`index/VectorIndex.h:50-55`), so an appender can push validity in before
-    // anything is sealed.
-    VectorValidData()
-        : mapping_(std::make_shared<milvus::GrowingOffsetMapping>()) {
-    }
+    VectorValidData();
+    ~VectorValidData();
 
-    // --- appender side ------------------------------------------------------
+    VectorValidData(const VectorValidData&) noexcept = default;
+    VectorValidData&
+    operator=(const VectorValidData& other) noexcept;
+    VectorValidData(VectorValidData&&) noexcept = default;
+    VectorValidData&
+    operator=(VectorValidData&& other) noexcept;
 
-    // Today `VectorIndex::UpdateValidData` (`index/VectorIndex.h:192-199`):
-    // asserts the mapping is still the growing one, then appends.
-    void
-    Append(const bool* valid_data, int64_t count);
-
-    // --- builder side -------------------------------------------------------
-
-    // Today `VectorIndex::BuildValidData` (`index/VectorIndex.h:201-208`):
-    // replaces the mapping with a sealed one built in one shot. `options` decides
-    // whether the sealed mapping is mmap-backed
-    // (`VectorIndexValidDataUtils.h:139-156`).
+    // Builds one sealed generation. A zero count publishes the disabled
+    // no-op mapping. A positive count requires a complete validity array.
     void
     Build(const bool* valid_data,
           int64_t total_count,
           const milvus::OffsetMappingBuildOptions& options = {});
-
-    void
-    Reset(std::shared_ptr<milvus::OffsetMapping> mapping) {
-        mapping_ = std::move(mapping);
-    }
-
-    // --- reader side (see VectorNullableReader) -----------------------------
 
     bool
     Enabled() const {
         return mapping_->IsEnabled();
     }
 
+    // Counts carry information only when Enabled() is true. The disabled
+    // no-op mapping intentionally reports zero for both counts.
     int64_t
     ValidCount() const {
         return mapping_->GetValidCount();
+    }
+
+    int64_t
+    TotalCount() const {
+        return mapping_->GetTotalCount();
     }
 
     bool
@@ -108,23 +86,16 @@ class VectorValidData {
         return mapping_->GetLogicalOffset(physical_offset);
     }
 
-    // Borrowed. `query/` and `exec/` take this by reference and, in the
-    // iterator case, keep a RAW POINTER to it with no pin — see §12.1(b) and
-    // the note in contracts/VectorReaders.h. Refactor phase 1 deliberately does
-    // not change that.
     const milvus::OffsetMapping&
     Mapping() const {
         return *mapping_;
     }
 
  private:
-    // SHARED, not unique: an artifact and the reader it opens in place hold the
-    // same mapping (`storage::Artifact::OpenReader()` is const, §6.2), and on the
-    // growing side one appender and every snapshot it has handed out share one
-    // mapping — which is already today's behaviour, since
-    // `VectorIndex::UpdateValidData` appends to the same `GrowingOffsetMapping`
-    // that concurrent queries are reading through `GetOffsetMapping()`.
-    std::shared_ptr<milvus::OffsetMapping> mapping_;
+    // Declare the directory first so the mapping (and its mmap arrays) is
+    // destroyed before the directory on the final shared owner.
+    std::shared_ptr<VectorValidDataDirectory> directory_;
+    std::shared_ptr<const milvus::OffsetMapping> mapping_;
 };
 
 }  // namespace milvus::index

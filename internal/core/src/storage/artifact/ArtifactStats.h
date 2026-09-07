@@ -21,27 +21,14 @@
 #include <utility>
 #include <vector>
 
-// What a `Artifact::Serialize(FileSink&)` produced: the list of files that were
-// written, plus the in-memory footprint. Zero index semantics.
+// What an `Artifact::Serialize(FileSink&)` produced: the published files plus
+// the legacy build/upload size statistic projected through the C ABI.
 //
 // See core_refactor/01-scalar-index.md §11.2 rule 1 (the pipeline sinks to L1)
 // and §12.2 (naming still open).
 //
-// Modelled on today's `index/IndexStats.h`, with three deliberate differences:
-//
-//  1. `index::IndexStats::SerializeAt(milvus::ProtoLayout*)` does NOT come
-//     along. Projecting the result into proto is an adapter concern
-//     (README §5 rule 2 — pb only in adapters and capi); the indexbuilder
-//     service does it at its own boundary.
-//  2. Value type, not a move-only heap object behind `IndexStatsPtr`
-//     (`std::unique_ptr`). Nothing about this data needs identity.
-//  3. `SerializedIndexFileInfo` loses the `Index` infix along with the rest of
-//     the prefix (§11.2: the `Index` prefix stops making sense at L1).
-//
-// The rest — `(file_name, file_size)` pairs plus a memory size — is copied
-// verbatim, because `index/IndexStats.h` already depends on nothing but
-// `common/protobuf_utils.h` and carries no index semantics whatsoever. §1 makes
-// exactly this point: "the whole cost of the migration is demoting this class".
+// Projection into proto remains an adapter concern. This value type contains
+// only byte-accounting data and has no index semantics.
 
 namespace milvus::storage {
 
@@ -77,13 +64,11 @@ class ArtifactStats {
     std::vector<std::string>
     FileNames() const;
 
-    // Bytes the opened artifact occupies in memory.
-    //
-    // NOTE: this is the *build*-side report (what the builder measured), not the
-    // load-side cache accounting. The latter is `LoadedArtifact::CellByteSize()`
-    // and its yardstick is still undefined — see §12.3 and the comment there.
-    // Do not silently unify the two; §12.3 says the unification has to be a
-    // decision, not a rename.
+    // Legacy `IndexStats::mem_size`: the serialized bytes handled by the build
+    // and upload path (DiskFileManager local file bytes plus MemFileManager
+    // named-buffer bytes), preserved for the existing C-ABI projection. It is
+    // neither opened-reader resident memory nor a load-admission estimate.
+    // Opened ownership is reported only by LoadedArtifact::CellByteSize().
     int64_t
     MemSize() const {
         return mem_size_;

@@ -24,6 +24,7 @@
 
 #include "common/Types.h"
 #include "index/contracts/IndexBuilder.h"
+#include "index/contracts/Registry.h"
 #include "storage/artifact/Artifact.h"
 
 // The `auto` family: CARDINALITY-BASED INDEX SELECTION, AS A BUILD STRATEGY.
@@ -31,9 +32,9 @@
 // See 01-scalar-index.md §6.3 in full:
 //
 //   > `HybridScalarIndex`'s "pick bitmap or inverted by cardinality" is a
-//   > BUILD-TIME DECISION. The builder chooses at `Seal()` and records the
-//   > choice in the artifact metadata; `Loader::Open` returns the chosen
-//   > concrete reader directly. The runtime forwarding class is deleted.
+//   > BUILD-TIME DECISION. The probe chooses before the real build pass and
+//   > `Seal()` records the choice; `Loader::Open` returns the chosen concrete
+//   > reader directly. The runtime forwarding class is deleted.
 //
 // ==========================================================================
 // WHAT IS DELETED: `HybridScalarIndex<T>` AND `JsonHybridScalarIndex<T>`.
@@ -67,8 +68,12 @@ struct AutoBuildParams {
     std::string low_cardinality_family;
     std::string high_cardinality_family;
 
-    bool nested{false};
+    DataType element_type{DataType::NONE};
     DataType value_type{DataType::NONE};
+
+    // Passed unchanged to the selected family's registry factory. Selection
+    // must not discard normalized field/version/staging parameters.
+    BuildParams delegate_params;
 };
 
 template <typename T>
@@ -84,35 +89,23 @@ class AutoIndexBuilder final : public IndexBuilder<T> {
     // limit (`HybridScalarIndex.cpp:114`, `:130`), because the exact
     // cardinality above the threshold does not change the answer.
     //
-    // ------------------------------------------------------------------
-    // A GAP IN THE CONTRACT, NOT AN OVERSIGHT HERE.
-    //
-    // `BuilderInputSpec::needs_second_pass` (index/contracts/IndexBuilder.h)
-    // tells the CALLER to rewind and feed the data again (§6.1.2:
-    // "multi-pass must be in the contract: form C requires that
-    // `ScanCursor::Seek(0)` be available"). But `IndexBuilder<T>` has no way
-    // for the caller to say WHERE ONE PASS ENDS AND THE NEXT BEGINS — there is
-    // no `EndPass()` / `BeginPass()`, and `Add` cannot tell pass 1 from pass 2.
-    // Nor can the builder tell the caller that the first pass stopped early, so
-    // the early exit is unreachable through the interface as declared.
-    //
-    // This skeleton does NOT invent the missing method: the contract layer is
-    // owned elsewhere and the design document should decide the shape. It is
-    // reported instead, and the family is written as if a pass boundary exists.
-    // ------------------------------------------------------------------
     BuilderInputSpec
     InputSpec() const override;
 
     void
     Add(size_t n, const T* values, const bool* valid) override;
 
-    // Picks the family, then returns THAT FAMILY'S artifact — with
-    // `families::kFamilyMetaKey` set to the chosen family, not to "auto".
-    // The loader side therefore needs no `auto` entry at all in the common
-    // case; `AutoIndexLoader` exists only for artifacts written before the
-    // choice was recorded that way.
+    bool
+    CurrentPassComplete() const override;
+
+    void
+    FinishPass() override;
+
+    // Returns the family artifact selected by FinishPass(), decorated only with
+    // the existing HYBRID `index_type` selector.
     storage::ArtifactPtr
-    Seal() && override;
+        Seal() &&
+        override;
 
  private:
     // §6.3's decision, and the only thing this class contributes.
@@ -120,25 +113,16 @@ class AutoIndexBuilder final : public IndexBuilder<T> {
     std::string
     SelectFamily(size_t distinct_count) const;
 
+    enum class State { Probe, Build, Failed, Consumed };
+
+    class Impl;
+
     AutoBuildParams params_;
-
-    // Pass 1 state. Was `SelectBuildTypeForPrimitiveType`
-    // (HybridScalarIndex.cpp:121-137) and `SelectBuildTypeForArrayType`
-    // (:139-169).
-    //
-    // BUG TO FIX WHILE MOVING: the primitive counter iterates `RawValue(i)`
-    // WITHOUT consulting `is_valid(i)`, so null rows inflate the cardinality
-    // and can push a low-cardinality field onto the high-cardinality index.
-    // `JsonHybridScalarIndex` exists partly to work around it — it duplicates
-    // the whole loop twice (JsonHybridScalarIndex.h:71-83 and :129-141) purely
-    // to add the validity check (see the comment at :127-128). One correct
-    // counter here removes both copies.
-    size_t distinct_count_{0};
-    bool first_pass_done_{false};
-
-    // Pass 2 delegate: the concrete family's builder, created once the family
-    // is known.
+    BuilderInputSpec active_spec_;
+    std::unique_ptr<Impl> impl_;
     std::unique_ptr<IndexBuilder<T>> delegate_;
+    uint8_t selected_selector_{0};
+    State state_{State::Probe};
 };
 
 }  // namespace milvus::index

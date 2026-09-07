@@ -16,17 +16,123 @@
 
 #include "index/scalar/spatial/RTreeIndexReader.h"
 
+#include <algorithm>
+#include <limits>
 #include <utility>
 
-namespace milvus::index {
+#include "common/EasyAssert.h"
 
-RTreeIndexReader::RTreeIndexReader(std::unique_ptr<RTreeQueryEngine> engine,
-                                   std::vector<size_t> null_offsets,
-                                   int64_t total_num_rows)
+namespace milvus::index {
+namespace {
+
+class GeosContextGuard {
+ public:
+    GeosContextGuard() : context_(GEOS_init_r()) {
+        if (context_ == nullptr) {
+            ThrowInfo(UnexpectedError,
+                      "failed to initialize GEOS for R-Tree query");
+        }
+    }
+
+    GeosContextGuard(const GeosContextGuard&) = delete;
+    GeosContextGuard&
+    operator=(const GeosContextGuard&) = delete;
+
+    ~GeosContextGuard() {
+        GEOS_finish_r(context_);
+    }
+
+    GEOSContextHandle_t
+    Get() const {
+        return context_;
+    }
+
+ private:
+    GEOSContextHandle_t context_;
+};
+
+}  // namespace
+
+RTreeIndexState::RTreeIndexState(
+    std::shared_ptr<const RTreeQueryEngine> engine,
+    std::shared_ptr<const std::vector<size_t>> null_offsets,
+    int64_t total_num_rows,
+    int64_t memory_usage)
     : engine_(std::move(engine)),
       null_offsets_(std::move(null_offsets)),
-      total_num_rows_(total_num_rows) {
-    // TODO: assert null_offsets_ is sorted ascending (see the member comment).
+      total_num_rows_(total_num_rows),
+      memory_usage_(memory_usage) {
+}
+
+std::shared_ptr<const RTreeIndexState>
+RTreeIndexState::Create(std::shared_ptr<const RTreeQueryEngine> engine,
+                        std::shared_ptr<const std::vector<size_t>> null_offsets,
+                        int64_t total_num_rows) {
+    AssertInfo(engine != nullptr, "R-Tree state engine must not be null");
+    AssertInfo(null_offsets != nullptr,
+               "R-Tree state NULL offsets must not be null");
+    AssertInfo(total_num_rows >= 0,
+               "R-Tree state row count must not be negative");
+    size_t previous = 0;
+    bool first = true;
+    for (const auto offset : *null_offsets) {
+        if ((!first && offset <= previous) ||
+            offset >= static_cast<size_t>(total_num_rows)) {
+            ThrowInfo(DataFormatBroken,
+                      "invalid R-Tree null offset {} for row count {}",
+                      offset,
+                      total_num_rows);
+        }
+        previous = offset;
+        first = false;
+    }
+    engine->ValidateCoordinates(total_num_rows, *null_offsets);
+
+    const auto engine_bytes = engine->ByteSize();
+    AssertInfo(engine_bytes >= 0,
+               "R-Tree engine memory size must not be negative");
+    const auto available = std::numeric_limits<int64_t>::max() - engine_bytes;
+    constexpr auto kStateBytes = static_cast<int64_t>(
+        sizeof(RTreeIndexState) + sizeof(std::vector<size_t>));
+    const auto null_capacity = null_offsets->capacity();
+    int64_t memory_usage = std::numeric_limits<int64_t>::max();
+    if (available >= kStateBytes &&
+        null_capacity <=
+            static_cast<size_t>((available - kStateBytes) / sizeof(size_t))) {
+        memory_usage = engine_bytes + kStateBytes +
+                       static_cast<int64_t>(null_capacity) *
+                           static_cast<int64_t>(sizeof(size_t));
+    }
+    return std::shared_ptr<const RTreeIndexState>(
+        new RTreeIndexState(std::move(engine),
+                            std::move(null_offsets),
+                            total_num_rows,
+                            memory_usage));
+}
+
+const RTreeQueryEngine&
+RTreeIndexState::Engine() const {
+    return *engine_;
+}
+
+const std::vector<size_t>&
+RTreeIndexState::NullOffsets() const {
+    return *null_offsets_;
+}
+
+int64_t
+RTreeIndexState::Count() const {
+    return total_num_rows_;
+}
+
+int64_t
+RTreeIndexState::MemoryUsage() const {
+    return memory_usage_;
+}
+
+RTreeIndexReader::RTreeIndexReader(std::shared_ptr<const RTreeIndexState> state)
+    : state_(std::move(state)) {
+    AssertInfo(state_ != nullptr, "R-Tree reader state must not be null");
 }
 
 RTreeIndexReader::~RTreeIndexReader() = default;
@@ -46,7 +152,7 @@ RTreeIndexReader::CoordDomain() const {
 
 int64_t
 RTreeIndexReader::Count() const {
-    return total_num_rows_;
+    return state_->Count();
 }
 
 DataType
@@ -56,60 +162,52 @@ RTreeIndexReader::ValueType() const {
 
 int64_t
 RTreeIndexReader::MemoryUsage() const {
-    // TODO: move existing logic here (see RTreeIndex.h:160-174 ComputeByteSize:
-    // null-offset capacity + engine ByteSize).
-    //
-    // DO NOT COPY THE BASE CALL. RTreeIndex.h:162 calls
-    // `ScalarIndex<T>::ComputeByteSize()` and then reads `cached_byte_size_` at
-    // :163 as if it accumulated — but `ScalarIndex` does not define the method,
-    // so it resolves to `IndexBase::ComputeByteSize` (Index.h:145-148), which
-    // ZEROES the field. The "accumulated" total is therefore always 0 + own
-    // parts. Harmless today, but it is dead weight that reads as a bug.
+    return state_->MemoryUsage();
 }
 
-ResourceUsage
+cachinglayer::ResourceUsage
 RTreeIndexReader::CellByteSize() const {
-    // NOTE: RTreeIndex never called `SetCellSize` at all, so this family
-    // reports whatever the translator estimated from the file size — a third
-    // variant on top of the two §12.3 already names.
+    // Boost deserializes the complete tree. Staging files are deleted after
+    // Open and no mmap/file-backed bytes remain owned by this reader.
+    return {MemoryUsage(), 0};
 }
 
 TargetBitmap
 RTreeIndexReader::Candidates(SpatialOp op, const Geometry& query_geom) const {
-    // TODO: move existing logic here (see RTreeIndex.cpp:505-518 QueryCandidates
-    // plus RTreeIndexWrapper.cpp:252-281), converting the candidate offsets into
-    // a bitmap of size Count().
-    //
-    // Two defects to fix rather than transcribe:
-    //   1. `const Geometry query_geometry` was taken BY VALUE
-    //      (RTreeIndex.h:185), copying a GEOS-owning object on every call.
-    //      The contract takes `const Geometry&`.
-    //   2. The GEOS context handle is leaked on any throw between
-    //      `GEOS_init_r` (RTreeIndex.cpp:513) and `GEOS_finish_r` (:517) —
-    //      no RAII guard. Use a scope guard when moving.
-    //
-    // ALSO ABSORBED HERE: `RTreeIndex::Query(const DatasetPtr&)`
-    // (RTreeIndex.cpp:520-543). Note for the record that §5.6 calls that method
-    // an empty shell with no production callers; IT IS NOT — it is fully
-    // implemented and it is TODAY'S ONLY production entry point, called from
-    // `exec/expression/GISFunctionFilterExpr.cpp:466`. What disappears is the
-    // knowhere-style `DatasetPtr` packing (the `OPERATOR_TYPE` / `MATCH_VALUE`
-    // keys of index/Meta.h:22,28 unpacked at RTreeIndex.cpp:526-531), which
-    // becomes two typed parameters. The BEHAVIOUR moves here; only the
-    // untyped envelope is deleted.
+    static_cast<void>(op);
+    if (!query_geom.IsValid()) {
+        return IsNotNull();
+    }
+    GeosContextGuard context;
+    TargetBitmap result(static_cast<size_t>(state_->Count()), false);
+    const auto has_query_box = state_->Engine().ForEachCandidate(
+        query_geom.GetGeometry(), context.Get(), [&](int64_t offset) {
+            AssertInfo(offset >= 0 && offset < state_->Count(),
+                       "R-Tree candidate offset {} is outside [0, {})",
+                       offset,
+                       state_->Count());
+            result.set(static_cast<size_t>(offset));
+        });
+    if (!has_query_box) {
+        return IsNotNull();
+    }
+    return result;
 }
 
 TargetBitmap
 RTreeIndexReader::IsNull() const {
-    // TODO: move existing logic here (see RTreeIndex.cpp:431-443).
-    // The `lower_bound(count)` clamp existed because the GROWING path could
-    // append offsets past `Count()`. A sealed reader is immutable and the
-    // builder fixes `Count()` at Seal(), so the clamp becomes an assertion.
+    TargetBitmap result(static_cast<size_t>(state_->Count()), false);
+    for (const auto offset : state_->NullOffsets()) {
+        result.set(offset);
+    }
+    return result;
 }
 
 TargetBitmap
 RTreeIndexReader::IsNotNull() const {
-    // TODO: move existing logic here (see RTreeIndex.cpp:445-457).
+    auto result = IsNull();
+    result.flip();
+    return result;
 }
 
 }  // namespace milvus::index

@@ -85,6 +85,15 @@ impl IndexWriterWrapper {
         }
     }
 
+    pub fn create_snapshot_reader(&self, set_bitset: SetBitsetFn) -> Result<IndexReaderWrapper> {
+        match self {
+            IndexWriterWrapper::V5(_) => self.create_reader(set_bitset),
+            IndexWriterWrapper::V7(writer) => {
+                IndexReaderWrapper::from_index_snapshot(writer.index.clone(), set_bitset)
+            }
+        }
+    }
+
     pub fn add<T>(&mut self, data: T, offset: Option<i64>) -> Result<()>
     where
         T: TantivyValue<TantivyDocumentV5> + TantivyValue<TantivyDocumentV7>,
