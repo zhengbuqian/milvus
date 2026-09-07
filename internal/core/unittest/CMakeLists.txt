@@ -79,6 +79,11 @@ set(MILVUS_TEST_FILES
         CipherPluginContextTest.cpp
         )
 
+# This acceptance target exercises only the current index contracts. Keep it
+# out of all_tests so deleted legacy index APIs cannot prevent it from being
+# compiled and run independently.
+list(FILTER MILVUS_TEST_FILES EXCLUDE REGEX "index_runtime_acceptance_test\\.cpp$")
+
 if ( NOT (INDEX_ENGINE STREQUAL "cardinal") )
     list(FILTER MILVUS_TEST_FILES EXCLUDE REGEX "KmeansClusteringTest\\.cpp$")
 endif()
@@ -163,6 +168,29 @@ set_target_properties(all_tests PROPERTIES
         )
 
 install(TARGETS all_tests DESTINATION unittest)
+
+add_executable(index_runtime_acceptance_test
+        index_runtime_acceptance_test.cpp
+        )
+
+target_link_libraries(index_runtime_acceptance_test
+        GTest::gtest
+        GTest::gtest_main
+        GTest::gmock
+        milvus_core
+        milvus_conan_deps
+        knowhere
+        milvus-storage
+        )
+
+target_link_options(index_runtime_acceptance_test PRIVATE "-L${PLANPARSER_LIB_DIR}")
+target_link_libraries(index_runtime_acceptance_test milvus-planparser-cpp)
+set_target_properties(index_runtime_acceptance_test PROPERTIES
+        BUILD_RPATH "${PLANPARSER_LIB_DIR}"
+        INSTALL_RPATH "${PLANPARSER_LIB_DIR}"
+        )
+
+install(TARGETS index_runtime_acceptance_test DESTINATION unittest)
 
 add_subdirectory(test_json_stats)
 

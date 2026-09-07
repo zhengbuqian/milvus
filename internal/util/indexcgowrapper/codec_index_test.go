@@ -11,6 +11,7 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/storage"
+	"github.com/milvus-io/milvus/internal/util/initcore"
 	"github.com/milvus-io/milvus/pkg/v3/common"
 	"github.com/milvus-io/milvus/pkg/v3/proto/indexpb"
 	"github.com/milvus-io/milvus/pkg/v3/util/funcutil"
@@ -20,6 +21,9 @@ import (
 
 func TestMain(m *testing.M) {
 	paramtable.Init()
+	if err := initcore.InitLocalChunkManager(os.TempDir()); err != nil {
+		panic(err)
+	}
 	exitCode := m.Run()
 	os.Exit(exitCode)
 }

@@ -38,9 +38,6 @@ BuildJsonKeyIndex(ProtoLayoutInterface c_binary_set,
                   const uint64_t len);
 
 CStatus
-CleanLocalData(CIndex index);
-
-CStatus
 SerializeIndexAndUpLoad(CIndex index, ProtoLayoutInterface result);
 
 // =========== Followings are used only in test ==========
