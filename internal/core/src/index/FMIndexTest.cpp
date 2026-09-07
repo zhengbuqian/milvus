@@ -28,7 +28,6 @@
 #include "common/Schema.h"
 #include "common/Types.h"
 #include "index/FMIndex.h"
-#include "index/IndexInfo.h"
 #include "index/Meta.h"
 #include "common/type_c.h"
 #include "pb/common.pb.h"
@@ -49,6 +48,7 @@
 #include "test_utils/Constants.h"
 #include "test_utils/DataGen.h"
 #include "test_utils/GenExprProto.h"
+#include "test_utils/LegacyIndexParams.h"
 #include "test_utils/storage_test_utils.h"
 
 using namespace milvus;
