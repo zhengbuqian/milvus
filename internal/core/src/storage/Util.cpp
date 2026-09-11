@@ -1381,15 +1381,18 @@ FetchFieldData(ChunkManager* cm, const std::vector<std::string>& remote_files) {
     return field_datas;
 }
 
-std::vector<FieldDataPtr>
-GetFieldDatasFromStorageV2(std::vector<std::vector<std::string>>& remote_files,
-                           int64_t field_id,
-                           DataType data_type,
-                           DataType element_type,
-                           int64_t dim,
-                           milvus_storage::ArrowFileSystemPtr fs) {
+VisitOutcome
+VisitFieldDataFromStorageV2(
+    const std::vector<std::vector<std::string>>& remote_files,
+    int64_t field_id,
+    DataType data_type,
+    DataType element_type,
+    int64_t dim,
+    milvus_storage::ArrowFileSystemPtr fs,
+    const FieldDataVisitor& visitor) {
     AssertInfo(remote_files.size() > 0, "[StorageV2] remote files size is 0");
-    std::vector<FieldDataPtr> field_data_list;
+    AssertInfo(static_cast<bool>(visitor),
+               "[StorageV2] field-data visitor is empty");
 
     // remote files might not followed the sequence of column group id,
     // so we need to put into map<column_group_id, remote_chunk_files>
@@ -1433,7 +1436,7 @@ GetFieldDatasFromStorageV2(std::vector<std::vector<std::string>>& remote_files,
             "[StorageV2] field {} not found in any column group, return "
             "empty result set",
             field_id);
-        return field_data_list;
+        return VisitOutcome::FieldMissing;
     }
     AssertInfo(remote_chunk_files.size() > 0,
                "[StorageV2] remote files size is 0");
@@ -1457,23 +1460,16 @@ GetFieldDatasFromStorageV2(std::vector<std::vector<std::string>>& remote_files,
             "result set",
             field_id,
             column_group_id);
-        return field_data_list;
+        return VisitOutcome::FieldMissing;
     }
 
     AssertInfo(fs != nullptr,
                "[StorageV2] storage v2 arrow file system is not initialized");
 
-    // set up channel for arrow reader
-    auto field_data_info = FieldDataInfo();
-    auto parallel_degree =
-        static_cast<uint64_t>(DEFAULT_FIELD_MAX_MEMORY_LIMIT / FILE_SLICE_SIZE);
-    field_data_info.arrow_reader_channel->set_capacity(parallel_degree);
-
     auto& pool = ThreadPools::GetThreadPool(milvus::ThreadPoolPriority::MIDDLE);
 
-    for (auto& column_group_file : remote_chunk_files) {
+    for (const auto& column_group_file : remote_chunk_files) {
         // get all row groups for each file
-        std::vector<std::vector<int64_t>> row_group_lists;
         auto result = milvus_storage::FileRowGroupReader::Make(
             fs,
             column_group_file,
@@ -1487,36 +1483,47 @@ GetFieldDatasFromStorageV2(std::vector<std::vector<std::string>>& remote_files,
 
         auto row_group_num =
             reader->file_metadata()->GetRowGroupMetadataVector().size();
-        std::vector<int64_t> all_row_groups(row_group_num);
-        std::iota(all_row_groups.begin(), all_row_groups.end(), 0);
-        row_group_lists.push_back(all_row_groups);
 
-        // create a schema with only the field id
+        // Preserve the source field's nullability while decoding each row
+        // group. The visitor intentionally trades the old all-row-group
+        // parallel window for a genuine row-group early-stop boundary.
         auto field_schema = reader->schema()->field(col_offset)->Copy();
-        auto arrow_schema = arrow::schema({field_schema});
         auto status = reader->Close();
         AssertInfo(status.ok(),
                    "[StorageV2] failed to close file reader when get arrow "
                    "schema from file: " +
                        column_group_file + " with error: " + status.ToString());
 
-        // split row groups for parallel reading
-        auto strategy = std::make_unique<segcore::ParallelDegreeSplitStrategy>(
-            parallel_degree);
-        auto load_future = pool.Submit([&]() {
-            return LoadWithStrategy(std::vector<std::string>{column_group_file},
-                                    field_data_info.arrow_reader_channel,
-                                    DEFAULT_FIELD_MAX_MEMORY_LIMIT,
-                                    std::move(strategy),
-                                    row_group_lists,
-                                    fs,
-                                    nullptr,
-                                    milvus::proto::common::LoadPriority::HIGH);
-        });
-        // read field data from channel
-        try {
+        for (size_t row_group = 0; row_group < row_group_num; ++row_group) {
+            // One block produces one ArrowDataWrapper followed by the channel
+            // close marker. Capacity two lets the producer finish before this
+            // thread consumes either item, avoiding producer/consumer
+            // deadlock and ensuring no task outlives captured state.
+            auto channel = std::make_shared<ArrowReaderChannel>(2);
+            auto load_future = pool.Submit([channel,
+                                            column_group_file,
+                                            fs,
+                                            row_group]() mutable {
+                auto strategy =
+                    std::make_unique<segcore::ParallelDegreeSplitStrategy>(1);
+                LoadWithStrategy(std::vector<std::string>{column_group_file},
+                                 channel,
+                                 DEFAULT_FIELD_MAX_MEMORY_LIMIT,
+                                 std::move(strategy),
+                                 std::vector<std::vector<int64_t>>{
+                                     {static_cast<int64_t>(row_group)}},
+                                 fs,
+                                 nullptr,
+                                 milvus::proto::common::LoadPriority::HIGH);
+            });
+
+            // LoadWithStrategy has published both the single wrapper and the
+            // close marker before get() returns. Any producer error is
+            // rethrown here before captured objects can leave scope.
+            load_future.get();
+
             std::shared_ptr<milvus::ArrowDataWrapper> r;
-            while (field_data_info.arrow_reader_channel->pop(r)) {
+            while (channel->pop(r)) {
                 size_t num_rows = 0;
                 std::vector<std::shared_ptr<arrow::ChunkedArray>>
                     chunked_arrays;
@@ -1534,29 +1541,47 @@ GetFieldDatasFromStorageV2(std::vector<std::vector<std::string>>& remote_files,
                 for (const auto& chunked_array : chunked_arrays) {
                     field_data->FillFieldData(chunked_array);
                 }
-                field_data_list.push_back(field_data);
-            }
-        } catch (...) {
-            // The load task captures this frame by reference and may be
-            // blocked pushing into the bounded channel. Unblock it, then
-            // wait for it to finish before unwinding (see #46958).
-            try {
-                std::shared_ptr<milvus::ArrowDataWrapper> discard;
-                while (field_data_info.arrow_reader_channel->pop(discard)) {
+                if (visitor(std::move(field_data)) == VisitControl::Stop) {
+                    return VisitOutcome::Stopped;
                 }
-            } catch (...) {
             }
-            DrainFuture(load_future);
-            throw;
         }
-        // access underlying feature to get exception if any
-        load_future.get();
+    }
+    return VisitOutcome::Exhausted;
+}
+
+std::vector<FieldDataPtr>
+GetFieldDatasFromStorageV2(std::vector<std::vector<std::string>>& remote_files,
+                           int64_t field_id,
+                           DataType data_type,
+                           DataType element_type,
+                           int64_t dim,
+                           milvus_storage::ArrowFileSystemPtr fs) {
+    std::vector<FieldDataPtr> field_data_list;
+    const auto outcome = VisitFieldDataFromStorageV2(
+        remote_files,
+        field_id,
+        data_type,
+        element_type,
+        dim,
+        std::move(fs),
+        [&](FieldDataPtr field_data) {
+            field_data_list.push_back(std::move(field_data));
+            return VisitControl::Continue;
+        });
+    switch (outcome) {
+        case VisitOutcome::Exhausted:
+        case VisitOutcome::FieldMissing:
+            break;
+        case VisitOutcome::Stopped:
+            ThrowInfo(UnexpectedError,
+                      "always-continue storage-v2 visitor stopped early");
     }
     return field_data_list;
 }
 
-void
-IterateFieldDataFromManifest(
+VisitOutcome
+VisitFieldDataFromManifest(
     const std::string& manifest_path,
     const std::shared_ptr<milvus_storage::api::Properties>& loon_ffi_properties,
     const FieldDataMeta& field_meta,
@@ -1564,11 +1589,13 @@ IterateFieldDataFromManifest(
     int64_t dim,
     std::optional<DataType> element_type,
     std::optional<StorageColumnMapping> storage_column_mapping,
-    const std::function<void(FieldDataPtr)>& consumer,
+    const FieldDataVisitor& visitor,
     int64_t max_inflight_bytes) {
     AssertInfo(max_inflight_bytes > 0,
                "max_inflight_bytes must be positive, got {}",
                max_inflight_bytes);
+    AssertInfo(static_cast<bool>(visitor),
+               "manifest field-data visitor is empty");
     auto loon_manifest = GetLoonManifest(manifest_path, loon_ffi_properties);
     auto column_groups = std::make_shared<milvus_storage::api::ColumnGroups>(
         loon_manifest->columnGroups());
@@ -1605,7 +1632,7 @@ IterateFieldDataFromManifest(
     };
     bool field_exists = column_exists(column_name);
     if (!field_exists) {
-        return;
+        return VisitOutcome::FieldMissing;
     }
 
     std::vector<std::string> needed_columns = {column_name};
@@ -1772,16 +1799,36 @@ IterateFieldDataFromManifest(
         auto t1 = now_ns();
         pending_bytes -= pending.front().second;
         pending.pop_front();
-        consumer(std::move(field_data));
+        const auto control = visitor(std::move(field_data));
         auto t2 = now_ns();
         decode_wait_ns += t1 - t0;
         consume_ns += t2 - t1;
         consume_max_ns = std::max(consume_max_ns, t2 - t1);
+        return control;
+    };
+
+    auto drain_after_stop = [&]() {
+        std::exception_ptr first_failure;
+        while (!pending.empty()) {
+            try {
+                pending.front().first.get();
+            } catch (...) {
+                if (!first_failure) {
+                    first_failure = std::current_exception();
+                }
+            }
+            pending_bytes -= pending.front().second;
+            pending.pop_front();
+        }
+        if (first_failure) {
+            std::rethrow_exception(first_failure);
+        }
     };
 
     auto data_type_v = data_type.value();
     auto element_type_v = element_type.value();
-    while (true) {
+    bool stopped = false;
+    while (!stopped) {
         std::shared_ptr<arrow::RecordBatch> batch;
         auto fetch_start = now_ns();
         auto status = record_batch_reader->ReadNext(&batch);
@@ -1847,19 +1894,39 @@ IterateFieldDataFromManifest(
         // single oversized batch cannot deadlock the loop.
         while (pending.size() > 1 && (pending_bytes > max_inflight_bytes ||
                                       pending.size() >= max_inflight_batches)) {
-            deliver_front();
+            if (deliver_front() == VisitControl::Stop) {
+                stopped = true;
+                break;
+            }
+        }
+        if (stopped) {
+            break;
         }
         // Opportunistically deliver whatever is already done, keeping
         // consumer-side work (e.g. disk writes) interleaved with fetching.
         while (!pending.empty() &&
                pending.front().first.wait_for(std::chrono::seconds(0)) ==
                    std::future_status::ready) {
-            deliver_front();
+            if (deliver_front() == VisitControl::Stop) {
+                stopped = true;
+                break;
+            }
         }
     }
 
-    while (!pending.empty()) {
-        deliver_front();
+    if (stopped) {
+        // These decodes were submitted before the stop decision. They receive
+        // no callback, but get() still preserves the first real failure rather
+        // than turning it into cancellation or hiding it behind normal Stop.
+        drain_after_stop();
+    } else {
+        while (!pending.empty()) {
+            if (deliver_front() == VisitControl::Stop) {
+                stopped = true;
+                drain_after_stop();
+                break;
+            }
+        }
     }
 
     if (batch_count > 0) {
@@ -1879,6 +1946,41 @@ IterateFieldDataFromManifest(
             decode_wait_ns / 1'000'000,
             consume_ns / 1'000'000,
             consume_max_ns / 1'000'000);
+    }
+    return stopped ? VisitOutcome::Stopped : VisitOutcome::Exhausted;
+}
+
+void
+IterateFieldDataFromManifest(
+    const std::string& manifest_path,
+    const std::shared_ptr<milvus_storage::api::Properties>& loon_ffi_properties,
+    const FieldDataMeta& field_meta,
+    std::optional<DataType> data_type,
+    int64_t dim,
+    std::optional<DataType> element_type,
+    std::optional<StorageColumnMapping> storage_column_mapping,
+    const std::function<void(FieldDataPtr)>& consumer,
+    int64_t max_inflight_bytes) {
+    const auto outcome = VisitFieldDataFromManifest(
+        manifest_path,
+        loon_ffi_properties,
+        field_meta,
+        data_type,
+        dim,
+        element_type,
+        std::move(storage_column_mapping),
+        [&](FieldDataPtr field_data) {
+            consumer(std::move(field_data));
+            return VisitControl::Continue;
+        },
+        max_inflight_bytes);
+    switch (outcome) {
+        case VisitOutcome::Exhausted:
+        case VisitOutcome::FieldMissing:
+            break;
+        case VisitOutcome::Stopped:
+            ThrowInfo(UnexpectedError,
+                      "always-continue manifest visitor stopped early");
     }
 }
 

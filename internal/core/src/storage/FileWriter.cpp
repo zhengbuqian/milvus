@@ -297,13 +297,10 @@ FileWriter::Write(const void* data, size_t nbyte) {
     // fallback to write the data directly if the task cannot be added to the pool
     if (FileWriteWorkerPool::GetInstance().AddTask(task)) {
         try {
-            future.wait();
-        } catch (const std::exception& e) {
+            std::move(future).get();
+        } catch (...) {
             Cleanup();
-            ThrowInfo(ErrorCode::FileWriteFailed,
-                      "Failed to write to file: {}, error: {}",
-                      filename_,
-                      e.what());
+            throw;
         }
     } else {
         WriteInternal(data, nbyte);
@@ -362,13 +359,10 @@ FileWriter::Finish() {
 
         if (FileWriteWorkerPool::GetInstance().AddTask(task)) {
             try {
-                future.wait();
-            } catch (const std::exception& e) {
+                std::move(future).get();
+            } catch (...) {
                 Cleanup();
-                ThrowInfo(ErrorCode::FileWriteFailed,
-                          "Failed to flush file: {}, error: {}",
-                          filename_,
-                          e.what());
+                throw;
             }
         } else {
             if (use_direct_io_) {
