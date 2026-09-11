@@ -42,7 +42,6 @@
 #include "gtest/gtest.h"
 #include "index/Index.h"
 #include "index/IndexFactory.h"
-#include "index/IndexInfo.h"
 #include "index/IndexStats.h"
 #include "index/JsonFlatIndex.h"
 #include "index/Meta.h"

@@ -36,7 +36,6 @@
 #include "index/BitmapIndex.h"
 #include "index/Index.h"
 #include "index/IndexFactory.h"
-#include "index/IndexInfo.h"
 #include "index/ScalarIndex.h"
 #include "index/ScalarIndexSort.h"
 #include "pb/common.pb.h"

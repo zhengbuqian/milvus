@@ -16,7 +16,15 @@
 
 #pragma once
 
-#include "knowhere/comp/index_param.h"
+#include <cstdint>
+#include <string>
+
+// Index parameter and metadata keys. User-facing index-type names below are
+// distinct from persisted registry family names in Families.h; the adapter maps
+// between them. Keep vector-only configuration headers out of this shared file.
+//
+// TODO: move kOverrideRootPathForUT into storage. Production FileManager reads
+// this test hook, creating a storage-to-index dependency unrelated to indexing.
 
 namespace milvus::index {
 constexpr const char* OPERATOR_TYPE = "operator_type";
