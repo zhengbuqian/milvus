@@ -268,18 +268,12 @@ class PhyBloomFilterExpr : public SegmentExpr {
             exec_path_ = ExprExecPath::RawData;
             return;
         }
-        // No raw data. Try to pin a scalar index that can reverse-look-up the
-        // stored values; HasCompatibleScalarIndex() may report true for a
-        // vector/binlog-index-only field or a mid-load state where PinIndex()
-        // still yields nothing, so verify the pin and its reverse-lookup
-        // capability before committing to the index path.
-        if (HasCompatibleScalarIndex()) {
-            EnsurePinnedIndex();
-            if (!pinned_index_.empty() && IndexSupportsReverseLookup()) {
-                exec_path_ = ExprExecPath::ScalarIndex;
-                return;
-            }
+        auto req = MakeIndexRequirement(RequiredReader::ValueLookup);
+        req.value_type = expr_->column_.data_type_;
+        if (SelectAndPinIndex(req) && IndexSupportsReverseLookup()) {
+            return;
         }
+        ClearSelectedIndex();
         // No raw data and no usable index: keep RawData. ExecVisitorImpl
         // detects this (num_data_chunk_ == 0, not UseIndexCursor()) and throws
         // a clear SegcoreError instead of asserting.
@@ -355,7 +349,8 @@ class PhyBloomFilterExpr : public SegmentExpr {
     // "no usable index" error instead of silently running billions of checks.
     bool
     IndexSupportsReverseLookup() const {
-        if (pinned_index_.empty() || pinned_index_[0].get() == nullptr) {
+        if (!selected_index_entry_.has_value() ||
+            !selected_index_entry_->caps.cheap_value_lookup) {
             return false;
         }
         switch (expr_->column_.data_type_) {
@@ -389,13 +384,8 @@ class PhyBloomFilterExpr : public SegmentExpr {
     template <typename T>
     bool
     IndexSupportsFastReverseLookup() const {
-        typedef std::
-            conditional_t<std::is_same_v<T, std::string_view>, std::string, T>
-                IndexInnerType;
-        using Index = index::ScalarIndex<IndexInnerType>;
-        auto scalar_index = dynamic_cast<const Index*>(pinned_index_[0].get());
-        return scalar_index != nullptr &&
-               scalar_index->SupportFastReverseLookup();
+        return selected_index_entry_.has_value() &&
+               selected_index_entry_->caps.cheap_value_lookup;
     }
 
  private:

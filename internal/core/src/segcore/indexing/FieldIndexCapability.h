@@ -86,8 +86,9 @@ struct IndexKeyHash {
 };
 
 // One inventory entry's capability record. Built at LOAD time from load
-// metadata (family + build parameters) via `index::IndexLoader::DeriveCaps()`
-// — never by touching the index object.
+// metadata (family + build parameters) via the registered
+// `index::LoaderEntry::derive_caps` function — never by touching the index
+// object.
 struct IndexCapabilityEntry {
     IndexKey key;
 
@@ -101,7 +102,7 @@ struct IndexCapabilityEntry {
     JsonCastType json_cast_type{JsonCastType::UNKNOWN};
 
     // "inverted" / "bitmap" / "sort" / "marisa" / "fmindex" / "text" /
-    // "ngram" / "rtree" / "json_flat" ... — `index::IndexLoader::Family()`.
+    // "ngram" / "rtree" / "json_flat" ... — the canonical registry key.
     std::string family;
 
     // The value type indexed by the reader. ARRAY uses its element type; a JSON

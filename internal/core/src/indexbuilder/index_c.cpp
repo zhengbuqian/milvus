@@ -11,8 +11,8 @@
 
 #include <glog/logging.h>
 #include <string.h>
+#include <cstdint>
 #include <exception>
-#include <map>
 #include <memory>
 #include <new>
 #include <string>
@@ -23,25 +23,21 @@
 
 #include "common/Consts.h"
 #include "common/EasyAssert.h"
+#include "common/Exception.h"
 #include "common/FieldMeta.h"
+#include "common/NamedBuffer.h"
 #include "common/Schema.h"
 #include "common/Types.h"
 #include "common/protobuf_utils.h"
 #include "common/type_c.h"
 #include "filemanager/InputStream.h"
-#include "index/IndexStats.h"
 #include "index/Meta.h"
-#include "index/TextMatchIndex.h"
 #include "index/Utils.h"
-#include "index/json_stats/JsonKeyStats.h"
-#include "indexbuilder/IndexCreatorBase.h"
-#include "indexbuilder/IndexFactory.h"
-#include "indexbuilder/VecIndexCreator.h"
+#include "segcore/json_stats/JsonKeyStats.h"
+#include "indexbuilder/BuildSession.h"
+#include "indexbuilder/IndexBuildCapiAdapter.h"
 #include "indexbuilder/index_c.h"
 #include "indexbuilder/type_c.h"
-#include "knowhere/binaryset.h"
-#include "knowhere/dataset.h"
-#include "knowhere/version.h"
 #include "log/Log.h"
 #include "monitor/scope_metric.h"
 #include "nlohmann/json.hpp"
@@ -57,6 +53,71 @@
 #include "storage/plugin/PluginInterface.h"
 
 using namespace milvus;
+
+namespace {
+
+struct CIndexHandle {
+    explicit CIndexHandle(
+        std::unique_ptr<milvus::indexbuilder::BuildSession> native_session)
+        : session(std::move(native_session)) {
+    }
+
+    std::unique_ptr<milvus::indexbuilder::BuildSession> session;
+};
+
+CIndexHandle&
+RequireHandle(CIndex index) {
+    AssertInfo(index != nullptr, "passed index handle was null");
+    return *reinterpret_cast<CIndexHandle*>(index);
+}
+
+milvus::indexbuilder::BuildSession&
+RequireSession(CIndex index) {
+    auto& handle = RequireHandle(index);
+    AssertInfo(handle.session != nullptr, "native index session was null");
+    return *handle.session;
+}
+
+std::unique_ptr<CIndexHandle>
+MakeNativeHandle(std::unique_ptr<milvus::indexbuilder::BuildSession> session) {
+    AssertInfo(session != nullptr, "cannot publish a null native session");
+    return std::make_unique<CIndexHandle>(std::move(session));
+}
+
+CStatus
+SuccessStatus() {
+    CStatus status{};
+    status.error_code = Success;
+    status.error_msg = "";
+    return status;
+}
+
+void
+WriteArtifactStats(const milvus::storage::ArtifactStats& stats,
+                   ProtoLayoutInterface result) {
+    AssertInfo(result != nullptr, "index stats output was null");
+    auto proto = milvus::indexbuilder::AdaptArtifactStats(stats);
+    auto* layout = reinterpret_cast<milvus::ProtoLayout*>(result);
+    AssertInfo(layout->SerializeAndHoldProto(proto),
+               "failed to serialize index artifact stats");
+}
+
+void
+BuildDirectVector(CIndex index, milvus::indexbuilder::DirectVectorInput input) {
+    auto& session = RequireSession(index);
+    AssertInfo(session.IsDirect(),
+               "production index session cannot consume direct vector data");
+    AssertInfo(session.SourceType() == input.source_type,
+               "direct vector entry for type {} received session type {}",
+               input.source_type,
+               session.SourceType());
+    input.configured_dim = session.DirectDimension();
+    session.BuildDirect(
+        milvus::indexbuilder::AdaptDirectVectorFieldData(input));
+}
+
+}  // namespace
+
 CStatus
 CreateIndexForUT(enum CDataType dtype,
                  const char* serialized_type_params,
@@ -64,7 +125,6 @@ CreateIndexForUT(enum CDataType dtype,
                  CIndex* res_index) {
     SCOPE_CGO_CALL_METRIC();
 
-    auto status = CStatus();
     try {
         AssertInfo(res_index, "failed to create index, passed index was null");
 
@@ -73,42 +133,18 @@ CreateIndexForUT(enum CDataType dtype,
         milvus::index::ParseFromString(type_params, serialized_type_params);
         milvus::index::ParseFromString(index_params, serialized_index_params);
 
-        milvus::Config config;
-        for (auto i = 0; i < type_params.params_size(); ++i) {
-            const auto& param = type_params.params(i);
-            config[param.key()] = param.value();
-        }
+        const auto data_type = milvus::DataType(dtype);
+        auto prepared = milvus::indexbuilder::AdaptDirectBuild(
+            data_type, type_params, index_params);
+        auto handle = MakeNativeHandle(
+            std::make_unique<milvus::indexbuilder::BuildSession>(
+                prepared.source_type, std::move(prepared.adapted)));
 
-        for (auto i = 0; i < index_params.params_size(); ++i) {
-            const auto& param = index_params.params(i);
-            config[param.key()] = param.value();
-        }
-
-        config[milvus::index::INDEX_ENGINE_VERSION] = std::to_string(
-            knowhere::Version::GetCurrentVersion().VersionNumber());
-
-        auto& index_factory = milvus::indexbuilder::IndexFactory::GetInstance();
-        auto index =
-            index_factory.CreateIndex(milvus::DataType(dtype),
-                                      config,
-                                      milvus::storage::FileManagerContext());
-
-        *res_index = index.release();
-        status.error_code = Success;
-        status.error_msg = "";
-    } catch (SegcoreError& e) {
-        auto status = CStatus();
-        status.error_code = e.get_error_code();
-        status.error_msg = strdup(e.what());
-        return status;
-    } catch (std::bad_alloc& e) {
-        status.error_code = MemAllocateFailed;
-        status.error_msg = strdup(e.what());
-    } catch (std::exception& e) {
-        status.error_code = UnexpectedError;
-        status.error_msg = strdup(e.what());
+        *res_index = handle.release();
+        return SuccessStatus();
+    } catch (const std::exception& error) {
+        return milvus::FailureCStatus(&error);
     }
-    return status;
 }
 
 milvus::storage::StorageConfig
@@ -291,115 +327,36 @@ CreateIndex(CIndex* res_index,
     SCOPE_CGO_CALL_METRIC();
 
     try {
+        AssertInfo(res_index != nullptr, "index output handle was null");
         auto build_index_info =
             std::make_unique<milvus::proto::indexcgo::BuildIndexInfo>();
         auto res =
             build_index_info->ParseFromArray(serialized_build_index_info, len);
         AssertInfo(res, "Unmarshal build index info failed");
 
-        auto field_type =
+        const auto field_type =
             static_cast<DataType>(build_index_info->field_schema().data_type());
-
-        auto storage_config =
-            get_storage_config(build_index_info->storage_config());
-        auto config = get_config(build_index_info);
-
-        auto engine_version = build_index_info->current_index_version();
-        config[milvus::index::INDEX_ENGINE_VERSION] =
-            std::to_string(engine_version);
-        auto scalar_index_engine_version =
-            build_index_info->current_scalar_index_version();
-        config[milvus::index::SCALAR_INDEX_ENGINE_VERSION] =
-            scalar_index_engine_version;
-        auto tantivy_index_version =
-            scalar_index_engine_version <= 1
-                ? milvus::index::TANTIVY_INDEX_MINIMUM_VERSION
-                : milvus::index::TANTIVY_INDEX_LATEST_VERSION;
-        config[milvus::index::TANTIVY_INDEX_VERSION] = tantivy_index_version;
-
-        // check index encoding config
-        auto index_non_encoding_str =
-            config.value(milvus::index::INDEX_NON_ENCODING, "false");
-        bool index_non_encoding = index_non_encoding_str == "true";
-
-        // init file manager
-        milvus::storage::FieldDataMeta field_meta{
-            build_index_info->collectionid(),
-            build_index_info->partitionid(),
-            build_index_info->segmentid(),
-            build_index_info->field_schema().fieldid(),
-            build_index_info->field_schema()};
-
-        milvus::storage::IndexMeta index_meta{
-            build_index_info->segmentid(),
-            build_index_info->field_schema().fieldid(),
-            build_index_info->buildid(),
-            build_index_info->index_version(),
-            "",
-            build_index_info->field_schema().name(),
-            field_type,
-            build_index_info->dim(),
-            index_non_encoding,
-            build_index_info->index_store_path_version()};
-        auto chunk_manager =
-            milvus::storage::CreateChunkManager(storage_config);
-        LOG_INFO("create chunk manager success, build_id: {}",
-                 build_index_info->buildid());
-        auto fs = milvus::storage::InitArrowFileSystem(storage_config);
-        LOG_INFO("init arrow file system success, build_id: {}",
-                 build_index_info->buildid());
-
-        milvus::storage::FileManagerContext fileManagerContext(
-            field_meta, index_meta, chunk_manager, fs);
-        if (!build_index_info->stats_base_path().empty()) {
-            fileManagerContext.set_stats_base_path(
-                build_index_info->stats_base_path());
-        }
-        configure_manifest_file_manager_context(
-            fileManagerContext, *build_index_info, storage_config);
-
-        if (build_index_info->has_storage_plugin_context()) {
-            fileManagerContext.set_plugin_context(
-                milvus::storage::PluginLoader::GetInstance()
-                    .registerCipherPluginContext(
-                        build_index_info->storage_plugin_context()
-                            .encryption_zone_id(),
-                        build_index_info->storage_plugin_context()
-                            .collection_id(),
-                        build_index_info->storage_plugin_context()
-                            .encryption_key()));
-        }
-
-        auto index =
-            milvus::indexbuilder::IndexFactory::GetInstance().CreateIndex(
-                field_type, config, fileManagerContext);
-        LOG_INFO("create index instance success, build_id: {}",
-                 build_index_info->buildid());
-        index->Build();
-        LOG_INFO("build index done, build_id: {}", build_index_info->buildid());
-        *res_index = index.release();
-        auto status = CStatus();
-        status.error_code = Success;
-        status.error_msg = "";
-        return status;
-    } catch (SegcoreError& e) {
-        auto status = CStatus();
-        status.error_code = e.get_error_code();
-        status.error_msg = strdup(e.what());
-        return status;
-    } catch (std::bad_alloc& e) {
-        auto status = CStatus();
-        status.error_code = MemAllocateFailed;
-        status.error_msg = strdup(e.what());
-        return status;
-    } catch (std::exception& e) {
-        auto status = CStatus();
-        status.error_code = UnexpectedError;
-        status.error_msg = strdup(e.what());
-        return status;
+        const auto purpose =
+            milvus::IsVectorDataType(field_type)
+                ? milvus::indexbuilder::BuildPurpose::VectorIndex
+                : milvus::indexbuilder::BuildPurpose::ScalarIndex;
+        auto prepared = milvus::indexbuilder::AdaptBuildIndexInfo(
+            *build_index_info, purpose);
+        auto session = std::make_unique<milvus::indexbuilder::BuildSession>(
+            std::move(prepared.request),
+            std::move(prepared.file_manager_context));
+        session->BuildProduction();
+        *res_index = MakeNativeHandle(std::move(session)).release();
+        return SuccessStatus();
+    } catch (const std::exception& error) {
+        return milvus::FailureCStatus(&error);
     }
 }
 
+// Build the JSON shredding layout through JsonKeyStats, independently of the
+// index-family builder registry. This path still uses its own Build/Upload
+// pipeline rather than storage::Artifact; typed sub-column integration remains
+// separate work.
 CStatus
 BuildJsonKeyIndex(ProtoLayoutInterface result,
                   const uint8_t* serialized_build_index_info,
@@ -407,6 +364,7 @@ BuildJsonKeyIndex(ProtoLayoutInterface result,
     SCOPE_CGO_CALL_METRIC();
 
     try {
+        AssertInfo(result != nullptr, "index stats output was null");
         auto build_index_info =
             std::make_unique<milvus::proto::indexcgo::BuildIndexInfo>();
         auto res =
@@ -483,13 +441,8 @@ BuildJsonKeyIndex(ProtoLayoutInterface result,
             build_index_info->json_stats_write_batch_size(),
             tantivy_index_version);
         index->Build(config);
-        auto create_index_result = index->Upload(config);
-        create_index_result->SerializeAt(
-            reinterpret_cast<milvus::ProtoLayout*>(result));
-        auto status = CStatus();
-        status.error_code = Success;
-        status.error_msg = "";
-        return status;
+        WriteArtifactStats(index->Upload(config), result);
+        return SuccessStatus();
     } catch (SegcoreError& e) {
         auto status = CStatus();
         status.error_code = e.get_error_code();
@@ -510,99 +463,23 @@ BuildTextIndex(ProtoLayoutInterface result,
     SCOPE_CGO_CALL_METRIC();
 
     try {
+        AssertInfo(result != nullptr, "index stats output was null");
         auto build_index_info =
             std::make_unique<milvus::proto::indexcgo::BuildIndexInfo>();
         auto res =
             build_index_info->ParseFromArray(serialized_build_index_info, len);
         AssertInfo(res, "Unmarshal build index info failed");
 
-        auto field_type = static_cast<milvus::DataType>(
-            build_index_info->field_schema().data_type());
-
-        auto storage_config =
-            get_storage_config(build_index_info->storage_config());
-        auto config = get_config(build_index_info);
-
-        // init file manager
-        milvus::storage::FieldDataMeta field_meta{
-            build_index_info->collectionid(),
-            build_index_info->partitionid(),
-            build_index_info->segmentid(),
-            build_index_info->field_schema().fieldid(),
-            build_index_info->field_schema()};
-
-        milvus::storage::IndexMeta index_meta{
-            build_index_info->segmentid(),
-            build_index_info->field_schema().fieldid(),
-            build_index_info->buildid(),
-            build_index_info->index_version(),
-            "",
-            build_index_info->field_schema().name(),
-            field_type,
-            build_index_info->dim(),
-        };
-        auto chunk_manager =
-            milvus::storage::CreateChunkManager(storage_config);
-        auto fs = milvus::storage::InitArrowFileSystem(storage_config);
-
-        milvus::storage::FileManagerContext fileManagerContext(
-            field_meta, index_meta, chunk_manager, fs);
-        fileManagerContext.set_stats_base_path(
-            build_index_info->stats_base_path());
-
-        configure_manifest_file_manager_context(
-            fileManagerContext, *build_index_info, storage_config);
-
-        if (build_index_info->has_storage_plugin_context()) {
-            fileManagerContext.set_plugin_context(
-                milvus::storage::PluginLoader::GetInstance()
-                    .registerCipherPluginContext(
-                        build_index_info->storage_plugin_context()
-                            .encryption_zone_id(),
-                        build_index_info->storage_plugin_context()
-                            .collection_id(),
-                        build_index_info->storage_plugin_context()
-                            .encryption_key()));
-        }
-
-        auto scalar_index_engine_version =
-            build_index_info->current_scalar_index_version();
-        config[milvus::index::SCALAR_INDEX_ENGINE_VERSION] =
-            scalar_index_engine_version;
-        auto tantivy_index_version =
-            scalar_index_engine_version <= 1
-                ? milvus::index::TANTIVY_INDEX_MINIMUM_VERSION
-                : milvus::index::TANTIVY_INDEX_LATEST_VERSION;
-        config[milvus::index::TANTIVY_INDEX_VERSION] = tantivy_index_version;
-
-        auto field_schema =
-            FieldMeta::ParseFrom(build_index_info->field_schema());
-
-        auto index = std::make_unique<index::TextMatchIndex>(
-            fileManagerContext,
-            tantivy_index_version,
-            "milvus_tokenizer",
-            field_schema.get_analyzer_params().c_str(),
-            build_index_info->analyzer_extra_info().c_str());
-
-        index->Build(config);
-        auto create_index_result = index->Upload(config);
-        create_index_result->SerializeAt(
-            reinterpret_cast<milvus::ProtoLayout*>(result));
-        auto status = CStatus();
-        status.error_code = Success;
-        status.error_msg = "";
-        return status;
-    } catch (SegcoreError& e) {
-        auto status = CStatus();
-        status.error_code = e.get_error_code();
-        status.error_msg = strdup(e.what());
-        return status;
-    } catch (std::exception& e) {
-        auto status = CStatus();
-        status.error_code = UnexpectedError;
-        status.error_msg = strdup(e.what());
-        return status;
+        auto prepared = milvus::indexbuilder::AdaptBuildIndexInfo(
+            *build_index_info, milvus::indexbuilder::BuildPurpose::TextIndex);
+        milvus::indexbuilder::BuildSession session(
+            std::move(prepared.request),
+            std::move(prepared.file_manager_context));
+        session.BuildProduction();
+        WriteArtifactStats(session.Publish(), result);
+        return SuccessStatus();
+    } catch (const std::exception& error) {
+        return milvus::FailureCStatus(&error);
     }
 }
 
@@ -610,19 +487,13 @@ CStatus
 DeleteIndex(CIndex index) {
     SCOPE_CGO_CALL_METRIC();
 
-    auto status = CStatus();
     try {
-        AssertInfo(index, "failed to delete index, passed index was null");
-        auto cIndex =
-            reinterpret_cast<milvus::indexbuilder::IndexCreatorBase*>(index);
-        delete cIndex;
-        status.error_code = Success;
-        status.error_msg = "";
-    } catch (std::exception& e) {
-        status.error_code = UnexpectedError;
-        status.error_msg = strdup(e.what());
+        auto* handle = &RequireHandle(index);
+        delete handle;
+        return SuccessStatus();
+    } catch (const std::exception& error) {
+        return milvus::FailureCStatus(&error);
     }
-    return status;
 }
 
 CStatus
@@ -631,25 +502,15 @@ BuildFloatVecIndex(CIndex index,
                    const float* vectors) {
     SCOPE_CGO_CALL_METRIC();
 
-    auto status = CStatus();
     try {
-        AssertInfo(index,
-                   "failed to build float vector index, passed index was null");
-        auto real_index =
-            reinterpret_cast<milvus::indexbuilder::IndexCreatorBase*>(index);
-        auto cIndex =
-            dynamic_cast<milvus::indexbuilder::VecIndexCreator*>(real_index);
-        auto dim = cIndex->dim();
-        auto row_nums = float_value_num / dim;
-        auto ds = knowhere::GenDataSet(row_nums, dim, vectors);
-        cIndex->Build(ds);
-        status.error_code = Success;
-        status.error_msg = "";
-    } catch (std::exception& e) {
-        status.error_code = UnexpectedError;
-        status.error_msg = strdup(e.what());
+        BuildDirectVector(index,
+                          {.source_type = DataType::VECTOR_FLOAT,
+                           .payload_count = float_value_num,
+                           .payload = vectors});
+        return SuccessStatus();
+    } catch (const std::exception& error) {
+        return milvus::FailureCStatus(&error);
     }
-    return status;
 }
 
 CStatus
@@ -660,25 +521,18 @@ BuildFloatVecIndexWithValidData(CIndex index,
                                 int64_t valid_data_len) {
     SCOPE_CGO_CALL_METRIC();
 
-    auto status = CStatus();
     try {
-        AssertInfo(index,
-                   "failed to build float vector index, passed index was null");
-        auto real_index =
-            reinterpret_cast<milvus::indexbuilder::IndexCreatorBase*>(index);
-        auto cIndex =
-            dynamic_cast<milvus::indexbuilder::VecIndexCreator*>(real_index);
-        auto dim = cIndex->dim();
-        auto row_nums = float_value_num / dim;
-        auto ds = knowhere::GenDataSet(row_nums, dim, vectors);
-        cIndex->Build(ds, valid_data, valid_data_len);
-        status.error_code = Success;
-        status.error_msg = "";
-    } catch (std::exception& e) {
-        status.error_code = UnexpectedError;
-        status.error_msg = strdup(e.what());
+        BuildDirectVector(index,
+                          {.source_type = DataType::VECTOR_FLOAT,
+                           .payload_count = float_value_num,
+                           .payload = vectors,
+                           .has_validity = true,
+                           .valid_data = valid_data,
+                           .logical_rows = valid_data_len});
+        return SuccessStatus();
+    } catch (const std::exception& error) {
+        return milvus::FailureCStatus(&error);
     }
-    return status;
 }
 
 CStatus
@@ -687,26 +541,15 @@ BuildFloat16VecIndex(CIndex index,
                      const uint8_t* vectors) {
     SCOPE_CGO_CALL_METRIC();
 
-    auto status = CStatus();
     try {
-        AssertInfo(
-            index,
-            "failed to build float16 vector index, passed index was null");
-        auto real_index =
-            reinterpret_cast<milvus::indexbuilder::IndexCreatorBase*>(index);
-        auto cIndex =
-            dynamic_cast<milvus::indexbuilder::VecIndexCreator*>(real_index);
-        auto dim = cIndex->dim();
-        auto row_nums = float16_value_num / dim / 2;
-        auto ds = knowhere::GenDataSet(row_nums, dim, vectors);
-        cIndex->Build(ds);
-        status.error_code = Success;
-        status.error_msg = "";
-    } catch (std::exception& e) {
-        status.error_code = UnexpectedError;
-        status.error_msg = strdup(e.what());
+        BuildDirectVector(index,
+                          {.source_type = DataType::VECTOR_FLOAT16,
+                           .payload_count = float16_value_num,
+                           .payload = vectors});
+        return SuccessStatus();
+    } catch (const std::exception& error) {
+        return milvus::FailureCStatus(&error);
     }
-    return status;
 }
 
 CStatus
@@ -717,26 +560,18 @@ BuildFloat16VecIndexWithValidData(CIndex index,
                                   int64_t valid_data_len) {
     SCOPE_CGO_CALL_METRIC();
 
-    auto status = CStatus();
     try {
-        AssertInfo(
-            index,
-            "failed to build float16 vector index, passed index was null");
-        auto real_index =
-            reinterpret_cast<milvus::indexbuilder::IndexCreatorBase*>(index);
-        auto cIndex =
-            dynamic_cast<milvus::indexbuilder::VecIndexCreator*>(real_index);
-        auto dim = cIndex->dim();
-        auto row_nums = float16_value_num / dim / 2;
-        auto ds = knowhere::GenDataSet(row_nums, dim, vectors);
-        cIndex->Build(ds, valid_data, valid_data_len);
-        status.error_code = Success;
-        status.error_msg = "";
-    } catch (std::exception& e) {
-        status.error_code = UnexpectedError;
-        status.error_msg = strdup(e.what());
+        BuildDirectVector(index,
+                          {.source_type = DataType::VECTOR_FLOAT16,
+                           .payload_count = float16_value_num,
+                           .payload = vectors,
+                           .has_validity = true,
+                           .valid_data = valid_data,
+                           .logical_rows = valid_data_len});
+        return SuccessStatus();
+    } catch (const std::exception& error) {
+        return milvus::FailureCStatus(&error);
     }
-    return status;
 }
 
 CStatus
@@ -745,26 +580,15 @@ BuildBFloat16VecIndex(CIndex index,
                       const uint8_t* vectors) {
     SCOPE_CGO_CALL_METRIC();
 
-    auto status = CStatus();
     try {
-        AssertInfo(
-            index,
-            "failed to build bfloat16 vector index, passed index was null");
-        auto real_index =
-            reinterpret_cast<milvus::indexbuilder::IndexCreatorBase*>(index);
-        auto cIndex =
-            dynamic_cast<milvus::indexbuilder::VecIndexCreator*>(real_index);
-        auto dim = cIndex->dim();
-        auto row_nums = bfloat16_value_num / dim / 2;
-        auto ds = knowhere::GenDataSet(row_nums, dim, vectors);
-        cIndex->Build(ds);
-        status.error_code = Success;
-        status.error_msg = "";
-    } catch (std::exception& e) {
-        status.error_code = UnexpectedError;
-        status.error_msg = strdup(e.what());
+        BuildDirectVector(index,
+                          {.source_type = DataType::VECTOR_BFLOAT16,
+                           .payload_count = bfloat16_value_num,
+                           .payload = vectors});
+        return SuccessStatus();
+    } catch (const std::exception& error) {
+        return milvus::FailureCStatus(&error);
     }
-    return status;
 }
 
 CStatus
@@ -775,52 +599,33 @@ BuildBFloat16VecIndexWithValidData(CIndex index,
                                    int64_t valid_data_len) {
     SCOPE_CGO_CALL_METRIC();
 
-    auto status = CStatus();
     try {
-        AssertInfo(
-            index,
-            "failed to build bfloat16 vector index, passed index was null");
-        auto real_index =
-            reinterpret_cast<milvus::indexbuilder::IndexCreatorBase*>(index);
-        auto cIndex =
-            dynamic_cast<milvus::indexbuilder::VecIndexCreator*>(real_index);
-        auto dim = cIndex->dim();
-        auto row_nums = bfloat16_value_num / dim / 2;
-        auto ds = knowhere::GenDataSet(row_nums, dim, vectors);
-        cIndex->Build(ds, valid_data, valid_data_len);
-        status.error_code = Success;
-        status.error_msg = "";
-    } catch (std::exception& e) {
-        status.error_code = UnexpectedError;
-        status.error_msg = strdup(e.what());
+        BuildDirectVector(index,
+                          {.source_type = DataType::VECTOR_BFLOAT16,
+                           .payload_count = bfloat16_value_num,
+                           .payload = vectors,
+                           .has_validity = true,
+                           .valid_data = valid_data,
+                           .logical_rows = valid_data_len});
+        return SuccessStatus();
+    } catch (const std::exception& error) {
+        return milvus::FailureCStatus(&error);
     }
-    return status;
 }
 
 CStatus
 BuildBinaryVecIndex(CIndex index, int64_t data_size, const uint8_t* vectors) {
     SCOPE_CGO_CALL_METRIC();
 
-    auto status = CStatus();
     try {
-        AssertInfo(
-            index,
-            "failed to build binary vector index, passed index was null");
-        auto real_index =
-            reinterpret_cast<milvus::indexbuilder::IndexCreatorBase*>(index);
-        auto cIndex =
-            dynamic_cast<milvus::indexbuilder::VecIndexCreator*>(real_index);
-        auto dim = cIndex->dim();
-        auto row_nums = (data_size * 8) / dim;
-        auto ds = knowhere::GenDataSet(row_nums, dim, vectors);
-        cIndex->Build(ds);
-        status.error_code = Success;
-        status.error_msg = "";
-    } catch (std::exception& e) {
-        status.error_code = UnexpectedError;
-        status.error_msg = strdup(e.what());
+        BuildDirectVector(index,
+                          {.source_type = DataType::VECTOR_BINARY,
+                           .payload_count = data_size,
+                           .payload = vectors});
+        return SuccessStatus();
+    } catch (const std::exception& error) {
+        return milvus::FailureCStatus(&error);
     }
-    return status;
 }
 
 CStatus
@@ -831,26 +636,18 @@ BuildBinaryVecIndexWithValidData(CIndex index,
                                  int64_t valid_data_len) {
     SCOPE_CGO_CALL_METRIC();
 
-    auto status = CStatus();
     try {
-        AssertInfo(
-            index,
-            "failed to build binary vector index, passed index was null");
-        auto real_index =
-            reinterpret_cast<milvus::indexbuilder::IndexCreatorBase*>(index);
-        auto cIndex =
-            dynamic_cast<milvus::indexbuilder::VecIndexCreator*>(real_index);
-        auto dim = cIndex->dim();
-        auto row_nums = (data_size * 8) / dim;
-        auto ds = knowhere::GenDataSet(row_nums, dim, vectors);
-        cIndex->Build(ds, valid_data, valid_data_len);
-        status.error_code = Success;
-        status.error_msg = "";
-    } catch (std::exception& e) {
-        status.error_code = UnexpectedError;
-        status.error_msg = strdup(e.what());
+        BuildDirectVector(index,
+                          {.source_type = DataType::VECTOR_BINARY,
+                           .payload_count = data_size,
+                           .payload = vectors,
+                           .has_validity = true,
+                           .valid_data = valid_data,
+                           .logical_rows = valid_data_len});
+        return SuccessStatus();
+    } catch (const std::exception& error) {
+        return milvus::FailureCStatus(&error);
     }
-    return status;
 }
 
 CStatus
@@ -860,25 +657,16 @@ BuildSparseFloatVecIndex(CIndex index,
                          const uint8_t* vectors) {
     SCOPE_CGO_CALL_METRIC();
 
-    auto status = CStatus();
     try {
-        AssertInfo(
-            index,
-            "failed to build sparse float vector index, passed index was null");
-        auto real_index =
-            reinterpret_cast<milvus::indexbuilder::IndexCreatorBase*>(index);
-        auto cIndex =
-            dynamic_cast<milvus::indexbuilder::VecIndexCreator*>(real_index);
-        auto ds = knowhere::GenDataSet(row_num, dim, vectors);
-        ds->SetIsSparse(true);
-        cIndex->Build(ds);
-        status.error_code = Success;
-        status.error_msg = "";
-    } catch (std::exception& e) {
-        status.error_code = UnexpectedError;
-        status.error_msg = strdup(e.what());
+        BuildDirectVector(index,
+                          {.source_type = DataType::VECTOR_SPARSE_U32_F32,
+                           .payload_count = row_num,
+                           .payload = vectors,
+                           .sparse_dim = dim});
+        return SuccessStatus();
+    } catch (const std::exception& error) {
+        return milvus::FailureCStatus(&error);
     }
-    return status;
 }
 
 CStatus
@@ -890,50 +678,34 @@ BuildSparseFloatVecIndexWithValidData(CIndex index,
                                       int64_t valid_data_len) {
     SCOPE_CGO_CALL_METRIC();
 
-    auto status = CStatus();
     try {
-        AssertInfo(
-            index,
-            "failed to build sparse float vector index, passed index was null");
-        auto real_index =
-            reinterpret_cast<milvus::indexbuilder::IndexCreatorBase*>(index);
-        auto cIndex =
-            dynamic_cast<milvus::indexbuilder::VecIndexCreator*>(real_index);
-        auto ds = knowhere::GenDataSet(row_num, dim, vectors);
-        ds->SetIsSparse(true);
-        cIndex->Build(ds, valid_data, valid_data_len);
-        status.error_code = Success;
-        status.error_msg = "";
-    } catch (std::exception& e) {
-        status.error_code = UnexpectedError;
-        status.error_msg = strdup(e.what());
+        BuildDirectVector(index,
+                          {.source_type = DataType::VECTOR_SPARSE_U32_F32,
+                           .payload_count = row_num,
+                           .payload = vectors,
+                           .has_validity = true,
+                           .valid_data = valid_data,
+                           .logical_rows = valid_data_len,
+                           .sparse_dim = dim});
+        return SuccessStatus();
+    } catch (const std::exception& error) {
+        return milvus::FailureCStatus(&error);
     }
-    return status;
 }
 
 CStatus
 BuildInt8VecIndex(CIndex index, int64_t int8_value_num, const int8_t* vectors) {
     SCOPE_CGO_CALL_METRIC();
 
-    auto status = CStatus();
     try {
-        AssertInfo(index,
-                   "failed to build int8 vector index, passed index was null");
-        auto real_index =
-            reinterpret_cast<milvus::indexbuilder::IndexCreatorBase*>(index);
-        auto cIndex =
-            dynamic_cast<milvus::indexbuilder::VecIndexCreator*>(real_index);
-        auto dim = cIndex->dim();
-        auto row_nums = int8_value_num / dim;
-        auto ds = knowhere::GenDataSet(row_nums, dim, vectors);
-        cIndex->Build(ds);
-        status.error_code = Success;
-        status.error_msg = "";
-    } catch (std::exception& e) {
-        status.error_code = UnexpectedError;
-        status.error_msg = strdup(e.what());
+        BuildDirectVector(index,
+                          {.source_type = DataType::VECTOR_INT8,
+                           .payload_count = int8_value_num,
+                           .payload = vectors});
+        return SuccessStatus();
+    } catch (const std::exception& error) {
+        return milvus::FailureCStatus(&error);
     }
-    return status;
 }
 
 CStatus
@@ -944,25 +716,18 @@ BuildInt8VecIndexWithValidData(CIndex index,
                                int64_t valid_data_len) {
     SCOPE_CGO_CALL_METRIC();
 
-    auto status = CStatus();
     try {
-        AssertInfo(index,
-                   "failed to build int8 vector index, passed index was null");
-        auto real_index =
-            reinterpret_cast<milvus::indexbuilder::IndexCreatorBase*>(index);
-        auto cIndex =
-            dynamic_cast<milvus::indexbuilder::VecIndexCreator*>(real_index);
-        auto dim = cIndex->dim();
-        auto row_nums = int8_value_num / dim;
-        auto ds = knowhere::GenDataSet(row_nums, dim, vectors);
-        cIndex->Build(ds, valid_data, valid_data_len);
-        status.error_code = Success;
-        status.error_msg = "";
-    } catch (std::exception& e) {
-        status.error_code = UnexpectedError;
-        status.error_msg = strdup(e.what());
+        BuildDirectVector(index,
+                          {.source_type = DataType::VECTOR_INT8,
+                           .payload_count = int8_value_num,
+                           .payload = vectors,
+                           .has_validity = true,
+                           .valid_data = valid_data,
+                           .logical_rows = valid_data_len});
+        return SuccessStatus();
+    } catch (const std::exception& error) {
+        return milvus::FailureCStatus(&error);
     }
-    return status;
 }
 
 // field_data:
@@ -974,118 +739,59 @@ CStatus
 BuildScalarIndex(CIndex c_index, int64_t size, const void* field_data) {
     SCOPE_CGO_CALL_METRIC();
 
-    auto status = CStatus();
     try {
-        AssertInfo(c_index,
-                   "failed to build scalar index, passed index was null");
-
-        auto real_index =
-            reinterpret_cast<milvus::indexbuilder::IndexCreatorBase*>(c_index);
-        const int64_t dim = 8;  // not important here
-        auto dataset = knowhere::GenDataSet(size, dim, field_data);
-        real_index->Build(dataset);
-
-        status.error_code = Success;
-        status.error_msg = "";
-    } catch (std::exception& e) {
-        status.error_code = UnexpectedError;
-        status.error_msg = strdup(e.what());
+        auto& session = RequireSession(c_index);
+        AssertInfo(session.IsDirect(),
+                   "production scalar/text session cannot consume a direct "
+                   "scalar payload");
+        session.BuildDirect(milvus::indexbuilder::AdaptDirectScalarFieldData(
+            session.SourceType(), size, field_data));
+        return SuccessStatus();
+    } catch (const std::exception& error) {
+        return milvus::FailureCStatus(&error);
     }
-    return status;
 }
 
 CStatus
 SerializeIndexToBinarySet(CIndex index, CBinarySet* c_binary_set) {
     SCOPE_CGO_CALL_METRIC();
 
-    auto status = CStatus();
     try {
-        AssertInfo(
-            index,
-            "failed to serialize index to binary set, passed index was null");
-        auto real_index =
-            reinterpret_cast<milvus::indexbuilder::IndexCreatorBase*>(index);
-        auto binary =
-            std::make_unique<knowhere::BinarySet>(real_index->Serialize());
+        AssertInfo(c_binary_set != nullptr,
+                   "BinarySet output pointer was null");
+        auto binary = std::make_unique<milvus::NamedBufferSet>(
+            RequireSession(index).SerializePhysical());
         *c_binary_set = binary.release();
-        status.error_code = Success;
-        status.error_msg = "";
-    } catch (std::exception& e) {
-        status.error_code = UnexpectedError;
-        status.error_msg = strdup(e.what());
+        return SuccessStatus();
+    } catch (const std::exception& error) {
+        return milvus::FailureCStatus(&error);
     }
-    return status;
 }
 
 CStatus
 LoadIndexFromBinarySet(CIndex index, CBinarySet c_binary_set) {
     SCOPE_CGO_CALL_METRIC();
 
-    auto status = CStatus();
     try {
-        AssertInfo(
-            index,
-            "failed to load index from binary set, passed index was null");
-        auto real_index =
-            reinterpret_cast<milvus::indexbuilder::IndexCreatorBase*>(index);
-        auto binary_set = reinterpret_cast<knowhere::BinarySet*>(c_binary_set);
-        real_index->Load(*binary_set);
-        status.error_code = Success;
-        status.error_msg = "";
-    } catch (std::exception& e) {
-        status.error_code = UnexpectedError;
-        status.error_msg = strdup(e.what());
+        AssertInfo(c_binary_set != nullptr, "BinarySet input pointer was null");
+        auto binary_set =
+            reinterpret_cast<milvus::NamedBufferSet*>(c_binary_set);
+        RequireSession(index).LoadPhysical(*binary_set);
+        return SuccessStatus();
+    } catch (const std::exception& error) {
+        return milvus::FailureCStatus(&error);
     }
-    return status;
-}
-
-CStatus
-CleanLocalData(CIndex index) {
-    SCOPE_CGO_CALL_METRIC();
-
-    auto status = CStatus();
-    try {
-        AssertInfo(index,
-                   "failed to build float vector index, passed index was null");
-        auto real_index =
-            reinterpret_cast<milvus::indexbuilder::IndexCreatorBase*>(index);
-        auto cIndex =
-            dynamic_cast<milvus::indexbuilder::VecIndexCreator*>(real_index);
-        cIndex->CleanLocalData();
-        status.error_code = Success;
-        status.error_msg = "";
-    } catch (std::exception& e) {
-        status.error_code = UnexpectedError;
-        status.error_msg = strdup(e.what());
-    }
-    return status;
 }
 
 CStatus
 SerializeIndexAndUpLoad(CIndex index, ProtoLayoutInterface result) {
     SCOPE_CGO_CALL_METRIC();
 
-    auto status = CStatus();
     try {
-        AssertInfo(
-            index,
-            "failed to serialize index to binary set, passed index was null");
-        auto real_index =
-            reinterpret_cast<milvus::indexbuilder::IndexCreatorBase*>(index);
-        auto create_index_result = real_index->Upload();
-        create_index_result->SerializeAt(
-            reinterpret_cast<milvus::ProtoLayout*>(result));
-        status.error_code = Success;
-        status.error_msg = "";
-    } catch (SegcoreError& e) {
-        status.error_code = e.get_error_code();
-        status.error_msg = strdup(e.what());
-    } catch (std::bad_alloc& e) {
-        status.error_code = MemAllocateFailed;
-        status.error_msg = strdup(e.what());
-    } catch (std::exception& e) {
-        status.error_code = UnexpectedError;
-        status.error_msg = strdup(e.what());
+        AssertInfo(result != nullptr, "index stats output was null");
+        WriteArtifactStats(RequireSession(index).Publish(), result);
+        return SuccessStatus();
+    } catch (const std::exception& error) {
+        return milvus::FailureCStatus(&error);
     }
-    return status;
 }

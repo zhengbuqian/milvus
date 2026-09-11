@@ -42,7 +42,6 @@ type CodecIndex interface {
 	GetIndexFileInfo() ([]*IndexFileInfo, error)
 	Load([]*Blob) error
 	Delete() error
-	CleanLocalData() error
 	UpLoad() (*cgopb.IndexStats, error)
 }
 
@@ -523,11 +522,6 @@ func (index *CgoIndex) Delete() error {
 	status := C.DeleteIndex(index.indexPtr)
 	index.close = true
 	return HandleCStatus(&status, "failed to delete index")
-}
-
-func (index *CgoIndex) CleanLocalData() error {
-	status := C.CleanLocalData(index.indexPtr)
-	return HandleCStatus(&status, "failed to clean cached data on disk")
 }
 
 func (index *CgoIndex) UpLoad() (*cgopb.IndexStats, error) {
