@@ -19,7 +19,6 @@
 #include <string>
 #include <vector>
 #include "common/Types.h"
-#include "index/Index.h"
 #include "storage/Types.h"
 
 struct AnalyzeInfo {
