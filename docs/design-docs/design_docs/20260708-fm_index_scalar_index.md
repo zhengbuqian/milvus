@@ -503,10 +503,10 @@ All integration points verified against master (branch state of 2026-07-14).
     implemented here; general `LIKE` / regex currently fall back to the scan.
 - **Registration**: `ScalarIndexType::FMINDEX` (`ScalarIndex.h:39-49` +
   To/FromString), `FMINDEX_INDEX_TYPE = "FMINDEX"` (`Meta.h`), param key
-  `fm_sa_sample_rate` (`Meta.h`), `std::optional<FMIndexParams>` in
-  `CreateIndexInfo` (`IndexInfo.h:30-45`), dispatch in
-  `IndexFactory::CreatePrimitiveScalarIndex<std::string>`
-  (`IndexFactory.cpp:768-777`, beside the `ngram_params` branch),
+  `fm_sa_sample_rate` (`Meta.h`), `FmIndexBuildParams` in
+  `scalar/fmindex/FmIndexBuilder.h`, and the `families::kFmIndex`
+  `BuilderRegistry<ScalarBuildInput<std::string_view>>` entry in
+  `scalar/fmindex/FmIndexBuilder.cpp`, which parses normalized build parameters,
   `IsMmapSupported()` list (`ScalarIndex.h:188-196`).
 
 ### Expression layer (`internal/core/src/exec/expression/`)
