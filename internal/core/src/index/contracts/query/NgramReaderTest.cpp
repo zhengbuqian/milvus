@@ -33,7 +33,7 @@
 #include "index/contracts/query/NgramReader.h"
 #include "index/scalar/ngram/JsonProjectedString.h"
 #include "index/test_utils/AssertHelpers.h"
-#include "index/test_utils/ReaderTestDriver.h"
+#include "index/test_utils/CaseTestDriver.h"
 
 namespace milvus::index::test {
 namespace {
@@ -138,7 +138,7 @@ ObserveNgram(const NgramCase& test_case,
 
 template <typename T>
 void
-AddNgramCase(ReaderObservationCases& cases,
+AddNgramCase(IndexTestCases& cases,
              std::string name,
              std::string dataset,
              NgramCase test_case,
@@ -146,27 +146,32 @@ AddNgramCase(ReaderObservationCases& cases,
     constexpr auto shape = std::is_same_v<T, JsonProjectedString>
                                ? BackendInputShape::JsonProjected
                                : BackendInputShape::Scalar;
-    cases.Add<T>({
+    cases.Add(IndexTestCase<T>{
         .name = std::move(name),
         .dataset = std::move(dataset),
         .input_shape = shape,
         .domain = Domain::Row,
-        .capability = &ReaderCaps::ngram_candidates,
         .logical_value_type = std::is_same_v<T, JsonProjectedString>
                                   ? std::optional<DataType>(DataType::VARCHAR)
                                   : std::nullopt,
+        .input_lifetime = InputLifetime::ReleaseBeforeBody,
         .select_backend = std::move(select_backend),
-        .observe =
-            [test_case = std::move(test_case)](const ReaderBackend&,
-                                               const ScalarTestData<T>& data,
-                                               IndexReaderBasePtr& reader) {
-                ObserveNgram(test_case, data, reader);
+        .body =
+            Observe<T>{
+                .capability = &ReaderCaps::ngram_candidates,
+                .run =
+                    [test_case = std::move(test_case)](
+                        const ReaderBackend&,
+                        const ScalarTestData<T>& data,
+                        IndexReaderBasePtr& reader) {
+                        ObserveNgram(test_case, data, reader);
+                    },
             },
     });
 }
 
 void
-AddCanHandleCases(ReaderObservationCases& cases) {
+AddCanHandleCases(IndexTestCases& cases) {
     constexpr auto dataset = "NgramCoreNullable";
     AddNgramCase<std::string_view>(
         cases,
@@ -287,7 +292,7 @@ AddCanHandleCases(ReaderObservationCases& cases) {
 }
 
 void
-AddWikiCases(ReaderObservationCases& cases) {
+AddWikiCases(IndexTestCases& cases) {
     constexpr auto dataset = "NgramWiki";
     AddNgramCase<std::string_view>(cases,
                                    "WikiInnerAry",
@@ -372,7 +377,7 @@ AddWikiCases(ReaderObservationCases& cases) {
 }
 
 void
-AddCoreCandidateCases(ReaderObservationCases& cases) {
+AddCoreCandidateCases(IndexTestCases& cases) {
     constexpr auto dataset = "NgramCoreNullable";
     AddNgramCase<std::string_view>(cases,
                                    "InnerSecondarySchoolRetainsExactHit",
@@ -495,16 +500,16 @@ AddCoreCandidateCases(ReaderObservationCases& cases) {
 }
 
 void
-AddMatcherAgreementCases(ReaderObservationCases& cases) {
+AddMatcherAgreementCases(IndexTestCases& cases) {
     constexpr auto dataset = "NgramCoreNullable";
-    struct Case {
+    struct MatcherAgreementCase {
         const char* name;
         PatternOp op;
         const char* literal;
         std::vector<size_t> exact;
         bool min_gram_2_only{false};
     };
-    const std::vector<Case> table = {
+    const std::vector<MatcherAgreementCase> table = {
         {"PrefixHello", PatternOp::PrefixMatch, "hello", {0, 1, 4}},
         {"PrefixTest", PatternOp::PrefixMatch, "test", {6, 7, 8, 9}},
         {"PrefixApp", PatternOp::PrefixMatch, "app", {10, 11}},
@@ -558,7 +563,7 @@ AddMatcherAgreementCases(ReaderObservationCases& cases) {
 }
 
 void
-AddOverlapCases(ReaderObservationCases& cases) {
+AddOverlapCases(IndexTestCases& cases) {
     constexpr auto dataset = "NgramOverlap";
     AddNgramCase<std::string_view>(cases,
                                    "OverlapTwoAa",
@@ -610,7 +615,7 @@ AddOverlapCases(ReaderObservationCases& cases) {
 }
 
 void
-AddUtf8AndEscapeCases(ReaderObservationCases& cases) {
+AddUtf8AndEscapeCases(IndexTestCases& cases) {
     constexpr auto utf8 = "NgramUtf8";
     AddNgramCase<std::string_view>(cases,
                                    "Utf8CafePrefix",
@@ -739,7 +744,7 @@ AddUtf8AndEscapeCases(ReaderObservationCases& cases) {
 }
 
 void
-AddJsonProjectedCases(ReaderObservationCases& cases) {
+AddJsonProjectedCases(IndexTestCases& cases) {
     constexpr auto dataset = "NgramJsonProjected";
     AddNgramCase<JsonProjectedString>(cases,
                                       "JsonMissingLiteral",
@@ -806,10 +811,10 @@ AddJsonProjectedCases(ReaderObservationCases& cases) {
                                       });
 }
 
-const ReaderObservationCases&
+const IndexTestCases&
 NgramCases() {
     static const auto cases = [] {
-        ReaderObservationCases cases;
+        IndexTestCases cases;
         AddCanHandleCases(cases);
         AddWikiCases(cases);
         AddCoreCandidateCases(cases);

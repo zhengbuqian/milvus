@@ -28,7 +28,7 @@
 #include "index/Meta.h"
 #include "index/contracts/query/TextMatchReader.h"
 #include "index/test_utils/AssertHelpers.h"
-#include "index/test_utils/ReaderTestDriver.h"
+#include "index/test_utils/CaseTestDriver.h"
 
 namespace milvus::index::test {
 namespace {
@@ -78,42 +78,46 @@ const BackendSelector kStandardAnalyzer = [](const ReaderBackend& backend) {
 const BackendSelector kJiebaAnalyzer = UsesJieba;
 
 void
-AddTextCase(ReaderObservationCases& cases,
+AddTextCase(IndexTestCases& cases,
             std::string name,
             std::string dataset,
             TextQueryArgs args,
             std::vector<size_t> expected_offsets,
             BackendSelector select_backend) {
-    cases.Add<std::string_view>({
+    cases.Add(IndexTestCase<std::string_view>{
         .name = std::move(name),
         .dataset = std::move(dataset),
         .input_shape = BackendInputShape::Scalar,
         .domain = Domain::Row,
-        .capability = &ReaderCaps::text_match,
+        .input_lifetime = InputLifetime::ReleaseBeforeBody,
         .select_backend = std::move(select_backend),
-        .observe =
-            [args = std::move(args),
-             expected_offsets = std::move(expected_offsets)](
-                const ReaderBackend&,
-                const ScalarTestData<std::string_view>& data,
-                IndexReaderBasePtr& reader) {
-                ASSERT_TRUE(reader->Caps().text_match);
-                EXPECT_TRUE(reader->Caps().exact);
-                const auto* text_reader =
-                    dynamic_cast<const TextMatchReader*>(reader.get());
-                ASSERT_NE(text_reader, nullptr);
+        .body =
+            Observe<std::string_view>{
+                .capability = &ReaderCaps::text_match,
+                .run =
+                    [args = std::move(args),
+                     expected_offsets = std::move(expected_offsets)](
+                        const ReaderBackend&,
+                        const ScalarTestData<std::string_view>& data,
+                        IndexReaderBasePtr& reader) {
+                        ASSERT_TRUE(reader->Caps().text_match);
+                        EXPECT_TRUE(reader->Caps().exact);
+                        const auto* text_reader =
+                            dynamic_cast<const TextMatchReader*>(reader.get());
+                        ASSERT_NE(text_reader, nullptr);
 
-                const auto expected =
-                    Hits(data.values.size(), expected_offsets);
-                auto actual = RunTextQuery(*text_reader, args);
-                ExpectBitmap(actual, expected);
-                ExpectNullState(data, *reader);
+                        const auto expected =
+                            Hits(data.values.size(), expected_offsets);
+                        auto actual = RunTextQuery(*text_reader, args);
+                        ExpectBitmap(actual, expected);
+                        ExpectNullState(data, *reader);
+                    },
             },
     });
 }
 
 void
-AddStandardEnglishCases(ReaderObservationCases& cases) {
+AddStandardEnglishCases(IndexTestCases& cases) {
     constexpr auto dataset = "TextEnglishNullable";
     AddTextCase(cases,
                 "MatchFootballMin1",
@@ -240,7 +244,7 @@ AddStandardEnglishCases(ReaderObservationCases& cases) {
 }
 
 void
-AddAllValidCases(ReaderObservationCases& cases) {
+AddAllValidCases(IndexTestCases& cases) {
     constexpr auto dataset = "TextEnglishAllValid";
     AddTextCase(cases,
                 "AllValidMatchFootball",
@@ -263,7 +267,7 @@ AddAllValidCases(ReaderObservationCases& cases) {
 }
 
 void
-AddNullEmptyAndUnicodeCases(ReaderObservationCases& cases) {
+AddNullEmptyAndUnicodeCases(IndexTestCases& cases) {
     AddTextCase(cases,
                 "SingleBatchNullableAlpha",
                 "TextSingleBatchNullable",
@@ -321,7 +325,7 @@ AddNullEmptyAndUnicodeCases(ReaderObservationCases& cases) {
 }
 
 void
-AddJiebaCases(ReaderObservationCases& cases) {
+AddJiebaCases(IndexTestCases& cases) {
     constexpr auto dataset = "TextJiebaNullable";
     AddTextCase(cases,
                 "JiebaMatchBronze",
@@ -367,10 +371,10 @@ AddJiebaCases(ReaderObservationCases& cases) {
                 kJiebaAnalyzer);
 }
 
-const ReaderObservationCases&
+const IndexTestCases&
 TextCases() {
     static const auto cases = [] {
-        ReaderObservationCases cases;
+        IndexTestCases cases;
         AddStandardEnglishCases(cases);
         AddAllValidCases(cases);
         AddNullEmptyAndUnicodeCases(cases);

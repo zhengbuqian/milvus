@@ -36,7 +36,7 @@
 #include "index/contracts/Registry.h"
 #include "index/scalar/json/JsonProjectedIndexLoad.h"
 #include "index/test_utils/ArtifactTestUtils.h"
-#include "index/test_utils/FilterTestDriver.h"
+#include "index/test_utils/CaseTestDriver.h"
 #include "index/test_utils/ScalarReaderFactory.h"
 #include "index/test_utils/TestArtifactIO.h"
 

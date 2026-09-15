@@ -30,7 +30,7 @@
 #include "index/contracts/query/ScalarValueReader.h"
 #include "index/contracts/query/SpatialReader.h"
 #include "index/contracts/query/TextMatchReader.h"
-#include "index/test_utils/ReaderTestDriver.h"
+#include "index/test_utils/CaseTestDriver.h"
 
 namespace milvus::index::test {
 namespace {
@@ -90,25 +90,27 @@ ObserveReaderMetadata(const ReaderBackend& backend,
 
 template <typename T>
 void
-AddReaderMetadataCases(ReaderObservationCases& cases) {
-    cases.Add<T>({
+AddReaderMetadataCases(IndexTestCases& cases) {
+    cases.Add(IndexTestCase<T>{
         .name = "RowMetadataAndInterfaces",
         .dataset = "PredicateSingleRow",
-        .observe = ObserveReaderMetadata<T>,
+        .input_lifetime = InputLifetime::ReleaseBeforeBody,
+        .body = Observe<T>{.run = ObserveReaderMetadata<T>},
     });
-    cases.Add<T>({
+    cases.Add(IndexTestCase<T>{
         .name = "ElementMetadataAndInterfaces",
         .dataset = "NestedElements",
         .input_shape = BackendInputShape::NestedElements,
         .domain = Domain::Element,
-        .observe = ObserveReaderMetadata<T>,
+        .input_lifetime = InputLifetime::ReleaseBeforeBody,
+        .body = Observe<T>{.run = ObserveReaderMetadata<T>},
     });
 }
 
-const ReaderObservationCases&
+const IndexTestCases&
 ReaderCases() {
     static const auto cases = [] {
-        ReaderObservationCases result;
+        IndexTestCases result;
         AddReaderMetadataCases<bool>(result);
         AddReaderMetadataCases<int8_t>(result);
         AddReaderMetadataCases<int16_t>(result);

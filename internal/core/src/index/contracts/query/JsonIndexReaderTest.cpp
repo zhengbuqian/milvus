@@ -35,7 +35,7 @@
 #include "index/contracts/query/ScalarPredicateReader.h"
 #include "index/scalar/ScalarIndexUtils.h"
 #include "index/test_utils/AssertHelpers.h"
-#include "index/test_utils/ReaderTestDriver.h"
+#include "index/test_utils/CaseTestDriver.h"
 
 namespace milvus::index::test {
 namespace {
@@ -180,26 +180,30 @@ Membership(const ScalarPredicateReader<T>& reader,
 
 template <typename InputT, typename Observer>
 void
-AddJsonCase(ReaderObservationCases& cases,
+AddJsonCase(IndexTestCases& cases,
             std::string name,
             std::string dataset,
             BackendInputShape input_shape,
             Observer observe,
             bool ReaderCaps::*capability = &ReaderCaps::json_paths,
             std::vector<std::string> backends = {}) {
-    cases.Add<InputT>({
+    cases.Add(IndexTestCase<InputT>{
         .name = std::move(name),
         .dataset = std::move(dataset),
         .input_shape = input_shape,
-        .capability = capability,
+        .input_lifetime = InputLifetime::ReleaseBeforeBody,
         .backends = std::move(backends),
-        .observe = std::move(observe),
+        .body =
+            Observe<InputT>{
+                .capability = capability,
+                .run = std::move(observe),
+            },
     });
 }
 
 template <typename InputT, typename QueryT>
 void
-AddMembershipCase(ReaderObservationCases& cases,
+AddMembershipCase(IndexTestCases& cases,
                   std::string name,
                   std::string dataset,
                   BackendInputShape input_shape,
@@ -233,7 +237,7 @@ AddMembershipCase(ReaderObservationCases& cases,
 
 template <typename InputT, typename QueryT>
 void
-AddUnaryRangeCase(ReaderObservationCases& cases,
+AddUnaryRangeCase(IndexTestCases& cases,
                   std::string name,
                   std::string dataset,
                   BackendInputShape input_shape,
@@ -272,7 +276,7 @@ AddUnaryRangeCase(ReaderObservationCases& cases,
 
 template <typename InputT, typename QueryT>
 void
-AddIntervalCase(ReaderObservationCases& cases,
+AddIntervalCase(IndexTestCases& cases,
                 std::string name,
                 std::string dataset,
                 BackendInputShape input_shape,
@@ -318,7 +322,7 @@ AddIntervalCase(ReaderObservationCases& cases,
 
 template <typename InputT>
 void
-AddPatternCase(ReaderObservationCases& cases,
+AddPatternCase(IndexTestCases& cases,
                std::string name,
                std::string dataset,
                BackendInputShape input_shape,
@@ -357,7 +361,7 @@ AddPatternCase(ReaderObservationCases& cases,
 
 template <typename InputT>
 void
-AddExistsCase(ReaderObservationCases& cases,
+AddExistsCase(IndexTestCases& cases,
               std::string name,
               std::string dataset,
               BackendInputShape input_shape,
@@ -379,7 +383,7 @@ AddExistsCase(ReaderObservationCases& cases,
 
 template <typename InputT>
 void
-AddResolvedNullCase(ReaderObservationCases& cases,
+AddResolvedNullCase(IndexTestCases& cases,
                     std::string name,
                     std::string dataset,
                     BackendInputShape input_shape,
@@ -419,7 +423,7 @@ AddResolvedNullCase(ReaderObservationCases& cases,
 }
 
 void
-AddJsonFlatRoutingCases(ReaderObservationCases& cases) {
+AddJsonFlatRoutingCases(IndexTestCases& cases) {
     constexpr auto shape = BackendInputShape::JsonDocument;
     AddExistsCase<std::string_view>(cases,
                                     "PreferredNameExists",
@@ -601,7 +605,7 @@ AddJsonFlatRoutingCases(ReaderObservationCases& cases) {
 }
 
 void
-AddJsonFlatStringCases(ReaderObservationCases& cases) {
+AddJsonFlatStringCases(IndexTestCases& cases) {
     constexpr auto shape = BackendInputShape::JsonDocument;
     const auto cast = Cast("VARCHAR");
     const std::string path = "/profile/name/first";
@@ -818,7 +822,7 @@ AddJsonFlatStringCases(ReaderObservationCases& cases) {
 }
 
 void
-AddJsonFlatBoolCases(ReaderObservationCases& cases) {
+AddJsonFlatBoolCases(IndexTestCases& cases) {
     constexpr auto shape = BackendInputShape::JsonDocument;
     const auto cast = Cast("BOOL");
     const std::string path = "/profile/is_active";
@@ -881,7 +885,7 @@ AddJsonFlatBoolCases(ReaderObservationCases& cases) {
 }
 
 void
-AddJsonFlatNumericCases(ReaderObservationCases& cases) {
+AddJsonFlatNumericCases(IndexTestCases& cases) {
     constexpr auto shape = BackendInputShape::JsonDocument;
     const auto cast = Cast("DOUBLE");
     const std::string path = "/profile/employee_id";
@@ -1085,7 +1089,7 @@ AddJsonFlatNumericCases(ReaderObservationCases& cases) {
 }
 
 void
-AddJsonFlatArrayStringCases(ReaderObservationCases& cases) {
+AddJsonFlatArrayStringCases(IndexTestCases& cases) {
     constexpr auto shape = BackendInputShape::JsonDocument;
     const auto cast = Cast("VARCHAR");
     AddMembershipCase<std::string_view, std::string_view>(cases,
@@ -1110,7 +1114,7 @@ AddJsonFlatArrayStringCases(ReaderObservationCases& cases) {
 
 template <typename InputT>
 void
-AddProjectedRoutingCases(ReaderObservationCases& cases,
+AddProjectedRoutingCases(IndexTestCases& cases,
                          std::string dataset,
                          JsonCastType cast,
                          std::vector<size_t> expected_exists,
@@ -1148,7 +1152,7 @@ AddProjectedRoutingCases(ReaderObservationCases& cases,
 }
 
 void
-AddProjectedScalarCases(ReaderObservationCases& cases) {
+AddProjectedScalarCases(IndexTestCases& cases) {
     constexpr auto shape = BackendInputShape::JsonProjected;
     AddProjectedRoutingCases<double>(cases,
                                      "JsonProjectedDoubleTriState",
@@ -1351,7 +1355,7 @@ AddProjectedScalarCases(ReaderObservationCases& cases) {
 }
 
 void
-AddProjectedArrayCases(ReaderObservationCases& cases) {
+AddProjectedArrayCases(IndexTestCases& cases) {
     constexpr auto shape = BackendInputShape::JsonProjected;
     AddProjectedRoutingCases<ArrayView>(cases,
                                         "JsonProjectedArrayBool",
@@ -1465,7 +1469,7 @@ AddProjectedArrayCases(ReaderObservationCases& cases) {
 }
 
 void
-AddProjectedNgramRoutingCases(ReaderObservationCases& cases) {
+AddProjectedNgramRoutingCases(IndexTestCases& cases) {
     constexpr auto shape = BackendInputShape::JsonProjected;
     AddJsonCase<JsonProjectedString>(
         cases,
@@ -1519,10 +1523,10 @@ AddProjectedNgramRoutingCases(ReaderObservationCases& cases) {
         });
 }
 
-const ReaderObservationCases&
+const IndexTestCases&
 JsonCases() {
     static const auto cases = [] {
-        ReaderObservationCases result;
+        IndexTestCases result;
         AddJsonFlatRoutingCases(result);
         AddJsonFlatStringCases(result);
         AddJsonFlatBoolCases(result);

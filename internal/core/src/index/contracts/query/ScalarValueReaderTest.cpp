@@ -27,7 +27,7 @@
 #include <vector>
 
 #include "index/contracts/query/ScalarValueReader.h"
-#include "index/test_utils/ReaderTestDriver.h"
+#include "index/test_utils/CaseTestDriver.h"
 
 namespace milvus::index::test {
 namespace {
@@ -130,46 +130,54 @@ ExpectGather(const ScalarTestData<T>& data,
 
 template <typename T>
 void
-AddLookupAllCase(ReaderObservationCases& cases,
+AddLookupAllCase(IndexTestCases& cases,
                  std::string name,
                  std::string dataset,
                  BackendInputShape input_shape = BackendInputShape::Scalar,
                  Domain domain = Domain::Row) {
-    cases.Add<T>({
+    cases.Add(IndexTestCase<T>{
         .name = std::move(name),
         .dataset = std::move(dataset),
         .input_shape = input_shape,
         .domain = domain,
-        .capability = &ReaderCaps::value_lookup,
-        .observe =
-            [](const auto&, const auto& data, auto& reader) {
-                const auto* values = ValueReader<T>(reader);
-                ASSERT_NE(values, nullptr);
-                ExpectLookupAll(data, *values);
+        .input_lifetime = InputLifetime::ReleaseBeforeBody,
+        .body =
+            Observe<T>{
+                .capability = &ReaderCaps::value_lookup,
+                .run =
+                    [](const auto&, const auto& data, auto& reader) {
+                        const auto* values = ValueReader<T>(reader);
+                        ASSERT_NE(values, nullptr);
+                        ExpectLookupAll(data, *values);
+                    },
             },
     });
 }
 
 template <typename T>
 void
-AddGatherCase(ReaderObservationCases& cases,
+AddGatherCase(IndexTestCases& cases,
               std::string name,
               std::string dataset,
               std::vector<int64_t> offsets,
               BackendInputShape input_shape = BackendInputShape::Scalar,
               Domain domain = Domain::Row) {
-    cases.Add<T>({
+    cases.Add(IndexTestCase<T>{
         .name = std::move(name),
         .dataset = std::move(dataset),
         .input_shape = input_shape,
         .domain = domain,
-        .capability = &ReaderCaps::value_lookup,
-        .observe =
-            [offsets = std::move(offsets)](
-                const auto&, const auto& data, auto& reader) {
-                const auto* values = ValueReader<T>(reader);
-                ASSERT_NE(values, nullptr);
-                ExpectGather(data, *values, offsets);
+        .input_lifetime = InputLifetime::ReleaseBeforeBody,
+        .body =
+            Observe<T>{
+                .capability = &ReaderCaps::value_lookup,
+                .run =
+                    [offsets = std::move(offsets)](
+                        const auto&, const auto& data, auto& reader) {
+                        const auto* values = ValueReader<T>(reader);
+                        ASSERT_NE(values, nullptr);
+                        ExpectGather(data, *values, offsets);
+                    },
             },
     });
 }
@@ -202,7 +210,7 @@ MixedGatherOffsets(const ScalarTestData<T>& data) {
 
 template <typename T>
 void
-AddCoreValueCases(ReaderObservationCases& cases) {
+AddCoreValueCases(IndexTestCases& cases) {
     AddLookupAllCase<T>(cases, "LookupMixedValidity", "PredicateEdges");
     AddLookupAllCase<T>(cases, "LookupAbsentValidity", "PredicateAllValid");
     AddLookupAllCase<T>(cases, "LookupAllNull", "PredicateAllNull");
@@ -210,15 +218,19 @@ AddCoreValueCases(ReaderObservationCases& cases) {
 
     AddGatherCase<T>(cases, "GatherEmptyRequest", "PredicateSingleRow", {});
     AddGatherCase<T>(cases, "GatherSingleOffset", "PredicateEdges", {0});
-    cases.Add<T>({
+    cases.Add(IndexTestCase<T>{
         .name = "GatherPermutedDuplicateAndNullOffsets",
         .dataset = "PredicateEdges",
-        .capability = &ReaderCaps::value_lookup,
-        .observe =
-            [](const auto&, const auto& data, auto& reader) {
-                const auto* values = ValueReader<T>(reader);
-                ASSERT_NE(values, nullptr);
-                ExpectGather(data, *values, MixedGatherOffsets(data));
+        .input_lifetime = InputLifetime::ReleaseBeforeBody,
+        .body =
+            Observe<T>{
+                .capability = &ReaderCaps::value_lookup,
+                .run =
+                    [](const auto&, const auto& data, auto& reader) {
+                        const auto* values = ValueReader<T>(reader);
+                        ASSERT_NE(values, nullptr);
+                        ExpectGather(data, *values, MixedGatherOffsets(data));
+                    },
             },
     });
     AddGatherCase<T>(
@@ -240,24 +252,29 @@ AddCoreValueCases(ReaderObservationCases& cases) {
 
 template <typename T>
 void
-AddHighCardinalityLookup(ReaderObservationCases& cases) {
-    cases.Add<T>({
+AddHighCardinalityLookup(IndexTestCases& cases) {
+    cases.Add(IndexTestCase<T>{
         .name = "LookupHighCardinalityBoundaries",
         .dataset = "TenThousandHighCardinality",
-        .capability = &ReaderCaps::value_lookup,
-        .observe =
-            [](const auto&, const auto& data, auto& reader) {
-                const auto* values = ValueReader<T>(reader);
-                ASSERT_NE(values, nullptr);
-                ExpectLookupOffsets(data, *values, {0, 1999, 2000, 9999});
+        .input_lifetime = InputLifetime::ReleaseBeforeBody,
+        .body =
+            Observe<T>{
+                .capability = &ReaderCaps::value_lookup,
+                .run =
+                    [](const auto&, const auto& data, auto& reader) {
+                        const auto* values = ValueReader<T>(reader);
+                        ASSERT_NE(values, nullptr);
+                        ExpectLookupOffsets(
+                            data, *values, {0, 1999, 2000, 9999});
+                    },
             },
     });
 }
 
-const ReaderObservationCases&
+const IndexTestCases&
 ValueCases() {
     static const auto cases = [] {
-        ReaderObservationCases result;
+        IndexTestCases result;
         AddCoreValueCases<bool>(result);
         AddCoreValueCases<int8_t>(result);
         AddCoreValueCases<int16_t>(result);
@@ -293,21 +310,26 @@ ValueCases() {
                                "PredicateEdgesWithEmptyBatches",
                                {5, 0, 2, 1, 0});
 
-        result.Add<std::string_view>({
+        result.Add(IndexTestCase<std::string_view>{
             .name = "LookupOwnsStringAfterLaterQueryAndReaderDestruction",
             .dataset = "PredicateAllValid",
-            .capability = &ReaderCaps::value_lookup,
-            .observe =
-                [](const auto&, const auto& data, auto& reader) {
-                    const auto* values = ValueReader<std::string_view>(reader);
-                    ASSERT_NE(values, nullptr);
-                    ASSERT_GT(data.values.size(), 6);
-                    auto retained = values->Lookup(6);
-                    ASSERT_TRUE(retained.has_value());
-                    ASSERT_GT(retained->size(), 64);
-                    static_cast<void>(values->Lookup(0));
-                    reader.reset();
-                    EXPECT_EQ(*retained, data.values[6]);
+            .input_lifetime = InputLifetime::ReleaseBeforeBody,
+            .body =
+                Observe<std::string_view>{
+                    .capability = &ReaderCaps::value_lookup,
+                    .run =
+                        [](const auto&, const auto& data, auto& reader) {
+                            const auto* values =
+                                ValueReader<std::string_view>(reader);
+                            ASSERT_NE(values, nullptr);
+                            ASSERT_GT(data.values.size(), 6);
+                            auto retained = values->Lookup(6);
+                            ASSERT_TRUE(retained.has_value());
+                            ASSERT_GT(retained->size(), 64);
+                            static_cast<void>(values->Lookup(0));
+                            reader.reset();
+                            EXPECT_EQ(*retained, data.values[6]);
+                        },
                 },
         });
         return result;

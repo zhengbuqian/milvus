@@ -24,7 +24,7 @@
 
 #include "index/contracts/query/NullReader.h"
 #include "index/test_utils/AssertHelpers.h"
-#include "index/test_utils/ReaderTestDriver.h"
+#include "index/test_utils/CaseTestDriver.h"
 
 namespace milvus::index::test {
 namespace {
@@ -57,29 +57,33 @@ ExpectNullMasks(const ScalarTestData<T>& data, const NullReader& reader) {
 
 template <typename T>
 void
-AddNullCase(ReaderObservationCases& cases,
+AddNullCase(IndexTestCases& cases,
             std::string name,
             std::string dataset,
             BackendInputShape input_shape = BackendInputShape::Scalar,
             Domain domain = Domain::Row) {
-    cases.Add<T>({
+    cases.Add(IndexTestCase<T>{
         .name = std::move(name),
         .dataset = std::move(dataset),
         .input_shape = input_shape,
         .domain = domain,
-        .observe =
-            [](const auto&, const auto& data, const auto& reader) {
-                const auto* nulls =
-                    dynamic_cast<const NullReader*>(reader.get());
-                ASSERT_NE(nulls, nullptr);
-                ExpectNullMasks(data, *nulls);
+        .input_lifetime = InputLifetime::ReleaseBeforeBody,
+        .body =
+            Observe<T>{
+                .run =
+                    [](const auto&, const auto& data, const auto& reader) {
+                        const auto* nulls =
+                            dynamic_cast<const NullReader*>(reader.get());
+                        ASSERT_NE(nulls, nullptr);
+                        ExpectNullMasks(data, *nulls);
+                    },
             },
     });
 }
 
 template <typename T>
 void
-AddCoreNullCases(ReaderObservationCases& cases) {
+AddCoreNullCases(IndexTestCases& cases) {
     AddNullCase<T>(cases, "MixedValidity", "PredicateEdges");
     AddNullCase<T>(cases, "AbsentValidityIsAllValid", "PredicateAllValid");
     AddNullCase<T>(cases, "AllNull", "PredicateAllNull");
@@ -91,10 +95,10 @@ AddCoreNullCases(ReaderObservationCases& cases) {
                    Domain::Element);
 }
 
-const ReaderObservationCases&
+const IndexTestCases&
 NullCases() {
     static const auto cases = [] {
-        ReaderObservationCases result;
+        IndexTestCases result;
         AddCoreNullCases<bool>(result);
         AddCoreNullCases<int8_t>(result);
         AddCoreNullCases<int16_t>(result);
@@ -108,8 +112,21 @@ NullCases() {
             result, "AcrossBatches", "PredicateEdgesMultiBatch");
         AddNullCase<int64_t>(
             result, "AcrossEmptyBatches", "PredicateEdgesWithEmptyBatches");
-        AddNullCase<int64_t>(
-            result, "AcrossPackedBitBoundary", "BitBoundaryNullable");
+        result.Add(IndexTestCase<int64_t>{
+            .name = "AcrossPackedBitBoundary",
+            .dataset = "BitBoundaryNullable",
+            .input_lifetime = InputLifetime::ReleaseBeforeBody,
+            .body =
+                Observe<int64_t>{
+                    .run =
+                        [](const auto&, const auto& data, const auto& reader) {
+                            const auto* nulls =
+                                dynamic_cast<const NullReader*>(reader.get());
+                            ASSERT_NE(nulls, nullptr);
+                            ExpectNullMasks(data, *nulls);
+                        },
+                },
+        });
         AddNullCase<std::string_view>(
             result, "NullIsDistinctFromEmptyString", "NullVsEmptyString");
         return result;

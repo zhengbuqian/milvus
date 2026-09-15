@@ -28,7 +28,7 @@
 #include "common/Geometry.h"
 #include "index/contracts/query/SpatialReader.h"
 #include "index/test_utils/AssertHelpers.h"
-#include "index/test_utils/ReaderTestDriver.h"
+#include "index/test_utils/CaseTestDriver.h"
 
 namespace milvus::index::test {
 namespace {
@@ -49,10 +49,10 @@ struct ConcreteSpatialCase {
     std::vector<size_t> expected_offsets;
 };
 
-const ReaderObservationCases&
+const IndexTestCases&
 ConcreteRTreeCases() {
     static const auto cases = [] {
-        ReaderObservationCases cases;
+        IndexTestCases cases;
         const std::vector<ConcreteSpatialCase> table = {
             {.name = "PointMbrIntersection",
              .op = SpatialOp::Equals,
@@ -72,51 +72,64 @@ ConcreteRTreeCases() {
              .expected_offsets = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11}},
         };
         for (const auto& test_case : table) {
-            cases.Add<std::string_view>({
+            cases.Add(IndexTestCase<std::string_view>{
                 .name = test_case.name,
                 .dataset = kDataset,
                 .input_shape = BackendInputShape::SpatialWkb,
                 .domain = Domain::Row,
-                .capability = &ReaderCaps::spatial,
                 .logical_value_type = DataType::GEOMETRY,
+                .input_lifetime = InputLifetime::ReleaseBeforeBody,
                 .backends = {kBackend},
-                .observe =
-                    [test_case](const ReaderBackend&,
+                .body =
+                    Observe<std::string_view>{
+                        .capability = &ReaderCaps::spatial,
+                        .run =
+                            [test_case](
+                                const ReaderBackend&,
                                 const ScalarTestData<std::string_view>& data,
                                 IndexReaderBasePtr& reader) {
-                        const auto* spatial =
-                            dynamic_cast<const SpatialReader*>(reader.get());
-                        ASSERT_NE(spatial, nullptr);
-                        auto actual = [&] {
-                            if (test_case.query_wkt.has_value()) {
-                                const Geometry query(
-                                    GetThreadLocalGEOSContext(),
-                                    test_case.query_wkt->c_str());
-                                return spatial->Candidates(test_case.op, query);
-                            }
-                            const Geometry query;
-                            return spatial->Candidates(test_case.op, query);
-                        }();
-                        const auto expected = Hits(data.values.size(),
-                                                   test_case.expected_offsets);
-                        ExpectBitmap(actual, expected);
+                                const auto* spatial =
+                                    dynamic_cast<const SpatialReader*>(
+                                        reader.get());
+                                ASSERT_NE(spatial, nullptr);
+                                auto actual = [&] {
+                                    if (test_case.query_wkt.has_value()) {
+                                        const Geometry query(
+                                            GetThreadLocalGEOSContext(),
+                                            test_case.query_wkt->c_str());
+                                        return spatial->Candidates(test_case.op,
+                                                                   query);
+                                    }
+                                    const Geometry query;
+                                    return spatial->Candidates(test_case.op,
+                                                               query);
+                                }();
+                                const auto expected =
+                                    Hits(data.values.size(),
+                                         test_case.expected_offsets);
+                                ExpectBitmap(actual, expected);
+                            },
                     },
             });
         }
-        cases.Add<std::string_view>({
+        cases.Add(IndexTestCase<std::string_view>{
             .name = "UsesHeapResourceAccounting",
             .dataset = "SpatialWkbAllValid",
             .input_shape = BackendInputShape::SpatialWkb,
             .domain = Domain::Row,
-            .capability = &ReaderCaps::spatial,
             .logical_value_type = DataType::GEOMETRY,
+            .input_lifetime = InputLifetime::ReleaseBeforeBody,
             .backends = std::vector<std::string>(kAllBackends.begin(),
                                                  kAllBackends.end()),
-            .observe =
-                [](const ReaderBackend&,
-                   const ScalarTestData<std::string_view>&,
-                   IndexReaderBasePtr& reader) {
-                    EXPECT_EQ(reader->CellByteSize().file_bytes, 0);
+            .body =
+                Observe<std::string_view>{
+                    .capability = &ReaderCaps::spatial,
+                    .run =
+                        [](const ReaderBackend&,
+                           const ScalarTestData<std::string_view>&,
+                           IndexReaderBasePtr& reader) {
+                            EXPECT_EQ(reader->CellByteSize().file_bytes, 0);
+                        },
                 },
         });
         return cases;

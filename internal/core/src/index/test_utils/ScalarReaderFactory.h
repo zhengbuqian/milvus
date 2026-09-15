@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -211,6 +212,24 @@ class ReaderBackend {
     bool
     LoadersRegistered() const;
 
+    // Prepare registry lookup and dataset-specific builder configuration
+    // separately from the one-shot Build call. Negative builder-contract tests
+    // use this to keep fixture/setup failures outside their expected-error
+    // boundary.
+    template <typename T>
+    std::unique_ptr<ArtifactBuilder<ScalarBuildInput<T>>>
+    CreateBuilder(BackendCaseMetadata metadata = {}) const {
+        if (input_type_ != std::type_index(typeid(T))) {
+            throw std::logic_error(Name() + ": wrong test input type");
+        }
+        auto builder = BuilderRegistry<ScalarBuildInput<T>>::Instance().Create(
+            spec_.family, CompletedBuildParams(metadata));
+        if (!builder) {
+            throw std::logic_error(Name() + ": no builder for family/input");
+        }
+        return builder;
+    }
+
     template <typename T>
     storage::ArtifactPtr
     Build(const ScalarBuildInput<T>& input,
@@ -221,11 +240,7 @@ class ReaderBackend {
         if (metadata.row_count == 0) {
             metadata.row_count = detail::InputRowCount(input);
         }
-        auto builder = BuilderRegistry<ScalarBuildInput<T>>::Instance().Create(
-            spec_.family, CompletedBuildParams(metadata));
-        if (!builder) {
-            throw std::logic_error(Name() + ": no builder for family/input");
-        }
+        auto builder = CreateBuilder<T>(metadata);
         auto artifact = std::move(*builder).Build(input);
         if (!artifact) {
             throw std::logic_error(Name() + ": builder returned no artifact");
