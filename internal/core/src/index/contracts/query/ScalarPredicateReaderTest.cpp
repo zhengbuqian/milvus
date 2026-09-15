@@ -30,7 +30,7 @@
 #include <vector>
 
 #include "index/contracts/query/ScalarPredicateReader.h"
-#include "index/test_utils/FilterTestDriver.h"
+#include "index/test_utils/CaseTestDriver.h"
 
 namespace milvus::index::test {
 namespace {
@@ -330,83 +330,119 @@ CaseValues() {
 
 template <typename T>
 void
-AddEdgeMembershipCases(FilterCases& cases) {
+AddEdgeMembershipCases(IndexTestCases& cases) {
     const auto values = CaseValues<T>();
 
-    cases.Add<In<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "InEmptyKeys",
         .dataset = "PredicateEdges",
-        .args = {.keys = {}},
+        .body =
+            Query<In<T>>{
+                .args = {.keys = {}},
+            },
     });
     if constexpr (!std::is_same_v<T, bool>) {
-        cases.Add<In<T>>({
+        cases.Add(IndexTestCase<T>{
             .name = "InMissingOnly",
             .dataset = "PredicateEdges",
-            .args = {.keys = {values.missing}},
+            .body =
+                Query<In<T>>{
+                    .args = {.keys = {values.missing}},
+                },
         });
     }
-    cases.Add<In<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "InAllValues",
         .dataset = "PredicateEdges",
-        .args = {.keys = values.all_values},
+        .body =
+            Query<In<T>>{
+                .args = {.keys = values.all_values},
+            },
     });
-    cases.Add<In<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "InRepeatedKeys",
         .dataset = "PredicateEdges",
-        .args = {.keys = {values.middle, values.middle, values.middle}},
+        .body =
+            Query<In<T>>{
+                .args = {.keys = {values.middle, values.middle, values.middle}},
+            },
     });
-    cases.Add<In<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "InNullableStoredValue",
         .dataset = "PredicateEdges",
-        .args = {.keys = {values.nullable_duplicate}},
+        .body =
+            Query<In<T>>{
+                .args = {.keys = {values.nullable_duplicate}},
+            },
     });
     if constexpr (!std::is_same_v<T, bool>) {
-        cases.Add<In<T>>({
+        cases.Add(IndexTestCase<T>{
             .name = "InMixedHitAndMiss",
             .dataset = "PredicateEdges",
-            .args = {.keys = {values.low, values.missing}},
+            .body =
+                Query<In<T>>{
+                    .args = {.keys = {values.low, values.missing}},
+                },
         });
     }
 
-    cases.Add<NotIn<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "NotInEmptyKeys",
         .dataset = "PredicateEdges",
-        .args = {.keys = {}},
+        .body =
+            Query<NotIn<T>>{
+                .args = {.keys = {}},
+            },
     });
     if constexpr (!std::is_same_v<T, bool>) {
-        cases.Add<NotIn<T>>({
+        cases.Add(IndexTestCase<T>{
             .name = "NotInMissingOnly",
             .dataset = "PredicateEdges",
-            .args = {.keys = {values.missing}},
+            .body =
+                Query<NotIn<T>>{
+                    .args = {.keys = {values.missing}},
+                },
         });
     }
-    cases.Add<NotIn<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "NotInAllValues",
         .dataset = "PredicateEdges",
-        .args = {.keys = values.all_values},
+        .body =
+            Query<NotIn<T>>{
+                .args = {.keys = values.all_values},
+            },
     });
-    cases.Add<NotIn<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "NotInRepeatedKeys",
         .dataset = "PredicateEdges",
-        .args = {.keys = {values.middle, values.middle, values.middle}},
+        .body =
+            Query<NotIn<T>>{
+                .args = {.keys = {values.middle, values.middle, values.middle}},
+            },
     });
-    cases.Add<NotIn<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "NotInNullableStoredValue",
         .dataset = "PredicateEdges",
-        .args = {.keys = {values.nullable_duplicate}},
+        .body =
+            Query<NotIn<T>>{
+                .args = {.keys = {values.nullable_duplicate}},
+            },
     });
     if constexpr (!std::is_same_v<T, bool>) {
-        cases.Add<NotIn<T>>({
+        cases.Add(IndexTestCase<T>{
             .name = "NotInMixedHitAndMiss",
             .dataset = "PredicateEdges",
-            .args = {.keys = {values.low, values.missing}},
+            .body =
+                Query<NotIn<T>>{
+                    .args = {.keys = {values.low, values.missing}},
+                },
         });
     }
 }
 
 template <typename T>
 void
-AddUnaryRangeCases(FilterCases& cases) {
+AddUnaryRangeCases(IndexTestCases& cases) {
     const auto values = CaseValues<T>();
     const std::vector<std::pair<std::string, CompareOp>> operations = {
         {"Equal", CompareOp::Equal},
@@ -417,222 +453,322 @@ AddUnaryRangeCases(FilterCases& cases) {
         {"LessEqual", CompareOp::LessEqual},
     };
     for (const auto& [name, op] : operations) {
-        cases.Add<UnaryRange<T>>({
+        cases.Add(IndexTestCase<T>{
             .name = "Unary" + name,
             .dataset = "PredicateEdges",
-            .args = {.value = values.middle, .op = op},
+            .body =
+                Query<UnaryRange<T>>{
+                    .args = {.value = values.middle, .op = op},
+                },
         });
     }
 
-    cases.Add<UnaryRange<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "UnaryLessThanMinimum",
         .dataset = "PredicateEdges",
-        .args = {.value = values.minimum, .op = CompareOp::LessThan},
+        .body =
+            Query<UnaryRange<T>>{
+                .args = {.value = values.minimum, .op = CompareOp::LessThan},
+            },
     });
-    cases.Add<UnaryRange<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "UnaryLessEqualMinimum",
         .dataset = "PredicateEdges",
-        .args = {.value = values.minimum, .op = CompareOp::LessEqual},
+        .body =
+            Query<UnaryRange<T>>{
+                .args = {.value = values.minimum, .op = CompareOp::LessEqual},
+            },
     });
-    cases.Add<UnaryRange<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "UnaryGreaterThanMaximum",
         .dataset = "PredicateEdges",
-        .args = {.value = values.maximum, .op = CompareOp::GreaterThan},
+        .body =
+            Query<UnaryRange<T>>{
+                .args = {.value = values.maximum, .op = CompareOp::GreaterThan},
+            },
     });
-    cases.Add<UnaryRange<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "UnaryGreaterEqualMaximum",
         .dataset = "PredicateEdges",
-        .args = {.value = values.maximum, .op = CompareOp::GreaterEqual},
+        .body =
+            Query<UnaryRange<T>>{
+                .args = {.value = values.maximum,
+                         .op = CompareOp::GreaterEqual},
+            },
     });
     if constexpr (std::is_floating_point_v<T>) {
-        cases.Add<UnaryRange<T>>({
+        cases.Add(IndexTestCase<T>{
             .name = "UnaryEqualNegativeZero",
             .dataset = "PredicateEdges",
-            .args = {.value = static_cast<T>(-0.0), .op = CompareOp::Equal},
+            .body =
+                Query<UnaryRange<T>>{
+                    .args = {.value = static_cast<T>(-0.0),
+                             .op = CompareOp::Equal},
+                },
         });
-        cases.Add<UnaryRange<T>>({
+        cases.Add(IndexTestCase<T>{
             .name = "UnaryEqualPositiveZero",
             .dataset = "PredicateEdges",
-            .args = {.value = static_cast<T>(0.0), .op = CompareOp::Equal},
+            .body =
+                Query<UnaryRange<T>>{
+                    .args = {.value = static_cast<T>(0.0),
+                             .op = CompareOp::Equal},
+                },
         });
     }
 }
 
 template <typename T>
 void
-AddIntervalRangeCases(FilterCases& cases) {
+AddIntervalRangeCases(IndexTestCases& cases) {
     const auto values = CaseValues<T>();
     for (const auto [lo_inc, hi_inc, suffix] :
          {std::tuple{false, false, "OpenOpen"},
           std::tuple{false, true, "OpenClosed"},
           std::tuple{true, false, "ClosedOpen"},
           std::tuple{true, true, "ClosedClosed"}}) {
-        cases.Add<IntervalRange<T>>({
+        cases.Add(IndexTestCase<T>{
             .name = std::string("Interval") + suffix,
             .dataset = "PredicateEdges",
-            .args = {.lo = values.low,
-                     .lo_inc = lo_inc,
-                     .hi = values.high,
-                     .hi_inc = hi_inc},
+            .body =
+                Query<IntervalRange<T>>{
+                    .args = {.lo = values.low,
+                             .lo_inc = lo_inc,
+                             .hi = values.high,
+                             .hi_inc = hi_inc},
+                },
         });
-        cases.Add<IntervalRange<T>>({
+        cases.Add(IndexTestCase<T>{
             .name = std::string("IntervalEqualBounds") + suffix,
             .dataset = "PredicateEdges",
-            .args = {.lo = values.middle,
-                     .lo_inc = lo_inc,
-                     .hi = values.middle,
-                     .hi_inc = hi_inc},
+            .body =
+                Query<IntervalRange<T>>{
+                    .args = {.lo = values.middle,
+                             .lo_inc = lo_inc,
+                             .hi = values.middle,
+                             .hi_inc = hi_inc},
+                },
         });
-        cases.Add<IntervalRange<T>>({
+        cases.Add(IndexTestCase<T>{
             .name = std::string("IntervalReversedBounds") + suffix,
             .dataset = "PredicateEdges",
-            .args = {.lo = values.high,
-                     .lo_inc = lo_inc,
-                     .hi = values.low,
-                     .hi_inc = hi_inc},
+            .body =
+                Query<IntervalRange<T>>{
+                    .args = {.lo = values.high,
+                             .lo_inc = lo_inc,
+                             .hi = values.low,
+                             .hi_inc = hi_inc},
+                },
         });
     }
-    cases.Add<IntervalRange<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "IntervalClosedEndpoints",
         .dataset = "PredicateEdges",
-        .args = {.lo = values.minimum,
-                 .lo_inc = true,
-                 .hi = values.maximum,
-                 .hi_inc = true},
+        .body =
+            Query<IntervalRange<T>>{
+                .args = {.lo = values.minimum,
+                         .lo_inc = true,
+                         .hi = values.maximum,
+                         .hi_inc = true},
+            },
     });
-    cases.Add<IntervalRange<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "IntervalOpenEndpoints",
         .dataset = "PredicateEdges",
-        .args = {.lo = values.minimum,
-                 .lo_inc = false,
-                 .hi = values.maximum,
-                 .hi_inc = false},
+        .body =
+            Query<IntervalRange<T>>{
+                .args = {.lo = values.minimum,
+                         .lo_inc = false,
+                         .hi = values.maximum,
+                         .hi_inc = false},
+            },
     });
 }
 
 template <typename T>
 void
-AddInputShapeCases(FilterCases& cases) {
+AddInputShapeCases(IndexTestCases& cases) {
     const auto values = CaseValues<T>();
 
-    cases.Add<In<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "InAllValuesWithoutValidity",
         .dataset = "PredicateAllValid",
-        .args = {.keys = values.all_values},
+        .body =
+            Query<In<T>>{
+                .args = {.keys = values.all_values},
+            },
     });
-    cases.Add<NotIn<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "NotInEmptyWithoutValidity",
         .dataset = "PredicateAllValid",
-        .args = {.keys = {}},
+        .body =
+            Query<NotIn<T>>{
+                .args = {.keys = {}},
+            },
     });
-    cases.Add<UnaryRange<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "UnaryNotEqualWithoutValidity",
         .dataset = "PredicateAllValid",
-        .args = {.value = values.missing, .op = CompareOp::NotEqual},
+        .body =
+            Query<UnaryRange<T>>{
+                .args = {.value = values.missing, .op = CompareOp::NotEqual},
+            },
     });
-    cases.Add<IntervalRange<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "IntervalEndpointsWithoutValidity",
         .dataset = "PredicateAllValid",
-        .args = {.lo = values.minimum,
-                 .lo_inc = true,
-                 .hi = values.maximum,
-                 .hi_inc = true},
+        .body =
+            Query<IntervalRange<T>>{
+                .args = {.lo = values.minimum,
+                         .lo_inc = true,
+                         .hi = values.maximum,
+                         .hi_inc = true},
+            },
     });
 
-    cases.Add<In<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "InAllValuesAllNull",
         .dataset = "PredicateAllNull",
-        .args = {.keys = values.all_values},
+        .body =
+            Query<In<T>>{
+                .args = {.keys = values.all_values},
+            },
     });
-    cases.Add<NotIn<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "NotInEmptyAllNull",
         .dataset = "PredicateAllNull",
-        .args = {.keys = {}},
+        .body =
+            Query<NotIn<T>>{
+                .args = {.keys = {}},
+            },
     });
-    cases.Add<UnaryRange<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "UnaryNotEqualAllNull",
         .dataset = "PredicateAllNull",
-        .args = {.value = values.missing, .op = CompareOp::NotEqual},
+        .body =
+            Query<UnaryRange<T>>{
+                .args = {.value = values.missing, .op = CompareOp::NotEqual},
+            },
     });
-    cases.Add<IntervalRange<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "IntervalEndpointsAllNull",
         .dataset = "PredicateAllNull",
-        .args = {.lo = values.minimum,
-                 .lo_inc = true,
-                 .hi = values.maximum,
-                 .hi_inc = true},
+        .body =
+            Query<IntervalRange<T>>{
+                .args = {.lo = values.minimum,
+                         .lo_inc = true,
+                         .hi = values.maximum,
+                         .hi_inc = true},
+            },
     });
 
-    cases.Add<In<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "InSingleRow",
         .dataset = "PredicateSingleRow",
-        .args = {.keys = {values.representative}},
+        .body =
+            Query<In<T>>{
+                .args = {.keys = {values.representative}},
+            },
     });
-    cases.Add<NotIn<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "NotInSingleRow",
         .dataset = "PredicateSingleRow",
-        .args = {.keys = {values.representative}},
+        .body =
+            Query<NotIn<T>>{
+                .args = {.keys = {values.representative}},
+            },
     });
-    cases.Add<UnaryRange<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "UnaryEqualSingleRow",
         .dataset = "PredicateSingleRow",
-        .args = {.value = values.representative, .op = CompareOp::Equal},
+        .body =
+            Query<UnaryRange<T>>{
+                .args = {.value = values.representative,
+                         .op = CompareOp::Equal},
+            },
     });
-    cases.Add<IntervalRange<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "IntervalEqualSingleRow",
         .dataset = "PredicateSingleRow",
-        .args = {.lo = values.representative,
-                 .lo_inc = true,
-                 .hi = values.representative,
-                 .hi_inc = true},
+        .body =
+            Query<IntervalRange<T>>{
+                .args = {.lo = values.representative,
+                         .lo_inc = true,
+                         .hi = values.representative,
+                         .hi_inc = true},
+            },
     });
 
-    cases.Add<In<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "InRepeatedKeysAllEqual",
         .dataset = "PredicateAllEqual",
-        .args = {.keys = {values.representative, values.representative}},
+        .body =
+            Query<In<T>>{
+                .args = {.keys = {values.representative,
+                                  values.representative}},
+            },
     });
-    cases.Add<In<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "InMissingAllEqual",
         .dataset = "PredicateAllEqual",
-        .args = {.keys = {values.representative_missing}},
+        .body =
+            Query<In<T>>{
+                .args = {.keys = {values.representative_missing}},
+            },
     });
-    cases.Add<NotIn<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "NotInMissingAllEqual",
         .dataset = "PredicateAllEqual",
-        .args = {.keys = {values.representative_missing}},
+        .body =
+            Query<NotIn<T>>{
+                .args = {.keys = {values.representative_missing}},
+            },
     });
-    cases.Add<UnaryRange<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "UnaryEqualAllEqual",
         .dataset = "PredicateAllEqual",
-        .args = {.value = values.representative, .op = CompareOp::Equal},
+        .body =
+            Query<UnaryRange<T>>{
+                .args = {.value = values.representative,
+                         .op = CompareOp::Equal},
+            },
     });
-    cases.Add<UnaryRange<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "UnaryNotEqualAllEqual",
         .dataset = "PredicateAllEqual",
-        .args = {.value = values.representative, .op = CompareOp::NotEqual},
+        .body =
+            Query<UnaryRange<T>>{
+                .args = {.value = values.representative,
+                         .op = CompareOp::NotEqual},
+            },
     });
-    cases.Add<IntervalRange<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "IntervalClosedAllEqual",
         .dataset = "PredicateAllEqual",
-        .args = {.lo = values.representative,
-                 .lo_inc = true,
-                 .hi = values.representative,
-                 .hi_inc = true},
+        .body =
+            Query<IntervalRange<T>>{
+                .args = {.lo = values.representative,
+                         .lo_inc = true,
+                         .hi = values.representative,
+                         .hi_inc = true},
+            },
     });
-    cases.Add<IntervalRange<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "IntervalOpenAllEqual",
         .dataset = "PredicateAllEqual",
-        .args = {.lo = values.representative,
-                 .lo_inc = false,
-                 .hi = values.representative,
-                 .hi_inc = false},
+        .body =
+            Query<IntervalRange<T>>{
+                .args = {.lo = values.representative,
+                         .lo_inc = false,
+                         .hi = values.representative,
+                         .hi_inc = false},
+            },
     });
 }
 
 template <typename T>
 void
-AddTypeCases(FilterCases& cases) {
+AddTypeCases(IndexTestCases& cases) {
     AddEdgeMembershipCases<T>(cases);
     AddUnaryRangeCases<T>(cases);
     AddIntervalRangeCases<T>(cases);
@@ -682,76 +818,113 @@ HighCardinalityValues() {
 
 template <typename T>
 void
-AddHighCardinalityCases(FilterCases& cases) {
+AddHighCardinalityCases(IndexTestCases& cases) {
     const auto values = HighCardinalityValues<T>();
-    cases.Add<In<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "InHighCardinality",
         .dataset = "TenThousandHighCardinality",
-        .args = {.keys = values.keys},
+        .body =
+            Query<In<T>>{
+                .args = {.keys = values.keys},
+            },
     });
-    cases.Add<NotIn<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "NotInHighCardinality",
         .dataset = "TenThousandHighCardinality",
-        .args = {.keys = values.keys},
+        .body =
+            Query<NotIn<T>>{
+                .args = {.keys = values.keys},
+            },
     });
-    cases.Add<UnaryRange<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "UnaryHighCardinality",
         .dataset = "TenThousandHighCardinality",
-        .args = {.value = values.threshold, .op = CompareOp::GreaterEqual},
+        .body =
+            Query<UnaryRange<T>>{
+                .args = {.value = values.threshold,
+                         .op = CompareOp::GreaterEqual},
+            },
     });
-    cases.Add<IntervalRange<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "IntervalHighCardinality",
         .dataset = "TenThousandHighCardinality",
-        .args =
-            {.lo = values.lo, .lo_inc = true, .hi = values.hi, .hi_inc = false},
+        .body =
+            Query<IntervalRange<T>>{
+                .args = {.lo = values.lo,
+                         .lo_inc = true,
+                         .hi = values.hi,
+                         .hi_inc = false},
+            },
     });
 }
 
 template <typename T>
 void
-AddInfinityCases(FilterCases& cases) {
+AddInfinityCases(IndexTestCases& cases) {
     static_assert(std::is_floating_point_v<T>);
     const auto negative = -std::numeric_limits<T>::infinity();
     const auto positive = std::numeric_limits<T>::infinity();
 
-    cases.Add<In<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "InBothInfinities",
         .dataset = "PredicateFloatInfinities",
-        .args = {.keys = {negative, positive}},
+        .body =
+            Query<In<T>>{
+                .args = {.keys = {negative, positive}},
+            },
     });
-    cases.Add<NotIn<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "NotInBothInfinities",
         .dataset = "PredicateFloatInfinities",
-        .args = {.keys = {negative, positive}},
+        .body =
+            Query<NotIn<T>>{
+                .args = {.keys = {negative, positive}},
+            },
     });
-    cases.Add<UnaryRange<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "UnaryGreaterThanNegativeInfinity",
         .dataset = "PredicateFloatInfinities",
-        .args = {.value = negative, .op = CompareOp::GreaterThan},
+        .body =
+            Query<UnaryRange<T>>{
+                .args = {.value = negative, .op = CompareOp::GreaterThan},
+            },
     });
-    cases.Add<UnaryRange<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "UnaryLessThanPositiveInfinity",
         .dataset = "PredicateFloatInfinities",
-        .args = {.value = positive, .op = CompareOp::LessThan},
+        .body =
+            Query<UnaryRange<T>>{
+                .args = {.value = positive, .op = CompareOp::LessThan},
+            },
     });
-    cases.Add<IntervalRange<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "IntervalClosedInfinities",
         .dataset = "PredicateFloatInfinities",
-        .args =
-            {.lo = negative, .lo_inc = true, .hi = positive, .hi_inc = true},
+        .body =
+            Query<IntervalRange<T>>{
+                .args = {.lo = negative,
+                         .lo_inc = true,
+                         .hi = positive,
+                         .hi_inc = true},
+            },
     });
-    cases.Add<IntervalRange<T>>({
+    cases.Add(IndexTestCase<T>{
         .name = "IntervalOpenInfinities",
         .dataset = "PredicateFloatInfinities",
-        .args =
-            {.lo = negative, .lo_inc = false, .hi = positive, .hi_inc = false},
+        .body =
+            Query<IntervalRange<T>>{
+                .args = {.lo = negative,
+                         .lo_inc = false,
+                         .hi = positive,
+                         .hi_inc = false},
+            },
     });
 }
 
-const FilterCases&
+const IndexTestCases&
 PredicateCases() {
     static const auto cases = [] {
-        FilterCases cases;
+        IndexTestCases cases;
 
         AddTypeCases<bool>(cases);
         AddTypeCases<int8_t>(cases);
@@ -762,30 +935,45 @@ PredicateCases() {
         AddTypeCases<double>(cases);
         AddTypeCases<std::string_view>(cases);
 
-        cases.Add<In<bool>>({
+        cases.Add(IndexTestCase<bool>{
             .name = "InFalseAllFalse",
             .dataset = "PredicateAllFalse",
-            .args = {.keys = {false}},
+            .body =
+                Query<In<bool>>{
+                    .args = {.keys = {false}},
+                },
         });
-        cases.Add<In<bool>>({
+        cases.Add(IndexTestCase<bool>{
             .name = "InTrueAllFalse",
             .dataset = "PredicateAllFalse",
-            .args = {.keys = {true}},
+            .body =
+                Query<In<bool>>{
+                    .args = {.keys = {true}},
+                },
         });
-        cases.Add<NotIn<bool>>({
+        cases.Add(IndexTestCase<bool>{
             .name = "NotInFalseAllFalse",
             .dataset = "PredicateAllFalse",
-            .args = {.keys = {false}},
+            .body =
+                Query<NotIn<bool>>{
+                    .args = {.keys = {false}},
+                },
         });
-        cases.Add<NotIn<bool>>({
+        cases.Add(IndexTestCase<bool>{
             .name = "NotInTrueAllFalse",
             .dataset = "PredicateAllFalse",
-            .args = {.keys = {true}},
+            .body =
+                Query<NotIn<bool>>{
+                    .args = {.keys = {true}},
+                },
         });
-        cases.Add<NotIn<bool>>({
+        cases.Add(IndexTestCase<bool>{
             .name = "NotInTrueAllTrue",
             .dataset = "PredicateAllEqual",
-            .args = {.keys = {true}},
+            .body =
+                Query<NotIn<bool>>{
+                    .args = {.keys = {true}},
+                },
         });
 
         AddHighCardinalityCases<int8_t>(cases);
@@ -799,126 +987,192 @@ PredicateCases() {
         AddInfinityCases<float>(cases);
         AddInfinityCases<double>(cases);
 
-        cases.Add<In<int64_t>>({
+        cases.Add(IndexTestCase<int64_t>{
             .name = "InLargeRowCount",
             .dataset = "HundredThousandRows",
-            .args = {.keys = {7, 31, 7}},
+            .body =
+                Query<In<int64_t>>{
+                    .args = {.keys = {7, 31, 7}},
+                },
         });
-        cases.Add<NotIn<int64_t>>({
+        cases.Add(IndexTestCase<int64_t>{
             .name = "NotInLargeRowCount",
             .dataset = "HundredThousandRows",
-            .args = {.keys = {7, 31, 7}},
+            .body =
+                Query<NotIn<int64_t>>{
+                    .args = {.keys = {7, 31, 7}},
+                },
         });
-        cases.Add<IntervalRange<int64_t>>({
+        cases.Add(IndexTestCase<int64_t>{
             .name = "IntervalLargeRowCount",
             .dataset = "HundredThousandRows",
-            .args = {.lo = 7, .lo_inc = true, .hi = 31, .hi_inc = false},
+            .body =
+                Query<IntervalRange<int64_t>>{
+                    .args =
+                        {.lo = 7, .lo_inc = true, .hi = 31, .hi_inc = false},
+                },
         });
 
         const auto ints = CaseValues<int64_t>();
-        cases.Add<In<int64_t>>({
+        cases.Add(IndexTestCase<int64_t>{
             .name = "InAcrossBatches",
             .dataset = "PredicateEdgesMultiBatch",
-            .args = {.keys = {ints.low, ints.nullable_duplicate}},
+            .body =
+                Query<In<int64_t>>{
+                    .args = {.keys = {ints.low, ints.nullable_duplicate}},
+                },
         });
-        cases.Add<NotIn<int64_t>>({
+        cases.Add(IndexTestCase<int64_t>{
             .name = "NotInAcrossBatches",
             .dataset = "PredicateEdgesMultiBatch",
-            .args = {.keys = {ints.low, ints.nullable_duplicate}},
+            .body =
+                Query<NotIn<int64_t>>{
+                    .args = {.keys = {ints.low, ints.nullable_duplicate}},
+                },
         });
-        cases.Add<UnaryRange<int64_t>>({
+        cases.Add(IndexTestCase<int64_t>{
             .name = "UnaryAcrossBatches",
             .dataset = "PredicateEdgesMultiBatch",
-            .args = {.value = ints.middle, .op = CompareOp::GreaterEqual},
+            .body =
+                Query<UnaryRange<int64_t>>{
+                    .args = {.value = ints.middle,
+                             .op = CompareOp::GreaterEqual},
+                },
         });
-        cases.Add<IntervalRange<int64_t>>({
+        cases.Add(IndexTestCase<int64_t>{
             .name = "IntervalAcrossBatches",
             .dataset = "PredicateEdgesMultiBatch",
-            .args = {.lo = ints.low,
-                     .lo_inc = true,
-                     .hi = ints.high,
-                     .hi_inc = true},
+            .body =
+                Query<IntervalRange<int64_t>>{
+                    .args = {.lo = ints.low,
+                             .lo_inc = true,
+                             .hi = ints.high,
+                             .hi_inc = true},
+                },
         });
-        cases.Add<In<int64_t>>({
+        cases.Add(IndexTestCase<int64_t>{
             .name = "InAcrossEmptyBatches",
             .dataset = "PredicateEdgesWithEmptyBatches",
-            .args = {.keys = {ints.low, ints.nullable_duplicate}},
+            .body =
+                Query<In<int64_t>>{
+                    .args = {.keys = {ints.low, ints.nullable_duplicate}},
+                },
         });
 
         const auto strings = CaseValues<std::string_view>();
         const std::string embedded_nul("a\0b", 3);
-        cases.Add<In<std::string_view>>({
+        cases.Add(IndexTestCase<std::string_view>{
             .name = "InEmptyString",
             .dataset = "PredicateEdges",
-            .args = {.keys = {""}},
+            .body =
+                Query<In<std::string_view>>{
+                    .args = {.keys = {""}},
+                },
         });
-        cases.Add<In<std::string_view>>({
+        cases.Add(IndexTestCase<std::string_view>{
             .name = "InPrefixValueIsExact",
             .dataset = "PredicateEdges",
-            .args = {.keys = {"a"}},
+            .body =
+                Query<In<std::string_view>>{
+                    .args = {.keys = {"a"}},
+                },
         });
-        cases.Add<In<std::string_view>>({
+        cases.Add(IndexTestCase<std::string_view>{
             .name = "InEmbeddedNulIsLengthAware",
             .dataset = "PredicateEdges",
-            .args = {.keys = {embedded_nul}},
+            .body =
+                Query<In<std::string_view>>{
+                    .args = {.keys = {embedded_nul}},
+                },
         });
-        cases.Add<NotIn<std::string_view>>({
+        cases.Add(IndexTestCase<std::string_view>{
             .name = "NotInEmbeddedNulIsLengthAware",
             .dataset = "PredicateEdges",
-            .args = {.keys = {embedded_nul}},
+            .body =
+                Query<NotIn<std::string_view>>{
+                    .args = {.keys = {embedded_nul}},
+                },
         });
-        cases.Add<UnaryRange<std::string_view>>({
+        cases.Add(IndexTestCase<std::string_view>{
             .name = "UnaryEqualEmbeddedNulIsLengthAware",
             .dataset = "PredicateEdges",
-            .args = {.value = embedded_nul, .op = CompareOp::Equal},
+            .body =
+                Query<UnaryRange<std::string_view>>{
+                    .args = {.value = embedded_nul, .op = CompareOp::Equal},
+                },
         });
-        cases.Add<UnaryRange<std::string_view>>({
+        cases.Add(IndexTestCase<std::string_view>{
             .name = "UnaryNotEqualEmbeddedNulIsLengthAware",
             .dataset = "PredicateEdges",
-            .args = {.value = embedded_nul, .op = CompareOp::NotEqual},
+            .body =
+                Query<UnaryRange<std::string_view>>{
+                    .args = {.value = embedded_nul, .op = CompareOp::NotEqual},
+                },
         });
-        cases.Add<IntervalRange<std::string_view>>({
+        cases.Add(IndexTestCase<std::string_view>{
             .name = "IntervalEmbeddedNulIsLengthAware",
             .dataset = "PredicateEdges",
-            .args = {.lo = embedded_nul,
-                     .lo_inc = true,
-                     .hi = embedded_nul,
-                     .hi_inc = true},
+            .body =
+                Query<IntervalRange<std::string_view>>{
+                    .args = {.lo = embedded_nul,
+                             .lo_inc = true,
+                             .hi = embedded_nul,
+                             .hi_inc = true},
+                },
         });
-        cases.Add<In<int64_t>>({
+        cases.Add(IndexTestCase<int64_t>{
             .name = "InManualOffsets",
             .dataset = "RepeatedNullable",
-            .args = {.keys = {10, 99}},
-            .expected = ManualHits({0, 3}),
+            .body =
+                Query<In<int64_t>>{
+                    .args = {.keys = {10, 99}},
+                    .expected = ManualHits({0, 3}),
+                },
         });
-        cases.Add<In<int64_t>>({
+        cases.Add(IndexTestCase<int64_t>{
             .name = "InManualNoHits",
             .dataset = "RepeatedNullable",
-            .args = {.keys = {99}},
-            .expected = ManualHits({}),
+            .body =
+                Query<In<int64_t>>{
+                    .args = {.keys = {99}},
+                    .expected = ManualHits({}),
+                },
         });
-        cases.Add<In<std::string_view>>({
+        cases.Add(IndexTestCase<std::string_view>{
             .name = "InAcrossBatches",
             .dataset = "PredicateEdgesMultiBatch",
-            .args = {.keys = {strings.low, strings.nullable_duplicate}},
+            .body =
+                Query<In<std::string_view>>{
+                    .args = {.keys = {strings.low, strings.nullable_duplicate}},
+                },
         });
-        cases.Add<NotIn<std::string_view>>({
+        cases.Add(IndexTestCase<std::string_view>{
             .name = "NotInAcrossBatches",
             .dataset = "PredicateEdgesMultiBatch",
-            .args = {.keys = {strings.low, strings.nullable_duplicate}},
+            .body =
+                Query<NotIn<std::string_view>>{
+                    .args = {.keys = {strings.low, strings.nullable_duplicate}},
+                },
         });
-        cases.Add<UnaryRange<std::string_view>>({
+        cases.Add(IndexTestCase<std::string_view>{
             .name = "UnaryAcrossBatches",
             .dataset = "PredicateEdgesMultiBatch",
-            .args = {.value = strings.middle, .op = CompareOp::GreaterEqual},
+            .body =
+                Query<UnaryRange<std::string_view>>{
+                    .args = {.value = strings.middle,
+                             .op = CompareOp::GreaterEqual},
+                },
         });
-        cases.Add<IntervalRange<std::string_view>>({
+        cases.Add(IndexTestCase<std::string_view>{
             .name = "IntervalAcrossBatches",
             .dataset = "PredicateEdgesMultiBatch",
-            .args = {.lo = strings.low,
-                     .lo_inc = true,
-                     .hi = strings.high,
-                     .hi_inc = true},
+            .body =
+                Query<IntervalRange<std::string_view>>{
+                    .args = {.lo = strings.low,
+                             .lo_inc = true,
+                             .hi = strings.high,
+                             .hi_inc = true},
+                },
         });
 
         return cases;

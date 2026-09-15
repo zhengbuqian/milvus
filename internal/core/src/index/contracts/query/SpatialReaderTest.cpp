@@ -25,7 +25,7 @@
 #include "common/Geometry.h"
 #include "index/contracts/query/SpatialReader.h"
 #include "index/test_utils/AssertHelpers.h"
-#include "index/test_utils/ReaderTestDriver.h"
+#include "index/test_utils/CaseTestDriver.h"
 
 namespace milvus::index::test {
 namespace {
@@ -38,44 +38,50 @@ struct SpatialCase {
 };
 
 void
-AddSpatialCase(ReaderObservationCases& cases,
+AddSpatialCase(IndexTestCases& cases,
                std::string name,
                std::string dataset,
                SpatialCase test_case) {
-    cases.Add<std::string_view>({
+    cases.Add(IndexTestCase<std::string_view>{
         .name = std::move(name),
         .dataset = std::move(dataset),
         .input_shape = BackendInputShape::SpatialWkb,
         .domain = Domain::Row,
-        .capability = &ReaderCaps::spatial,
         .logical_value_type = DataType::GEOMETRY,
-        .observe =
-            [test_case = std::move(test_case)](
-                const ReaderBackend&,
-                const ScalarTestData<std::string_view>& data,
-                IndexReaderBasePtr& reader) {
-                ASSERT_TRUE(reader->Caps().spatial);
-                EXPECT_FALSE(reader->Caps().exact);
-                const auto* spatial =
-                    dynamic_cast<const SpatialReader*>(reader.get());
-                ASSERT_NE(spatial, nullptr);
+        .input_lifetime = InputLifetime::ReleaseBeforeBody,
+        .body =
+            Observe<std::string_view>{
+                .capability = &ReaderCaps::spatial,
+                .run =
+                    [test_case = std::move(test_case)](
+                        const ReaderBackend&,
+                        const ScalarTestData<std::string_view>& data,
+                        IndexReaderBasePtr& reader) {
+                        ASSERT_TRUE(reader->Caps().spatial);
+                        EXPECT_FALSE(reader->Caps().exact);
+                        const auto* spatial =
+                            dynamic_cast<const SpatialReader*>(reader.get());
+                        ASSERT_NE(spatial, nullptr);
 
-                const Geometry query(GetThreadLocalGEOSContext(),
-                                     test_case.query_wkt.c_str());
-                const auto actual = spatial->Candidates(test_case.op, query);
-                ASSERT_EQ(actual.size(), data.values.size());
-                for (const auto offset : test_case.required_offsets) {
-                    ASSERT_LT(offset, actual.size());
-                    EXPECT_TRUE(actual[offset])
-                        << "spatial candidates dropped exact hit " << offset;
-                }
-                ExpectNullState(data, *reader);
+                        const Geometry query(GetThreadLocalGEOSContext(),
+                                             test_case.query_wkt.c_str());
+                        const auto actual =
+                            spatial->Candidates(test_case.op, query);
+                        ASSERT_EQ(actual.size(), data.values.size());
+                        for (const auto offset : test_case.required_offsets) {
+                            ASSERT_LT(offset, actual.size());
+                            EXPECT_TRUE(actual[offset])
+                                << "spatial candidates dropped exact hit "
+                                << offset;
+                        }
+                        ExpectNullState(data, *reader);
+                    },
             },
     });
 }
 
 void
-AddAllSpatialOps(ReaderObservationCases& cases) {
+AddAllSpatialOps(IndexTestCases& cases) {
     constexpr auto dataset = "SpatialWkbNullable";
     AddSpatialCase(cases,
                    "EqualsRetainsPointHit",
@@ -130,7 +136,7 @@ AddAllSpatialOps(ReaderObservationCases& cases) {
 }
 
 void
-AddNullAndCountCases(ReaderObservationCases& cases) {
+AddNullAndCountCases(IndexTestCases& cases) {
     AddSpatialCase(cases,
                    "InvalidAndEmptyPayloadsDoNotChangeCount",
                    "SpatialWkbAllValid",
@@ -145,10 +151,10 @@ AddNullAndCountCases(ReaderObservationCases& cases) {
                     .required_offsets = {}});
 }
 
-const ReaderObservationCases&
+const IndexTestCases&
 SpatialCases() {
     static const auto cases = [] {
-        ReaderObservationCases cases;
+        IndexTestCases cases;
         AddAllSpatialOps(cases);
         AddNullAndCountCases(cases);
         return cases;

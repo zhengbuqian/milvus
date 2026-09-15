@@ -25,7 +25,7 @@
 #include <vector>
 
 #include "index/contracts/query/PatternMatchReader.h"
-#include "index/test_utils/FilterTestDriver.h"
+#include "index/test_utils/CaseTestDriver.h"
 
 namespace milvus::index::test {
 namespace {
@@ -88,30 +88,36 @@ struct PatternQuery {
 };
 
 void
-AddOracleCase(FilterCases& cases,
+AddOracleCase(IndexTestCases& cases,
               std::string name,
               std::string dataset,
               PatternOp op,
               std::string pattern) {
-    cases.Add<PatternQuery>({
+    cases.Add(IndexTestCase<std::string_view>{
         .name = std::move(name),
         .dataset = std::move(dataset),
-        .args = {.op = op, .pattern = std::move(pattern)},
+        .body =
+            Query<PatternQuery>{
+                .args = {.op = op, .pattern = std::move(pattern)},
+            },
     });
 }
 
 void
-AddManualCase(FilterCases& cases,
+AddManualCase(IndexTestCases& cases,
               std::string name,
               std::string dataset,
               PatternOp op,
               std::string pattern,
               std::vector<size_t> offsets) {
-    cases.Add<PatternQuery>({
+    cases.Add(IndexTestCase<std::string_view>{
         .name = std::move(name),
         .dataset = std::move(dataset),
-        .args = {.op = op, .pattern = std::move(pattern)},
-        .expected = ManualHits(std::move(offsets)),
+        .body =
+            Query<PatternQuery>{
+                .args = {.op = op, .pattern = std::move(pattern)},
+                .expected = ManualHits(std::move(offsets)),
+            },
     });
 }
 
@@ -144,7 +150,7 @@ ValidNonEmptyRows() {
 }
 
 void
-AddLiteralCases(FilterCases& cases) {
+AddLiteralCases(IndexTestCases& cases) {
     constexpr auto dataset = "PatternStringsNullable";
 
     AddOracleCase(cases, "PrefixBasic", dataset, PatternOp::PrefixMatch, "app");
@@ -250,7 +256,7 @@ AddLiteralCases(FilterCases& cases) {
 }
 
 void
-AddLikeCases(FilterCases& cases) {
+AddLikeCases(IndexTestCases& cases) {
     constexpr auto dataset = "PatternStringsNullable";
 
     AddManualCase(cases, "LikeExact", dataset, PatternOp::Match, "hello", {14});
@@ -282,11 +288,14 @@ AddLikeCases(FilterCases& cases) {
         cases, "LikeSingleWildcard", dataset, PatternOp::Match, "h_llo", {14});
     AddManualCase(cases, "LikeGap", dataset, PatternOp::Match, "h%o", {14});
 
-    cases.Add<PatternQuery>({
+    cases.Add(IndexTestCase<std::string_view>{
         .name = "LikePercentMatchesAllValid",
         .dataset = dataset,
-        .args = {.op = PatternOp::Match, .pattern = "%"},
-        .expected = ValidRows(),
+        .body =
+            Query<PatternQuery>{
+                .args = {.op = PatternOp::Match, .pattern = "%"},
+                .expected = ValidRows(),
+            },
     });
     AddManualCase(cases,
                   "LikeTestPrefix",
@@ -547,21 +556,27 @@ AddLikeCases(FilterCases& cases) {
         PatternOp::Match,
         "___",
         {5, 7, 17, 18, 19, 21, 22, 23, 39, 40, 41, 43, 60, 80, 93, 98, 99});
-    cases.Add<PatternQuery>({
+    cases.Add(IndexTestCase<std::string_view>{
         .name = "LikeRepeatedPercentMatchesAllValid",
         .dataset = dataset,
-        .args = {.op = PatternOp::Match, .pattern = "%%"},
-        .expected = ValidRows(),
+        .body =
+            Query<PatternQuery>{
+                .args = {.op = PatternOp::Match, .pattern = "%%"},
+                .expected = ValidRows(),
+            },
     });
     for (const auto& [name, pattern] : {
              std::pair{"LikeLeadingSingleWildcard", "_%"},
              std::pair{"LikeTrailingSingleWildcard", "%_"},
          }) {
-        cases.Add<PatternQuery>({
+        cases.Add(IndexTestCase<std::string_view>{
             .name = name,
             .dataset = dataset,
-            .args = {.op = PatternOp::Match, .pattern = pattern},
-            .expected = ValidNonEmptyRows(),
+            .body =
+                Query<PatternQuery>{
+                    .args = {.op = PatternOp::Match, .pattern = pattern},
+                    .expected = ValidNonEmptyRows(),
+                },
         });
     }
     AddManualCase(
@@ -572,11 +587,14 @@ AddLikeCases(FilterCases& cases) {
              std::pair{"LikeOnlyBackslashRejected", "\\"},
              std::pair{"LikeWildcardTrailingBackslashRejected", "%\\"},
          }) {
-        cases.Add<PatternQuery>({
+        cases.Add(IndexTestCase<std::string_view>{
             .name = name,
             .dataset = dataset,
-            .args = {.op = PatternOp::Match, .pattern = pattern},
-            .expected_error = ErrorCode::ExprInvalid,
+            .body =
+                Query<PatternQuery>{
+                    .args = {.op = PatternOp::Match, .pattern = pattern},
+                    .expected_error = ErrorCode::ExprInvalid,
+                },
         });
     }
 
@@ -595,16 +613,19 @@ AddLikeCases(FilterCases& cases) {
     AddManualCase(
         cases, "LikeCrLfTwoWildcards", dataset, PatternOp::Match, "a__b", {42});
 
-    cases.Add<PatternQuery>({
+    cases.Add(IndexTestCase<std::string_view>{
         .name = "AllNullLike",
         .dataset = "PatternAllNull",
-        .args = {.op = PatternOp::Match, .pattern = "%"},
-        .expected = ManualHits({}),
+        .body =
+            Query<PatternQuery>{
+                .args = {.op = PatternOp::Match, .pattern = "%"},
+                .expected = ManualHits({}),
+            },
     });
 }
 
 void
-AddEmbeddedNulCases(FilterCases& cases) {
+AddEmbeddedNulCases(IndexTestCases& cases) {
     constexpr auto dataset = "PatternBinaryNullable";
 
     AddOracleCase(cases,
@@ -628,11 +649,14 @@ AddEmbeddedNulCases(FilterCases& cases) {
                   PatternOp::InnerMatch,
                   std::string("a\0b", 3));
 
-    cases.Add<PatternQuery>({
+    cases.Add(IndexTestCase<std::string_view>{
         .name = "NulLikeAll",
         .dataset = dataset,
-        .args = {.op = PatternOp::Match, .pattern = "%"},
-        .expected = ValidRows(),
+        .body =
+            Query<PatternQuery>{
+                .args = {.op = PatternOp::Match, .pattern = "%"},
+                .expected = ValidRows(),
+            },
     });
     AddManualCase(
         cases, "NulLikeGap", dataset, PatternOp::Match, "a%b", {0, 3, 6});
@@ -734,7 +758,7 @@ AddEmbeddedNulCases(FilterCases& cases) {
 }
 
 void
-AddRegexCases(FilterCases& cases) {
+AddRegexCases(IndexTestCases& cases) {
     constexpr auto dataset = "PatternStringsNullable";
 
     AddManualCase(cases,
@@ -802,23 +826,32 @@ AddRegexCases(FilterCases& cases) {
                   PatternOp::RegexMatch,
                   "a.c",
                   {21, 22, 23, 24, 58, 59, 81, 82, 83, 84, 85, 94, 102, 103});
-    cases.Add<PatternQuery>({
+    cases.Add(IndexTestCase<std::string_view>{
         .name = "RegexEmptyMatchesAllValid",
         .dataset = dataset,
-        .args = {.op = PatternOp::RegexMatch, .pattern = ""},
-        .expected = ValidRows(),
+        .body =
+            Query<PatternQuery>{
+                .args = {.op = PatternOp::RegexMatch, .pattern = ""},
+                .expected = ValidRows(),
+            },
     });
-    cases.Add<PatternQuery>({
+    cases.Add(IndexTestCase<std::string_view>{
         .name = "RegexDotStarMatchesAllValid",
         .dataset = dataset,
-        .args = {.op = PatternOp::RegexMatch, .pattern = ".*"},
-        .expected = ValidRows(),
+        .body =
+            Query<PatternQuery>{
+                .args = {.op = PatternOp::RegexMatch, .pattern = ".*"},
+                .expected = ValidRows(),
+            },
     });
-    cases.Add<PatternQuery>({
+    cases.Add(IndexTestCase<std::string_view>{
         .name = "RegexLazyDotStarMatchesAllValid",
         .dataset = dataset,
-        .args = {.op = PatternOp::RegexMatch, .pattern = ".*?"},
-        .expected = ValidRows(),
+        .body =
+            Query<PatternQuery>{
+                .args = {.op = PatternOp::RegexMatch, .pattern = ".*?"},
+                .expected = ValidRows(),
+            },
     });
     AddManualCase(cases,
                   "RegexDotNewlineDisabled",
@@ -832,11 +865,14 @@ AddRegexCases(FilterCases& cases) {
                   PatternOp::RegexMatch,
                   "abc|fgk|xyz",
                   {21, 24, 58, 59, 80, 81, 82, 83, 84, 85, 94, 102, 103});
-    cases.Add<PatternQuery>({
+    cases.Add(IndexTestCase<std::string_view>{
         .name = "RegexEmptyAlternationBranch",
         .dataset = dataset,
-        .args = {.op = PatternOp::RegexMatch, .pattern = "(abc|)"},
-        .expected = ValidRows(),
+        .body =
+            Query<PatternQuery>{
+                .args = {.op = PatternOp::RegexMatch, .pattern = "(abc|)"},
+                .expected = ValidRows(),
+            },
     });
     AddManualCase(cases,
                   "RegexOptionalGroup",
@@ -974,22 +1010,28 @@ AddRegexCases(FilterCases& cases) {
                   "\\p{Han}+[0-9]+",
                   {92});
 
-    cases.Add<PatternQuery>({
+    cases.Add(IndexTestCase<std::string_view>{
         .name = "RegexBackreferenceRejected",
         .dataset = dataset,
-        .args = {.op = PatternOp::RegexMatch, .pattern = "(a)\\1"},
-        .expected_error = ErrorCode::UnexpectedError,
+        .body =
+            Query<PatternQuery>{
+                .args = {.op = PatternOp::RegexMatch, .pattern = "(a)\\1"},
+                .expected_error = ErrorCode::UnexpectedError,
+            },
     });
-    cases.Add<PatternQuery>({
+    cases.Add(IndexTestCase<std::string_view>{
         .name = "AllNullRegex",
         .dataset = "PatternAllNull",
-        .args = {.op = PatternOp::RegexMatch, .pattern = ".*"},
-        .expected = ManualHits({}),
+        .body =
+            Query<PatternQuery>{
+                .args = {.op = PatternOp::RegexMatch, .pattern = ".*"},
+                .expected = ManualHits({}),
+            },
     });
 }
 
 void
-AddHybridRoutingCases(FilterCases& cases) {
+AddHybridRoutingCases(IndexTestCases& cases) {
     for (const auto& [name, op, pattern] : {
              std::tuple{"HybridBitmapPostfix",
                         PatternOp::PostfixMatch,
@@ -998,47 +1040,59 @@ AddHybridRoutingCases(FilterCases& cases) {
                         PatternOp::InnerMatch,
                         std::string("hello")},
          }) {
-        cases.Add<PatternQuery>({
+        cases.Add(IndexTestCase<std::string_view>{
             .name = name,
             .dataset = "PatternBinaryNullable",
-            .args = {.op = op, .pattern = pattern},
             .families = {"hybrid"},
-            .expected_should_use = true,
+            .body =
+                Query<PatternQuery>{
+                    .args = {.op = op, .pattern = pattern},
+                    .expected_should_use = true,
+                },
         });
     }
-    cases.Add<PatternQuery>({
+    cases.Add(IndexTestCase<std::string_view>{
         .name = "HybridBitmapRegex",
         .dataset = "PatternBinaryNullable",
-        .args = {.op = PatternOp::RegexMatch, .pattern = "hello"},
         .families = {"hybrid"},
-        .expected_should_use = true,
-        .expected = ManualHits({1, 4, 5}),
+        .body =
+            Query<PatternQuery>{
+                .args = {.op = PatternOp::RegexMatch, .pattern = "hello"},
+                .expected_should_use = true,
+                .expected = ManualHits({1, 4, 5}),
+            },
     });
 
     for (const auto& [name, op] : {
              std::pair{"HybridInvertedPostfix", PatternOp::PostfixMatch},
              std::pair{"HybridInvertedInner", PatternOp::InnerMatch},
          }) {
-        cases.Add<PatternQuery>({
+        cases.Add(IndexTestCase<std::string_view>{
             .name = name,
             .dataset = "PatternStringsNullable",
-            .args = {.op = op, .pattern = "world"},
             .families = {"hybrid"},
-            .expected_should_use = false,
+            .body =
+                Query<PatternQuery>{
+                    .args = {.op = op, .pattern = "world"},
+                    .expected_should_use = false,
+                },
         });
     }
-    cases.Add<PatternQuery>({
+    cases.Add(IndexTestCase<std::string_view>{
         .name = "HybridInvertedRegex",
         .dataset = "PatternStringsNullable",
-        .args = {.op = PatternOp::RegexMatch, .pattern = "world"},
         .families = {"hybrid"},
-        .expected_should_use = false,
-        .expected = ManualHits({11, 12, 13, 15, 37, 65, 66, 67}),
+        .body =
+            Query<PatternQuery>{
+                .args = {.op = PatternOp::RegexMatch, .pattern = "world"},
+                .expected_should_use = false,
+                .expected = ManualHits({11, 12, 13, 15, 37, 65, 66, 67}),
+            },
     });
 }
 
 void
-AddFmRoutingCases(FilterCases& cases) {
+AddFmRoutingCases(IndexTestCases& cases) {
     constexpr auto dataset = "PatternSelective";
 
     for (const auto& [name, op, pattern, should_use] : {
@@ -1054,33 +1108,42 @@ AddFmRoutingCases(FilterCases& cases) {
              std::tuple{"FmSingleByteInner", PatternOp::InnerMatch, "x", false},
              std::tuple{"FmEmptyPrefix", PatternOp::PrefixMatch, "", true},
          }) {
-        cases.Add<PatternQuery>({
+        cases.Add(IndexTestCase<std::string_view>{
             .name = name,
             .dataset = dataset,
-            .args = {.op = op, .pattern = pattern},
             .families = {"fmindex"},
-            .expected_should_use = should_use,
+            .body =
+                Query<PatternQuery>{
+                    .args = {.op = op, .pattern = pattern},
+                    .expected_should_use = should_use,
+                },
         });
     }
 
-    cases.Add<PatternQuery>({
+    cases.Add(IndexTestCase<std::string_view>{
         .name = "FmZeroTokenAbsentInner",
         .dataset = "PatternAllNull",
-        .args = {.op = PatternOp::InnerMatch, .pattern = "absent"},
         .families = {"fmindex"},
-        .expected_should_use = true,
+        .body =
+            Query<PatternQuery>{
+                .args = {.op = PatternOp::InnerMatch, .pattern = "absent"},
+                .expected_should_use = true,
+            },
     });
-    cases.Add<PatternQuery>({
+    cases.Add(IndexTestCase<std::string_view>{
         .name = "FmZeroTokenEmptyInner",
         .dataset = "PatternAllNull",
-        .args = {.op = PatternOp::InnerMatch, .pattern = ""},
         .families = {"fmindex"},
-        .expected_should_use = true,
+        .body =
+            Query<PatternQuery>{
+                .args = {.op = PatternOp::InnerMatch, .pattern = ""},
+                .expected_should_use = true,
+            },
     });
 }
 
 void
-AddRandomByteCases(FilterCases& cases) {
+AddRandomByteCases(IndexTestCases& cases) {
     constexpr auto dataset = "PatternRandomBytes";
 
     for (const auto& [name, op, pattern] : {
@@ -1097,27 +1160,33 @@ AddRandomByteCases(FilterCases& cases) {
                         PatternOp::InnerMatch,
                         std::string("\3", 1)},
          }) {
-        cases.Add<PatternQuery>({
+        cases.Add(IndexTestCase<std::string_view>{
             .name = name,
             .dataset = dataset,
-            .args = {.op = op, .pattern = pattern},
             .families = {"fmindex"},
+            .body =
+                Query<PatternQuery>{
+                    .args = {.op = op, .pattern = pattern},
+                },
         });
     }
 }
 
 void
-AddBackendLayoutCases(FilterCases& cases) {
-    cases.Add<PatternQuery>({
+AddBackendLayoutCases(IndexTestCases& cases) {
+    cases.Add(IndexTestCase<std::string_view>{
         .name = "BitmapRoaringMmapPrefix",
         .dataset = "PatternHighCardinality",
-        .args = {.op = PatternOp::PrefixMatch, .pattern = "key_00"},
         .families = {"bitmap"},
+        .body =
+            Query<PatternQuery>{
+                .args = {.op = PatternOp::PrefixMatch, .pattern = "key_00"},
+            },
     });
 }
 
 void
-AddAllValidProfileCases(FilterCases& cases) {
+AddAllValidProfileCases(IndexTestCases& cases) {
     constexpr auto dataset = "PredicateAllValid";
 
     AddOracleCase(
@@ -1133,22 +1202,30 @@ AddAllValidProfileCases(FilterCases& cases) {
         cases, "AllValidRegex", dataset, PatternOp::RegexMatch, "^ab$", {2});
 }
 
-const FilterCases&
+const IndexTestCases&
 PatternCases() {
     static const auto cases = [] {
-        FilterCases cases;
+        IndexTestCases cases;
         const std::string prefix(64, 'x');
 
         // Reuse the same nullable string dataset as In, with different queries.
-        cases.Add<PatternQuery>({
+        cases.Add(IndexTestCase<std::string_view>{
             .name = "RepeatedValues",
             .dataset = "RepeatedNullable",
-            .args = {.op = PatternOp::PrefixMatch, .pattern = prefix + "1"},
+            .body =
+                Query<PatternQuery>{
+                    .args = {.op = PatternOp::PrefixMatch,
+                             .pattern = prefix + "1"},
+                },
         });
-        cases.Add<PatternQuery>({
+        cases.Add(IndexTestCase<std::string_view>{
             .name = "MissingPrefix",
             .dataset = "RepeatedNullable",
-            .args = {.op = PatternOp::PrefixMatch, .pattern = prefix + "9"},
+            .body =
+                Query<PatternQuery>{
+                    .args = {.op = PatternOp::PrefixMatch,
+                             .pattern = prefix + "9"},
+                },
         });
 
         AddLiteralCases(cases);

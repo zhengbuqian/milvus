@@ -33,7 +33,7 @@
 #include "index/contracts/query/ScalarPredicateReader.h"
 #include "index/scalar/hybrid/HybridIndexArtifact.h"
 #include "index/test_utils/ArtifactTestUtils.h"
-#include "index/test_utils/FilterTestDriver.h"
+#include "index/test_utils/CaseTestDriver.h"
 #include "index/test_utils/ScalarReaderFactory.h"
 #include "index/test_utils/ScalarTestData.h"
 #include "index/test_utils/TestArtifactIO.h"

@@ -187,8 +187,9 @@ ScalarTestHasNulls(const ScalarTestData<T>& data) {
 template <typename T>
 struct ScalarDataSet {
     std::string name;
-    // True when this descriptor can generate at least one null row. Such data
-    // is registered only against nullable backend configurations.
+    // True when this descriptor can generate at least one null row. Ordinary
+    // reader cases require a backend that accepts nulls; an explicit negative
+    // builder case may deliberately select a non-nullable backend instead.
     bool requires_nullable{false};
     BackendInputShape input_shape{BackendInputShape::Scalar};
     Domain domain{Domain::Row};

@@ -29,7 +29,7 @@
 #include "index/Families.h"
 #include "index/contracts/query/NullReader.h"
 #include "index/contracts/query/ScalarPredicateReader.h"
-#include "index/test_utils/FilterTestDriver.h"
+#include "index/test_utils/CaseTestDriver.h"
 #include "index/test_utils/ScalarReaderFactory.h"
 #include "index/test_utils/ScalarTestData.h"
 #include "index/test_utils/TestArtifactIO.h"
@@ -306,6 +306,25 @@ ArtifactLifecycleCases() {
     return cases;
 }
 
+const IndexTestCases&
+ArtifactBuildFailureCases() {
+    static const auto cases = [] {
+        IndexTestCases result;
+        result.Add(IndexTestCase<std::string_view>{
+            .name = "NonNullableRejectsNullInput",
+            .dataset = "NullVsEmptyString",
+            .backends = {"FmIndexVarcharNonNull"},
+            .body =
+                BuildFails{
+                    .expected_error = ErrorCode::DataFormatBroken,
+                    .allow_nullability_mismatch = true,
+                },
+        });
+        return result;
+    }();
+    return cases;
+}
+
 class ArtifactBuilderTest : public ::testing::TestWithParam<FilterParam> {};
 
 TEST_P(ArtifactBuilderTest, ArtifactAndReaderOutliveBorrowedInput) {
@@ -315,6 +334,18 @@ TEST_P(ArtifactBuilderTest, ArtifactAndReaderOutliveBorrowedInput) {
 INSTANTIATE_TEST_SUITE_P(ScalarAndArrayBuilders,
                          ArtifactBuilderTest,
                          ::testing::ValuesIn(ArtifactLifecycleCases()),
+                         FilterParamName);
+
+class ArtifactBuilderFailureTest
+    : public ::testing::TestWithParam<FilterParam> {};
+
+TEST_P(ArtifactBuilderFailureTest, RejectsInvalidInput) {
+    GetParam().run();
+}
+
+INSTANTIATE_TEST_SUITE_P(ScalarBuilders,
+                         ArtifactBuilderFailureTest,
+                         ::testing::ValuesIn(ArtifactBuildFailureCases().All()),
                          FilterParamName);
 
 }  // namespace

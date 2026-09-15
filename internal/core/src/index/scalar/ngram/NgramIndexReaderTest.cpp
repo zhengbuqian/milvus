@@ -25,7 +25,7 @@
 
 #include "index/contracts/query/NgramReader.h"
 #include "index/test_utils/AssertHelpers.h"
-#include "index/test_utils/ReaderTestDriver.h"
+#include "index/test_utils/CaseTestDriver.h"
 
 namespace milvus::index::test {
 namespace {
@@ -41,10 +41,10 @@ struct ConcreteCandidateCase {
     std::vector<size_t> expected_offsets;
 };
 
-const ReaderObservationCases&
+const IndexTestCases&
 ConcreteNgramCases() {
     static const auto cases = [] {
-        ReaderObservationCases cases;
+        IndexTestCases cases;
         const std::vector<ConcreteCandidateCase> table = {
             {.name = "PostfixPositionFalsePositives",
              .dataset = "NgramWiki",
@@ -64,32 +64,41 @@ ConcreteNgramCases() {
              .expected_offsets = {0, 2, 4}},
         };
         for (const auto& test_case : table) {
-            cases.Add<std::string_view>({
+            cases.Add(IndexTestCase<std::string_view>{
                 .name = test_case.name,
                 .dataset = test_case.dataset,
                 .input_shape = BackendInputShape::Scalar,
                 .domain = Domain::Row,
-                .capability = &ReaderCaps::ngram_candidates,
+                .input_lifetime = InputLifetime::ReleaseBeforeBody,
                 .backends = {kBackend},
-                .observe =
-                    [test_case](const ReaderBackend&,
+                .body =
+                    Observe<std::string_view>{
+                        .capability = &ReaderCaps::ngram_candidates,
+                        .run =
+                            [test_case](
+                                const ReaderBackend&,
                                 const ScalarTestData<std::string_view>& data,
                                 IndexReaderBasePtr& reader) {
-                        const auto* ngram =
-                            dynamic_cast<const NgramReader*>(reader.get());
-                        ASSERT_NE(ngram, nullptr);
-                        ASSERT_TRUE(
-                            ngram->CanHandle(test_case.literal, test_case.op));
-                        auto candidates =
-                            test_case.initial_offsets.has_value()
-                                ? Hits(data.values.size(),
-                                       *test_case.initial_offsets)
-                                : TargetBitmap(data.values.size(), true);
-                        ngram->Candidates(
-                            test_case.literal, test_case.op, candidates);
-                        const auto expected = Hits(data.values.size(),
-                                                   test_case.expected_offsets);
-                        ExpectBitmap(candidates, expected);
+                                const auto* ngram =
+                                    dynamic_cast<const NgramReader*>(
+                                        reader.get());
+                                ASSERT_NE(ngram, nullptr);
+                                ASSERT_TRUE(ngram->CanHandle(test_case.literal,
+                                                             test_case.op));
+                                auto candidates =
+                                    test_case.initial_offsets.has_value()
+                                        ? Hits(data.values.size(),
+                                               *test_case.initial_offsets)
+                                        : TargetBitmap(data.values.size(),
+                                                       true);
+                                ngram->Candidates(test_case.literal,
+                                                  test_case.op,
+                                                  candidates);
+                                const auto expected =
+                                    Hits(data.values.size(),
+                                         test_case.expected_offsets);
+                                ExpectBitmap(candidates, expected);
+                            },
                     },
             });
         }
