@@ -107,6 +107,7 @@ set(INDEX_TEST_FILES
         ${CMAKE_HOME_DIRECTORY}/src/index/scalar/spatial/RTreeIndexArtifactTest.cpp
         ${CMAKE_HOME_DIRECTORY}/src/index/scalar/spatial/RTreeIndexReaderTest.cpp
         ${CMAKE_HOME_DIRECTORY}/src/index/scalar/text/TextIndexArtifactTest.cpp
+        ${CMAKE_HOME_DIRECTORY}/src/index/test_utils/CaseTestDriverTest.cpp
         ${CMAKE_HOME_DIRECTORY}/src/storage/artifact/FileSinkTest.cpp
         ${CMAKE_HOME_DIRECTORY}/src/storage/artifact/FileSourceTest.cpp
         ${CMAKE_HOME_DIRECTORY}/src/storage/artifact/LocalDirectoryTest.cpp

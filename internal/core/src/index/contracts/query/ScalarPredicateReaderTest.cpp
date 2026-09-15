@@ -1012,6 +1012,21 @@ PredicateCases() {
                         {.lo = 7, .lo_inc = true, .hi = 31, .hi_inc = false},
                 },
         });
+        cases.Add(IndexTestCase<int64_t>{
+            .name = "Membership",
+            .dataset = "HundredThousandRows",
+            .body =
+                QueryBatch<int64_t>{
+                    {"In",
+                     Query<In<int64_t>>{
+                         .args = {.keys = {7, 31}},
+                     }},
+                    {"NotIn",
+                     Query<NotIn<int64_t>>{
+                         .args = {.keys = {7, 31}},
+                     }},
+                },
+        });
 
         const auto ints = CaseValues<int64_t>();
         cases.Add(IndexTestCase<int64_t>{
