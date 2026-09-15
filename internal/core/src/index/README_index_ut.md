@@ -58,11 +58,14 @@ Reader”和“Reader 宣称什么能力”；用例负责输入、操作参数�
 选择条件。`body` 明确本次测试停在哪个阶段：
 
 - `Query<Op>` 打开 Reader 后执行一次查询，能力由 `Op` 给出；
+- `QueryBatch<T>` 在同一个 Reader 上按顺序执行多个具名 `Query<Op>`；
 - `Observe<T>` 打开 Reader 后执行观察回调，可指定需要的能力；
 - `BuildFails` 只调用构建器并校验错误，不进入包装或 `Open`。
 
 `Query<Op>` 使用 `Op::ValueType` 作为构建输入类型，从 `Op::Args` 取得查询参数，
 并通过 `Op::Reader` 调用对应 Reader 接口。
+`QueryBatch<T>` 中各 `Op` 可以不同，但 `Op::ValueType` 必须都是 `T`。批内名称
+不能为空且不能重复。
 
 用例文件定义小型操作适配器后，可以直接注册公共描述符：
 
@@ -76,11 +79,28 @@ cases.Add(IndexTestCase<int64_t>{
 });
 ```
 
+同一数据集需要核对多个查询时可合并为一个用例：
+
+```cpp
+cases.Add(IndexTestCase<int64_t>{
+    .name = "Membership",
+    .dataset = "HundredThousandRows",
+    .body = QueryBatch<int64_t>{
+        {"In", Query<In<int64_t>>{.args = {.keys = {7, 31}}}},
+        {"NotIn", Query<NotIn<int64_t>>{.args = {.keys = {7, 31}}}},
+    },
+});
+```
+
 `IndexTestCases::Add` 在注册阶段先核对数据集描述符，再取以下条件的交集：
 
 1. C++ 输入类型、输入形状、坐标域和逻辑值类型；
 2. 数据是否含 null、后端是否允许 null，以及查询或观察阶段声明的能力；
 3. 可选的索引族、精确后端名和 `select_backend` 条件。
+
+批量查询对所有子查询声明的 Reader capability 取交集；只有能执行完整 batch 的
+后端才会生成 GTest。操作参数导致的 `Unsupported` 仍由对应 `Query<Op>` 的 policy
+和错误期望校验，不作为 capability 缺失跳过。
 
 每个匹配后端生成一个 `FilterParam`，名称为
 `backend_dataset_case`。参数化测试体只调用 `GetParam().run()`，因此
@@ -91,6 +111,8 @@ GTest 报告中的每一项都是一个确定组合，不在单个测试体内�
 `InputLifetime::KeepUntilBodyCompletes` 让输入数据和借用视图存活到查询或观察结束；
 `ReleaseBeforeBody` 使用相互独立的期望数据和构建输入，并在回调前销毁输入所有者。
 `BuildFails` 是同步借用输入，只允许前一种生命周期。
+`QueryBatch<T>` 沿用同一规则：前一种生命周期只生成一次数据并 Build/Open 一次，
+后一种仍生成独立的期望数据和临时构建输入，但整个 batch 也只 Build/Open 一次。
 
 数据集的 `requires_nullable` 表示生成数据确实含 null；后端的 `nullable` 表示该配置
 接受可空输入。普通选择不把前者送入不可空后端。只有明确验证这一矛盾输入的
@@ -106,6 +128,8 @@ ValueType、Caps 基本关系和资源统计。随后 Query 适配器与 Observe
 简单谓词由 `Op::Oracle` 根据原始数据计算期望；复杂 LIKE、正则或边界数据使用
 `ManualHits` 明确列出偏移。实际和期望位图直接整体比较。查询错误只包围
 `Op::Run`，并校验精确 `ErrorCode`，不会把构建/加载失败误算成正确的查询拒绝。
+batch 在每个子查询执行时加入其稳定名称的 `SCOPED_TRACE`；普通 `EXPECT` 失败后
+继续执行后续查询，fatal failure 则停止当前 batch，避免继续使用无效 Reader。
 
 `BuildFails` 先在错误断言外生成数据和输入，并通过 `CreateBuilder` 完成 registry
 查找与配置解析；错误断言只包围生产构建器的 `Build`。它不调用 Artifact 包装或

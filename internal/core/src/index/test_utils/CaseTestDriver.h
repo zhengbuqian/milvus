@@ -21,6 +21,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <functional>
+#include <initializer_list>
+#include <iterator>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -320,6 +322,79 @@ concept ObservationCallback = requires(std::decay_t<F>& callback,
 }  // namespace detail
 
 template <typename T>
+class QueryBatch {
+ public:
+    class Entry {
+     public:
+        template <typename Op>
+        Entry(std::string name, Query<Op> query)
+            : name_(std::move(name)),
+              capability_(Op::kCapability),
+              run_([query = std::move(query)](const ReaderBackend& backend,
+                                              const ScalarTestData<T>& data,
+                                              IndexReaderBasePtr& reader) {
+                  static_assert(std::is_same_v<T, typename Op::ValueType>);
+                  detail::RunQueryBody<Op>(backend, data, reader, query);
+              }) {
+            static_assert(std::is_same_v<T, typename Op::ValueType>);
+        }
+
+     private:
+        friend class QueryBatch;
+
+        std::string name_;
+        bool ReaderCaps::*capability_;
+        ObserveFn<T> run_;
+    };
+
+    QueryBatch(std::initializer_list<Entry> entries) : entries_(entries) {
+        if (entries_.empty()) {
+            throw std::logic_error("query batch requires at least one query");
+        }
+        for (auto current = entries_.begin(); current != entries_.end();
+             ++current) {
+            if (current->name_.empty()) {
+                throw std::logic_error("query batch requires query names");
+            }
+            if (std::find_if(std::next(current),
+                             entries_.end(),
+                             [&](const auto& candidate) {
+                                 return candidate.name_ == current->name_;
+                             }) != entries_.end()) {
+                throw std::logic_error(current->name_ +
+                                       ": duplicate query name in batch");
+            }
+        }
+    }
+
+    void
+    Run(const ReaderBackend& backend,
+        const ScalarTestData<T>& data,
+        IndexReaderBasePtr& reader) const {
+        for (const auto& entry : entries_) {
+            SCOPED_TRACE("query: " + entry.name_);
+            ASSERT_NO_FATAL_FAILURE(entry.run_(backend, data, reader));
+        }
+    }
+
+    std::vector<bool ReaderCaps::*>
+    RequiredCapabilities() const {
+        std::vector<bool ReaderCaps::*> result;
+        result.reserve(entries_.size());
+        for (const auto& entry : entries_) {
+            if (std::find(result.begin(), result.end(), entry.capability_) ==
+                result.end()) {
+                result.push_back(entry.capability_);
+            }
+        }
+        return result;
+    }
+
+ private:
+    std::vector<Entry> entries_;
+};
+
+template <typename T>
 class CaseBody {
  public:
     template <typename Op>
@@ -333,6 +408,16 @@ class CaseBody {
               detail::RunQueryBody<Op>(backend, data, reader, query);
           }) {
         static_assert(std::is_same_v<T, typename Op::ValueType>);
+    }
+
+    CaseBody(QueryBatch<T> batch)
+        : phase_(CasePhase::Query),
+          batch_capabilities_(batch.RequiredCapabilities()),
+          reader_body_([batch = std::move(batch)](const ReaderBackend& backend,
+                                                  const ScalarTestData<T>& data,
+                                                  IndexReaderBasePtr& reader) {
+              batch.Run(backend, data, reader);
+          }) {
     }
 
     CaseBody(Observe<T> observe)
@@ -358,6 +443,7 @@ class CaseBody {
 
     CasePhase phase_;
     bool ReaderCaps::*capability_{nullptr};
+    std::vector<bool ReaderCaps::*> batch_capabilities_;
     bool allow_nullability_mismatch_{false};
     ObserveFn<T> reader_body_;
     std::optional<ErrorCode> build_error_;
@@ -439,6 +525,15 @@ class IndexTestCases {
                                                      test_case.body.capability_,
                                                      requires_nullable,
                                                      logical_type);
+        if (!test_case.body.batch_capabilities_.empty()) {
+            std::erase_if(backends, [&](const auto& backend) {
+                return !std::all_of(test_case.body.batch_capabilities_.begin(),
+                                    test_case.body.batch_capabilities_.end(),
+                                    [&](const auto capability) {
+                                        return backend.Supports(capability);
+                                    });
+            });
+        }
         if (!test_case.families.empty()) {
             std::erase_if(backends, [&](const auto& backend) {
                 return std::find(test_case.families.begin(),
