@@ -6,7 +6,7 @@
 
 保留它们是为了在重写测试时参考已有行为覆盖。各索引类型仍需补齐往返一致性矩阵：
 Builder → Artifact → Serialize → Loader → Reader，并比较原地打开与持久化后打开的查询结果、
-null 语义和坐标域。接口说明见 [contracts/README.md](contracts/README.md)。
+null 语义和坐标域。接口说明见 [contracts/README.md](../../contracts/README.md)。
 在对应索引类型的新测试写完之前，不要删这里的任何一个文件。
 旧 `NgramParams`/`FMIndexParams` 仅供这些参考测试使用，定义现位于
 `unittest/test_utils/LegacyIndexParams.h`，不再属于生产索引接口。

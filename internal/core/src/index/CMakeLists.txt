@@ -10,6 +10,8 @@
 # or implied. See the License for the specific language governing permissions and limitations under the License
 
 add_source_at_current_directory_recursively()
+# Test helpers have ordinary .cpp names but belong only to index_tests.
+list(FILTER SOURCE_FILES EXCLUDE REGEX "^test_utils/")
 add_library(milvus_index OBJECT ${SOURCE_FILES})
 # libsais (PUBLIC) propagates its include dir so the vendored FM-index sources
 # under fmindex/ can #include "libsais.h"; milvus_core links the objects (below).
