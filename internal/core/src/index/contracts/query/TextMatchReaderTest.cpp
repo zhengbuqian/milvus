@@ -26,7 +26,7 @@
 #include <vector>
 
 #include "index/Meta.h"
-#include "index/contracts/query/TextMatchReader.h"
+#include "index/contracts/query/ITextMatchReader.h"
 #include "index/test_utils/AssertHelpers.h"
 #include "index/test_utils/CaseTestDriver.h"
 
@@ -48,7 +48,7 @@ struct TextQueryArgs {
 using BackendSelector = std::function<bool(const ReaderBackend&)>;
 
 TargetBitmap
-RunTextQuery(const TextMatchReader& reader, const TextQueryArgs& args) {
+RunTextQuery(const ITextMatchReader& reader, const TextQueryArgs& args) {
     switch (args.kind) {
         case TextQueryKind::Match:
             return reader.MatchQuery(args.query, args.parameter);
@@ -99,11 +99,11 @@ AddTextCase(IndexTestCases& cases,
                      expected_offsets = std::move(expected_offsets)](
                         const ReaderBackend&,
                         const ScalarTestData<std::string_view>& data,
-                        IndexReaderBasePtr& reader) {
+                        IIndexReaderBasePtr& reader) {
                         ASSERT_TRUE(reader->Caps().text_match);
                         EXPECT_TRUE(reader->Caps().exact);
                         const auto* text_reader =
-                            dynamic_cast<const TextMatchReader*>(reader.get());
+                            dynamic_cast<const ITextMatchReader*>(reader.get());
                         ASSERT_NE(text_reader, nullptr);
 
                         const auto expected =

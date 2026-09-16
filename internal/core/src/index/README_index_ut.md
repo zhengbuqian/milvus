@@ -167,7 +167,7 @@ Ngram 和 Spatial 返回候选集，不承诺等于最终真值。公共契约�
 传输数据都已退出局部作用域，所以返回的 Reader 必须自行拥有查询所需状态。
 需要落盘的加载器由读取端原子写入自己的临时位置。
 
-`Consume` 路径把 `ArtifactPtr` 移交给 `ConsumeIndexArtifact`，不经过序列化；返回的
+`Consume` 路径把 `ArtifactPtr` 移交给 `IReaderConvertible::FromArtifact`，不经过序列化；返回的
 Reader 接管继续存活所需的产物状态。这条路径用于验证 RAM/可消费 Artifact，而非
 模拟持久化加载。
 

@@ -29,7 +29,7 @@
 #include <utility>
 #include <vector>
 
-#include "index/contracts/query/ScalarPredicateReader.h"
+#include "index/contracts/query/IScalarPredicateReader.h"
 #include "index/test_utils/CaseTestDriver.h"
 
 namespace milvus::index::test {
@@ -114,7 +114,7 @@ MatchesInterval(
 template <typename T>
 struct In {
     using ValueType = T;
-    using Reader = ScalarPredicateReader<T>;
+    using Reader = IScalarPredicateReader<T>;
     static constexpr auto kCapability = &ReaderCaps::predicate;
 
     struct Args {
@@ -149,7 +149,7 @@ struct In {
 template <typename T>
 struct NotIn {
     using ValueType = T;
-    using Reader = ScalarPredicateReader<T>;
+    using Reader = IScalarPredicateReader<T>;
     static constexpr auto kCapability = &ReaderCaps::predicate;
 
     struct Args {
@@ -176,7 +176,7 @@ struct NotIn {
 template <typename T>
 struct UnaryRange {
     using ValueType = T;
-    using Reader = ScalarPredicateReader<T>;
+    using Reader = IScalarPredicateReader<T>;
     static constexpr auto kCapability = &ReaderCaps::predicate;
 
     struct Args {
@@ -208,7 +208,7 @@ struct UnaryRange {
 template <typename T>
 struct IntervalRange {
     using ValueType = T;
-    using Reader = ScalarPredicateReader<T>;
+    using Reader = IScalarPredicateReader<T>;
     static constexpr auto kCapability = &ReaderCaps::predicate;
 
     struct Args {

@@ -82,7 +82,7 @@ void
 ValidateReader(std::string_view name,
                const ReaderBackend& backend,
                const ReaderCaps& expected_caps,
-               const IndexReaderBasePtr& reader) {
+               const IIndexReaderBasePtr& reader) {
     if (!reader) {
         throw std::logic_error(std::string(name) +
                                ": loader returned no reader");
@@ -214,7 +214,7 @@ ReaderBackend::LoadersRegistered() const {
         });
 }
 
-IndexReaderBasePtr
+IIndexReaderBasePtr
 ReaderBackend::Open(storage::ArtifactPtr artifact,
                     const BackendCaseMetadata& metadata) const {
     if (!artifact) {
@@ -229,7 +229,7 @@ ReaderBackend::Open(storage::ArtifactPtr artifact,
         }
         const auto expected_caps =
             Loader(spec_.load_families.front()).derive_caps(params);
-        auto reader = ConsumeIndexArtifact(std::move(artifact));
+        auto reader = IReaderConvertible::FromArtifact(std::move(artifact));
         ValidateReader(Name(), *this, expected_caps, reader);
         return reader;
     }

@@ -22,7 +22,7 @@
 #include <vector>
 
 #include "index/Meta.h"
-#include "index/contracts/query/ScalarPredicateReader.h"
+#include "index/contracts/query/IScalarPredicateReader.h"
 #include "index/test_utils/ArtifactTestUtils.h"
 #include "index/test_utils/ScalarTestData.h"
 
@@ -48,7 +48,7 @@ ExpectLegacyRoundTrip(std::string_view backend_name,
     auto reader = OpenV1V2(backend, buffers);
     ASSERT_NE(reader, nullptr);
     const auto* predicate =
-        dynamic_cast<const ScalarPredicateReader<T>*>(reader.get());
+        dynamic_cast<const IScalarPredicateReader<T>*>(reader.get());
     ASSERT_NE(predicate, nullptr);
     const auto hits = predicate->In(1, &key);
     ASSERT_EQ(hits.size(), 4);

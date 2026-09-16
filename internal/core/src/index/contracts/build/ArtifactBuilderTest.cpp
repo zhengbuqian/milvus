@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -26,13 +27,23 @@
 #include <utility>
 #include <vector>
 
+#include "common/Consts.h"
 #include "index/Families.h"
-#include "index/contracts/query/NullReader.h"
-#include "index/contracts/query/ScalarPredicateReader.h"
+#include "index/IndexTypeAdapter.h"
+#include "index/Meta.h"
+#include "index/contracts/Registry.h"
+#include "index/contracts/build/VectorBuildInput.h"
+#include "index/contracts/query/INullReader.h"
+#include "index/contracts/query/IScalarPredicateReader.h"
+#include "index/contracts/query/IVectorReader.h"
 #include "index/test_utils/CaseTestDriver.h"
 #include "index/test_utils/ScalarReaderFactory.h"
 #include "index/test_utils/ScalarTestData.h"
 #include "index/test_utils/TestArtifactIO.h"
+#include "index/vector/KnowhereEngine.h"
+#include "knowhere/comp/index_param.h"
+#include "knowhere/version.h"
+#include "storage/artifact/LoadOptions.h"
 
 namespace milvus::index::test {
 namespace {
@@ -116,7 +127,7 @@ RunScalarArtifactLifecycle(const ReaderBackend& backend) {
     ASSERT_NE(reader, nullptr);
     EXPECT_EQ(reader->Count(), 3);
     EXPECT_EQ(reader->CoordDomain(), Domain::Row);
-    const auto* null_reader = dynamic_cast<const NullReader*>(reader.get());
+    const auto* null_reader = dynamic_cast<const INullReader*>(reader.get());
     ASSERT_NE(null_reader, nullptr);
     const auto nulls = null_reader->IsNull();
     ASSERT_EQ(nulls.size(), 3);
@@ -208,7 +219,7 @@ RunArrayRowsLifecycle(const ReaderBackend& backend,
     EXPECT_EQ(reader->CoordDomain(), Domain::Row);
     EXPECT_EQ(reader->ValueType(), detail::ScalarTestType<T>());
 
-    const auto* null_reader = dynamic_cast<const NullReader*>(reader.get());
+    const auto* null_reader = dynamic_cast<const INullReader*>(reader.get());
     ASSERT_NE(null_reader, nullptr);
     const auto nulls = null_reader->IsNull();
     const auto not_nulls = null_reader->IsNotNull();
@@ -222,7 +233,7 @@ RunArrayRowsLifecycle(const ReaderBackend& backend,
     EXPECT_TRUE(not_nulls[1]);
 
     const auto* predicate =
-        dynamic_cast<const ScalarPredicateReader<T>*>(reader.get());
+        dynamic_cast<const IScalarPredicateReader<T>*>(reader.get());
     ASSERT_NE(predicate, nullptr);
     const auto member = ArrayMembershipKey<T>();
     const auto in = predicate->In(1, &member);
@@ -280,6 +291,133 @@ AddArrayRowsCases(std::vector<FilterParam>& cases, std::string_view type_name) {
     add_dataset("AllValid");
 }
 
+struct VectorLifecycleProfile {
+    std::string index_type;
+    std::string metric_type;
+    int64_t dim;
+    Config extra_params = Config::object();
+};
+
+template <typename T>
+std::vector<typename VectorBuildInput<T>::value_type>
+MakeVectorValues(int64_t rows, int64_t dim) {
+    using ValueType = typename VectorBuildInput<T>::value_type;
+    std::vector<ValueType> result;
+    if constexpr (std::is_same_v<T, sparse_u32_f32>) {
+        result.reserve(static_cast<size_t>(rows));
+        for (int64_t row = 0; row < rows; ++row) {
+            auto& value = result.emplace_back(2);
+            value.set_at(0,
+                         static_cast<uint32_t>(row % dim),
+                         static_cast<SparseValueType>(row + 1));
+            value.set_at(1,
+                         static_cast<uint32_t>((row + 7) % dim),
+                         static_cast<SparseValueType>(row + 2));
+        }
+    } else {
+        const auto values_per_row =
+            std::is_same_v<T, bin1> ? dim / 8 : dim;
+        result.reserve(static_cast<size_t>(rows * values_per_row));
+        for (int64_t i = 0; i < rows * values_per_row; ++i) {
+            result.push_back(static_cast<ValueType>((i % 13) + 1));
+        }
+    }
+    return result;
+}
+
+template <typename T>
+void
+RunVectorArtifactLifecycle(const VectorLifecycleProfile& profile,
+                           bool all_null) {
+    constexpr auto physical_type = PhysicalVectorDataType<T>();
+    constexpr int64_t kPopulatedRows = 32;
+    constexpr int64_t kAllNullRows = 3;
+    const auto logical_rows = all_null ? kAllNullRows : kPopulatedRows;
+
+    auto params = profile.extra_params;
+    params[METRIC_TYPE] = profile.metric_type;
+    params[DIM_KEY] = profile.dim;
+    auto adapted = AdaptIndexType({
+        .index_type = profile.index_type,
+        .field_type = physical_type,
+        .element_type = DataType::NONE,
+        .index_engine_version =
+            knowhere::Version::GetCurrentVersion().VersionNumber(),
+        .params = std::move(params),
+    });
+    ASSERT_EQ(adapted.family, families::kVectorMem);
+    adapted.params["nullable"] = all_null;
+    adapted.params[INDEX_NUM_ROWS_KEY] = logical_rows;
+
+    auto builder = BuilderRegistry<VectorBuildInput<T>>::Instance().Create(
+        adapted.family, adapted.params);
+    ASSERT_NE(builder, nullptr);
+    EXPECT_TRUE(builder->InputSpec().side_inputs.empty());
+
+    auto values = all_null
+                      ? std::vector<typename VectorBuildInput<T>::value_type>{}
+                      : MakeVectorValues<T>(logical_rows, profile.dim);
+    const std::array<bool, kAllNullRows> invalid = {false, false, false};
+    const auto validity =
+        all_null ? ValidityView::FromExpanded(invalid.data()) : ValidityView{};
+    VectorBuildInput<T> input{
+        .physical_values = values,
+        .logical_rows = logical_rows,
+        .physical_rows = all_null ? 0 : logical_rows,
+        .dim = profile.dim,
+        .parent_validity = validity,
+    };
+    auto artifact = std::move(*builder).Build(input);
+    ASSERT_NE(artifact, nullptr);
+
+    TestArtifactData persisted;
+    TestArtifactSink sink(persisted, storage::Generation::V1V2);
+    artifact->Serialize(sink);
+    const auto stats = sink.Finish();
+    EXPECT_FALSE(persisted.entries.empty());
+    EXPECT_EQ(stats.Files().size(), persisted.entries.size());
+
+    TestArtifactSource source(persisted, storage::Generation::V1V2);
+    const auto loader = LoaderRegistry::Instance().Lookup(adapted.family);
+    ASSERT_TRUE(static_cast<bool>(loader));
+    storage::LoadOptions options;
+    options.params = adapted.params;
+    auto reader = loader.open(source, options);
+    ASSERT_NE(reader, nullptr);
+    EXPECT_EQ(reader->CoordDomain(), Domain::Row);
+    EXPECT_EQ(reader->ValueType(), physical_type);
+
+    const auto* vectors = dynamic_cast<const IVectorReader*>(reader.get());
+    ASSERT_NE(vectors, nullptr);
+    if (all_null) {
+        EXPECT_EQ(reader->Count(), 0);
+        EXPECT_TRUE(vectors->HasValidData());
+        EXPECT_EQ(vectors->ValidCount(), 0);
+        for (int64_t row = 0; row < logical_rows; ++row) {
+            EXPECT_FALSE(vectors->IsRowValid(row));
+        }
+    } else {
+        EXPECT_EQ(reader->Count(), logical_rows);
+        EXPECT_FALSE(vectors->HasValidData());
+    }
+}
+
+template <typename T>
+void
+AddVectorLifecycleCases(std::vector<FilterParam>& cases,
+                        std::string type_name,
+                        VectorLifecycleProfile profile) {
+    for (const auto all_null : {false, true}) {
+        cases.push_back({
+            .name = "Vector_" + type_name +
+                    (all_null ? "_AllNull" : "_Populated"),
+            .run = [profile, all_null] {
+                RunVectorArtifactLifecycle<T>(profile, all_null);
+            },
+        });
+    }
+}
+
 const std::vector<FilterParam>&
 ArtifactLifecycleCases() {
     static const auto cases = [] {
@@ -301,6 +439,42 @@ ArtifactLifecycleCases() {
         AddArrayRowsCases<float>(result, "Float");
         AddArrayRowsCases<double>(result, "Double");
         AddArrayRowsCases<std::string_view>(result, "Varchar");
+
+        const VectorLifecycleProfile dense{
+            .index_type = knowhere::IndexEnum::INDEX_FAISS_IVFPQ,
+            .metric_type = knowhere::metric::L2,
+            .dim = 4,
+            .extra_params = {
+                {knowhere::indexparam::NLIST, 2},
+                {knowhere::indexparam::M, 2},
+                {knowhere::indexparam::NBITS, 4},
+            },
+        };
+        AddVectorLifecycleCases<float>(result, "Float", dense);
+        AddVectorLifecycleCases<float16>(result, "Float16", dense);
+        AddVectorLifecycleCases<bfloat16>(result, "BFloat16", dense);
+        AddVectorLifecycleCases<int8>(result, "Int8", dense);
+        AddVectorLifecycleCases<bin1>(
+            result,
+            "Binary",
+            {
+                .index_type = knowhere::IndexEnum::INDEX_FAISS_BIN_IVFFLAT,
+                .metric_type = knowhere::metric::JACCARD,
+                .dim = 8,
+                .extra_params = {{knowhere::indexparam::NLIST, 2}},
+            });
+        AddVectorLifecycleCases<sparse_u32_f32>(
+            result,
+            "SparseFloat",
+            {
+                .index_type =
+                    knowhere::IndexEnum::INDEX_SPARSE_INVERTED_INDEX,
+                .metric_type = knowhere::metric::IP,
+                .dim = 32,
+                .extra_params = {
+                    {knowhere::indexparam::DROP_RATIO_BUILD, 0.1},
+                },
+            });
         return result;
     }();
     return cases;
@@ -331,7 +505,7 @@ TEST_P(ArtifactBuilderTest, ArtifactAndReaderOutliveBorrowedInput) {
     GetParam().run();
 }
 
-INSTANTIATE_TEST_SUITE_P(ScalarAndArrayBuilders,
+INSTANTIATE_TEST_SUITE_P(ArtifactBuilders,
                          ArtifactBuilderTest,
                          ::testing::ValuesIn(ArtifactLifecycleCases()),
                          FilterParamName);

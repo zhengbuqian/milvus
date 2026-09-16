@@ -105,7 +105,7 @@ internal/core/src/index/
   contracts/
     RegistryTest.cpp
     build/
-      ConsumeIndexArtifactTest.cpp
+      ReaderConvertibleTest.cpp
       ArtifactBuilderTest.cpp              # #65：真实 family 的构建契约
     growing/
       GrowingIndexTest.cpp
@@ -185,7 +185,7 @@ internal/core/src/storage/artifact/
 rtk proxy cmake -S internal/core -B cmake_build -DBUILD_UNIT_TEST=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 rtk proxy cmake --build cmake_build --target index_tests --parallel 8
 rtk proxy ./scripts/run_index_unittest.sh --gtest_list_tests
-rtk proxy ./scripts/run_index_unittest.sh --gtest_filter='ConsumeIndexArtifactTest.*'
+rtk proxy ./scripts/run_index_unittest.sh --gtest_filter='ReaderConvertibleTest.*'
 ```
 
 必须核对 `CMAKE_HOME_DIRECTORY` 和工具链路径属于本工作树。新 worktree 先按仓库构建流程建立自己的 Conan/CMake 配置；不能复制旧工作树的绝对路径 CMakeCache。worktree 放在 `/home/zilliz/...` 或 `/tmp/kilo/...`。
@@ -202,12 +202,12 @@ rtk proxy ./scripts/run_index_unittest.sh --gtest_filter='ConsumeIndexArtifactTe
 **新增：**
 
 - `scripts/run_index_unittest.sh`
-- `internal/core/src/index/contracts/build/ConsumeIndexArtifactTest.cpp`
+- `internal/core/src/index/contracts/build/ReaderConvertibleTest.cpp`
 
 **步骤：**
 
 1. 创建 `SegcoreRefactor/6-tests-index`，记录其起点 SHA。
-2. 在 ConsumeIndexArtifactTest 中先加入 null artifact 的错误码测试；调用生产 `ConsumeIndexArtifact(nullptr)`，验证捕获到 `SegcoreError` 且 code 为该入口实际约定的 `UnexpectedError`。
+2. 在 ReaderConvertibleTest 中先加入 null artifact 的错误码测试；调用生产 `IReaderConvertible::FromArtifact(nullptr)`，验证捕获到 `SegcoreError` 且 code 为该入口实际约定的 `UnexpectedError`。
 3. CMake 定义绝对路径的 `INDEX_TEST_FILES` 显式列表。用同一列表从 `MILVUS_TEST_FILES` 移除文件，再创建 `index_tests`，避免两个 binary 重复收集。
 4. 使用 `GTest::gtest_main`，按现有编译依赖链接 `milvus_core` 和必要依赖，不复制 plan parser、Segment YAML、远端存储初始化。不复用 `init_gtest.cpp`。
 5. 为 target 设置只需要的 include/compile/link 属性，安装到既有 `unittest` 目录。既有目录级 flag 有继承时明确记录，不声称完成了链接依赖隔离。
@@ -221,11 +221,11 @@ rtk proxy ./scripts/run_index_unittest.sh --gtest_filter='ConsumeIndexArtifactTe
 
 **新增/修改：**
 
-- `internal/core/src/index/contracts/build/ConsumeIndexArtifactTest.cpp`
+- `internal/core/src/index/contracts/build/ReaderConvertibleTest.cpp`
 - `internal/core/src/index/contracts/query/JsonIndexReaderTest.cpp`
 - `internal/core/unittest/CMakeLists.txt`
 
-**读取：** `ConsumeIndexArtifact.h`、`ReaderConvertible.h`、`JsonIndexReader.h`。
+**读取：** `IReaderConvertible.h`、`IJsonIndexReader.h`。
 
 **用例：**
 
@@ -239,7 +239,7 @@ rtk proxy ./scripts/run_index_unittest.sh --gtest_filter='ConsumeIndexArtifactTe
 
 Tracking 类型只实现计数/所有权需要的最小接口；被测的是生产 helper/handle 的行为。
 
-**运行：** `--gtest_filter='ConsumeIndexArtifactTest.*:JsonResolvedReaderTest.*'`。
+**运行：** `--gtest_filter='ReaderConvertibleTest.*:JsonResolvedReaderTest.*'`。
 
 **提交：** `test: [SegcoreUT 1] cover consuming artifact and resolved reader ownership`
 
@@ -247,7 +247,7 @@ Tracking 类型只实现计数/所有权需要的最小接口；被测的是生�
 
 **新增：** `internal/core/src/index/contracts/RegistryTest.cpp`。
 
-**读取：** `index/contracts/Registry.h`、`index/Registry.cpp`。
+**读取：** `index/contracts/Registry.h`、`index/contracts/Registry.cpp`。
 
 **用例：**
 
@@ -269,7 +269,7 @@ Tracking 类型只实现计数/所有权需要的最小接口；被测的是生�
 
 **新增：** `internal/core/src/index/contracts/growing/GrowingIndexTest.cpp`。
 
-**读取：** `GrowingIndex.h`；参考 acceptance 文件中的 tracking 思路，不引入 GrowingIndexSet。
+**读取：** `IGrowingIndex.h`；参考 acceptance 文件中的 tracking 思路，不引入 GrowingIndexSet。
 
 **用例：**
 
@@ -456,7 +456,7 @@ TEST_P(ScalarPredicateInt64Test, NotInExcludesNullRows) {
 **按组执行：**
 
 1. Pattern：明确 LIKE/Regex 的语法与 Prefix/Postfix/Inner 的 literal 区别；覆盖 `%`、`_`、空串和转义。先验证 op/literal 的支持约定，再对支持组合执行共享精确结果用例。FM 的路由拒绝单独测试。
-2. Text：固定 analyzer 和小语料，覆盖 min_should_match、phrase slop、fuzzy edit distance。分别测试文件模式 Serialize/Open 和 RAM 模式 ConsumeIndexArtifact；RAM 不能 Serialize 的能力边界要有负例。
+2. Text：固定 analyzer 和小语料，覆盖 min_should_match、phrase slop、fuzzy edit distance。分别测试文件模式 Serialize/Open 和 RAM 模式 IReaderConvertible::FromArtifact；RAM 不能 Serialize 的能力边界要有负例。
 3. Text 生命周期：转换后销毁 Artifact shell，Reader 保留 engine/backing；失败转换不保留多余 owner。普通 scalar 的 Artifact 不允许因缺少转换能力而隐式走 IO fallback。
 4. Ngram：验证 CanHandle；从全候选及预过滤候选开始查询，结果只能收缩且包含原候选范围内所有真实匹配；用普通字符串操作求真值。另测 false positive 示例，不能把候选当最终精确结果。
 5. RTree：用明确几何构造验证 MBR 候选和 NullReader；DWithin 的输入是调用者已准备好的扩展查询形状，不拉入 executor。覆盖 Artifact 的各实际支持序列化模式及对应重载。
@@ -477,7 +477,7 @@ TestArtifactIO 仅在 NamedBuffer transport 无法表达需要的 raw entry 或 
 - `internal/core/src/index/scalar/json/JsonFlatIndexBuilderTest.cpp`
 - `internal/core/src/index/scalar/json/JsonFlatIndexLoaderTest.cpp`
 - `internal/core/src/index/scalar/json/JsonProjectedIndexArtifactTest.cpp`
-- `internal/core/src/index/scalar/json/JsonProjectedIndexReaderTest.cpp`
+- `internal/core/src/index/scalar/json/JsonPathIndexReaderTest.cpp`
 
 **修改：** `contracts/query/JsonIndexReaderTest.cpp`、必要的工厂和 CMake 列表。
 
@@ -531,7 +531,7 @@ rtk git diff --check
 ```bash
 rtk proxy cmake -S internal/core -B cmake_build -DBUILD_UNIT_TEST=ON -DUSE_ASAN=ON
 rtk proxy cmake --build cmake_build --target index_tests --parallel 8
-rtk proxy ./scripts/run_index_unittest.sh --gtest_filter='ConsumeIndexArtifactTest.*:JsonResolvedReaderTest.*:GrowingIndexContractTest.*:*ArtifactBuilder*:*Lifetime*'
+rtk proxy ./scripts/run_index_unittest.sh --gtest_filter='ReaderConvertibleTest.*:JsonResolvedReaderTest.*:GrowingIndexContractTest.*:*ArtifactBuilder*:*Lifetime*'
 ```
 
 这会改变当前构建配置，执行前记录；报告中说明最终配置。若使用独立 sanitizer build directory，先按仓库流程配置工具链并通过 `INDEX_TEST_BINARY` 指定 binary。不扩大既有 LSan suppression 来掩盖新泄漏，不宣称未插桩的第三方代码得到相同覆盖。

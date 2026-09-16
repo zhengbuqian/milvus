@@ -43,15 +43,16 @@ SerializeV3(const storage::Artifact& artifact) {
     return result;
 }
 
-inline NamedBufferSet
+inline TestArtifactData
 SerializeV1V2(const storage::Artifact& artifact) {
-    storage::NamedBufferSink sink;
+    TestArtifactData result;
+    TestArtifactSink sink(result, storage::Generation::V1V2);
     artifact.Serialize(sink);
     static_cast<void>(sink.Finish());
-    return sink.Take();
+    return result;
 }
 
-inline IndexReaderBasePtr
+inline IIndexReaderBasePtr
 OpenFromSource(const ReaderBackend& backend,
                storage::FileSource& source,
                const BackendCaseMetadata& metadata = {}) {
@@ -91,7 +92,7 @@ OpenFromSource(const ReaderBackend& backend,
     return reader;
 }
 
-inline IndexReaderBasePtr
+inline IIndexReaderBasePtr
 OpenV3(const ReaderBackend& backend,
        const TestArtifactData& artifact,
        const BackendCaseMetadata& metadata = {}) {
@@ -99,11 +100,11 @@ OpenV3(const ReaderBackend& backend,
     return OpenFromSource(backend, source, metadata);
 }
 
-inline IndexReaderBasePtr
+inline IIndexReaderBasePtr
 OpenV1V2(const ReaderBackend& backend,
-         const NamedBufferSet& artifact,
+         const TestArtifactData& artifact,
          const BackendCaseMetadata& metadata = {}) {
-    storage::NamedBufferSource source(artifact);
+    TestArtifactSource source(artifact, storage::Generation::V1V2);
     return OpenFromSource(backend, source, metadata);
 }
 

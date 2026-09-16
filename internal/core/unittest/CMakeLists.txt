@@ -82,7 +82,7 @@ set(MILVUS_TEST_FILES
 set(INDEX_TEST_FILES
         ${CMAKE_HOME_DIRECTORY}/src/index/contracts/RegistryTest.cpp
         ${CMAKE_HOME_DIRECTORY}/src/index/contracts/build/ArtifactBuilderTest.cpp
-        ${CMAKE_HOME_DIRECTORY}/src/index/contracts/build/ConsumeIndexArtifactTest.cpp
+        ${CMAKE_HOME_DIRECTORY}/src/index/contracts/build/ReaderConvertibleTest.cpp
         ${CMAKE_HOME_DIRECTORY}/src/index/contracts/query/IndexReaderTest.cpp
         ${CMAKE_HOME_DIRECTORY}/src/index/contracts/query/JsonIndexReaderTest.cpp
         ${CMAKE_HOME_DIRECTORY}/src/index/contracts/query/NgramReaderTest.cpp
@@ -109,7 +109,6 @@ set(INDEX_TEST_FILES
         ${CMAKE_HOME_DIRECTORY}/src/index/scalar/text/TextIndexArtifactTest.cpp
         ${CMAKE_HOME_DIRECTORY}/src/index/test_utils/CaseTestDriverTest.cpp
         ${CMAKE_HOME_DIRECTORY}/src/storage/artifact/FileSinkTest.cpp
-        ${CMAKE_HOME_DIRECTORY}/src/storage/artifact/FileSourceTest.cpp
         ${CMAKE_HOME_DIRECTORY}/src/storage/artifact/LocalDirectoryTest.cpp
         )
 set(INDEX_TEST_SUPPORT_FILES
@@ -258,6 +257,7 @@ install(TARGETS index_tests DESTINATION unittest)
 
 add_executable(index_runtime_acceptance_test
         index_runtime_acceptance_test.cpp
+        ${CMAKE_HOME_DIRECTORY}/src/index/test_utils/TestArtifactIO.cpp
         )
 
 target_link_libraries(index_runtime_acceptance_test

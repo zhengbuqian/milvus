@@ -26,7 +26,7 @@
 #include <vector>
 
 #include "common/Geometry.h"
-#include "index/contracts/query/SpatialReader.h"
+#include "index/contracts/query/ISpatialReader.h"
 #include "index/test_utils/AssertHelpers.h"
 #include "index/test_utils/CaseTestDriver.h"
 
@@ -87,9 +87,9 @@ ConcreteRTreeCases() {
                             [test_case](
                                 const ReaderBackend&,
                                 const ScalarTestData<std::string_view>& data,
-                                IndexReaderBasePtr& reader) {
+                                IIndexReaderBasePtr& reader) {
                                 const auto* spatial =
-                                    dynamic_cast<const SpatialReader*>(
+                                    dynamic_cast<const ISpatialReader*>(
                                         reader.get());
                                 ASSERT_NE(spatial, nullptr);
                                 auto actual = [&] {
@@ -127,7 +127,7 @@ ConcreteRTreeCases() {
                     .run =
                         [](const ReaderBackend&,
                            const ScalarTestData<std::string_view>&,
-                           IndexReaderBasePtr& reader) {
+                           IIndexReaderBasePtr& reader) {
                             EXPECT_EQ(reader->CellByteSize().file_bytes, 0);
                         },
                 },

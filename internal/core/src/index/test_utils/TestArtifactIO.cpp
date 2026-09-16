@@ -250,13 +250,14 @@ WriteLocalFile(const std::string& path, const std::vector<uint8_t>& bytes) {
 
 }  // namespace
 
-TestArtifactSink::TestArtifactSink(TestArtifactData& artifact)
-    : artifact_(artifact) {
+TestArtifactSink::TestArtifactSink(TestArtifactData& artifact,
+                                   storage::Generation generation)
+    : artifact_(artifact), generation_(generation) {
 }
 
 storage::Generation
 TestArtifactSink::Gen() const {
-    return storage::Generation::V3;
+    return generation_;
 }
 
 void
@@ -288,11 +289,19 @@ TestArtifactSink::WriteEntryFromLocalFile(std::string_view name,
 void
 TestArtifactSink::WriteRawEntryFromLocalFile(std::string_view name,
                                              const std::string& local_path) {
+    if (generation_ == storage::Generation::V1V2) {
+        ThrowInfo(Unsupported,
+                  "V1/V2 test artifacts cannot publish a raw file entry");
+    }
     WriteEntryFromLocalFile(name, local_path);
 }
 
 void
 TestArtifactSink::PutMeta(std::string_view key, const nlohmann::json& value) {
+    if (generation_ == storage::Generation::V1V2) {
+        ThrowInfo(Unsupported,
+                  "V1/V2 test artifacts store metadata as named entries");
+    }
     if (key.empty() ||
         !artifact_.metadata.emplace(std::string(key), value).second) {
         throw std::logic_error(std::string(key) +
@@ -314,6 +323,9 @@ TestArtifactSink::Finish() {
         total += size;
         files.emplace_back(name, size);
     }
+    if (generation_ == storage::Generation::V1V2) {
+        return {total, {}};
+    }
     return {total, std::move(files)};
 }
 
@@ -321,13 +333,14 @@ void
 TestArtifactSink::ReleaseLocalStaging() {
 }
 
-TestArtifactSource::TestArtifactSource(const TestArtifactData& artifact)
-    : artifact_(artifact) {
+TestArtifactSource::TestArtifactSource(const TestArtifactData& artifact,
+                                       storage::Generation generation)
+    : artifact_(artifact), generation_(generation) {
 }
 
 storage::Generation
 TestArtifactSource::Gen() const {
-    return storage::Generation::V3;
+    return generation_;
 }
 
 std::vector<std::string>
@@ -420,6 +433,9 @@ TestArtifactSource::ReadEntriesToLocalDir(const std::vector<std::string>& names,
 
 std::optional<nlohmann::json>
 TestArtifactSource::GetMeta(std::string_view key) const {
+    if (generation_ == storage::Generation::V1V2) {
+        return std::nullopt;
+    }
     const auto it = artifact_.metadata.find(std::string(key));
     if (it == artifact_.metadata.end()) {
         return std::nullopt;

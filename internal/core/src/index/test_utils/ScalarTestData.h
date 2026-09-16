@@ -38,7 +38,7 @@
 #include "common/Array.h"
 #include "common/CustomBitset.h"
 #include "index/contracts/build/ScalarBuildInput.h"
-#include "index/contracts/query/IndexReader.h"
+#include "index/contracts/query/IIndexReaderBase.h"
 #include "index/scalar/ngram/JsonProjectedString.h"
 
 namespace milvus::index::test {

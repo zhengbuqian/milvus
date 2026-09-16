@@ -98,7 +98,7 @@ scripts/run_index_unittest.sh --gtest_color=no \
 | 套件 | 测试数 | 通过 | 断言失败 | 崩溃 | 禁用 | 错误 | XML 中的 GTest 秒数 |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | `RegistryTest` | 8 | 8 | 0 | 0 | 0 | 0 | 0.001 |
-| `ConsumeIndexArtifactTest` | 7 | 7 | 0 | 0 | 0 | 0 | 0.107 |
+| `ReaderConvertibleTest` | 7 | 7 | 0 | 0 | 0 | 0 | 0.107 |
 | `JsonResolvedReaderTest` | 1 | 1 | 0 | 0 | 0 | 0 | 0.000 |
 | `BitmapIndexArtifactTest` | 10 | 10 | 0 | 0 | 0 | 0 | 0.005 |
 | `BitmapIndexReaderTest` | 3 | 3 | 0 | 0 | 0 | 0 | 0.000 |

@@ -22,8 +22,8 @@
 #include <vector>
 
 #include "index/Meta.h"
-#include "index/contracts/query/NullReader.h"
-#include "index/contracts/query/TextMatchReader.h"
+#include "index/contracts/query/INullReader.h"
+#include "index/contracts/query/ITextMatchReader.h"
 #include "index/test_utils/ArtifactTestUtils.h"
 #include "index/test_utils/ScalarTestData.h"
 
@@ -53,7 +53,7 @@ TEST(TextIndexArtifactTest, LegacyV5DirectoryAndValidityRoundTrip) {
     ASSERT_NE(reader, nullptr);
     EXPECT_EQ(reader->Count(), 3);
 
-    const auto* text = dynamic_cast<const TextMatchReader*>(reader.get());
+    const auto* text = dynamic_cast<const ITextMatchReader*>(reader.get());
     ASSERT_NE(text, nullptr);
     const auto alpha = text->MatchQuery("alpha", 1);
     ASSERT_EQ(alpha.size(), 3);
@@ -61,7 +61,7 @@ TEST(TextIndexArtifactTest, LegacyV5DirectoryAndValidityRoundTrip) {
     EXPECT_FALSE(alpha[1]);
     EXPECT_TRUE(alpha[2]);
 
-    const auto* nulls = dynamic_cast<const NullReader*>(reader.get());
+    const auto* nulls = dynamic_cast<const INullReader*>(reader.get());
     ASSERT_NE(nulls, nullptr);
     const auto is_null = nulls->IsNull();
     EXPECT_FALSE(is_null[0]);

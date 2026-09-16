@@ -28,11 +28,11 @@
 #include <utility>
 #include <vector>
 
-#include "index/contracts/query/JsonIndexReader.h"
-#include "index/contracts/query/NgramReader.h"
-#include "index/contracts/query/NullReader.h"
-#include "index/contracts/query/PatternMatchReader.h"
-#include "index/contracts/query/ScalarPredicateReader.h"
+#include "index/contracts/query/IJsonIndexReader.h"
+#include "index/contracts/query/INgramReader.h"
+#include "index/contracts/query/INullReader.h"
+#include "index/contracts/query/IPatternMatchReader.h"
+#include "index/contracts/query/IScalarPredicateReader.h"
 #include "index/scalar/ScalarIndexUtils.h"
 #include "index/test_utils/AssertHelpers.h"
 #include "index/test_utils/CaseTestDriver.h"
@@ -76,7 +76,7 @@ ResolvedValueType(JsonCastType cast) {
 }
 
 void
-ExpectResolvedMetadata(const IndexReaderBase& reader,
+ExpectResolvedMetadata(const IIndexReaderBase& reader,
                        size_t count,
                        JsonCastType cast) {
     EXPECT_EQ(reader.Count(), count);
@@ -86,9 +86,9 @@ ExpectResolvedMetadata(const IndexReaderBase& reader,
     EXPECT_TRUE(ScalarValueTypesMatch(reader.ValueType(), expected_type));
 
     const auto caps = reader.Caps();
-    EXPECT_EQ(dynamic_cast<const PatternMatchReader*>(&reader) != nullptr,
+    EXPECT_EQ(dynamic_cast<const IPatternMatchReader*>(&reader) != nullptr,
               caps.pattern_match);
-    EXPECT_EQ(dynamic_cast<const NgramReader*>(&reader) != nullptr,
+    EXPECT_EQ(dynamic_cast<const INgramReader*>(&reader) != nullptr,
               caps.ngram_candidates);
     EXPECT_FALSE(caps.text_match);
     EXPECT_FALSE(caps.spatial);
@@ -97,41 +97,39 @@ ExpectResolvedMetadata(const IndexReaderBase& reader,
 }
 
 void
-ExpectProjectedOuterRoutesOnlyJson(const IndexReaderBase& reader) {
-    EXPECT_EQ(dynamic_cast<const ScalarPredicateReader<bool>*>(&reader),
+ExpectProjectedOuterRoutesOnlyJson(const IIndexReaderBase& reader) {
+    EXPECT_EQ(dynamic_cast<const IScalarPredicateReader<bool>*>(&reader),
               nullptr);
-    EXPECT_EQ(dynamic_cast<const ScalarPredicateReader<int64_t>*>(&reader),
+    EXPECT_EQ(dynamic_cast<const IScalarPredicateReader<int64_t>*>(&reader),
               nullptr);
-    EXPECT_EQ(dynamic_cast<const ScalarPredicateReader<double>*>(&reader),
+    EXPECT_EQ(dynamic_cast<const IScalarPredicateReader<double>*>(&reader),
               nullptr);
     EXPECT_EQ(
-        dynamic_cast<const ScalarPredicateReader<std::string_view>*>(&reader),
+        dynamic_cast<const IScalarPredicateReader<std::string_view>*>(&reader),
         nullptr);
-    EXPECT_EQ(dynamic_cast<const PatternMatchReader*>(&reader), nullptr);
-    EXPECT_EQ(dynamic_cast<const NgramReader*>(&reader), nullptr);
+    EXPECT_EQ(dynamic_cast<const IPatternMatchReader*>(&reader), nullptr);
+    EXPECT_EQ(dynamic_cast<const INgramReader*>(&reader), nullptr);
 }
 
 void
-ExpectProjectedExistsProtocol(const JsonIndexReader& json) {
+ExpectProjectedExistsProtocol(const IJsonIndexReader& json) {
     ExpectSegcoreError(ErrorCode::UnexpectedError,
                        [&] { static_cast<void>(json.Exists("/wrong")); });
-    ExpectSegcoreError(ErrorCode::UnexpectedError, [&] {
-        static_cast<void>(json.Exists("/a", JsonValueType::Numeric));
-    });
 }
 
-const JsonIndexReader*
-JsonReader(const IndexReaderBasePtr& reader) {
-    const auto* json = dynamic_cast<const JsonIndexReader*>(reader.get());
+const IJsonIndexReader*
+JsonReader(const IIndexReaderBasePtr& reader) {
+    const auto* json = dynamic_cast<const IJsonIndexReader*>(reader.get());
     if (json == nullptr) {
-        ADD_FAILURE() << "json_paths reader does not implement JsonIndexReader";
+        ADD_FAILURE()
+            << "json_paths reader does not implement IJsonIndexReader";
     }
     return json;
 }
 
 template <typename T>
-const ScalarPredicateReader<T>*
-ResolvedPredicate(const JsonIndexReader& json,
+const IScalarPredicateReader<T>*
+ResolvedPredicate(const IJsonIndexReader& json,
                   std::string_view path,
                   JsonCastType cast,
                   size_t count,
@@ -142,7 +140,7 @@ ResolvedPredicate(const JsonIndexReader& json,
         return nullptr;
     }
     const auto* predicate =
-        dynamic_cast<const ScalarPredicateReader<T>*>(resolved.get());
+        dynamic_cast<const IScalarPredicateReader<T>*>(resolved.get());
     if (predicate == nullptr) {
         ADD_FAILURE() << "resolved JSON reader lacks predicate interface";
         return nullptr;
@@ -155,7 +153,7 @@ ResolvedPredicate(const JsonIndexReader& json,
 
 template <typename T>
 TargetBitmap
-Membership(const ScalarPredicateReader<T>& reader,
+Membership(const IScalarPredicateReader<T>& reader,
            const std::vector<ScalarTestValue<T>>& values,
            bool negate) {
     if constexpr (std::is_same_v<T, bool>) {
@@ -347,7 +345,7 @@ AddPatternCase(IndexTestCases& cases,
             ExpectResolvedMetadata(
                 *resolved.get(), data.values.size(), Cast("VARCHAR"));
             const auto* matcher =
-                dynamic_cast<const PatternMatchReader*>(resolved.get());
+                dynamic_cast<const IPatternMatchReader*>(resolved.get());
             ASSERT_NE(matcher, nullptr);
             EXPECT_TRUE(resolved->Caps().predicate);
             EXPECT_TRUE(resolved->Caps().pattern_match);
@@ -366,18 +364,17 @@ AddExistsCase(IndexTestCases& cases,
               std::string dataset,
               BackendInputShape input_shape,
               std::string path,
-              JsonValueType type,
               std::vector<size_t> expected) {
     AddJsonCase<InputT>(
         cases,
         std::move(name),
         std::move(dataset),
         input_shape,
-        [path = std::move(path), type, expected = std::move(expected)](
+        [path = std::move(path), expected = std::move(expected)](
             const auto&, const auto& data, auto& reader) {
             const auto* json = JsonReader(reader);
             ASSERT_NE(json, nullptr);
-            ExpectHits(json->Exists(path, type), data.values.size(), expected);
+            ExpectHits(json->Exists(path), data.values.size(), expected);
         });
 }
 
@@ -404,7 +401,8 @@ AddResolvedNullCase(IndexTestCases& cases,
             auto resolved = json->Resolve(path, cast);
             ASSERT_TRUE(resolved);
             ExpectResolvedMetadata(*resolved.get(), data.values.size(), cast);
-            const auto* nulls = dynamic_cast<const NullReader*>(resolved.get());
+            const auto* nulls =
+                dynamic_cast<const INullReader*>(resolved.get());
             ASSERT_NE(nulls, nullptr);
             EXPECT_TRUE(resolved->Caps().predicate);
             EXPECT_TRUE(resolved->Caps().exact);
@@ -430,43 +428,15 @@ AddJsonFlatRoutingCases(IndexTestCases& cases) {
                                     "JsonEmployees",
                                     shape,
                                     "/profile/name/preferred_name",
-                                    JsonValueType::Any,
                                     {0});
     AddExistsCase<std::string_view>(cases,
                                     "ObjectSubpathExists",
                                     "JsonTypeFamilies",
                                     shape,
                                     "/a",
-                                    JsonValueType::Any,
                                     {0, 1, 2, 3, 4, 5, 6, 7, 11, 12, 13});
-    AddExistsCase<std::string_view>(cases,
-                                    "NumericExists",
-                                    "JsonTypeFamilies",
-                                    shape,
-                                    "/a",
-                                    JsonValueType::Numeric,
-                                    {0, 1, 4});
-    AddExistsCase<std::string_view>(cases,
-                                    "StringExists",
-                                    "JsonTypeFamilies",
-                                    shape,
-                                    "/a",
-                                    JsonValueType::String,
-                                    {2, 5, 11, 12, 13});
-    AddExistsCase<std::string_view>(cases,
-                                    "BoolExists",
-                                    "JsonTypeFamilies",
-                                    shape,
-                                    "/a",
-                                    JsonValueType::Bool,
-                                    {3, 6});
-    AddExistsCase<std::string_view>(cases,
-                                    "SupportedPathWithNoValues",
-                                    "JsonAllMissing",
-                                    shape,
-                                    "/a",
-                                    JsonValueType::Any,
-                                    {});
+    AddExistsCase<std::string_view>(
+        cases, "SupportedPathWithNoValues", "JsonAllMissing", shape, "/a", {});
 
     AddJsonCase<std::string_view>(
         cases,
@@ -474,7 +444,7 @@ AddJsonFlatRoutingCases(IndexTestCases& cases) {
         "JsonFieldNullable",
         shape,
         [](const auto&, const auto& data, auto& reader) {
-            const auto* nulls = dynamic_cast<const NullReader*>(reader.get());
+            const auto* nulls = dynamic_cast<const INullReader*>(reader.get());
             ASSERT_NE(nulls, nullptr);
             ExpectHits(nulls->IsNull(), data.values.size(), {1});
             ExpectHits(nulls->IsNotNull(), data.values.size(), {0, 2, 3, 4});
@@ -1211,7 +1181,6 @@ AddProjectedScalarCases(IndexTestCases& cases) {
                           "JsonProjectedDoubleMultiBatch",
                           shape,
                           "/a",
-                          JsonValueType::Any,
                           {0, 3, 5});
 
     AddProjectedRoutingCases<bool>(
@@ -1489,7 +1458,7 @@ AddProjectedNgramRoutingCases(IndexTestCases& cases) {
             ExpectResolvedMetadata(
                 *resolved.get(), data.values.size(), varchar);
             const auto* ngram =
-                dynamic_cast<const NgramReader*>(resolved.get());
+                dynamic_cast<const INgramReader*>(resolved.get());
             ASSERT_NE(ngram, nullptr);
             EXPECT_TRUE(resolved->Caps().ngram_candidates);
             EXPECT_FALSE(resolved->Caps().predicate);
@@ -1513,7 +1482,7 @@ AddProjectedNgramRoutingCases(IndexTestCases& cases) {
             ASSERT_TRUE(resolved);
             ExpectResolvedMetadata(
                 *resolved.get(), data.values.size(), varchar);
-            EXPECT_NE(dynamic_cast<const NgramReader*>(resolved.get()),
+            EXPECT_NE(dynamic_cast<const INgramReader*>(resolved.get()),
                       nullptr);
             EXPECT_TRUE(resolved->Caps().ngram_candidates);
             EXPECT_FALSE(resolved->Caps().predicate);
@@ -1540,7 +1509,7 @@ JsonCases() {
     return cases;
 }
 
-class TrackingReader final : public IndexReaderBase {
+class TrackingReader final : public IIndexReaderBase {
  public:
     explicit TrackingReader(size_t* destroyed) : destroyed_(destroyed) {
     }

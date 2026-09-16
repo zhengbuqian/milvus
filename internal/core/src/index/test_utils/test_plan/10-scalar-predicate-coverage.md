@@ -5,7 +5,7 @@ Validation mode: static source audit only. No configuration, compilation, test, 
 
 ## 被测契约
 
-`internal/core/src/index/contracts/query/ScalarPredicateReader.h` exposes:
+`internal/core/src/index/contracts/query/IScalarPredicateReader.h` exposes:
 
 - `In(size_t, const T*)`
 - `NotIn(size_t, const T*)`

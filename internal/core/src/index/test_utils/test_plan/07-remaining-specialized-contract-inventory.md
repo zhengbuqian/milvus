@@ -65,7 +65,7 @@ JsonFlat 数据：master employee 文档；scalar/array/object/empty-array/null/
 
 用例：preferred-name Exists；object subpath 和 Any/Numeric/String/Bool；root field null 对比 comparable null；string In/NotIn/全部比较/区间和全部 PatternOps；bool In/NotIn/Range；int64/double In/NotIn/全部比较/区间形式和精度边界；array string/numeric any-element predicates；outside/sibling/numeric/malformed paths；unknown cast；支持的 absent path。
 
-必须保留的生产失败：JsonIndexReader.h 将 CastTypesOf 定义为受支持 cast 词汇表。JsonFlat 仅返回 {JSON}；Resolve(JSON) 为空，而 BOOL/DOUBLE/VARCHAR 和 ARRAY 元素 casts 可 Resolve。测试必须断言两个方向。不得规范化期望或跳过。
+必须保留的生产失败：IJsonIndexReader.h 将 CastTypesOf 定义为受支持 cast 词汇表。JsonFlat 仅返回 {JSON}；Resolve(JSON) 为空，而 BOOL/DOUBLE/VARCHAR 和 ARRAY 元素 casts 可 Resolve。测试必须断言两个方向。不得规范化期望或跳过。
 
 JsonProjected：DOUBLE/VARCHAR/BOOL 语料区分 valid、missing、JSON null、cast failure 和 field null；exact/wrong path/cast；exact vocabulary；multi-batch。每个 adapter 的系列：DOUBLE sort/inverted/hybrid；VARCHAR sort/bitmap/inverted/hybrid/ngram；BOOL bitmap/inverted/hybrid。ARRAY_BOOL/DOUBLE/VARCHAR 使用 ArrayView row-domain builders 和代表性 predicates。Heap/mmap。
 

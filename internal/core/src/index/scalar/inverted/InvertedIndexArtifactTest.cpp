@@ -23,7 +23,7 @@
 #include <vector>
 
 #include "index/Meta.h"
-#include "index/contracts/query/ScalarPredicateReader.h"
+#include "index/contracts/query/IScalarPredicateReader.h"
 #include "index/test_utils/ArtifactTestUtils.h"
 #include "index/test_utils/ScalarTestData.h"
 
@@ -50,7 +50,7 @@ TEST(InvertedIndexArtifactTest, LegacyDirectoryRoundTrip) {
     auto reader = OpenV1V2(backend, buffers);
     ASSERT_NE(reader, nullptr);
     const auto* predicate =
-        dynamic_cast<const ScalarPredicateReader<int64_t>*>(reader.get());
+        dynamic_cast<const IScalarPredicateReader<int64_t>*>(reader.get());
     ASSERT_NE(predicate, nullptr);
     const int64_t key = 2;
     const auto hits = predicate->In(1, &key);

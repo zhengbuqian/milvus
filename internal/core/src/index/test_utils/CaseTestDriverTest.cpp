@@ -25,21 +25,21 @@
 #include <utility>
 #include <vector>
 
-#include "index/contracts/query/ScalarPredicateReader.h"
-#include "index/contracts/query/ScalarValueReader.h"
+#include "index/contracts/query/IScalarPredicateReader.h"
+#include "index/contracts/query/IScalarValueReader.h"
 
 namespace milvus::index::test {
 namespace {
 
 struct BatchExecutionLog {
     std::vector<std::string> events;
-    std::vector<const ScalarPredicateReader<int64_t>*> readers;
+    std::vector<const IScalarPredicateReader<int64_t>*> readers;
     const ScalarTestData<int64_t>* expected_data{nullptr};
 };
 
 struct LoggedIn {
     using ValueType = int64_t;
-    using Reader = ScalarPredicateReader<int64_t>;
+    using Reader = IScalarPredicateReader<int64_t>;
     static constexpr auto kCapability = &ReaderCaps::predicate;
 
     struct Args {
@@ -72,7 +72,7 @@ struct DistinctOperationTag {};
 template <typename T, typename Tag>
 struct LoggedNotIn {
     using ValueType = T;
-    using Reader = ScalarPredicateReader<T>;
+    using Reader = IScalarPredicateReader<T>;
     static constexpr auto kCapability = &ReaderCaps::predicate;
 
     struct Args {
@@ -105,7 +105,7 @@ struct LoggedNotIn {
 
 struct LoggedError {
     using ValueType = int64_t;
-    using Reader = ScalarPredicateReader<int64_t>;
+    using Reader = IScalarPredicateReader<int64_t>;
     static constexpr auto kCapability = &ReaderCaps::predicate;
 
     struct Args {
@@ -122,7 +122,7 @@ struct LoggedError {
 
 struct LookupQuery {
     using ValueType = int64_t;
-    using Reader = ScalarValueReader<int64_t>;
+    using Reader = IScalarValueReader<int64_t>;
     static constexpr auto kCapability = &ReaderCaps::value_lookup;
 
     struct Args {
@@ -154,7 +154,7 @@ struct LookupQuery {
 
 struct SpatialQuery {
     using ValueType = int64_t;
-    using Reader = IndexReaderBase;
+    using Reader = IIndexReaderBase;
     static constexpr auto kCapability = &ReaderCaps::spatial;
 
     struct Args {};
@@ -244,7 +244,7 @@ TEST(QueryBatchTest, RunsHeterogeneousQueriesWithOneReaderAndDataOwner) {
         CasePhase::Query,
         [&](const ReaderBackend& selected,
             const ScalarTestData<int64_t>& data,
-            IndexReaderBasePtr& reader) {
+            IIndexReaderBasePtr& reader) {
             ASSERT_EQ(*generations, 1);
             ASSERT_EQ(buffers->size(), 1);
             EXPECT_EQ(buffers->front(),
@@ -284,7 +284,7 @@ TEST(QueryBatchTest, ReleaseBeforeBodyUsesTwoIndependentDataOwners) {
         CasePhase::Query,
         [&](const ReaderBackend& selected,
             const ScalarTestData<int64_t>& data,
-            IndexReaderBasePtr& reader) {
+            IIndexReaderBasePtr& reader) {
             ASSERT_EQ(*generations, 2);
             ASSERT_EQ(buffers->size(), 2);
             EXPECT_EQ(buffers->front(),
@@ -326,7 +326,7 @@ TEST(QueryBatchTest, ContinuesAfterNonFatalFailureAndNamesItsTrace) {
                                    CasePhase::Query,
                                    [&](const ReaderBackend& selected,
                                        const ScalarTestData<int64_t>& data,
-                                       IndexReaderBasePtr& reader) {
+                                       IIndexReaderBasePtr& reader) {
                                        EXPECT_NONFATAL_FAILURE(
                                            batch.Run(selected, data, reader),
                                            "FirstMismatch");
@@ -357,7 +357,7 @@ TEST(QueryBatchTest, StopsAfterFatalFailureAndNamesItsTrace) {
         CasePhase::Query,
         [&](const ReaderBackend& selected,
             const ScalarTestData<int64_t>& data,
-            IndexReaderBasePtr& reader) {
+            IIndexReaderBasePtr& reader) {
             const auto* const owned_reader = reader.get();
             ::testing::TestPartResultArray failures;
             {
@@ -485,7 +485,7 @@ TEST(QueryBatchTest, LeavesSingleObserveAndBuildSelectionRulesUnchanged) {
                 .capability = &ReaderCaps::value_lookup,
                 .run = [](const ReaderBackend&,
                           const ScalarTestData<int64_t>&,
-                          IndexReaderBasePtr&) {},
+                          IIndexReaderBasePtr&) {},
             },
     });
     EXPECT_EQ(observe.All().size(), expected_lookup.size());

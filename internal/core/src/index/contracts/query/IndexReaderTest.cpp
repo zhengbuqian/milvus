@@ -22,14 +22,14 @@
 #include <string_view>
 #include <utility>
 
-#include "index/contracts/query/JsonIndexReader.h"
-#include "index/contracts/query/NgramReader.h"
-#include "index/contracts/query/NullReader.h"
-#include "index/contracts/query/PatternMatchReader.h"
-#include "index/contracts/query/ScalarPredicateReader.h"
-#include "index/contracts/query/ScalarValueReader.h"
-#include "index/contracts/query/SpatialReader.h"
-#include "index/contracts/query/TextMatchReader.h"
+#include "index/contracts/query/IJsonIndexReader.h"
+#include "index/contracts/query/INgramReader.h"
+#include "index/contracts/query/INullReader.h"
+#include "index/contracts/query/IPatternMatchReader.h"
+#include "index/contracts/query/IScalarPredicateReader.h"
+#include "index/contracts/query/IScalarValueReader.h"
+#include "index/contracts/query/ISpatialReader.h"
+#include "index/contracts/query/ITextMatchReader.h"
 #include "index/test_utils/CaseTestDriver.h"
 
 namespace milvus::index::test {
@@ -37,32 +37,32 @@ namespace {
 
 template <typename Interface>
 bool
-Implements(const IndexReaderBase& reader) {
+Implements(const IIndexReaderBase& reader) {
     return dynamic_cast<const Interface*>(&reader) != nullptr;
 }
 
 template <typename T>
 void
-ExpectInterfacesMatchCaps(const IndexReaderBase& reader) {
+ExpectInterfacesMatchCaps(const IIndexReaderBase& reader) {
     const auto caps = reader.Caps();
-    EXPECT_EQ(Implements<ScalarPredicateReader<T>>(reader), caps.predicate);
-    EXPECT_EQ(Implements<PatternMatchReader>(reader), caps.pattern_match);
-    EXPECT_EQ(Implements<TextMatchReader>(reader), caps.text_match);
-    EXPECT_EQ(Implements<NgramReader>(reader), caps.ngram_candidates);
-    EXPECT_EQ(Implements<SpatialReader>(reader), caps.spatial);
-    EXPECT_EQ(Implements<ScalarValueReader<T>>(reader), caps.value_lookup);
-    EXPECT_EQ(Implements<JsonIndexReader>(reader), caps.json_paths);
+    EXPECT_EQ(Implements<IScalarPredicateReader<T>>(reader), caps.predicate);
+    EXPECT_EQ(Implements<IPatternMatchReader>(reader), caps.pattern_match);
+    EXPECT_EQ(Implements<ITextMatchReader>(reader), caps.text_match);
+    EXPECT_EQ(Implements<INgramReader>(reader), caps.ngram_candidates);
+    EXPECT_EQ(Implements<ISpatialReader>(reader), caps.spatial);
+    EXPECT_EQ(Implements<IScalarValueReader<T>>(reader), caps.value_lookup);
+    EXPECT_EQ(Implements<IJsonIndexReader>(reader), caps.json_paths);
 
-    // NullReader is independent of ReaderCaps. Every centrally registered
+    // INullReader is independent of ReaderCaps. Every centrally registered
     // scalar, candidate, and concrete text profile in this matrix provides it.
-    EXPECT_TRUE(Implements<NullReader>(reader));
+    EXPECT_TRUE(Implements<INullReader>(reader));
 }
 
 template <typename T>
 void
 ObserveReaderMetadata(const ReaderBackend& backend,
                       const ScalarTestData<T>& data,
-                      IndexReaderBasePtr& reader) {
+                      IIndexReaderBasePtr& reader) {
     ASSERT_NE(reader, nullptr);
     EXPECT_EQ(reader->Count(), data.values.size());
     EXPECT_EQ(reader->CoordDomain(), data.domain);

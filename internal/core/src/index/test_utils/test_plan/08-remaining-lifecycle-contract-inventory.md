@@ -21,7 +21,7 @@ PR 描述与已提交的 contract README 一致确认层边界：#64 负责 cont
 它们未隔离以下普通契约：
 
 1. Artifact serialization 前结束的 builder input 和 builder 生命周期；
-2. `ConsumeIndexArtifact` 所有权和 failure 行为；
+2. `IReaderConvertible::FromArtifact` 所有权和 failure 行为；
 3. Registry 协议和 typed-table 隔离；
 4. NamedBuffer sink/source 状态、slicing、本地 materialization 原子性和 LocalDirectory 所有权；
 5. V1/V2 scalar artifact serialization/load 分支；
@@ -33,8 +33,8 @@ PR 描述与已提交的 contract README 一致确认层边界：#64 负责 cont
 
 | 生产接口 | 计划普通测试 | 处置 |
 |---|---|---|
-| `ArtifactBuilder.h`、`ScalarBuildInput.h` | 默认空 `InputSpec`；多个和零大小 batches；缺失/存在 validity；Build 消费 builder，但返回 Artifact 不拥有借用 numeric/string/ArrayView input | 使用真实 scalar builders 添加 `contracts/build/ArtifactBuilderTest.cpp` |
-| `ReaderConvertible.h`、`ConsumeIndexArtifact.h` | null Artifact -> 精确 `UnexpectedError`；缺失 capability -> 精确 `Unsupported` 且零次 Serialize 调用；成功保留 Reader dependency 至 Reader 销毁；converter throw 保留精确 `SegcoreError`；null Reader -> 精确 `UnexpectedError`；shell 恰销毁一次 | 以小型 tracking types 添加 `contracts/build/ConsumeIndexArtifactTest.cpp`；通过同一 helper 添加代表性真实普通 scalar rejection 和 Text RAM success |
+| `IArtifactBuilder.h`、`ScalarBuildInput.h` | 默认空 `InputSpec`；多个和零大小 batches；缺失/存在 validity；Build 消费 builder，但返回 Artifact 不拥有借用 numeric/string/ArrayView input | 使用真实 scalar builders 添加 `contracts/build/ArtifactBuilderTest.cpp` |
+| `IReaderConvertible.h` | null Artifact -> 精确 `UnexpectedError`；缺失 capability -> 精确 `Unsupported` 且零次 Serialize 调用；成功保留 Reader dependency 至 Reader 销毁；converter throw 保留精确 `SegcoreError`；null Reader -> 精确 `UnexpectedError`；shell 恰销毁一次 | 以小型 tracking types 添加 `contracts/build/ReaderConvertibleTest.cpp`；通过同一 helper 添加代表性真实普通 scalar rejection 和 Text RAM success |
 | `contracts/Registry.h`、`Registry.cpp` | unknown Lookup/Create；typed builder tables 不 alias；params 原样传递；保留 factory exception；empty/duplicate factory rejection 保持原 entry 完整；loader derive/open dispatch 独立；repeat-safe 和 concurrent 独立 registration/lookups | 添加 `contracts/RegistryTest.cpp`；使用 test-only family keys，不使用 reset API |
 | 生产 scalar registrations | 每个中心声明的生产配置一个参数，验证其 builder entry 和 resolved loader entry；Hybrid 有 builder 且有意没有 Hybrid loader；没有测试 self-registers 生产 family | 向 `RegistryTest.cpp` 添加 parameterized 生产 registration smoke；专用负责人贡献其中心配置 |
 | `Artifact.h`、`ArtifactStats.h` | 系列实现时的两种 serialization mode；Finish stats 拥有 file names/sizes 并报告 serialized bytes | 由真实 family artifact tests 和 NamedBufferSink tests 覆盖；不做仅 getter 的 mirror test |
@@ -44,7 +44,7 @@ PR 描述与已提交的 contract README 一致确认层边界：#64 负责 cont
 | `FileSourceUtils.h`、`ParamUtils.h`、`ResourceUsageUtils.h`、`LoadOptions.h`、`NamedBuffer.h` | typed required metadata、entry-name validation、alias/type parsing、saturating arithmetic、option preservation、仅在真实 loader/IO test 使用时的 buffer ownership | 仅在计划 family/IO path 使用时添加聚焦用例；避免仅重复 inline getters 的测试 |
 | `V1DiskSink`、`V3PackedSink`、`V1RemoteSource`、`V3PackedSource` | remote naming/upload、packed container 和 cancellation | 暂缓：需要 #67 FileManager/ChunkManager/service transport 或 cancellation infrastructure，不属于请求的小型 in-memory L1 path |
 | `DiskEngineFileHandle` | disk-vector backing lifetime | 暂缓至 #66 vector scope |
-| `GrowingIndex.h`、query contracts | growing publication 和 query methods | 归其他 inventories 所有或排除的 #66；不在此重复 |
+| `IGrowingIndex.h`、query contracts | growing publication 和 query methods | 归其他 inventories 所有或排除的 #66；不在此重复 |
 
 本地 test-only `TestArtifactSource` 必须继续遵守生产 FileSource atomic-publication 承诺。其已实现的 staging/rollback 逻辑将被提取，不得弱化。
 
@@ -239,7 +239,7 @@ Create(const ScalarBuildInput<InputT>& input,
 `Create` fills `row_count` from batches when zero, then composes `Build` and
 `Open`. Build checks the stored input type, completes build params, invokes the
 production typed registry, and applies the optional wrapper. Open either uses
-`ConsumeIndexArtifact` or serializes through V3 test IO and opens the resolved
+`IReaderConvertible::FromArtifact` or serializes through V3 test IO and opens the resolved
 production loader; it completes load params first. Mmap roots and family local
 staging parents are chosen lazily from `std::filesystem::temp_directory_path()`
 so isolated `TMPDIR` verification remains meaningful.
@@ -316,7 +316,7 @@ spatial geometry stay in their contract tests and do not enter this factory.
 1. Extract TestArtifactIO; generalize the single BackendCatalog and add central
    profiles/datasets requested by the core/specialized owners. Add all new
    source paths to `INDEX_TEST_FILES`/support and remove them from all_tests.
-2. Implement `ConsumeIndexArtifactTest`, `RegistryTest`, and L1
+2. Implement `ReaderConvertibleTest`, `RegistryTest`, and L1
    FileSink/FileSource/LocalDirectory tests.
 3. Implement real `ArtifactBuilderTest` lifecycle matrix and ARRAY/nested input
    matrix.

@@ -21,8 +21,8 @@
 #include <string>
 #include <string_view>
 
-#include "index/contracts/query/NullReader.h"
-#include "index/contracts/query/PatternMatchReader.h"
+#include "index/contracts/query/INullReader.h"
+#include "index/contracts/query/IPatternMatchReader.h"
 #include "index/test_utils/ArtifactTestUtils.h"
 #include "index/test_utils/ScalarTestData.h"
 
@@ -64,14 +64,14 @@ SerializedFm(std::string_view backend_name) {
 }
 
 void
-ExpectFmQueries(const IndexReaderBase& reader, size_t expected_nulls) {
-    const auto* nulls = dynamic_cast<const NullReader*>(&reader);
+ExpectFmQueries(const IIndexReaderBase& reader, size_t expected_nulls) {
+    const auto* nulls = dynamic_cast<const INullReader*>(&reader);
     ASSERT_NE(nulls, nullptr);
     const auto null_result = nulls->IsNull();
     ASSERT_EQ(null_result.size(), 9);
     EXPECT_EQ(null_result.count(), expected_nulls);
 
-    const auto* pattern = dynamic_cast<const PatternMatchReader*>(&reader);
+    const auto* pattern = dynamic_cast<const IPatternMatchReader*>(&reader);
     ASSERT_NE(pattern, nullptr);
     const auto hits = pattern->PatternMatch("alp", PatternOp::PrefixMatch);
     ASSERT_EQ(hits.size(), 9);

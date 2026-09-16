@@ -4,7 +4,7 @@
 
 状态：已由源码和运行时确认。
 
-The public `JsonIndexReader` contract defines `CastTypesOf(path)` as the supported cast vocabulary and directs callers to check it before `Resolve`/`Exists` (`internal/core/src/index/contracts/query/JsonIndexReader.h:111-130`). `JsonFlatIndexReader::CastTypesOf` returns only `JSON` for every supported path (`JsonFlatIndexReader.cpp:1193-1198`), but `Resolve(JSON)` returns empty while BOOL, DOUBLE, VARCHAR, and their ARRAY element casts resolve to path readers through `cast_type.element_type()` (`JsonFlatIndexReader.cpp:1152-1178`).
+The public `JsonIndexReader` contract defines `CastTypesOf(path)` as the supported cast vocabulary and directs callers to check it before `Resolve`/`Exists` (`internal/core/src/index/contracts/query/IJsonIndexReader.h:111-130`). `JsonFlatIndexReader::CastTypesOf` returns only `JSON` for every supported path (`JsonFlatIndexReader.cpp:1193-1198`), but `Resolve(JSON)` returns empty while BOOL, DOUBLE, VARCHAR, and their ARRAY element casts resolve to path readers through `cast_type.element_type()` (`JsonFlatIndexReader.cpp:1152-1178`).
 
 Correct contract tests remain enabled in `JsonIndexReaderTest.cpp` as
 `CastVocabularyAdvertisesOnlyResolvableReaders` and
@@ -138,7 +138,7 @@ profile. The correct `{0,1}` expectation remains enabled.
 all four ordered unary comparisons and both-bound interval comparisons through
 `json_range_query` (`JsonFlatIndexReader.cpp:408-449`). The common predicate
 contract includes all six `CompareOp` values and a four-flag interval method
-(`internal/core/src/index/contracts/query/ScalarPredicateReader.h:27-57`). For
+(`internal/core/src/index/contracts/query/IScalarPredicateReader.h:27-57`). For
 the `true,false,true` employee values, the expected truth sets are:
 
 - `> false` and `(false,true]`: `{0,2}`.

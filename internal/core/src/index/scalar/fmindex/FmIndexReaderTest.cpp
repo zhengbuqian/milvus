@@ -18,7 +18,7 @@
 
 #include <string_view>
 
-#include "index/contracts/query/PatternMatchReader.h"
+#include "index/contracts/query/IPatternMatchReader.h"
 #include "index/test_utils/ScalarReaderFactory.h"
 
 namespace milvus::index::test {

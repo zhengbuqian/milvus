@@ -36,18 +36,17 @@
 #include "index/Meta.h"
 #include "index/contracts/Registry.h"
 #include "index/contracts/build/ScalarBuildInput.h"
-#include "index/contracts/growing/GrowingIndex.h"
-#include "index/contracts/query/NullReader.h"
-#include "index/contracts/query/ScalarPredicateReader.h"
-#include "index/contracts/query/ScalarValueReader.h"
-#include "index/contracts/query/VectorReaders.h"
+#include "index/contracts/growing/IGrowingIndex.h"
+#include "index/contracts/query/INullReader.h"
+#include "index/contracts/query/IScalarPredicateReader.h"
+#include "index/contracts/query/IScalarValueReader.h"
+#include "index/contracts/query/IVectorReader.h"
 #include "index/growing/GrowingVectorSource.h"
 #include "index/growing/KnowhereGrowingVectorIndex.h"
+#include "index/test_utils/TestArtifactIO.h"
 #include "knowhere/comp/index_param.h"
 #include "knowhere/version.h"
 #include "segcore/indexing/GrowingIndexSet.h"
-#include "storage/artifact/FileSink.h"
-#include "storage/artifact/FileSource.h"
 #include "storage/artifact/LoadOptions.h"
 
 namespace milvus {
@@ -118,13 +117,15 @@ TEST_P(ScalarArtifactRoundTripTest,
     auto artifact = std::move(*builder).Build(input);
     ASSERT_NE(artifact, nullptr);
 
-    storage::NamedBufferSink sink;
+    index::test::TestArtifactData persisted;
+    index::test::TestArtifactSink sink(persisted,
+                                       storage::Generation::V1V2);
     artifact->Serialize(sink);
     static_cast<void>(sink.Finish());
-    auto buffers = sink.Take();
-    ASSERT_FALSE(buffers.empty());
+    ASSERT_FALSE(persisted.entries.empty());
 
-    storage::NamedBufferSource source(buffers);
+    index::test::TestArtifactSource source(persisted,
+                                           storage::Generation::V1V2);
     storage::LoadOptions options;
     options.params = params;
     const auto loader = index::LoaderRegistry::Instance().Lookup(GetParam());
@@ -144,11 +145,11 @@ TEST_P(ScalarArtifactRoundTripTest,
     EXPECT_TRUE(reader->Caps().exact);
 
     const auto* predicate =
-        dynamic_cast<const index::ScalarPredicateReader<int64_t>*>(
+        dynamic_cast<const index::IScalarPredicateReader<int64_t>*>(
             reader.get());
-    const auto* nulls = dynamic_cast<const index::NullReader*>(reader.get());
+    const auto* nulls = dynamic_cast<const index::INullReader*>(reader.get());
     const auto* values =
-        dynamic_cast<const index::ScalarValueReader<int64_t>*>(reader.get());
+        dynamic_cast<const index::IScalarValueReader<int64_t>*>(reader.get());
     ASSERT_NE(predicate, nullptr);
     ASSERT_NE(nulls, nullptr);
     ASSERT_NE(values, nullptr);
@@ -257,22 +258,21 @@ TEST(GrowingVectorPublicationAcceptance,
         segcore::GrowingIndexSet::AppenderMap appenders;
         appenders.emplace(
             field_id,
-            segcore::GrowingIndexSet::Appender{
-                .caps = {},
-                .owner =
-                    std::make_unique<index::KnowhereGrowingVectorIndex<float>>(
-                        DataType::VECTOR_FLOAT,
-                        knowhere::IndexEnum::INDEX_FAISS_IVFFLAT_CC,
-                        knowhere::metric::L2,
-                        knowhere::Version::GetCurrentVersion().VersionNumber(),
-                        kDim,
-                        kBuildThreshold,
-                        build_params,
-                        search_defaults,
-                        source,
-                        false),
-                .source_backed = false,
-            });
+            segcore::GrowingIndexSet::Appender(
+                field_id,
+                {},
+                std::make_unique<index::KnowhereGrowingVectorIndex<float>>(
+                    DataType::VECTOR_FLOAT,
+                    knowhere::IndexEnum::INDEX_FAISS_IVFFLAT_CC,
+                    knowhere::metric::L2,
+                    knowhere::Version::GetCurrentVersion().VersionNumber(),
+                    kDim,
+                    kBuildThreshold,
+                    build_params,
+                    search_defaults,
+                    source,
+                    false),
+                false));
         indexes.RegisterBatch(std::move(appenders));
 
         const std::array<float, 4> first_physical = {0.0F, 0.0F, 2.0F, 2.0F};
@@ -290,7 +290,7 @@ TEST(GrowingVectorPublicationAcceptance,
         ASSERT_TRUE(static_cast<bool>(old_pin));
         EXPECT_EQ(old_pin.CoveredRowEnd(), 4);
         const auto* old_reader =
-            dynamic_cast<const index::VectorReader*>(&old_pin.Reader());
+            dynamic_cast<const index::IVectorReader*>(&old_pin.Reader());
         ASSERT_NE(old_reader, nullptr);
         EXPECT_EQ(old_reader->Count(), 2);
         EXPECT_EQ(old_reader->CoordDomain(), index::Domain::Row);
@@ -322,7 +322,7 @@ TEST(GrowingVectorPublicationAcceptance,
         ASSERT_TRUE(static_cast<bool>(new_pin));
         EXPECT_EQ(new_pin.CoveredRowEnd(), 7);
         const auto* new_reader =
-            dynamic_cast<const index::VectorReader*>(&new_pin.Reader());
+            dynamic_cast<const index::IVectorReader*>(&new_pin.Reader());
         ASSERT_NE(new_reader, nullptr);
         EXPECT_EQ(new_reader->Count(), 4);
         EXPECT_TRUE(new_reader->HasValidData());
@@ -367,16 +367,16 @@ TEST(GrowingVectorPublicationAcceptance,
     EXPECT_EQ(new_pin.CoveredRowEnd(), 7);
     EXPECT_EQ(new_pin.Reader().Count(), 4);
     const auto* old_reader =
-        dynamic_cast<const index::VectorReader*>(&old_pin.Reader());
+        dynamic_cast<const index::IVectorReader*>(&old_pin.Reader());
     const auto* new_reader =
-        dynamic_cast<const index::VectorReader*>(&new_pin.Reader());
+        dynamic_cast<const index::IVectorReader*>(&new_pin.Reader());
     ASSERT_NE(old_reader, nullptr);
     ASSERT_NE(new_reader, nullptr);
     EXPECT_EQ(old_reader->OffsetMapping().GetTotalCount(), 4);
     EXPECT_EQ(new_reader->OffsetMapping().GetTotalCount(), 7);
 }
 
-class TrackingReader final : public index::IndexReaderBase {
+class TrackingReader final : public index::IIndexReaderBase {
  public:
     TrackingReader(int64_t count, std::shared_ptr<int> lifetime)
         : count_(count), lifetime_(std::move(lifetime)) {
@@ -417,10 +417,10 @@ class TrackingReader final : public index::IndexReaderBase {
     std::shared_ptr<int> lifetime_;
 };
 
-class TestGrowingIndex final : public index::GrowingIndex {
+class TestGrowingIndex final : public index::IGrowingIndex {
  public:
     void
-    Publish(std::unique_ptr<const index::IndexReaderBase> reader,
+    Publish(std::unique_ptr<const index::IIndexReaderBase> reader,
             int64_t covered_row_end) {
         PublishSnapshot(std::move(reader), covered_row_end);
     }

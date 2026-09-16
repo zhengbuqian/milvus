@@ -26,7 +26,7 @@
 #include <utility>
 #include <vector>
 
-#include "index/contracts/query/ScalarValueReader.h"
+#include "index/contracts/query/IScalarValueReader.h"
 #include "index/test_utils/CaseTestDriver.h"
 
 namespace milvus::index::test {
@@ -46,15 +46,15 @@ ExpectScalarValue(const ScalarTestValue<T>& expected,
 }
 
 template <typename T>
-const ScalarValueReader<T>*
-ValueReader(const IndexReaderBasePtr& reader) {
-    return dynamic_cast<const ScalarValueReader<T>*>(reader.get());
+const IScalarValueReader<T>*
+ValueReader(const IIndexReaderBasePtr& reader) {
+    return dynamic_cast<const IScalarValueReader<T>*>(reader.get());
 }
 
 template <typename T>
 void
 ExpectLookupOffsets(const ScalarTestData<T>& data,
-                    const ScalarValueReader<T>& reader,
+                    const IScalarValueReader<T>& reader,
                     const std::vector<size_t>& offsets) {
     for (const auto offset : offsets) {
         ASSERT_LT(offset, data.values.size());
@@ -71,7 +71,7 @@ ExpectLookupOffsets(const ScalarTestData<T>& data,
 template <typename T>
 void
 ExpectLookupAll(const ScalarTestData<T>& data,
-                const ScalarValueReader<T>& reader) {
+                const IScalarValueReader<T>& reader) {
     std::vector<size_t> offsets(data.values.size());
     for (size_t i = 0; i < offsets.size(); ++i) {
         offsets[i] = i;
@@ -82,7 +82,7 @@ ExpectLookupAll(const ScalarTestData<T>& data,
 template <typename T>
 void
 ExpectGather(const ScalarTestData<T>& data,
-             const ScalarValueReader<T>& reader,
+             const IScalarValueReader<T>& reader,
              const std::vector<int64_t>& offsets) {
     std::vector<int> visits(offsets.size(), 0);
     std::vector<std::optional<ScalarTestValue<T>>> values(offsets.size());

@@ -36,7 +36,9 @@ struct TestArtifactData {
 
 class TestArtifactSink final : public storage::FileSink {
  public:
-    explicit TestArtifactSink(TestArtifactData& artifact);
+    explicit TestArtifactSink(
+        TestArtifactData& artifact,
+        storage::Generation generation = storage::Generation::V3);
 
     storage::Generation
     Gen() const override;
@@ -57,11 +59,14 @@ class TestArtifactSink final : public storage::FileSink {
 
  private:
     TestArtifactData& artifact_;
+    storage::Generation generation_;
 };
 
 class TestArtifactSource final : public storage::FileSource {
  public:
-    explicit TestArtifactSource(const TestArtifactData& artifact);
+    explicit TestArtifactSource(
+        const TestArtifactData& artifact,
+        storage::Generation generation = storage::Generation::V3);
 
     storage::Generation
     Gen() const override;
@@ -90,6 +95,7 @@ class TestArtifactSource final : public storage::FileSource {
     Entry(std::string_view name) const;
 
     const TestArtifactData& artifact_;
+    storage::Generation generation_;
 };
 
 }  // namespace milvus::index::test

@@ -33,7 +33,7 @@ The single central catalog declares 434 profiles:
 |---|---:|---|
 | `RegistryTest.cpp` | 442 | 8 protocol/routing cases plus one registration case for every 434 profile |
 | `ArtifactBuilderTest.cpp` | 262 | 70 scalar lifecycle configurations and 192 ordinary ARRAY configurations |
-| `ConsumeIndexArtifactTest.cpp` | 7 | null/unsupported/success/error/null-result ownership plus real scalar/Text paths; every outcome is a separate GTest |
+| `ReaderConvertibleTest.cpp` | 7 | null/unsupported/success/error/null-result ownership plus real scalar/Text paths; every outcome is a separate GTest |
 | Bitmap/Sorted/Inverted/Hybrid/Text/RTree artifact tests | 59 | legacy/V3 round trips, selectors, required parts, public relation and payload corruption |
 | Marisa/FM artifact tests | 32 | legacy behavior, heap/mmap ownership and current-format required-part/relation/payload checks |
 | NamedBuffer/LocalDirectory tests | 37 | sink 9, source 16, local directory/guards 12 |

@@ -91,7 +91,7 @@
 
 **Owner:** scalar_contract，在 Task 2 的源码完成后继续实现；共享输入/后端仍归 framework_support。
 
-**Files:** `contracts/query/JsonIndexReaderTest.cpp`，必要的 `scalar/json/JsonProjectedIndexReaderTest.cpp`、`JsonFlatIndexBuilderTest.cpp` 或对应已有生产文件旁的测试。
+**Files:** `contracts/query/JsonIndexReaderTest.cpp`，必要的 `scalar/json/JsonPathIndexReaderTest.cpp`、`JsonFlatIndexBuilderTest.cpp` 或对应已有生产文件旁的测试。
 
 - JsonFlat 直接使用拥有的 JSON 输入；投影索引使用测试预先定义的值和状态，不调用 materializer。
 - CastTypesOf、Exists、Resolve 分别覆盖支持/不支持路径、支持但全缺失、field-null、path-missing、present value、类型选择。
@@ -105,7 +105,7 @@
 
 **Owner:** framework_support 负责 Registry、Builder、Consume、Bitmap/Sorted/Inverted/Hybrid/Text/RTree 生命周期及全部 CMake；scalar_contract 在 Task 3 独立检查后负责 MarisaIndexArtifactTest、FmIndexArtifactTest；pattern_contract 在 Task 3 源码和 Task 2 独立静态检查完成后负责 FileSinkTest、FileSourceTest、LocalDirectoryTest。
 
-**Files:** `contracts/build/ArtifactBuilderTest.cpp`、`ConsumeIndexArtifactTest.cpp`、`contracts/RegistryTest.cpp`，以及包含实际被测机制的 `storage/artifact/*Test.cpp` 和 scalar family `*Test.cpp`。
+**Files:** `contracts/build/ArtifactBuilderTest.cpp`、`ReaderConvertibleTest.cpp`、`contracts/RegistryTest.cpp`，以及包含实际被测机制的 `storage/artifact/*Test.cpp` 和 scalar family `*Test.cpp`。
 
 - Build 返回后释放 builder 和输入，产物仍可 Serialize；Open 后释放 Artifact/IO/source，Reader 仍可使用。
 - 只检查公开的元数据/条目/selector 与可见结果，不绑定私有布局。
@@ -166,7 +166,7 @@
 
 ### 候选 contract 的预期边界修正
 
-- 最终按 NgramReader.h / SpatialReader.h 复核发现，初版 inventory 将当前 Phase1/MBR 输出误当成所有实现的共同保证。公共接口承诺的是候选超集，允许合法实现更精确或有不同的误报集合。
+- 最终按 INgramReader.h / ISpatialReader.h 复核发现，初版 inventory 将当前 Phase1/MBR 输出误当成所有实现的共同保证。公共接口承诺的是候选超集，允许合法实现更精确或有不同的误报集合。
 - Ngram 公共 case 移除固定 candidate 位图相等，保留手写真值不漏、Count、AND 收缩与 CanHandle。Spatial 公共 case 使用每个 op 的手写真值；未承诺的 invalid fallback 不作为共同要求。
 - 代表性的实现特性回归放在两个 colocated family 测试文件，继续复用当前 driver、lazy dataset 和中心 catalog 已命名 profile，不复制后端配置。两个文件及原公共断言的变更由 scalar_contract 独立复核，完成前仍不构建。
 

@@ -24,8 +24,8 @@
 #include <string_view>
 
 #include "index/Meta.h"
-#include "index/contracts/query/NullReader.h"
-#include "index/contracts/query/ScalarPredicateReader.h"
+#include "index/contracts/query/INullReader.h"
+#include "index/contracts/query/IScalarPredicateReader.h"
 #include "index/test_utils/ArtifactTestUtils.h"
 #include "index/test_utils/ScalarTestData.h"
 
@@ -57,9 +57,9 @@ SerializedMarisa(std::string_view backend_name) {
 }
 
 void
-ExpectBetaRows(const IndexReaderBase& reader) {
+ExpectBetaRows(const IIndexReaderBase& reader) {
     const auto* predicate =
-        dynamic_cast<const ScalarPredicateReader<std::string_view>*>(&reader);
+        dynamic_cast<const IScalarPredicateReader<std::string_view>*>(&reader);
     ASSERT_NE(predicate, nullptr);
     const std::string_view key = "beta";
     const auto hits = predicate->In(1, &key);
@@ -75,18 +75,18 @@ TEST(MarisaIndexArtifactTest, LegacyRoundTripRebuildsCsr) {
     auto artifact = BuildMarisa(backend);
     auto buffers = SerializeV1V2(*artifact);
 
-    EXPECT_TRUE(buffers.contains(MARISA_TRIE_INDEX));
-    EXPECT_TRUE(buffers.contains(MARISA_STR_IDS));
-    EXPECT_FALSE(buffers.contains(MARISA_CSR_INDEX));
-    EXPECT_FALSE(buffers.contains(MARISA_CSR_OFFSETS));
+    EXPECT_TRUE(buffers.entries.contains(MARISA_TRIE_INDEX));
+    EXPECT_TRUE(buffers.entries.contains(MARISA_STR_IDS));
+    EXPECT_FALSE(buffers.entries.contains(MARISA_CSR_INDEX));
+    EXPECT_FALSE(buffers.entries.contains(MARISA_CSR_OFFSETS));
 
     auto reader = OpenV1V2(
         backend, buffers, {.row_count = 5, .values = Config::object()});
     artifact.reset();
-    buffers.clear();
+    buffers = {};
     ASSERT_NE(reader, nullptr);
     ExpectBetaRows(*reader);
-    const auto* nulls = dynamic_cast<const NullReader*>(reader.get());
+    const auto* nulls = dynamic_cast<const INullReader*>(reader.get());
     ASSERT_NE(nulls, nullptr);
     EXPECT_EQ(nulls->IsNull().count(), 1);
 }

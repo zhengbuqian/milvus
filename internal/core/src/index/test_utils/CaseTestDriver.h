@@ -78,7 +78,7 @@ struct Query {
 
 template <typename T>
 using ObserveFn = std::function<void(
-    const ReaderBackend&, const ScalarTestData<T>&, IndexReaderBasePtr&)>;
+    const ReaderBackend&, const ScalarTestData<T>&, IIndexReaderBasePtr&)>;
 
 template <typename T>
 struct Observe {
@@ -112,7 +112,7 @@ enum class InputLifetime {
 
 inline void
 ExpectReaderBase(const ReaderBackend& backend,
-                 const IndexReaderBase& reader,
+                 const IIndexReaderBase& reader,
                  size_t expected_count) {
     ASSERT_EQ(reader.Count(), expected_count);
     EXPECT_EQ(reader.CoordDomain(), backend.ExpectedDomain());
@@ -135,7 +135,7 @@ ExpectReaderBase(const ReaderBackend& backend,
 
 inline void
 ExpectQueryReaderBase(const ReaderBackend& backend,
-                      const IndexReaderBase& reader,
+                      const IIndexReaderBase& reader,
                       Domain expected_domain,
                       size_t expected_count) {
     ASSERT_EQ(reader.Count(), expected_count);
@@ -165,7 +165,7 @@ void
 PrepareReader(const ReaderBackend& backend,
               const ScalarDataSet<T>& dataset,
               const ScalarTestData<T>& expected,
-              IndexReaderBasePtr& reader) {
+              IIndexReaderBasePtr& reader) {
     auto input_data = dataset.make_data();
     ASSERT_NO_FATAL_FAILURE(
         ValidateCaseData(backend, dataset, input_data, false));
@@ -196,7 +196,7 @@ template <typename Op>
 void
 RunQueryBody(const ReaderBackend& backend,
              const ScalarTestData<typename Op::ValueType>& data,
-             IndexReaderBasePtr& reader,
+             IIndexReaderBasePtr& reader,
              const Query<Op>& query) {
     EXPECT_TRUE(reader->Caps().*Op::kCapability);
     EXPECT_TRUE(backend.Supports(Op::kCapability));
@@ -276,7 +276,7 @@ RunReaderCase(const ReaderBackend& backend,
     auto expected = dataset.make_data();
     ASSERT_NO_FATAL_FAILURE(
         ValidateCaseData(backend, dataset, expected, false));
-    IndexReaderBasePtr reader;
+    IIndexReaderBasePtr reader;
     ASSERT_NO_FATAL_FAILURE(PrepareReader(backend, dataset, expected, reader));
     ASSERT_NE(reader, nullptr);
     if (phase == CasePhase::Query) {
@@ -315,7 +315,7 @@ template <typename F, typename T>
 concept ObservationCallback = requires(std::decay_t<F>& callback,
                                        const ReaderBackend& backend,
                                        const ScalarTestData<T>& data,
-                                       IndexReaderBasePtr& reader) {
+                                       IIndexReaderBasePtr& reader) {
     callback(backend, data, reader);
 };
 
@@ -332,7 +332,7 @@ class QueryBatch {
               capability_(Op::kCapability),
               run_([query = std::move(query)](const ReaderBackend& backend,
                                               const ScalarTestData<T>& data,
-                                              IndexReaderBasePtr& reader) {
+                                              IIndexReaderBasePtr& reader) {
                   static_assert(std::is_same_v<T, typename Op::ValueType>);
                   detail::RunQueryBody<Op>(backend, data, reader, query);
               }) {
@@ -370,7 +370,7 @@ class QueryBatch {
     void
     Run(const ReaderBackend& backend,
         const ScalarTestData<T>& data,
-        IndexReaderBasePtr& reader) const {
+        IIndexReaderBasePtr& reader) const {
         for (const auto& entry : entries_) {
             SCOPED_TRACE("query: " + entry.name_);
             ASSERT_NO_FATAL_FAILURE(entry.run_(backend, data, reader));
@@ -403,7 +403,7 @@ class CaseBody {
           capability_(Op::kCapability),
           reader_body_([query = std::move(query)](const ReaderBackend& backend,
                                                   const ScalarTestData<T>& data,
-                                                  IndexReaderBasePtr& reader) {
+                                                  IIndexReaderBasePtr& reader) {
               static_assert(std::is_same_v<T, typename Op::ValueType>);
               detail::RunQueryBody<Op>(backend, data, reader, query);
           }) {
@@ -415,7 +415,7 @@ class CaseBody {
           batch_capabilities_(batch.RequiredCapabilities()),
           reader_body_([batch = std::move(batch)](const ReaderBackend& backend,
                                                   const ScalarTestData<T>& data,
-                                                  IndexReaderBasePtr& reader) {
+                                                  IIndexReaderBasePtr& reader) {
               batch.Run(backend, data, reader);
           }) {
     }

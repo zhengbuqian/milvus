@@ -745,6 +745,13 @@ ScalarReaderBackends() {
             .nullable = false,
             .enable_mmap = true,
         });
+        catalog.Add<std::string_view>({
+            .name = "MarisaStringNonNull",
+            .family = families::kMarisa,
+            .nullable = false,
+            .field_type = DataType::STRING,
+            .value_type = DataType::STRING,
+        });
 
         PatternQueryPolicies fm_pattern;
         fm_pattern.match = PatternQueryPolicy::Unsupported;

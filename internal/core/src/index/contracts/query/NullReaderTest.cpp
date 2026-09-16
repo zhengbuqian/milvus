@@ -22,7 +22,7 @@
 #include <string_view>
 #include <utility>
 
-#include "index/contracts/query/NullReader.h"
+#include "index/contracts/query/INullReader.h"
 #include "index/test_utils/AssertHelpers.h"
 #include "index/test_utils/CaseTestDriver.h"
 
@@ -31,7 +31,7 @@ namespace {
 
 template <typename T>
 void
-ExpectNullMasks(const ScalarTestData<T>& data, const NullReader& reader) {
+ExpectNullMasks(const ScalarTestData<T>& data, const INullReader& reader) {
     auto nulls = reader.IsNull();
     const auto not_nulls = reader.IsNotNull();
     ASSERT_EQ(nulls.size(), data.values.size());
@@ -73,7 +73,7 @@ AddNullCase(IndexTestCases& cases,
                 .run =
                     [](const auto&, const auto& data, const auto& reader) {
                         const auto* nulls =
-                            dynamic_cast<const NullReader*>(reader.get());
+                            dynamic_cast<const INullReader*>(reader.get());
                         ASSERT_NE(nulls, nullptr);
                         ExpectNullMasks(data, *nulls);
                     },
@@ -121,7 +121,7 @@ NullCases() {
                     .run =
                         [](const auto&, const auto& data, const auto& reader) {
                             const auto* nulls =
-                                dynamic_cast<const NullReader*>(reader.get());
+                                dynamic_cast<const INullReader*>(reader.get());
                             ASSERT_NE(nulls, nullptr);
                             ExpectNullMasks(data, *nulls);
                         },

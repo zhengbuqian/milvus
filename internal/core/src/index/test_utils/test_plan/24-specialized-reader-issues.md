@@ -43,7 +43,7 @@ expectation are retained unchanged.
 
 The public `PatternMatchReader` contract states that `RegexMatch` takes a raw
 regular expression and declares no anchor restriction
-(`contracts/query/PatternMatchReader.h:50-55`). Anchors are also established
+(`contracts/query/IPatternMatchReader.h:50-55`). Anchors are also established
 ordinary syntax in pinned-master direct pattern coverage, for example
 `BitmapIndexTest.cpp::TestPatternMatchFunc` uses `^1.*`. The JsonFlat resolved
 child advertises `pattern_match` and `exact`; rejecting an engine-specific

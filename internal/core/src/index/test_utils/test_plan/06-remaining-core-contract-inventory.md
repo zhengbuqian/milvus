@@ -8,7 +8,7 @@
 
 ### `IndexReaderBase`
 
-源码：`contracts/query/IndexReader.h:43-85`、`contracts/README.md:15-22,48-79`。
+源码：`contracts/query/IIndexReaderBase.h:43-85`、`contracts/README.md:15-22,48-79`。
 
 - `Caps()` 必须等于唯一已打开清单条目由元数据派生的 caps。不得将无关条目的 caps 作 OR。
 - 普通标量索引的 `CoordDomain()` 为 `Row`，已平坦化嵌套 ARRAY 索引为 `Element`。
@@ -27,7 +27,7 @@
 
 ### `ScalarValueReader<T>`
 
-源码：`contracts/query/ScalarValueReader.h:33-68`。
+源码：`contracts/query/IScalarValueReader.h:33-68`。
 
 - `Lookup(offset)` 返回 `optional<owned_t<T>>`；`owned_t<string_view>` 为 `string`。成功结果拥有其字节，后续查询和读取器销毁后仍有效。null 坐标返回 `nullopt`。
 - `Gather(offsets,count,callback)` 可按任意顺序访问请求结果位置。回调 `i` 标识结果位置，未必是输入行或回调顺序。包括重复 offset 在内，每个请求位置必须恰产生一次。`valid=false` 是权威状态，值指针不得解引用。有效借用字符串在回调内复制，因为其 view 仅在该回调中有效。
@@ -37,7 +37,7 @@
 
 ### `NullReader`
 
-源码：`contracts/query/NullReader.h:21-37`。
+源码：`contracts/query/INullReader.h:21-37`。
 
 `IsNull()` 和 `IsNotNull()` 返回读取器域中 `Count()` 位的独立拥有位图。二者是精确补集。存在的全有效 validity 位图和缺失的 validity view 逻辑结果相同但构建输入形状不同。对平坦化嵌套输入，父级 null/空行已移除，故每个提供的元素坐标均非 null；`IsNull()` 为空，`IsNotNull()` 覆盖全部元素。
 

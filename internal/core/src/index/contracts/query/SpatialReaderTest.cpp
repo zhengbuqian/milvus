@@ -23,7 +23,7 @@
 #include <vector>
 
 #include "common/Geometry.h"
-#include "index/contracts/query/SpatialReader.h"
+#include "index/contracts/query/ISpatialReader.h"
 #include "index/test_utils/AssertHelpers.h"
 #include "index/test_utils/CaseTestDriver.h"
 
@@ -56,11 +56,11 @@ AddSpatialCase(IndexTestCases& cases,
                     [test_case = std::move(test_case)](
                         const ReaderBackend&,
                         const ScalarTestData<std::string_view>& data,
-                        IndexReaderBasePtr& reader) {
+                        IIndexReaderBasePtr& reader) {
                         ASSERT_TRUE(reader->Caps().spatial);
                         EXPECT_FALSE(reader->Caps().exact);
                         const auto* spatial =
-                            dynamic_cast<const SpatialReader*>(reader.get());
+                            dynamic_cast<const ISpatialReader*>(reader.get());
                         ASSERT_NE(spatial, nullptr);
 
                         const Geometry query(GetThreadLocalGEOSContext(),

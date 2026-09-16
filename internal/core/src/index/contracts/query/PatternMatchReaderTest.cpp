@@ -24,7 +24,7 @@
 #include <utility>
 #include <vector>
 
-#include "index/contracts/query/PatternMatchReader.h"
+#include "index/contracts/query/IPatternMatchReader.h"
 #include "index/test_utils/CaseTestDriver.h"
 
 namespace milvus::index::test {
@@ -32,7 +32,7 @@ namespace {
 
 struct PatternQuery {
     using ValueType = std::string_view;
-    using Reader = PatternMatchReader;
+    using Reader = IPatternMatchReader;
     static constexpr auto kCapability = &ReaderCaps::pattern_match;
 
     struct Args {

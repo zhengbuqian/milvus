@@ -28,17 +28,15 @@
 #include "index/Families.h"
 #include "index/IndexTypeAdapter.h"
 #include "index/Meta.h"
-#include "index/contracts/build/ConsumeIndexArtifact.h"
-#include "index/contracts/query/PatternMatchReader.h"
-#include "index/contracts/query/ScalarPredicateReader.h"
+#include "index/contracts/build/IReaderConvertible.h"
+#include "index/contracts/query/IPatternMatchReader.h"
+#include "index/contracts/query/IScalarPredicateReader.h"
 #include "index/scalar/hybrid/HybridIndexArtifact.h"
 #include "index/test_utils/ArtifactTestUtils.h"
 #include "index/test_utils/CaseTestDriver.h"
 #include "index/test_utils/ScalarReaderFactory.h"
 #include "index/test_utils/ScalarTestData.h"
 #include "index/test_utils/TestArtifactIO.h"
-#include "storage/artifact/FileSink.h"
-#include "storage/artifact/FileSource.h"
 
 namespace milvus::index::test {
 namespace {
@@ -53,7 +51,7 @@ class NoopArtifact final : public storage::Artifact {
 void
 ExpectSelector(const storage::Artifact& artifact,
                ScalarIndexType expected_selector,
-               NamedBufferSet& legacy_buffers) {
+               TestArtifactData& legacy_artifact) {
     TestArtifactData v3;
     TestArtifactSink v3_sink(v3);
     artifact.Serialize(v3_sink);
@@ -65,11 +63,12 @@ ExpectSelector(const storage::Artifact& artifact,
     EXPECT_EQ(ResolveLoadFamily(families::kHybrid, v3_source),
               FamilyFromScalarIndexType(expected_selector));
 
-    storage::NamedBufferSink legacy_sink;
+    TestArtifactSink legacy_sink(legacy_artifact,
+                                 storage::Generation::V1V2);
     artifact.Serialize(legacy_sink);
     static_cast<void>(legacy_sink.Finish());
-    legacy_buffers = legacy_sink.Take();
-    storage::NamedBufferSource legacy_source(legacy_buffers);
+    TestArtifactSource legacy_source(legacy_artifact,
+                                     storage::Generation::V1V2);
     const auto marker = legacy_source.ReadEntry(INDEX_TYPE);
     ASSERT_EQ(marker.size(), 1);
     EXPECT_EQ(marker.front(), static_cast<uint8_t>(expected_selector));
@@ -87,13 +86,13 @@ BuildInspectAndQuery(const ReaderBackend& backend,
     const ScalarTestInput<T> input(data);
     auto artifact = backend.Build(input.View(), {.row_count = count});
     ASSERT_NE(artifact, nullptr);
-    NamedBufferSet legacy;
+    TestArtifactData legacy;
     ASSERT_NO_FATAL_FAILURE(
         ExpectSelector(*artifact, expected_selector, legacy));
     auto legacy_reader = OpenV1V2(backend, legacy, {.row_count = count});
     ASSERT_NE(legacy_reader, nullptr);
     const auto* legacy_predicate =
-        dynamic_cast<const ScalarPredicateReader<T>*>(legacy_reader.get());
+        dynamic_cast<const IScalarPredicateReader<T>*>(legacy_reader.get());
     ASSERT_NE(legacy_predicate, nullptr);
     const auto legacy_result = legacy_predicate->In(1, &key);
     ASSERT_EQ(legacy_result.size(), count);
@@ -103,7 +102,7 @@ BuildInspectAndQuery(const ReaderBackend& backend,
     ASSERT_NE(reader, nullptr);
     ASSERT_EQ(reader->Count(), count);
     const auto* predicate =
-        dynamic_cast<const ScalarPredicateReader<T>*>(reader.get());
+        dynamic_cast<const IScalarPredicateReader<T>*>(reader.get());
     ASSERT_NE(predicate, nullptr);
     const auto result = predicate->In(1, &key);
     ASSERT_EQ(result.size(), count);
@@ -184,13 +183,13 @@ BuildInspectArrayAndQuery(const ReaderBackend& backend,
     const ScalarTestInput<ArrayView> input(data);
     auto artifact = backend.Build(input.View(), {.row_count = count});
     ASSERT_NE(artifact, nullptr);
-    NamedBufferSet legacy;
+    TestArtifactData legacy;
     ASSERT_NO_FATAL_FAILURE(
         ExpectSelector(*artifact, expected_selector, legacy));
     auto legacy_reader = OpenV1V2(backend, legacy, {.row_count = count});
     ASSERT_NE(legacy_reader, nullptr);
     const auto* legacy_predicate =
-        dynamic_cast<const ScalarPredicateReader<int64_t>*>(
+        dynamic_cast<const IScalarPredicateReader<int64_t>*>(
             legacy_reader.get());
     ASSERT_NE(legacy_predicate, nullptr);
     const int64_t key = 0;
@@ -201,7 +200,7 @@ BuildInspectArrayAndQuery(const ReaderBackend& backend,
     auto reader = backend.Open(std::move(artifact), {.row_count = count});
     ASSERT_NE(reader, nullptr);
     const auto* predicate =
-        dynamic_cast<const ScalarPredicateReader<int64_t>*>(reader.get());
+        dynamic_cast<const IScalarPredicateReader<int64_t>*>(reader.get());
     ASSERT_NE(predicate, nullptr);
     const auto result = predicate->In(1, &key);
     ASSERT_EQ(result.size(), count);
@@ -386,7 +385,7 @@ HybridLifecycleCases() {
                      input.View(), {.row_count = data.values.size()});
                  ExpectSegcoreError(ErrorCode::Unsupported, [&] {
                      static_cast<void>(
-                         ConsumeIndexArtifact(std::move(artifact)));
+                         IReaderConvertible::FromArtifact(std::move(artifact)));
                  });
              }},
     };

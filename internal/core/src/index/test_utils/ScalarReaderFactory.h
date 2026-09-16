@@ -31,10 +31,10 @@
 #include <vector>
 
 #include "index/contracts/Registry.h"
-#include "index/contracts/build/ConsumeIndexArtifact.h"
+#include "index/contracts/build/IReaderConvertible.h"
 #include "index/contracts/build/ScalarBuildInput.h"
-#include "index/contracts/query/IndexReader.h"
-#include "index/contracts/query/PatternMatchReader.h"
+#include "index/contracts/query/IIndexReaderBase.h"
+#include "index/contracts/query/IPatternMatchReader.h"
 #include "index/contracts/query/ReaderCaps.h"
 #include "index/scalar/ScalarIndexUtils.h"
 #include "index/test_utils/ScalarTestData.h"
@@ -217,7 +217,7 @@ class ReaderBackend {
     // use this to keep fixture/setup failures outside their expected-error
     // boundary.
     template <typename T>
-    std::unique_ptr<ArtifactBuilder<ScalarBuildInput<T>>>
+    std::unique_ptr<IArtifactBuilder<ScalarBuildInput<T>>>
     CreateBuilder(BackendCaseMetadata metadata = {}) const {
         if (input_type_ != std::type_index(typeid(T))) {
             throw std::logic_error(Name() + ": wrong test input type");
@@ -255,12 +255,12 @@ class ReaderBackend {
         return artifact;
     }
 
-    IndexReaderBasePtr
+    IIndexReaderBasePtr
     Open(storage::ArtifactPtr artifact,
          const BackendCaseMetadata& metadata = {}) const;
 
     template <typename T>
-    IndexReaderBasePtr
+    IIndexReaderBasePtr
     Create(const ScalarBuildInput<T>& input,
            BackendCaseMetadata metadata = {}) const {
         if (metadata.row_count == 0) {

@@ -11,7 +11,7 @@ diff 超过 300 行。按以下顺序阅读：
 
 1. `contracts/RegistryTest.cpp`，用于注册表协议和 434 profile 生产注册矩阵。
 2. `contracts/build/ArtifactBuilderTest.cpp` 和
-   `ConsumeIndexArtifactTest.cpp`，用于借用输入和转换所有权。
+   `ReaderConvertibleTest.cpp`，用于借用输入和转换所有权。
 3. `scalar/hybrid/HybridIndexBuilderTest.cpp`，用于阈值选择、持久化 selector 和具体 loader 路由。
 4. Bitmap、Sorted、Inverted、Text 和 RTree 产物测试，针对公开持久化布局和损坏边界。
 5. `internal/core/unittest/CMakeLists.txt`，用于 `index_tests` 隔离。
@@ -21,7 +21,7 @@ diff 超过 300 行。按以下顺序阅读：
 ## 已关闭发现
 
 - `ArtifactBuilderTest.cpp:40-77` 和中央 ARRAY 数据集现使用与非空批交错的零大小批。scalar 和 ARRAY 生命周期矩阵仍为 70 + 192 = 262 个独立参数。
-- `ConsumeIndexArtifactTest.cpp:183-207` 为 converter-error 和 null-result 结果提供单独 GTest，每个均证明 shell 销毁和零序列化。
+- `ReaderConvertibleTest.cpp:183-207` 为 converter-error 和 null-result 结果提供单独 GTest，每个均证明 shell 销毁和零序列化。
 - `BitmapIndexArtifactTest.cpp:135-160` 独立覆盖截断的打包 validity 和 row/nested 元数据不一致。
 - `SortedIndexArtifactTest.cpp:126-213` 新增数值计数不一致、不完整和无效的数值 reverse-offset 状态、精确 `Unsupported` 的不支持字符串 version、无效字符串 reverse offset，以及既有截断字符串载荷用例。
 - `InvertedIndexArtifactTest.cpp:75-158` 独立覆盖缺失和空 inventory、保留 inventory 条目、缺失文件、null-sidecar 关系、越界 null offset 和无效 engine 载荷。
@@ -32,7 +32,7 @@ diff 超过 300 行。按以下顺序阅读：
 ## 映射至其他位置的覆盖
 
 - Task 2 在全部 64 个 nested profile 上执行 nested-element 输入生命周期和元数据；Task 5 不复制该矩阵。
-- Text RAM 输入生命周期由 Text 观察运行器执行；`ConsumeIndexArtifactTest` 证明真实转换能力和 tracking 依赖转移。
+- Text RAM 输入生命周期由 Text 观察运行器执行；`ReaderConvertibleTest` 证明真实转换能力和 tracking 依赖转移。
 - RTree reader/source 生命周期由 SpatialReader 观察覆盖；产物文件聚焦 `.bgi`、行计数完成、null inventory 和缺失/损坏 archive。
 - 每个 profile 的通用 V3 成功打开在 query/observation 套件中执行。聚焦产物文件检查公开布局关系和损坏，不复制查询矩阵。
 

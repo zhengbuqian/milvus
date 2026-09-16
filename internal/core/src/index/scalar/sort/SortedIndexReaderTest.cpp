@@ -21,9 +21,9 @@
 #include <string>
 #include <string_view>
 
-#include "index/contracts/query/PatternMatchReader.h"
-#include "index/contracts/query/ScalarPredicateReader.h"
-#include "index/contracts/query/ScalarValueReader.h"
+#include "index/contracts/query/IPatternMatchReader.h"
+#include "index/contracts/query/IScalarPredicateReader.h"
+#include "index/contracts/query/IScalarValueReader.h"
 #include "index/test_utils/ScalarReaderFactory.h"
 
 namespace milvus::index::test {
@@ -69,9 +69,9 @@ TEST(SortedIndexReaderTest, ProvidesInt64Queries) {
     ASSERT_NE(reader, nullptr);
     EXPECT_TRUE(reader->Caps().predicate);
     EXPECT_TRUE(reader->Caps().value_lookup);
-    EXPECT_NE(dynamic_cast<const ScalarPredicateReader<int64_t>*>(reader.get()),
+    EXPECT_NE(dynamic_cast<const IScalarPredicateReader<int64_t>*>(reader.get()),
               nullptr);
-    EXPECT_NE(dynamic_cast<const ScalarValueReader<int64_t>*>(reader.get()),
+    EXPECT_NE(dynamic_cast<const IScalarValueReader<int64_t>*>(reader.get()),
               nullptr);
 }
 
@@ -91,10 +91,10 @@ TEST(SortedIndexReaderTest, ProvidesVarcharQueries) {
     ASSERT_NE(reader, nullptr);
     EXPECT_TRUE(reader->Caps().predicate);
     EXPECT_TRUE(reader->Caps().pattern_match);
-    EXPECT_NE(dynamic_cast<const ScalarPredicateReader<std::string_view>*>(
+    EXPECT_NE(dynamic_cast<const IScalarPredicateReader<std::string_view>*>(
                   reader.get()),
               nullptr);
-    EXPECT_NE(dynamic_cast<const PatternMatchReader*>(reader.get()), nullptr);
+    EXPECT_NE(dynamic_cast<const IPatternMatchReader*>(reader.get()), nullptr);
 }
 
 }  // namespace

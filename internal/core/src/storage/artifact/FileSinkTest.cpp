@@ -19,164 +19,111 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
-#include <fstream>
-#include <memory>
+#include <set>
 #include <string>
-#include <string_view>
+#include <utility>
 #include <vector>
 
-#include "index/test_utils/AssertHelpers.h"
-#include "nlohmann/json.hpp"
+#include "common/Common.h"
+#include "common/Slice.h"
+#include "storage/ChunkManager.h"
+#include "storage/FileManager.h"
+#include "storage/Types.h"
+#include "storage/Util.h"
 #include "storage/artifact/FileSink.h"
+#include "storage/artifact/FileSource.h"
 #include "storage/artifact/LocalDirectory.h"
 
 namespace milvus::storage::test {
 namespace {
 
-using milvus::index::test::ExpectSegcoreError;
-
-std::shared_ptr<LocalDirectory>
-MakeTestDirectory() {
-    return LocalDirectory::CreateOwned(std::filesystem::temp_directory_path(),
-                                       "milvus-filesink-test-XXXXXX",
-                                       "NamedBufferSink test");
-}
-
-void
-WriteFile(const std::filesystem::path& path, std::string_view value) {
-    std::ofstream output(path, std::ios::binary | std::ios::trunc);
-    ASSERT_TRUE(output.good());
-    output.write(value.data(), static_cast<std::streamsize>(value.size()));
-    output.close();
-    ASSERT_FALSE(output.fail());
-}
-
-std::vector<uint8_t>
-Bytes(const NamedBuffer& buffer) {
-    if (buffer.size == 0) {
-        return {};
+class FileSliceSizeGuard {
+ public:
+    explicit FileSliceSizeGuard(int64_t value)
+        : original_(FILE_SLICE_SIZE.load()) {
+        FILE_SLICE_SIZE.store(value);
     }
-    return {buffer.data.get(), buffer.data.get() + buffer.size};
-}
 
-TEST(NamedBufferSinkTest, RequiresSuccessfulFinishBeforeReadingData) {
-    NamedBufferSink sink;
+    ~FileSliceSizeGuard() {
+        FILE_SLICE_SIZE.store(original_);
+    }
 
-    EXPECT_EQ(sink.Gen(), Generation::V1V2);
-    ExpectSegcoreError(ErrorCode::UnexpectedError,
-                       [&] { static_cast<void>(sink.Data()); });
-    ExpectSegcoreError(ErrorCode::UnexpectedError,
-                       [&] { static_cast<void>(sink.Take()); });
-}
+ private:
+    int64_t original_;
+};
 
-TEST(NamedBufferSinkTest, EmptyFinishPublishesAnEmptyArtifact) {
-    NamedBufferSink sink;
+class RemoteFileGuard {
+ public:
+    RemoteFileGuard(ChunkManagerPtr manager, std::vector<std::string> paths)
+        : manager_(std::move(manager)), paths_(std::move(paths)) {
+    }
 
+    ~RemoteFileGuard() {
+        for (const auto& path : paths_) {
+            try {
+                if (manager_->Exist(path)) {
+                    manager_->Remove(path);
+                }
+            } catch (...) {
+            }
+        }
+    }
+
+ private:
+    ChunkManagerPtr manager_;
+    std::vector<std::string> paths_;
+};
+
+TEST(V1ArtifactIOTest, RoundTripsSlicedEntryThroughProductionTransport) {
+    FileSliceSizeGuard slice_size(3);
+    auto remote_root = LocalDirectory::CreateOwned(
+        std::filesystem::temp_directory_path().string(),
+        "milvus-filesink-test-XXXXXX",
+        "V1 artifact IO test");
+    StorageConfig storage_config;
+    storage_config.storage_type = "local";
+    storage_config.root_path = remote_root->Path() + "/";
+    auto chunk_manager = CreateChunkManager(storage_config);
+    auto filesystem = InitArrowFileSystem(storage_config);
+    FieldDataMeta field_meta = {1, 2, 3, 100};
+    IndexMeta index_meta = {
+        3, 100, 1000, 1, "artifact_io", "field", DataType::INT64, 1, false};
+    FileManagerContext context(
+        field_meta, index_meta, chunk_manager, std::move(filesystem));
+
+    V1DiskSink sink(context);
+    const std::array<uint8_t, 8> payload = {
+        'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'};
+    sink.WriteEntry("payload", payload.data(), payload.size());
     const auto stats = sink.Finish();
 
-    EXPECT_EQ(stats.MemSize(), 0);
-    EXPECT_TRUE(stats.Files().empty());
-    EXPECT_TRUE(sink.Data().empty());
-    EXPECT_TRUE(sink.Take().empty());
-    sink.ReleaseLocalStaging();
-    sink.ReleaseLocalStaging();
-}
+    std::vector<std::string> remote_paths;
+    std::set<std::string> physical_names;
+    remote_paths.reserve(stats.Files().size());
+    for (const auto& file : stats.Files()) {
+        remote_paths.push_back(file.file_name);
+        physical_names.insert(
+            std::filesystem::path(file.file_name).filename().string());
+    }
+    RemoteFileGuard remote_files(chunk_manager, remote_paths);
 
-TEST(NamedBufferSinkTest, PublishesBinaryEmptyAndBorrowedFileEntries) {
-    auto directory = MakeTestDirectory();
-    const auto borrowed = std::filesystem::path(directory->Path()) / "input";
-    WriteFile(borrowed, "local-value");
+    EXPECT_EQ(physical_names,
+              (std::set<std::string>{INDEX_FILE_SLICE_META,
+                                     "payload_0",
+                                     "payload_1",
+                                     "payload_2"}));
 
-    NamedBufferSink sink;
-    std::array<uint8_t, 4> binary = {0x00, 0x7f, 0x80, 0xff};
-    sink.WriteEntry("binary", binary.data(), binary.size());
-    sink.WriteEntry("empty", nullptr, 0);
-    sink.WriteEntryFromLocalFile("local", borrowed.string());
-    binary.fill(0);
-
-    const auto stats = sink.Finish();
-
-    EXPECT_EQ(stats.MemSize(), 15);
-    EXPECT_TRUE(stats.Files().empty());
-    ASSERT_EQ(sink.Data().size(), 3);
-    EXPECT_EQ(Bytes(sink.Data().at("binary")),
-              (std::vector<uint8_t>{0x00, 0x7f, 0x80, 0xff}));
-    EXPECT_TRUE(Bytes(sink.Data().at("empty")).empty());
-    EXPECT_EQ(Bytes(sink.Data().at("local")),
-              (std::vector<uint8_t>{
-                  'l', 'o', 'c', 'a', 'l', '-', 'v', 'a', 'l', 'u', 'e'}));
-    EXPECT_TRUE(std::filesystem::exists(borrowed));
+    V1RemoteSource source(context,
+                          remote_paths,
+                          {},
+                          ArtifactStoragePath::Index,
+                          V1SourceLayout::MemoryEntries);
+    EXPECT_EQ(source.EntryNames(), (std::vector<std::string>{"payload"}));
+    EXPECT_EQ(source.EntrySize("payload"), payload.size());
+    EXPECT_EQ(source.ReadEntry("payload"),
+              (std::vector<uint8_t>(payload.begin(), payload.end())));
 
     sink.ReleaseLocalStaging();
-    EXPECT_TRUE(std::filesystem::exists(borrowed));
-    const auto taken = sink.Take();
-    EXPECT_EQ(taken.size(), 3);
-    EXPECT_TRUE(sink.Data().empty());
-}
-
-TEST(NamedBufferSinkTest, FinishedSinkRejectsFurtherMutation) {
-    NamedBufferSink sink;
-    static constexpr std::array<uint8_t, 1> value = {1};
-    sink.WriteEntry("entry", value.data(), value.size());
-    static_cast<void>(sink.Finish());
-
-    ExpectSegcoreError(ErrorCode::UnexpectedError, [&] {
-        sink.WriteEntry("another", value.data(), value.size());
-    });
-    ExpectSegcoreError(ErrorCode::UnexpectedError,
-                       [&] { static_cast<void>(sink.Finish()); });
-}
-
-TEST(NamedBufferSinkTest, RawFileOperationIsUnsupportedAndFailsSink) {
-    NamedBufferSink sink;
-    ExpectSegcoreError(ErrorCode::Unsupported, [&] {
-        sink.WriteRawEntryFromLocalFile("raw", "/unused");
-    });
-
-    ExpectSegcoreError(ErrorCode::UnexpectedError,
-                       [&] { static_cast<void>(sink.Finish()); });
-}
-
-TEST(NamedBufferSinkTest, MetadataOperationIsUnsupportedAndFailsSink) {
-    NamedBufferSink sink;
-    ExpectSegcoreError(ErrorCode::Unsupported,
-                       [&] { sink.PutMeta("key", nlohmann::json(1)); });
-
-    ExpectSegcoreError(ErrorCode::UnexpectedError,
-                       [&] { sink.WriteEntry("entry", nullptr, 0); });
-}
-
-TEST(NamedBufferSinkTest, DuplicateEntryFailsSink) {
-    NamedBufferSink sink;
-    static constexpr std::array<uint8_t, 1> value = {1};
-    sink.WriteEntry("entry", value.data(), value.size());
-
-    ExpectSegcoreError(ErrorCode::UnexpectedError, [&] {
-        sink.WriteEntry("entry", value.data(), value.size());
-    });
-    ExpectSegcoreError(ErrorCode::UnexpectedError,
-                       [&] { static_cast<void>(sink.Finish()); });
-}
-
-TEST(NamedBufferSinkTest, NullNonEmptyEntryFailsSink) {
-    NamedBufferSink sink;
-
-    ExpectSegcoreError(ErrorCode::UnexpectedError,
-                       [&] { sink.WriteEntry("entry", nullptr, 1); });
-    ExpectSegcoreError(ErrorCode::UnexpectedError,
-                       [&] { static_cast<void>(sink.Finish()); });
-}
-
-TEST(NamedBufferSinkTest, MissingBorrowedFileFailsSink) {
-    auto directory = MakeTestDirectory();
-    const auto missing =
-        (std::filesystem::path(directory->Path()) / "missing").string();
-    NamedBufferSink sink;
-
-    ExpectSegcoreError(ErrorCode::FileOpenFailed,
-                       [&] { sink.WriteEntryFromLocalFile("entry", missing); });
-    ExpectSegcoreError(ErrorCode::UnexpectedError,
-                       [&] { static_cast<void>(sink.Finish()); });
 }
 
 }  // namespace

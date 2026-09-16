@@ -23,7 +23,7 @@
 #include <utility>
 #include <vector>
 
-#include "index/contracts/query/NgramReader.h"
+#include "index/contracts/query/INgramReader.h"
 #include "index/test_utils/AssertHelpers.h"
 #include "index/test_utils/CaseTestDriver.h"
 
@@ -78,9 +78,9 @@ ConcreteNgramCases() {
                             [test_case](
                                 const ReaderBackend&,
                                 const ScalarTestData<std::string_view>& data,
-                                IndexReaderBasePtr& reader) {
+                                IIndexReaderBasePtr& reader) {
                                 const auto* ngram =
-                                    dynamic_cast<const NgramReader*>(
+                                    dynamic_cast<const INgramReader*>(
                                         reader.get());
                                 ASSERT_NE(ngram, nullptr);
                                 ASSERT_TRUE(ngram->CanHandle(test_case.literal,

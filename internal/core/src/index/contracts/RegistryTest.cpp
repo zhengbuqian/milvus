@@ -56,7 +56,7 @@ class EmptyArtifact final : public storage::Artifact {
 };
 
 template <typename T>
-class EmptyBuilder final : public ArtifactBuilder<ScalarBuildInput<T>> {
+class EmptyBuilder final : public IArtifactBuilder<ScalarBuildInput<T>> {
  public:
     explicit EmptyBuilder(int marker = 0) : marker_(marker) {
     }
@@ -71,7 +71,7 @@ class EmptyBuilder final : public ArtifactBuilder<ScalarBuildInput<T>> {
     int marker_;
 };
 
-class EmptyReader final : public IndexReaderBase {
+class EmptyReader final : public IIndexReaderBase {
  public:
     explicit EmptyReader(ReaderCaps caps = {}) : caps_(caps) {
     }
@@ -118,7 +118,7 @@ struct LoaderProbeA {
         return {.predicate = params.value("predicate", false)};
     }
 
-    static IndexReaderBasePtr
+    static IIndexReaderBasePtr
     Open(storage::FileSource&, const storage::LoadOptions& options) {
         return std::make_unique<EmptyReader>(DeriveCaps(options.params));
     }
@@ -204,7 +204,7 @@ TEST(RegistryTest, FactoryExceptionIsPreserved) {
     BuilderRegistry<ScalarBuildInput<int64_t>>::Instance().Register(
         family,
         [](const Config&)
-            -> std::unique_ptr<ArtifactBuilder<ScalarBuildInput<int64_t>>> {
+            -> std::unique_ptr<IArtifactBuilder<ScalarBuildInput<int64_t>>> {
             ThrowInfo(DataTypeInvalid, "registry factory marker");
         });
 

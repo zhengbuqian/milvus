@@ -29,8 +29,8 @@
 
 #include "common/JsonCastType.h"
 #include "index/Meta.h"
-#include "index/contracts/query/JsonIndexReader.h"
-#include "index/contracts/query/NgramReader.h"
+#include "index/contracts/query/IJsonIndexReader.h"
+#include "index/contracts/query/INgramReader.h"
 #include "index/scalar/ngram/JsonProjectedString.h"
 #include "index/test_utils/AssertHelpers.h"
 #include "index/test_utils/CaseTestDriver.h"
@@ -76,16 +76,16 @@ template <typename T>
 void
 ObserveNgram(const NgramCase& test_case,
              const ScalarTestData<T>& data,
-             IndexReaderBasePtr& reader) {
+             IIndexReaderBasePtr& reader) {
     ASSERT_TRUE(reader->Caps().ngram_candidates);
     EXPECT_FALSE(reader->Caps().exact);
 
     JsonResolvedReader resolved;
-    const IndexReaderBase* query_reader = reader.get();
+    const IIndexReaderBase* query_reader = reader.get();
     if constexpr (std::is_same_v<T, JsonProjectedString>) {
         ASSERT_TRUE(reader->Caps().json_paths);
         const auto* json_reader =
-            dynamic_cast<const JsonIndexReader*>(reader.get());
+            dynamic_cast<const IJsonIndexReader*>(reader.get());
         ASSERT_NE(json_reader, nullptr);
         const auto cast = JsonCastType::FromString("VARCHAR");
         const auto casts = json_reader->CastTypesOf("/a");
@@ -103,7 +103,7 @@ ObserveNgram(const NgramCase& test_case,
         ExpectBitmap(actual_exists, expected_exists);
     }
 
-    const auto* ngram = dynamic_cast<const NgramReader*>(query_reader);
+    const auto* ngram = dynamic_cast<const INgramReader*>(query_reader);
     ASSERT_NE(ngram, nullptr);
     ExpectNullState(data, *query_reader);
 
@@ -163,7 +163,7 @@ AddNgramCase(IndexTestCases& cases,
                     [test_case = std::move(test_case)](
                         const ReaderBackend&,
                         const ScalarTestData<T>& data,
-                        IndexReaderBasePtr& reader) {
+                        IIndexReaderBasePtr& reader) {
                         ObserveNgram(test_case, data, reader);
                     },
             },

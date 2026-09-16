@@ -26,8 +26,8 @@
 #include <vector>
 
 #include "common/EasyAssert.h"
-#include "index/contracts/query/IndexReader.h"
-#include "index/contracts/query/NullReader.h"
+#include "index/contracts/query/IIndexReaderBase.h"
+#include "index/contracts/query/INullReader.h"
 #include "index/scalar/ngram/JsonProjectedString.h"
 
 namespace milvus::index::test {
@@ -100,8 +100,8 @@ ExpectedNulls(const ScalarTestData<T>& data) {
 
 template <typename T>
 void
-ExpectNullState(const ScalarTestData<T>& data, const IndexReaderBase& reader) {
-    const auto* null_reader = dynamic_cast<const NullReader*>(&reader);
+ExpectNullState(const ScalarTestData<T>& data, const IIndexReaderBase& reader) {
+    const auto* null_reader = dynamic_cast<const INullReader*>(&reader);
     ASSERT_NE(null_reader, nullptr);
 
     const auto expected_null = ExpectedNulls(data);

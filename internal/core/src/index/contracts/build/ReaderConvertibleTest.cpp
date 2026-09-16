@@ -22,16 +22,15 @@
 #include <utility>
 
 #include "common/EasyAssert.h"
-#include "index/contracts/build/ConsumeIndexArtifact.h"
-#include "index/contracts/build/ReaderConvertible.h"
-#include "index/contracts/query/NullReader.h"
+#include "index/contracts/build/IReaderConvertible.h"
+#include "index/contracts/query/INullReader.h"
 #include "index/test_utils/ScalarReaderFactory.h"
 #include "index/test_utils/ScalarTestData.h"
 
 namespace milvus::index::test {
 namespace {
 
-class TrackingReader final : public IndexReaderBase {
+class TrackingReader final : public IIndexReaderBase {
  public:
     explicit TrackingReader(std::shared_ptr<int> dependency)
         : dependency_(std::move(dependency)) {
@@ -98,7 +97,7 @@ enum class ConvertBehavior {
 };
 
 class ConvertibleTrackingArtifact final : public storage::Artifact,
-                                          public ReaderConvertible {
+                                          public IReaderConvertible {
  public:
     ConvertibleTrackingArtifact(int& destroyed,
                                 int& serialized,
@@ -119,7 +118,7 @@ class ConvertibleTrackingArtifact final : public storage::Artifact,
         ++serialized_;
     }
 
-    IndexReaderBasePtr
+    IIndexReaderBasePtr
         IntoReader() &&
         override {
         if (behavior_ == ConvertBehavior::Throw) {
@@ -141,18 +140,18 @@ class ConvertibleTrackingArtifact final : public storage::Artifact,
 void
 ExpectConsumeError(storage::ArtifactPtr artifact, ErrorCode expected) {
     try {
-        static_cast<void>(ConsumeIndexArtifact(std::move(artifact)));
+        static_cast<void>(IReaderConvertible::FromArtifact(std::move(artifact)));
         FAIL() << "artifact conversion expected an error";
     } catch (const SegcoreError& error) {
         EXPECT_EQ(error.get_error_code(), expected);
     }
 }
 
-TEST(ConsumeIndexArtifactTest, NullArtifactIsUnexpectedError) {
+TEST(ReaderConvertibleTest, NullArtifactIsUnexpectedError) {
     ExpectConsumeError(nullptr, ErrorCode::UnexpectedError);
 }
 
-TEST(ConsumeIndexArtifactTest, MissingCapabilityDoesNotSerialize) {
+TEST(ReaderConvertibleTest, MissingCapabilityDoesNotSerialize) {
     int destroyed = 0;
     int serialized = 0;
     ExpectConsumeError(
@@ -162,7 +161,7 @@ TEST(ConsumeIndexArtifactTest, MissingCapabilityDoesNotSerialize) {
     EXPECT_EQ(serialized, 0);
 }
 
-TEST(ConsumeIndexArtifactTest, SuccessTransfersDependencyToReader) {
+TEST(ReaderConvertibleTest, SuccessTransfersDependencyToReader) {
     int destroyed = 0;
     int serialized = 0;
     auto dependency = std::make_shared<int>(7);
@@ -170,7 +169,7 @@ TEST(ConsumeIndexArtifactTest, SuccessTransfersDependencyToReader) {
     auto artifact = std::make_unique<ConvertibleTrackingArtifact>(
         destroyed, serialized, std::move(dependency), ConvertBehavior::Success);
 
-    auto reader = ConsumeIndexArtifact(std::move(artifact));
+    auto reader = IReaderConvertible::FromArtifact(std::move(artifact));
     EXPECT_EQ(destroyed, 1);
     EXPECT_EQ(serialized, 0);
     ASSERT_NE(reader, nullptr);
@@ -180,7 +179,7 @@ TEST(ConsumeIndexArtifactTest, SuccessTransfersDependencyToReader) {
     EXPECT_TRUE(weak.expired());
 }
 
-TEST(ConsumeIndexArtifactTest, ConverterErrorDestroysShell) {
+TEST(ReaderConvertibleTest, ConverterErrorDestroysShell) {
     int destroyed = 0;
     int serialized = 0;
     ExpectConsumeError(
@@ -193,7 +192,7 @@ TEST(ConsumeIndexArtifactTest, ConverterErrorDestroysShell) {
     EXPECT_EQ(serialized, 0);
 }
 
-TEST(ConsumeIndexArtifactTest, NullResultDestroysShell) {
+TEST(ReaderConvertibleTest, NullResultDestroysShell) {
     int destroyed = 0;
     int serialized = 0;
     ExpectConsumeError(
@@ -206,7 +205,7 @@ TEST(ConsumeIndexArtifactTest, NullResultDestroysShell) {
     EXPECT_EQ(serialized, 0);
 }
 
-TEST(ConsumeIndexArtifactTest, OrdinaryScalarArtifactIsNotConvertible) {
+TEST(ReaderConvertibleTest, OrdinaryScalarArtifactIsNotConvertible) {
     const auto& backend = ScalarReaderBackends().Get<int64_t>("BitmapInt64");
     ScalarTestData<int64_t> data({1, 2, 3});
     data.validity_present = false;
@@ -215,7 +214,7 @@ TEST(ConsumeIndexArtifactTest, OrdinaryScalarArtifactIsNotConvertible) {
     ExpectConsumeError(std::move(artifact), ErrorCode::Unsupported);
 }
 
-TEST(ConsumeIndexArtifactTest, TextRamArtifactConvertsWithoutPersistence) {
+TEST(ReaderConvertibleTest, TextRamArtifactConvertsWithoutPersistence) {
     const auto& backend =
         ScalarReaderBackends().Get<std::string_view>("TextVarcharRamV7");
     ScalarTestData<std::string_view> data({"alpha beta", "gamma"});
@@ -223,13 +222,13 @@ TEST(ConsumeIndexArtifactTest, TextRamArtifactConvertsWithoutPersistence) {
     const ScalarTestInput<std::string_view> input(data);
     auto artifact = backend.Build(input.View(), {.row_count = 2});
 
-    auto reader = ConsumeIndexArtifact(std::move(artifact));
+    auto reader = IReaderConvertible::FromArtifact(std::move(artifact));
     ASSERT_NE(reader, nullptr);
     EXPECT_EQ(reader->Count(), 2);
     EXPECT_EQ(reader->CoordDomain(), Domain::Row);
     EXPECT_EQ(reader->ValueType(), DataType::VARCHAR);
     EXPECT_TRUE(reader->Caps().text_match);
-    EXPECT_NE(dynamic_cast<const NullReader*>(reader.get()), nullptr);
+    EXPECT_NE(dynamic_cast<const INullReader*>(reader.get()), nullptr);
 }
 
 }  // namespace

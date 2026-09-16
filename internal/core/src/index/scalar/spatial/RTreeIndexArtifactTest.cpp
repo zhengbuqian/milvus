@@ -24,7 +24,7 @@
 
 #include "common/Geometry.h"
 #include "index/Meta.h"
-#include "index/contracts/query/NullReader.h"
+#include "index/contracts/query/INullReader.h"
 #include "index/test_utils/ArtifactTestUtils.h"
 #include "index/test_utils/ScalarTestData.h"
 
@@ -73,7 +73,7 @@ TEST(RTreeIndexArtifactTest, V3RoundTripPreservesFileAndNullInventory) {
     auto reader = OpenV3(backend, persisted, {.row_count = 3});
     ASSERT_NE(reader, nullptr);
     EXPECT_EQ(reader->Count(), 3);
-    const auto* nulls = dynamic_cast<const NullReader*>(reader.get());
+    const auto* nulls = dynamic_cast<const INullReader*>(reader.get());
     ASSERT_NE(nulls, nullptr);
     EXPECT_TRUE(nulls->IsNull()[1]);
 }
