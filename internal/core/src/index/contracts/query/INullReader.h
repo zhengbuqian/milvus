@@ -14,41 +14,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+#pragma once
 
-#include <stdint.h>
+#include "common/Types.h"
 
-#include "common/common_type_c.h"
+// Null predicates, independent of point/range support. Scalar predicate and
+// candidate families provide this mixin even when they do not implement
+// IScalarPredicateReader<T>; RTree is one example. There is no ReaderCaps bit
+// for it. A standalone text-match artifact does not imply a null reader.
 
-typedef void* CBinarySet;
+namespace milvus::index {
 
-CStatus
-NewBinarySet(CBinarySet* c_binary_set);
+class INullReader {
+ public:
+    virtual ~INullReader() = default;
 
-void
-DeleteBinarySet(CBinarySet c_binary_set);
+    // 1 = hit. Bitmap size is Count(), in the reader's own coordinate domain.
+    virtual TargetBitmap
+    IsNull() const = 0;
 
-CStatus
-AppendIndexBinary(CBinarySet c_binary_set,
-                  void* index_binary,
-                  int64_t index_size,
-                  const char* c_index_key);
+    virtual TargetBitmap
+    IsNotNull() const = 0;
+};
 
-int
-GetBinarySetSize(CBinarySet c_binary_set);
-
-void
-GetBinarySetKeys(CBinarySet c_binary_set, void* data);
-
-int
-GetBinarySetValueSize(CBinarySet c_set, const char* key);
-
-// Note: the memory of data has been allocated outside
-CStatus
-CopyBinarySetValue(void* data, const char* key, CBinarySet c_set);
-
-#ifdef __cplusplus
-}
-#endif
+}  // namespace milvus::index
