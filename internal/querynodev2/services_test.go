@@ -676,6 +676,7 @@ func (suite *ServiceSuite) genSegmentLoadInfos(schema *schemapb.CollectionSchema
 					1000,
 				)
 				suite.Require().NoError(err)
+				index.NumRows = 1000
 				indexes = append(indexes, index)
 			}
 		}
