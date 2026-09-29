@@ -2028,6 +2028,10 @@ func (s *Server) ImportV2(ctx context.Context, in *internalpb.ImportRequestInter
 	resp := &internalpb.ImportResponse{
 		Status: merr.Success(),
 	}
+	if err := importutilv2.ValidateImportSchema(in.GetSchema()); err != nil {
+		resp.Status = merr.Status(err)
+		return resp, nil
+	}
 
 	mlog.Info(context.TODO(), "receive import request from proxy",
 		mlog.Int("fileNum", len(in.GetFiles())),
@@ -2151,10 +2155,11 @@ func (s *Server) createImportJobFromAck(ctx context.Context, in *internalpb.Impo
 	// config flip between broadcast and ack) is terminally failed below instead
 	// of running ungated or returning an error (which would retry forever).
 	l0ImportDisabled := importutilv2.IsL0Import(in.GetOptions()) && !Params.DataCoordCfg.EnableL0Import.GetAsBool()
+	unsupportedSchemaErr := importutilv2.ValidateImportSchema(in.GetSchema())
 
 	files := in.GetFiles()
 	isBackup := importutilv2.IsBackup(in.GetOptions())
-	if isBackup && !l0ImportDisabled {
+	if isBackup && !l0ImportDisabled && unsupportedSchemaErr == nil {
 		files, err = ListBinlogImportRequestFiles(ctx, s.meta.chunkManager, files, in.GetOptions())
 		if err != nil {
 			resp.Status = merr.Status(err)
@@ -2219,6 +2224,10 @@ func (s *Server) createImportJobFromAck(ctx context.Context, in *internalpb.Impo
 		UpdateJobReason("l0 import is disabled (dataCoord.import.enableL0Import=false); fold L0 deletes " +
 			"into data segment deltalogs before restore, or set the config to true on this cluster " +
 			"to re-enable the legacy L0 import")(job)
+	}
+	if unsupportedSchemaErr != nil {
+		UpdateJobState(internalpb.ImportJobState_Failed)(job)
+		UpdateJobReason(unsupportedSchemaErr.Error())(job)
 	}
 	err = s.importMeta.AddJob(ctx, job)
 	if err != nil {
