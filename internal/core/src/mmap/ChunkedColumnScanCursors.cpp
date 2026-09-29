@@ -544,6 +544,7 @@ OpenDataScan(const ChunkedColumnInterface* column,
 ChunkedColumnInterface::ScanResult
 ChunkedColumnInterface::Scan(milvus::OpContext* op_ctx,
                              const ScanOptions& options) const {
+    ValidateArrayViewTarget(options.target_type);
     auto data_type = GetDefaultScanDataType();
     if (!data_type.has_value()) {
         return nullptr;

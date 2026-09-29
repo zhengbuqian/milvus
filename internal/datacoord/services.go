@@ -2029,6 +2029,10 @@ func (s *Server) ImportV2(ctx context.Context, in *internalpb.ImportRequestInter
 	resp := &internalpb.ImportResponse{
 		Status: merr.Success(),
 	}
+	if err := importutilv2.ValidateImportSchema(in.GetSchema()); err != nil {
+		resp.Status = merr.Status(err)
+		return resp, nil
+	}
 
 	mlog.Info(context.TODO(), "receive import request from proxy",
 		mlog.Int("fileNum", len(in.GetFiles())),
@@ -2154,10 +2158,11 @@ func (s *Server) createImportJobFromAck(ctx context.Context, in *internalpb.Impo
 	if !l0ImportDisabled {
 		rlsPredicate, rlsErr = s.resolveImportRLSPredicate(ctx, in)
 	}
+	unsupportedSchemaErr := importutilv2.ValidateImportSchema(in.GetSchema())
 
 	files := in.GetFiles()
 	isBackup := importutilv2.IsBackup(in.GetOptions())
-	if isBackup && !l0ImportDisabled && rlsErr == nil {
+	if isBackup && !l0ImportDisabled && rlsErr == nil && unsupportedSchemaErr == nil {
 		files, err = ListBinlogImportRequestFiles(ctx, s.meta.chunkManager, files, in.GetOptions())
 		if err != nil {
 			resp.Status = merr.Status(err)
@@ -2228,6 +2233,10 @@ func (s *Server) createImportJobFromAck(ctx context.Context, in *internalpb.Impo
 			mlog.Int64("jobID", jobID), mlog.Int64("collectionID", in.GetCollectionID()), mlog.Err(rlsErr))
 		UpdateJobState(internalpb.ImportJobState_Failed)(job)
 		UpdateJobReason(rlsErr.Error())(job)
+	}
+	if unsupportedSchemaErr != nil {
+		UpdateJobState(internalpb.ImportJobState_Failed)(job)
+		UpdateJobReason(unsupportedSchemaErr.Error())(job)
 	}
 	err = s.importMeta.AddJob(ctx, job)
 	if err != nil {

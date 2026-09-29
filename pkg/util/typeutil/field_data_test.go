@@ -75,11 +75,11 @@ func TestFieldDataValidData(t *testing.T) {
 			},
 		}
 		assert.True(t, ValidateAndNormalizeFieldDataValidData(field))
-		assert.Nil(t, field.GetValidData())
+		assert.Equal(t, scalarValid, field.GetValidData())
 		assert.Equal(t, scalarValid, field.GetScalars().GetValidData())
 	})
 
-	t.Run("normalize legacy source", func(t *testing.T) {
+	t.Run("normalize legacy source to both locations", func(t *testing.T) {
 		field := &schemapb.FieldData{
 			ValidData: legacy,
 			Field: &schemapb.FieldData_Scalars{
@@ -87,8 +87,19 @@ func TestFieldDataValidData(t *testing.T) {
 			},
 		}
 		assert.True(t, ValidateAndNormalizeFieldDataValidData(field))
-		assert.Nil(t, field.GetValidData())
+		assert.Equal(t, legacy, field.GetValidData())
 		assert.Equal(t, legacy, field.GetScalars().GetValidData())
+	})
+
+	t.Run("normalize field-specific source to both locations", func(t *testing.T) {
+		field := &schemapb.FieldData{
+			Field: &schemapb.FieldData_Vectors{
+				Vectors: &schemapb.VectorField{ValidData: vectorValid},
+			},
+		}
+		assert.True(t, ValidateAndNormalizeFieldDataValidData(field))
+		assert.Equal(t, vectorValid, field.GetValidData())
+		assert.Equal(t, vectorValid, field.GetVectors().GetValidData())
 	})
 
 	t.Run("reject mismatched dual sources without normalization", func(t *testing.T) {
@@ -121,21 +132,49 @@ func TestFieldDataValidData(t *testing.T) {
 		assert.Equal(t, scalarValid, subField.GetScalars().GetValidData())
 	})
 
-	t.Run("project current source for legacy readers", func(t *testing.T) {
+	t.Run("reconcile mismatched dual sources to legacy", func(t *testing.T) {
+		// An older component rewrote the legacy location and forwarded a stale
+		// field-specific copy.
+		field := &schemapb.FieldData{
+			ValidData: legacy,
+			Field: &schemapb.FieldData_Scalars{
+				Scalars: &schemapb.ScalarField{ValidData: scalarValid},
+			},
+		}
+		assert.Equal(t, legacy, GetFieldDataValidData(field))
+		NormalizeFieldDataValidData(field)
+		assert.Equal(t, legacy, field.GetValidData())
+		assert.Equal(t, legacy, field.GetScalars().GetValidData())
+	})
+
+	t.Run("reconcile nested mismatched dual sources to legacy", func(t *testing.T) {
 		subField := &schemapb.FieldData{
+			ValidData: legacy,
 			Field: &schemapb.FieldData_Vectors{
 				Vectors: &schemapb.VectorField{ValidData: vectorValid},
 			},
 		}
 		field := &schemapb.FieldData{
+			ValidData: scalarValid,
 			Field: &schemapb.FieldData_StructArrays{
 				StructArrays: &schemapb.StructArrayField{Fields: []*schemapb.FieldData{subField}},
 			},
 		}
+		NormalizeFieldDataValidData(field)
+		assert.Nil(t, field.GetValidData())
+		assert.Equal(t, legacy, subField.GetValidData())
+		assert.Equal(t, legacy, subField.GetVectors().GetValidData())
+	})
 
-		ProjectFieldDataValidDataForLegacy(field)
-		assert.Equal(t, vectorValid, subField.GetValidData())
-		assert.Equal(t, vectorValid, subField.GetVectors().GetValidData())
+	t.Run("reconcile without validity leaves both locations empty", func(t *testing.T) {
+		field := &schemapb.FieldData{
+			Field: &schemapb.FieldData_Scalars{
+				Scalars: &schemapb.ScalarField{},
+			},
+		}
+		NormalizeFieldDataValidData(field)
+		assert.Empty(t, field.GetValidData())
+		assert.Empty(t, field.GetScalars().GetValidData())
 	})
 
 	t.Run("set scalar validity", func(t *testing.T) {
@@ -146,7 +185,7 @@ func TestFieldDataValidData(t *testing.T) {
 			},
 		}
 		SetFieldDataValidData(field, scalarValid)
-		assert.Nil(t, field.GetValidData())
+		assert.Equal(t, scalarValid, field.GetValidData())
 		assert.Equal(t, scalarValid, field.GetScalars().GetValidData())
 	})
 
@@ -158,7 +197,7 @@ func TestFieldDataValidData(t *testing.T) {
 			},
 		}
 		SetFieldDataValidData(field, vectorValid)
-		assert.Nil(t, field.GetValidData())
+		assert.Equal(t, vectorValid, field.GetValidData())
 		assert.Equal(t, vectorValid, field.GetVectors().GetValidData())
 	})
 
@@ -170,7 +209,8 @@ func TestFieldDataValidData(t *testing.T) {
 			},
 		}
 		SetFieldDataValidData(field, []bool{})
-		assert.Nil(t, field.GetValidData())
+		assert.NotNil(t, field.ValidData)
+		assert.Empty(t, field.GetValidData())
 		assert.NotNil(t, field.GetScalars().ValidData)
 		assert.Empty(t, field.GetScalars().GetValidData())
 	})
