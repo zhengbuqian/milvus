@@ -381,6 +381,14 @@ std::shared_ptr<ArrayOffsetsSealed>
 ArrayOffsetsSealed::BuildFromColumn(const ChunkedColumnInterface& column,
                                     const FieldMeta& field_meta,
                                     int64_t row_count) {
+    if ((field_meta.get_data_type() == DataType::VECTOR_ARRAY &&
+         field_meta.is_element_nullable()) ||
+        field_meta.has_nullable_array_element()) {
+        ThrowInfo(ErrorCode::NotImplemented,
+                  "array offsets on element-nullable array field {} are "
+                  "not supported yet",
+                  field_meta.get_name().get());
+    }
     if (row_count == 0) {
         LOG_INFO(
             "ArrayOffsetsSealed::BuildFromColumn: empty segment for struct "
@@ -432,7 +440,7 @@ ArrayOffsetsSealed::BuildFromColumn(const ChunkedColumnInterface& column,
                 append_array_length(array_len);
             }
         }
-    } else if (field_meta.is_nested_array()) {
+    } else if (field_meta.is_native_list_array()) {
         for (int64_t chunk_id = 0; chunk_id < num_chunks; ++chunk_id) {
             auto pinned_chunk = column.GetChunk(op_ctx_ptr, chunk_id);
             auto* array_chunk =
