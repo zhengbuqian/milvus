@@ -271,15 +271,6 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
         if (!schema->has_field(field_id)) {
             return nullptr;
         }
-        const auto& field_meta = schema->operator[](field_id);
-        if (field_meta.has_nullable_array_element() ||
-            (field_meta.get_data_type() == DataType::VECTOR_ARRAY &&
-             field_meta.is_element_nullable())) {
-            ThrowInfo(ErrorCode::NotImplemented,
-                      "array offsets on element-nullable array field {} "
-                      "are not supported yet",
-                      field_meta.get_name().get());
-        }
         auto runtime = CaptureRuntimeResourceState();
         auto it = runtime->array_offsets_map.find(field_id);
         if (it != runtime->array_offsets_map.end()) {
@@ -1889,6 +1880,16 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
                                       const SchemaPtr& target_schema,
                                       RuntimeResourceState& runtime);
 
+    static void
+    BuildStructArrayOffsets(
+        RuntimeResourceState& runtime,
+        const SchemaPtr& schema_snapshot,
+        const SegmentLoadInfo& segment_load_info,
+        const std::unordered_set<FieldId>& affected_fields,
+        const std::unordered_set<FieldId>& newly_loaded_fields = {},
+        const std::unordered_set<FieldId>& excluded_fields = {},
+        bool rebuild_all = false);
+
     void
     EnsureArrayOffsetsForStructField(const FieldMeta& field_meta,
                                      int64_t row_count,
@@ -2574,6 +2575,11 @@ class ChunkedSegmentSealedImpl : public SegmentSealed {
                                nullptr,
                                /*is_replace=*/true,
                                &committer);
+        BuildStructArrayOffsets(*runtime,
+                                schema_snapshot,
+                                *current->load_info,
+                                {field_id},
+                                {field_id});
         verifier();
         final_delta.runtime = ToConstRuntimeState(std::move(runtime));
         committer.Publish(current, final_delta);
