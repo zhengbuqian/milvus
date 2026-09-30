@@ -309,6 +309,7 @@ FillRetrieveFieldsOrdered(CSegmentInterface* segments,
                         data = materialized.segment
                                    ->bulk_subscript_not_exist_field(
                                        field_meta,
+                                       materialized.segment_offsets.data(),
                                        materialized.segment_offsets.size());
                     } else {
                         data = materialized.segment->bulk_subscript(

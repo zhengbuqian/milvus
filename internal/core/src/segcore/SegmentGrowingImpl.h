@@ -653,14 +653,8 @@ class SegmentGrowingImpl : public SegmentGrowing {
 
     std::shared_ptr<const IArrayOffsets>
     GetArrayOffsets(FieldId field_id) const override {
-        const auto& field_meta = get_schema_snapshot()->operator[](field_id);
-        if (field_meta.has_nullable_array_element() ||
-            (field_meta.get_data_type() == DataType::VECTOR_ARRAY &&
-             field_meta.is_element_nullable())) {
-            ThrowInfo(ErrorCode::NotImplemented,
-                      "array offsets on element-nullable array field {} "
-                      "are not supported yet",
-                      field_meta.get_name().get());
+        if (!get_schema_snapshot()->has_field(field_id)) {
+            return nullptr;
         }
         std::shared_lock lock(array_offsets_map_mutex_);
         auto it = array_offsets_map_.find(field_id);
