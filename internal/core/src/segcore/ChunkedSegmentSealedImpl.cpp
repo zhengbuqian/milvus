@@ -3439,7 +3439,7 @@ ChunkedSegmentSealedImpl::load_field_data_internal(
             if (field_meta.is_native_list_array() &&
                 load_info.storage_version < STORAGE_V2) {
                 ThrowInfo(ErrorCode::Unsupported,
-                          "nested ARRAY field {} is supported only by Storage "
+                          "native-list ARRAY field {} is supported only by Storage "
                           "V2/V3",
                           field_id.get());
             }
@@ -3607,7 +3607,7 @@ ChunkedSegmentSealedImpl::load_field_data_internal(
             if (field_meta.is_native_list_array() &&
                 load_info.storage_version < STORAGE_V2) {
                 ThrowInfo(ErrorCode::Unsupported,
-                          "nested ARRAY field {} is supported only by Storage "
+                          "native-list ARRAY field {} is supported only by Storage "
                           "V2/V3",
                           field_id.get());
             }
@@ -5569,7 +5569,7 @@ ChunkedSegmentSealedImpl::bulk_subscript(milvus::OpContext* op_ctx,
         case DataType::ARRAY: {
             if (field_meta.is_native_list_array()) {
                 ThrowInfo(ErrorCode::Unsupported,
-                          "raw Array* API does not support nested ARRAY field "
+                          "raw Array* API does not support native-list ARRAY field "
                           "{}; use protobuf retrieve output",
                           field_id.get());
             }
