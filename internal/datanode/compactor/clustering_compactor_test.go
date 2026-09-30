@@ -22,9 +22,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/apache/arrow/go/v17/arrow/array"
+	"github.com/apache/arrow/go/v17/arrow/memory"
 	"github.com/cockroachdb/errors"
 	"github.com/samber/lo"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"go.uber.org/atomic"
 
@@ -45,6 +48,20 @@ import (
 
 func TestClusteringCompactionTaskSuite(t *testing.T) {
 	suite.Run(t, new(ClusteringCompactionTaskSuite))
+}
+
+func TestClusteringScalarStringKeyOwnsArrowValue(t *testing.T) {
+	builder := array.NewStringBuilder(memory.DefaultAllocator)
+	builder.Append("cluster-key")
+	column := builder.NewArray().(*array.String)
+	builder.Release()
+	defer column.Release()
+
+	key, err := scalarValueAt(column, 0, &schemapb.FieldSchema{FieldID: 100, DataType: schemapb.DataType_VarChar})
+	require.NoError(t, err)
+	// Simulate a reader reusing the value buffer after advancing to its next record.
+	column.ValueBytes()[0] = 'X'
+	require.Equal(t, "cluster-key", key)
 }
 
 type ClusteringCompactionTaskSuite struct {
