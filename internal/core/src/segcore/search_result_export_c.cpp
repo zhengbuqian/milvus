@@ -646,7 +646,8 @@ BuildSearchResultFullBatch(CSearchResult c_search_result,
             std::unique_ptr<milvus::DataArray> field_data;
             if (!segment->is_field_exist(field_id)) {
                 field_data =
-                    segment->bulk_subscript_not_exist_field(field_meta, size);
+                    segment->bulk_subscript_not_exist_field(
+                        field_meta, search_result->seg_offsets_.data(), size);
             } else {
                 field_data =
                     segment->bulk_subscript(&op_ctx,
@@ -1459,7 +1460,9 @@ FillFieldsOrderedAsArrowRecordBatchImpl(
                     std::unique_ptr<milvus::DataArray> data;
                     if (!segment->is_field_exist(field_id)) {
                         data = segment->bulk_subscript_not_exist_field(
-                            field_meta, materialized.segment_offsets.size());
+                            field_meta,
+                            materialized.segment_offsets.data(),
+                            materialized.segment_offsets.size());
                     } else {
                         data = segment->bulk_subscript(
                             &op_ctx,

@@ -476,6 +476,7 @@ class SegmentExpr : public Expr {
         auto& field_meta = (*schema)[field_id_];
         field_type_ = field_meta.get_data_type();
         is_nullable_ = field_meta.is_nullable();
+        has_nullable_array_element_ = field_meta.has_nullable_array_element();
 
         if (schema->get_primary_field_id().has_value() &&
             schema->get_primary_field_id().value() == field_id_ &&
@@ -2943,6 +2944,9 @@ class SegmentExpr : public Expr {
             // Nested index with element-level result: batch by rows, slice elements
             auto struct_element_offsets =
                 segment_->GetStructElementOffsets(field_id_);
+            AssertInfo(struct_element_offsets != nullptr,
+                       "StructElementOffsets not found for field {}",
+                       field_id_.get());
 
             auto data_pos = current_index_chunk_pos_;
             auto batch_rows = std::min(batch_size_, active_count_ - data_pos);
@@ -3571,6 +3575,12 @@ class SegmentExpr : public Expr {
     void
     EnsureExecPathDetermined() const {
         std::call_once(determine_exec_path_once_, [this]() {
+            if (IsElementLevelExpression() && has_nullable_array_element_) {
+                ThrowInfo(ErrorCode::NotImplemented,
+                          "element-level expressions on element-nullable "
+                          "array field {} are not supported yet",
+                          field_id_.get());
+            }
             const_cast<SegmentExpr*>(this)->DetermineExecPath();
         });
     }
@@ -3836,6 +3846,7 @@ class SegmentExpr : public Expr {
     // skipped by SkipIndex needs no per-row validity work, so the multi-chunk
     // scan can avoid pinning/materializing it (see ProcessDataChunksForMultipleChunk).
     bool is_nullable_{false};
+    bool has_nullable_array_element_{false};
     // Set when a null-rejecting parent (top-level filter / AND / OR) consumes
     // this expr's output, so result validity (valid_res) is never observed and
     // even a nullable skipped chunk needs no validity fetch. See MarkNullRejecting.

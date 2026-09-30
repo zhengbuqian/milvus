@@ -4287,6 +4287,7 @@ func TestCheckAndFlattenStructFieldData(t *testing.T) {
 					Name:        "embeddings",
 					DataType:    schemapb.DataType_ArrayOfVector,
 					ElementType: schemapb.DataType_FloatVector,
+					TypeParams:  []*commonpb.KeyValuePair{{Key: common.DimKey, Value: "2"}},
 				},
 			},
 		}
@@ -4459,8 +4460,7 @@ func TestCheckAndFlattenStructFieldData(t *testing.T) {
 		err := checkAndFlattenStructFieldData(schema, insertMsg)
 
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "length of fields of struct field mismatch")
-		assert.Contains(t, err.Error(), "fieldData fields length:1, schema fields length:2")
+		assert.Contains(t, err.Error(), "sub-field \"field2\" of struct field \"test_struct\" is required")
 	})
 
 	t.Run("error - scalar array data is nil", func(t *testing.T) {
