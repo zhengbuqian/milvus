@@ -28,6 +28,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/apache/arrow/go/v17/arrow"
+	"github.com/apache/arrow/go/v17/arrow/array"
 	"github.com/samber/lo"
 	"go.opentelemetry.io/otel"
 	"go.uber.org/atomic"
@@ -113,31 +115,56 @@ type ClusterBuffer struct {
 	id                      int
 	writer                  *MultiSegmentWriter
 	clusteringKeyFieldStats *storage.FieldStats
+	builder                 *storage.RecordBuilder
 
 	lock sync.RWMutex
 }
 
-func (b *ClusterBuffer) Write(v *storage.Value) error {
+func (b *ClusterBuffer) Write(r storage.Record, row int) error {
 	b.lock.Lock()
 	defer b.lock.Unlock()
-	return b.writer.WriteValue(v)
+	if err := b.builder.Append(r, row, row+1); err != nil {
+		return err
+	}
+	if b.builder.GetRowNum() >= b.writer.batchSize {
+		return b.flush()
+	}
+	return nil
+}
+
+func (b *ClusterBuffer) flush() error {
+	if b.builder.GetRowNum() == 0 {
+		return nil
+	}
+	r := b.builder.Build()
+	defer r.Release()
+	return b.writer.Write(r)
 }
 
 func (b *ClusterBuffer) Flush() error {
 	b.lock.Lock()
 	defer b.lock.Unlock()
+	if err := b.flush(); err != nil {
+		return err
+	}
 	return b.writer.Flush()
 }
 
 func (b *ClusterBuffer) FlushChunk() error {
 	b.lock.Lock()
 	defer b.lock.Unlock()
+	if err := b.flush(); err != nil {
+		return err
+	}
 	return b.writer.FlushChunk()
 }
 
 func (b *ClusterBuffer) Close() error {
 	b.lock.Lock()
 	defer b.lock.Unlock()
+	if err := b.flush(); err != nil {
+		return err
+	}
 	return b.writer.Close()
 }
 
@@ -150,7 +177,7 @@ func (b *ClusterBuffer) GetCompactionSegments() []*datapb.CompactionSegment {
 func (b *ClusterBuffer) GetBufferSize() uint64 {
 	b.lock.RLock()
 	defer b.lock.RUnlock()
-	return b.writer.GetBufferUncompressed()
+	return b.builder.GetSize() + b.writer.GetBufferUncompressed()
 }
 
 func newClusterBuffer(id int, writer *MultiSegmentWriter, clusteringKeyFieldStats *storage.FieldStats) *ClusterBuffer {
@@ -158,6 +185,7 @@ func newClusterBuffer(id int, writer *MultiSegmentWriter, clusteringKeyFieldStat
 		id:                      id,
 		writer:                  writer,
 		clusteringKeyFieldStats: clusteringKeyFieldStats,
+		builder:                 storage.NewRecordBuilder(writer.schema),
 		lock:                    sync.RWMutex{},
 	}
 }
@@ -612,6 +640,7 @@ func (t *clusteringCompactionTask) mappingSegment(
 	defer rr.Close()
 
 	hasTTLField := t.ttlFieldID >= common.StartOfUserFieldID
+	defaultExpireTs := ttlDefaultValue(t.plan.Schema, t.ttlFieldID)
 
 	offset := int64(-1)
 	for {
@@ -624,40 +653,39 @@ func (t *clusteringCompactionTask) mappingSegment(
 			return err
 		}
 
-		vs := make([]*storage.Value, r.Len())
-		if err = storage.ValueDeserializerWithSchema(r, vs, t.plan.Schema, true); err != nil {
-			mlog.Warn(context.TODO(), "compact wrong, failed to deserialize data", mlog.Err(err))
-			return err
+		pkColumn := r.Column(t.primaryKeyField.FieldID)
+		tsColumn := r.Column(common.TimeStampField).(*array.Int64)
+		keyColumn := r.Column(t.clusteringKeyField.FieldID)
+		var ttlColumn *array.Int64
+		if hasTTLField {
+			ttlColumn = r.Column(t.ttlFieldID).(*array.Int64)
 		}
 
-		for _, v := range vs {
+		for row := 0; row < r.Len(); row++ {
 			offset++
-
-			row, ok := v.Value.(map[typeutil.UniqueID]interface{})
-			if !ok {
-				mlog.Warn(context.TODO(), "convert interface to map wrong")
-				return merr.WrapErrServiceInternalMsg("unexpected error")
+			pk, err := scalarValueAt(pkColumn, row, t.primaryKeyField)
+			if err != nil {
+				return err
 			}
-			expireTs := int64(-1)
-			if hasTTLField {
-				if val, exists := row[t.ttlFieldID]; exists {
-					if v, ok := val.(int64); ok {
-						expireTs = v
-					}
-				}
+			expireTs := defaultExpireTs
+			if ttlColumn != nil && ttlColumn.IsValid(row) {
+				expireTs = ttlColumn.Value(row)
 			}
-			if entityFilter.Filtered(v.PK.GetValue(), uint64(v.Timestamp), expireTs) {
+			if entityFilter.Filtered(pk, uint64(tsColumn.Value(row)), expireTs) {
 				continue
 			}
 
-			clusteringKey := row[t.clusteringKeyField.FieldID]
 			var clusterBuffer *ClusterBuffer
 			if t.isVectorClusteringKey {
 				clusterBuffer = t.offsetToBufferFunc(offset, mappingStats.GetCentroidIdMapping())
 			} else {
+				clusteringKey, err := scalarValueAt(keyColumn, row, t.clusteringKeyField)
+				if err != nil {
+					return err
+				}
 				clusterBuffer = t.keyToBufferFunc(clusteringKey)
 			}
-			if err := clusterBuffer.Write(v); err != nil {
+			if err := clusterBuffer.Write(r, row); err != nil {
 				return err
 			}
 			t.writtenRowNum.Inc()
@@ -676,9 +704,11 @@ func (t *clusteringCompactionTask) mappingSegment(
 			}
 		}
 
-		// all cluster buffers are flushed for a certain record, since the values read from the same record are references instead of copies
+		// Write each bucket's batch before the reader advances to its next record.
 		for _, buffer := range t.clusterBuffers {
-			buffer.Flush()
+			if err := buffer.Flush(); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -815,6 +845,9 @@ func (t *clusteringCompactionTask) cleanUp(ctx context.Context) {
 	if t.flushPool != nil {
 		t.flushPool.Release()
 	}
+	for _, buffer := range t.clusterBuffers {
+		buffer.builder.Release()
+	}
 }
 
 func (t *clusteringCompactionTask) scalarAnalyze(ctx context.Context) (map[interface{}]int64, error) {
@@ -894,11 +927,8 @@ func (t *clusteringCompactionTask) scalarAnalyzeSegment(
 		return make(map[interface{}]int64), err
 	}
 
-	pkIter := storage.NewDeserializeReader(rr, func(r storage.Record, v []*storage.Value) error {
-		return storage.ValueDeserializerWithSelectedFields(r, v, selectedFields, true)
-	})
-	defer pkIter.Close()
-	analyzeResult, remained, err := t.iterAndGetScalarAnalyzeResult(pkIter, expiredFilter)
+	defer rr.Close()
+	analyzeResult, remained, err := t.iterAndGetScalarAnalyzeResult(rr, expiredFilter)
 	if err != nil {
 		return nil, err
 	}
@@ -909,54 +939,103 @@ func (t *clusteringCompactionTask) scalarAnalyzeSegment(
 	return analyzeResult, nil
 }
 
-func (t *clusteringCompactionTask) iterAndGetScalarAnalyzeResult(pkIter *storage.DeserializeReaderImpl[*storage.Value], expiredFilter compaction.EntityFilter) (map[interface{}]int64, int64, error) {
-	// initial timestampFrom, timestampTo = -1, -1 is an illegal value, only to mark initial state
-	var (
-		remained      int64 = 0
-		analyzeResult       = make(map[interface{}]int64, 0)
-	)
+func (t *clusteringCompactionTask) iterAndGetScalarAnalyzeResult(rr storage.RecordReader, expiredFilter compaction.EntityFilter) (map[interface{}]int64, int64, error) {
+	var remained int64
+	analyzeResult := make(map[interface{}]int64)
 	hasTTLField := t.ttlFieldID >= common.StartOfUserFieldID
+	defaultExpireTs := ttlDefaultValue(t.plan.Schema, t.ttlFieldID)
 	for {
-		v, err := pkIter.NextValue()
+		r, err := rr.Next()
 		if err != nil {
 			if err == sio.EOF {
-				pkIter.Close()
 				break
-			} else {
-				mlog.Warn(context.TODO(), "compact wrong, failed to iter through data", mlog.Err(err))
+			}
+			mlog.Warn(context.TODO(), "compact wrong, failed to iter through data", mlog.Err(err))
+			return nil, 0, err
+		}
+
+		pkColumn := r.Column(t.primaryKeyField.FieldID)
+		tsColumn := r.Column(common.TimeStampField).(*array.Int64)
+		keyColumn := r.Column(t.clusteringKeyField.FieldID)
+		var ttlColumn *array.Int64
+		if hasTTLField {
+			ttlColumn = r.Column(t.ttlFieldID).(*array.Int64)
+		}
+
+		for row := 0; row < r.Len(); row++ {
+			pk, err := scalarValueAt(pkColumn, row, t.primaryKeyField)
+			if err != nil {
 				return nil, 0, err
 			}
-		}
-
-		// rowValue := vIter.GetData().(*iterators.InsertRow).GetValue()
-		row, ok := (*v).Value.(map[typeutil.UniqueID]interface{})
-		if !ok {
-			return nil, 0, merr.WrapErrServiceInternalMsg("unexpected error")
-		}
-
-		expireTs := int64(-1)
-		if hasTTLField {
-			if val, exists := row[t.ttlFieldID]; exists {
-				if v, ok := val.(int64); ok {
-					expireTs = v
-				}
+			expireTs := defaultExpireTs
+			if ttlColumn != nil && ttlColumn.IsValid(row) {
+				expireTs = ttlColumn.Value(row)
 			}
-		}
+			if expiredFilter.Filtered(pk, uint64(tsColumn.Value(row)), expireTs) {
+				continue
+			}
 
-		// Filtering expired entity
-		if expiredFilter.Filtered((*v).PK.GetValue(), uint64((*v).Timestamp), expireTs) {
-			continue
+			key, err := scalarValueAt(keyColumn, row, t.clusteringKeyField)
+			if err != nil {
+				return nil, 0, err
+			}
+			analyzeResult[key]++
+			remained++
 		}
-
-		key := row[t.clusteringKeyField.GetFieldID()]
-		if _, exist := analyzeResult[key]; exist {
-			analyzeResult[key] = analyzeResult[key] + 1
-		} else {
-			analyzeResult[key] = 1
-		}
-		remained++
 	}
 	return analyzeResult, remained, nil
+}
+
+func ttlDefaultValue(schema *schemapb.CollectionSchema, fieldID int64) int64 {
+	for _, field := range schema.GetFields() {
+		if field.GetFieldID() == fieldID && field.GetDefaultValue() != nil {
+			return field.GetDefaultValue().GetTimestamptzData()
+		}
+	}
+	return -1
+}
+
+func scalarValueAt(column arrow.Array, row int, field *schemapb.FieldSchema) (interface{}, error) {
+	if column == nil {
+		return nil, merr.WrapErrDataIntegrityMsg("missing scalar field %d", field.GetFieldID())
+	}
+	if column.IsNull(row) {
+		if field.GetDefaultValue() != nil {
+			return storage.GetDefaultValue(field), nil
+		}
+		return nil, nil
+	}
+	switch field.GetDataType() {
+	case schemapb.DataType_Int8:
+		if values, ok := column.(*array.Int8); ok {
+			return values.Value(row), nil
+		}
+	case schemapb.DataType_Int16:
+		if values, ok := column.(*array.Int16); ok {
+			return values.Value(row), nil
+		}
+	case schemapb.DataType_Int32:
+		if values, ok := column.(*array.Int32); ok {
+			return values.Value(row), nil
+		}
+	case schemapb.DataType_Int64, schemapb.DataType_Timestamptz:
+		if values, ok := column.(*array.Int64); ok {
+			return values.Value(row), nil
+		}
+	case schemapb.DataType_Float:
+		if values, ok := column.(*array.Float32); ok {
+			return values.Value(row), nil
+		}
+	case schemapb.DataType_Double:
+		if values, ok := column.(*array.Float64); ok {
+			return values.Value(row), nil
+		}
+	case schemapb.DataType_String, schemapb.DataType_VarChar:
+		if values, ok := column.(*array.String); ok {
+			return strings.Clone(values.Value(row)), nil
+		}
+	}
+	return nil, merr.WrapErrDataIntegrityMsg("scalar field %d (%s) has Arrow type %s", field.GetFieldID(), field.GetDataType(), column.DataType())
 }
 
 func (t *clusteringCompactionTask) generatedScalarPlan(maxRows, preferRows int64, keys []interface{}, dict map[interface{}]int64) [][]interface{} {
