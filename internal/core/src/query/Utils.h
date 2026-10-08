@@ -17,7 +17,7 @@
 #include <utility>
 #include <vector>
 
-#include "common/ArrayOffsets.h"
+#include "common/StructElementOffsets.h"
 #include "common/BitsetView.h"
 #include "common/Consts.h"
 #include "common/OffsetMapping.h"
@@ -78,11 +78,12 @@ AdvanceVectorDataPointer(const void* data,
 }
 
 // Map VECTOR_ARRAY element IDs returned by Knowhere to (doc_id, elem_idx)
-// pairs via ArrayOffsets. This is element-space only; row-level nullable
+// pairs via StructElementOffsets. This is element-space only; row-level nullable
 // mapping is handled before or inside Knowhere search.
 inline std::pair<std::vector<int64_t>, std::vector<int32_t>>
-ApplyElementIDMapping(const std::vector<int64_t>& element_ids,
-                      const milvus::IArrayOffsets& array_offsets) {
+ApplyElementIDMapping(
+    const std::vector<int64_t>& element_ids,
+    const milvus::IStructElementOffsets& struct_element_offsets) {
     std::vector<int64_t> doc_offsets;
     std::vector<int32_t> element_indices;
     doc_offsets.reserve(element_ids.size());
@@ -93,7 +94,7 @@ ApplyElementIDMapping(const std::vector<int64_t>& element_ids,
             element_indices.push_back(-1);
         } else {
             auto [doc_id, elem_index] =
-                array_offsets.ElementIDToRowID(element_ids[i]);
+                struct_element_offsets.ElementIDToRowID(element_ids[i]);
             doc_offsets.push_back(doc_id);
             element_indices.push_back(elem_index);
         }
@@ -105,11 +106,12 @@ ApplyElementIDMapping(const std::vector<int64_t>& element_ids,
 // search already receives logical IDs from Knowhere: indexed paths use IdMap,
 // raw BF paths pass physical->logical IDs through BitsetView.
 inline void
-FinalizeVectorSearchOffsets(SearchResult& result,
-                            const milvus::IArrayOffsets* array_offsets) {
-    if (array_offsets != nullptr) {
+FinalizeVectorSearchOffsets(
+    SearchResult& result,
+    const milvus::IStructElementOffsets* struct_element_offsets) {
+    if (struct_element_offsets != nullptr) {
         auto [doc_offsets, elem_indices] =
-            ApplyElementIDMapping(result.seg_offsets_, *array_offsets);
+            ApplyElementIDMapping(result.seg_offsets_, *struct_element_offsets);
         result.seg_offsets_ = std::move(doc_offsets);
         result.element_indices_ = std::move(elem_indices);
         result.element_level_ = true;
