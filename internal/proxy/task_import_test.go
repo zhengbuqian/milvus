@@ -18,6 +18,7 @@ package proxy
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/cockroachdb/errors"
@@ -470,19 +471,21 @@ func (s *ImportTaskSuite) TestExecute_PassesTheRequestContextToMixCoord() {
 // under test sit at both ends of PreExecute -- the duplicate-key rejection runs
 // before anything is resolved, the privilege gate runs after the schema and
 // vchannels are -- so the mocks must satisfy everything in between.
-func newImportTaskForPreExecute(t *testing.T, options []*commonpb.KeyValuePair) *importTask {
+func newImportTaskForPreExecute(t *testing.T, options []*commonpb.KeyValuePair, schemas ...*schemapb.CollectionSchema) *importTask {
+	collectionSchema := &schemapb.CollectionSchema{
+		Name: "test_collection",
+		Fields: []*schemapb.FieldSchema{
+			{FieldID: 100, Name: "pk", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+		},
+	}
+	if len(schemas) > 0 {
+		collectionSchema = schemas[0]
+	}
 	mockCache := NewMockCache(t)
 	mockCache.EXPECT().GetCollectionID(mock.Anything, mock.Anything, mock.Anything).
 		Return(int64(100), nil).Maybe()
 	mockCache.EXPECT().GetCollectionSchema(mock.Anything, mock.Anything, mock.Anything).
-		Return(&schemaInfo{
-			CollectionSchema: &schemapb.CollectionSchema{
-				Name: "test_collection",
-				Fields: []*schemapb.FieldSchema{
-					{FieldID: 100, Name: "pk", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
-				},
-			},
-		}, nil).Maybe()
+		Return(&schemaInfo{CollectionSchema: collectionSchema}, nil).Maybe()
 
 	// Only reached by the ordinary-import case, which runs past the gate into
 	// partition resolution.
@@ -575,4 +578,45 @@ func TestImportTask_PreExecuteRejectsDuplicateOptionKeys(t *testing.T) {
 
 	assert.ErrorIs(t, err, merr.ErrParameterInvalid)
 	assert.Contains(t, err.Error(), "duplicate import option key: backup")
+}
+
+func TestImportTask_PreExecuteRejectsNativeListArraySchema(t *testing.T) {
+	paramtable.Init()
+	for _, tc := range []struct {
+		name    string
+		paths   []string
+		options []*commonpb.KeyValuePair
+	}{
+		{"parquet", []string{"staging/file.parquet"}, nil},
+		{"json", []string{"staging/file.json"}, nil},
+		{"numpy", []string{"staging/file.npy"}, nil},
+		{"csv", []string{"staging/file.csv"}, nil},
+		{"binlog", []string{"insert", "delta"}, []*commonpb.KeyValuePair{{Key: "backup", Value: "true"}}},
+	} {
+		for _, elementNullable := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/element_nullable=%t", tc.name, elementNullable), func(t *testing.T) {
+				schema := &schemapb.CollectionSchema{
+					Name:   "test_collection",
+					Fields: []*schemapb.FieldSchema{{FieldID: 100, Name: "pk", DataType: schemapb.DataType_Int64, IsPrimaryKey: true}},
+					StructArrayFields: []*schemapb.StructArrayFieldSchema{{Name: "s", Fields: []*schemapb.FieldSchema{{
+						Name: "arr", DataType: schemapb.DataType_Array, ElementType: schemapb.DataType_Int64,
+						ElementNullable: elementNullable,
+					}}}},
+				}
+				it := newImportTaskForPreExecute(t, tc.options, schema)
+				it.req.Files = []*internalpb.ImportFile{{Id: 1, Paths: tc.paths}}
+				if tc.name == "binlog" {
+					it.req.PartitionName = "_default"
+				}
+				err := it.PreExecute(context.Background())
+				if !elementNullable {
+					require.NoError(t, err)
+					return
+				}
+				require.ErrorIs(t, err, merr.ErrParameterInvalid)
+				require.Contains(t, err.Error(), "not supported yet")
+				require.Contains(t, err.Error(), "s.arr")
+			})
+		}
+	}
 }

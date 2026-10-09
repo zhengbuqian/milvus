@@ -112,6 +112,9 @@ func (it *importTask) PreExecute(ctx context.Context) error {
 	if schema.CollectionSchema == nil || len(schema.GetFields()) == 0 {
 		return merr.WrapErrImportSysFailed("collection schema has no fields")
 	}
+	if err := importutilv2.ValidateImportSchema(schema.CollectionSchema); err != nil {
+		return err
+	}
 	if err := validateTextStorageV3Enabled(schema.CollectionSchema); err != nil {
 		return err
 	}

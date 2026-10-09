@@ -207,6 +207,41 @@ func (s *ImportServicesSuite) TestImportV2_AllocatorNilReturnsError() {
 	s.Contains(resp.GetStatus().GetReason(), "allocator not initialized")
 }
 
+func (s *ImportServicesSuite) TestImportV2_RejectsNativeListArrayBeforeAllocation() {
+	paramtable.Init()
+	for _, backup := range []bool{false, true} {
+		for _, elementNullable := range []bool{false, true} {
+			s.Run(fmt.Sprintf("backup=%t/element_nullable=%t", backup, elementNullable), func() {
+				server := &Server{}
+				server.stateCode.Store(commonpb.StateCode_Healthy)
+				options := []*commonpb.KeyValuePair{{Key: "timeout", Value: "300s"}}
+				if backup {
+					options = append(options, &commonpb.KeyValuePair{Key: "backup", Value: "true"})
+				}
+				resp, err := server.ImportV2(context.Background(), &internalpb.ImportRequestInternal{
+					Schema: &schemapb.CollectionSchema{
+						Fields: []*schemapb.FieldSchema{{Name: "pk", DataType: schemapb.DataType_Int64, IsPrimaryKey: true}},
+						StructArrayFields: []*schemapb.StructArrayFieldSchema{{Name: "s", Fields: []*schemapb.FieldSchema{{
+							Name: "arr", DataType: schemapb.DataType_Array, ElementType: schemapb.DataType_Int64,
+							ElementNullable: elementNullable,
+						}}}},
+					},
+					Options: options,
+				})
+				s.Require().NoError(err)
+				if !elementNullable {
+					s.ErrorIs(merr.Error(resp.GetStatus()), merr.ErrServiceUnavailable)
+					s.Contains(resp.GetStatus().GetReason(), "allocator not initialized")
+					return
+				}
+				s.ErrorIs(merr.Error(resp.GetStatus()), merr.ErrParameterInvalid)
+				s.Contains(resp.GetStatus().GetReason(), "not supported yet")
+				s.Contains(resp.GetStatus().GetReason(), "s.arr")
+			})
+		}
+	}
+}
+
 func (s *ImportServicesSuite) TestImportV2_AllocatorFailsReturnsError() {
 	ctx := context.Background()
 	server := &Server{}
@@ -1088,6 +1123,69 @@ func (s *ImportServicesSuite) TestCreateImportJobFromAck_L0ImportDisabledCreates
 	s.Contains(savedJob.GetReason(), "l0 import is disabled")
 	// Failed at creation must carry a real cleanup ts so GC can reclaim the job.
 	s.NotEqual(uint64(math.MaxUint64), savedJob.GetCleanupTs())
+}
+
+func (s *ImportServicesSuite) TestCreateImportJobFromAck_NativeListArrayCreatesFailedJob() {
+	paramtable.Init()
+	for _, tc := range []struct {
+		name            string
+		backup          bool
+		elementNullable bool
+	}{
+		{"legacy array remains pending", false, false},
+		{"native array fails", false, true},
+		{"native binlog import fails before listing", true, true},
+	} {
+		s.Run(tc.name, func() {
+			mockHandler := NewNMockHandler(s.T())
+			mockHandler.EXPECT().GetCollection(mock.Anything, mock.Anything).Return(&collectionInfo{
+				ID: 100, VChannelNames: []string{"v1"},
+			}, nil)
+			var savedJob *datapb.ImportJob
+			catalog := mocks.NewDataCoordCatalog(s.T())
+			catalog.EXPECT().ListImportJobs(mock.Anything).Return(nil, nil)
+			catalog.EXPECT().ListPreImportTasks(mock.Anything).Return(nil, nil)
+			catalog.EXPECT().ListImportTasks(mock.Anything).Return(nil, nil)
+			catalog.EXPECT().SaveImportJob(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, job *datapb.ImportJob) error {
+				savedJob = job
+				return nil
+			})
+			importMeta, err := NewImportMeta(context.Background(), catalog, nil, nil)
+			s.Require().NoError(err)
+			server := &Server{handler: mockHandler, importMeta: importMeta}
+			server.stateCode.Store(commonpb.StateCode_Healthy)
+			mockAllocator := allocator.NewMockAllocator(s.T())
+			mockAllocator.EXPECT().AllocN(mock.Anything).Return(int64(1000), int64(1002), nil)
+			server.allocator = mockAllocator
+			options := []*commonpb.KeyValuePair{{Key: "timeout", Value: "300s"}}
+			if tc.backup {
+				options = append(options, &commonpb.KeyValuePair{Key: "backup", Value: "true"})
+			}
+			resp, err := server.createImportJobFromAck(context.Background(), &internalpb.ImportRequestInternal{
+				CollectionID: 100, CollectionName: "test_collection", JobID: 2000,
+				Files: []*internalpb.ImportFile{{Paths: []string{"/test/file.json"}}},
+				Schema: &schemapb.CollectionSchema{StructArrayFields: []*schemapb.StructArrayFieldSchema{{
+					Name: "s", Fields: []*schemapb.FieldSchema{{
+						Name: "arr", DataType: schemapb.DataType_Array, ElementType: schemapb.DataType_Int64,
+						ElementNullable: tc.elementNullable,
+					}},
+				}}},
+				Options: options,
+			}, false)
+			s.Require().NoError(err)
+			s.Equal(int32(0), resp.GetStatus().GetCode())
+			s.Equal("2000", resp.GetJobID())
+			s.Require().NotNil(savedJob)
+			if !tc.elementNullable {
+				s.Equal(internalpb.ImportJobState_Pending, savedJob.GetState())
+				return
+			}
+			s.Equal(internalpb.ImportJobState_Failed, savedJob.GetState())
+			s.Contains(savedJob.GetReason(), "not supported yet")
+			s.Contains(savedJob.GetReason(), "s.arr")
+			s.NotEqual(uint64(math.MaxUint64), savedJob.GetCleanupTs())
+		})
+	}
 }
 
 func (s *ImportServicesSuite) TestCreateImportJobFromAck_L0ImportEnabledCreatesPendingJob() {
