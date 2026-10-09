@@ -523,6 +523,16 @@ class VectorArrayView {
         return size_;
     }
 
+    int64_t
+    dim() const {
+        return dim_;
+    }
+
+    DataType
+    get_element_type() const {
+        return element_type_;
+    }
+
  private:
     char* data_{nullptr};
     int64_t dim_ = 0;
