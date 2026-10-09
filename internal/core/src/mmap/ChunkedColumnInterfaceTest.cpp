@@ -1761,8 +1761,7 @@ TYPED_TEST(ChunkedColumnInterfaceTest,
     EXPECT_EQ(values[3], 2);
 }
 
-TEST(ChunkedColumnInterfaceTest,
-     RawTakeGetOwnPreservesValidEmptyArrayMetadata) {
+TEST(ChunkedColumnInterfaceTest, RawTakeGetOwnRejectsArray) {
     auto fx = CreateNullableEmptyArrayColumn();
     const FixedVector<int32_t> offsets{0, 1};
     auto take = fx.column->Take(
@@ -1774,16 +1773,13 @@ TEST(ChunkedColumnInterfaceTest,
     ASSERT_TRUE(take->IsValid(0));
     ASSERT_FALSE(take->IsValid(1));
 
-    auto owned = take->GetOwn();
-    ASSERT_EQ(owned.size, 2);
-    ASSERT_TRUE(owned.validity);
-    const auto* arrays = owned.values.data_as<ArrayView>();
-    EXPECT_EQ(arrays[0].length(), 0);
-    EXPECT_EQ(arrays[0].output_data().data_case(), ScalarFieldProto::kLongData);
-    EXPECT_NE(arrays[0].data(), nullptr);
-    EXPECT_EQ(arrays[1].output_data().data_case(),
-              ScalarFieldProto::DATA_NOT_SET);
-    EXPECT_EQ(arrays[1].data(), nullptr);
+    try {
+        take->GetOwn();
+        FAIL() << "GetOwn materialized ARRAY rows";
+    } catch (const SegcoreError& e) {
+        EXPECT_EQ(e.get_error_code(), ErrorCode::Unsupported);
+    }
+    EXPECT_FALSE(take->IsOwned());
 }
 
 TYPED_TEST(ChunkedColumnInterfaceTest, TakeGetRejectsMismatchedFixedType) {
