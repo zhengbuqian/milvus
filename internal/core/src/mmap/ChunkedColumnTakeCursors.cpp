@@ -42,10 +42,6 @@ struct OwnedTakeStorage {
     std::vector<std::string> strings;
     std::vector<std::string_view> string_views;
     std::vector<Json> json_values;
-    std::vector<Array> arrays;
-    std::vector<ArrayView> array_views;
-    std::vector<ArrayValue> array_values;
-    std::vector<ArrayValueView> array_value_views;
     FixedVector<bool> validity;
     FixedVector<bool> data_skipped;
 };
@@ -276,56 +272,10 @@ class RawTakeResult final : public ChunkedColumnInterface::TakeResult {
                 values.byte_width = sizeof(Json);
                 break;
             case DataType::ARRAY:
-                if (target_type_ == TargetType::ArrayValueView) {
-                    owner->array_values.resize(Size());
-                    owner->array_value_views.resize(Size());
-                    visit_values([&](int64_t index,
-                                     Chunk* chunk,
-                                     size_t chunk_offset,
-                                     bool valid) {
-                        if (!valid) {
-                            return;
-                        }
-                        auto* array_chunk =
-                            dynamic_cast<ColumnarArrayChunk*>(chunk);
-                        AssertInfo(array_chunk != nullptr,
-                                   "raw take Cell is not a recursive array");
-                        auto view =
-                            array_chunk->View<ArrayValueView>(chunk_offset);
-                        owner->array_values[index] =
-                            ArrayValue(view.output_data(), view.type());
-                        owner->array_value_views[index] =
-                            owner->array_values[index].View();
-                    });
-                    values.data = owner->array_value_views.data();
-                    values.byte_width = sizeof(ArrayValueView);
-                } else {
-                    owner->arrays.resize(Size());
-                    owner->array_views.resize(Size());
-                    visit_values([&](int64_t index,
-                                     Chunk* chunk,
-                                     size_t chunk_offset,
-                                     bool valid) {
-                        if (!valid) {
-                            return;
-                        }
-                        auto* array_chunk = dynamic_cast<ArrayChunk*>(chunk);
-                        AssertInfo(array_chunk != nullptr,
-                                   "raw take Cell is not a flat array");
-                        array_chunk->View(chunk_offset)
-                            .output_data(owner->arrays[index]);
-                        auto& array = owner->arrays[index];
-                        owner->array_views[index] =
-                            ArrayView(const_cast<char*>(array.data()),
-                                      array.length(),
-                                      array.byte_size(),
-                                      array.get_element_type(),
-                                      array.get_offsets_data());
-                    });
-                    values.data = owner->array_views.data();
-                    values.byte_width = sizeof(ArrayView);
-                }
-                break;
+                // Array rows are read only through the borrowed ArrayAt and
+                // ArrayValueAt views; nothing materializes them.
+                ThrowInfo(ErrorCode::Unsupported,
+                          "raw owned take does not support ARRAY rows");
             default:
                 ThrowInfo(ErrorCode::Unsupported,
                           "unsupported raw owned take type {}",
@@ -380,9 +330,6 @@ class RawTakeResult final : public ChunkedColumnInterface::TakeResult {
 
     ArrayView
     ArrayAt(int64_t index) const override {
-        if (owned_ != nullptr) {
-            return owned_data_.values.data_as<ArrayView>()[index];
-        }
         const auto [chunk, offset] = ResolveBorrowed(index);
         auto* array_chunk = dynamic_cast<ArrayChunk*>(chunk);
         AssertInfo(array_chunk != nullptr, "raw take Cell is not a flat array");
@@ -391,9 +338,6 @@ class RawTakeResult final : public ChunkedColumnInterface::TakeResult {
 
     ArrayValueView
     ArrayValueAt(int64_t index) const override {
-        if (owned_ != nullptr) {
-            return owned_data_.values.data_as<ArrayValueView>()[index];
-        }
         const auto [chunk, offset] = ResolveBorrowed(index);
         auto* array_chunk = dynamic_cast<ColumnarArrayChunk*>(chunk);
         AssertInfo(array_chunk != nullptr,
