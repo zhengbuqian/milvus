@@ -34,6 +34,7 @@ import (
 	"github.com/milvus-io/milvus/pkg/v3/common"
 	"github.com/milvus-io/milvus/pkg/v3/mq/msgstream"
 	"github.com/milvus-io/milvus/pkg/v3/util/metricsinfo"
+	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
 	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
@@ -680,6 +681,60 @@ func TestCheckStructArrayFieldSchema_NullableValidation(t *testing.T) {
 		err := checkStructArrayFieldSchema(schemas)
 		assert.NoError(t, err)
 	})
+}
+
+func TestCheckStructArrayFieldSchemaRejectsTextMatch(t *testing.T) {
+	newStruct := func(field *schemapb.FieldSchema) []*schemapb.StructArrayFieldSchema {
+		return []*schemapb.StructArrayFieldSchema{{Name: "s", Fields: []*schemapb.FieldSchema{field}}}
+	}
+	varcharArray := func(params ...*commonpb.KeyValuePair) *schemapb.FieldSchema {
+		return &schemapb.FieldSchema{
+			Name: "s[tag]", DataType: schemapb.DataType_Array, ElementType: schemapb.DataType_VarChar,
+			TypeParams: append([]*commonpb.KeyValuePair{
+				{Key: common.MaxCapacityKey, Value: "4"},
+				{Key: common.MaxLengthKey, Value: "16"},
+			}, params...),
+		}
+	}
+
+	for _, key := range []string{common.EnableMatchKey, common.EnableAnalyzerKey} {
+		err := checkStructArrayFieldSchema(newStruct(varcharArray(&commonpb.KeyValuePair{Key: key, Value: "true"})))
+		require.ErrorContains(t, err, key+" is not supported on struct sub-field s[tag]")
+	}
+	require.NoError(t, checkStructArrayFieldSchema(newStruct(varcharArray(&commonpb.KeyValuePair{Key: common.EnableMatchKey, Value: "false"}))))
+
+	nested := &schemapb.FieldSchema{
+		Name: "s[tags]", DataType: schemapb.DataType_Array, ElementType: schemapb.DataType_Array,
+		TypeSchema: &schemapb.TypeSchema{
+			TypeParams: []*commonpb.KeyValuePair{{Key: common.MaxCapacityKey, Value: "4"}},
+			Kind: &schemapb.TypeSchema_ArrayElement{ArrayElement: &schemapb.TypeSchema{
+				TypeParams: []*commonpb.KeyValuePair{{Key: common.MaxCapacityKey, Value: "8"}},
+				Kind: &schemapb.TypeSchema_ArrayElement{ArrayElement: &schemapb.TypeSchema{
+					TypeParams: []*commonpb.KeyValuePair{
+						{Key: common.MaxLengthKey, Value: "16"},
+						{Key: common.EnableAnalyzerKey, Value: "true"},
+					},
+					Kind: &schemapb.TypeSchema_LeafType{LeafType: schemapb.DataType_VarChar},
+				}},
+			}},
+		},
+	}
+	require.ErrorContains(t, checkStructArrayFieldSchema(newStruct(nested)), "enable_analyzer is not supported on struct sub-field s[tags]")
+}
+
+func TestCheckStructArrayFieldSchemaMaxCapacityFollowsProxyConfig(t *testing.T) {
+	field := &schemapb.FieldSchema{
+		Name: "s[a]", DataType: schemapb.DataType_Array, ElementType: schemapb.DataType_Int64,
+		TypeParams: []*commonpb.KeyValuePair{{Key: common.MaxCapacityKey, Value: "5000"}},
+	}
+	schemas := []*schemapb.StructArrayFieldSchema{{Name: "s", Fields: []*schemapb.FieldSchema{field}}}
+
+	paramtable.Get().Save(Params.ProxyCfg.MaxArrayCapacity.Key, "8192")
+	defer paramtable.Get().Reset(Params.ProxyCfg.MaxArrayCapacity.Key)
+	require.NoError(t, checkStructArrayFieldSchema(schemas))
+
+	paramtable.Get().Save(Params.ProxyCfg.MaxArrayCapacity.Key, "4096")
+	require.ErrorContains(t, checkStructArrayFieldSchema(schemas), "should be in (0, 4096]")
 }
 
 func TestCheckStructArrayFieldSchema_MaxCapacityValidation(t *testing.T) {
