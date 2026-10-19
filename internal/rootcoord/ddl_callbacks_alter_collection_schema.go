@@ -352,6 +352,9 @@ func prepareAlterSchemaAddStructSubField(coll *model.Collection, plan *schemauti
 	if !field.GetElementNullable() {
 		return merr.WrapErrParameterInvalidMsg("added sub-field %q of struct field %q must set element_nullable=true", originalName, parent.Name)
 	}
+	if err := schemautil.FillAddedStructSubFieldMaxCapacity(model.MarshalStructArrayFieldModel(parent), field); err != nil {
+		return err
+	}
 	if err := validateAddedStructSubFieldProperties(originalName, field); err != nil {
 		return err
 	}

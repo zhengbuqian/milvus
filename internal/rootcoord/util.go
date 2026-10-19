@@ -543,6 +543,9 @@ func checkStructArrayFieldSchema(schemas []*schemapb.StructArrayFieldSchema) err
 			if err := checkNestedArrayTypeSchemaCapacity(field); err != nil {
 				return err
 			}
+			if err := checkStructSubFieldTextMatch(field); err != nil {
+				return err
+			}
 			if field.GetDataType() != schemapb.DataType_Array && field.GetDataType() != schemapb.DataType_ArrayOfVector {
 				msg := fmt.Sprintf("fields in StructArrayField can only be array or array of vector, but field %s is %s", field.Name, field.DataType.String())
 				return merr.WrapErrParameterInvalidMsg(msg)
@@ -590,13 +593,34 @@ func checkStructArrayFieldSchema(schemas []*schemapb.StructArrayFieldSchema) err
 	return nil
 }
 
+// checkStructSubFieldTextMatch rejects enable_match and enable_analyzer on a
+// struct sub-field. Text indexes are only built for top-level fields, so on a
+// sub-field these params would be stored and silently ignored.
+func checkStructSubFieldTextMatch(field *schemapb.FieldSchema) error {
+	params := [][]*commonpb.KeyValuePair{field.GetTypeParams()}
+	for node := field.GetTypeSchema(); node != nil; node = node.GetArrayElement() {
+		params = append(params, node.GetTypeParams())
+	}
+	for _, kvs := range params {
+		for _, kv := range kvs {
+			if kv.GetKey() != common.EnableMatchKey && kv.GetKey() != common.EnableAnalyzerKey {
+				continue
+			}
+			if enabled, err := strconv.ParseBool(kv.GetValue()); err == nil && !enabled {
+				continue
+			}
+			return merr.WrapErrParameterInvalidMsg("%s is not supported on struct sub-field %s", kv.GetKey(), field.GetName())
+		}
+	}
+	return nil
+}
+
 func getStructSubFieldMaxCapacity(structName string, field *schemapb.FieldSchema) (int64, error) {
 	typeParams := field.GetTypeParams()
-	maxArrayCapacity := int64(defaultMaxArrayCapacity)
 	if typeutil.IsNestedArrayTypeSchema(field.GetTypeSchema()) {
 		typeParams = field.GetTypeSchema().GetTypeParams()
-		maxArrayCapacity = Params.ProxyCfg.MaxArrayCapacity.GetAsInt64()
 	}
+	maxArrayCapacity := Params.ProxyCfg.MaxArrayCapacity.GetAsInt64()
 	for _, param := range typeParams {
 		if param.GetKey() != common.MaxCapacityKey {
 			continue
