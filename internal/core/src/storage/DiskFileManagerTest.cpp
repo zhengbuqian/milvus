@@ -260,6 +260,7 @@ PublishDiskResident(const storage::FileManagerContext& context,
         adapted.value_type,
         context.indexMeta.dim,
         data->IsNullable(),
+        context.fieldDataMeta.field_schema.element_nullable(),
         data->get_num_rows(),
         adapted.family,
         adapted.params);
@@ -2193,6 +2194,9 @@ TEST_F(DiskAnnFileManagerTest, BuildAllValidEmptyEmbListDiskIndexFromBinlog) {
     config[milvus::index::DISK_ANN_BUILD_THREAD_NUM] = "1";
 
     auto adapted = DiskConsumerType(file_manager_context, num_rows, config);
+    // Only an embedding-list metric keeps the list layout; an element-level
+    // metric would see no element at all and skip the build.
+    adapted.params[index::METRIC_TYPE] = knowhere::metric::MAX_SIM_L2;
     indexbuilder::BuildRequest request;
     request.family = adapted.family;
     request.params = adapted.params;
@@ -2225,7 +2229,7 @@ TEST_F(DiskAnnFileManagerTest, BuildAllValidEmptyEmbListDiskIndexFromBinlog) {
 
     index::VectorSearchParams search_info;
     search_info.search_params_ = milvus::Config::object();
-    search_info.metric_type_ = knowhere::metric::L2;
+    search_info.metric_type_ = knowhere::metric::MAX_SIM_L2;
     search_info.topk_ = 2;
 
     SearchResult search_result;
