@@ -768,7 +768,6 @@ class ChunkedArrayColumn : public ChunkedColumnBase {
                         std::nullopt) const override {
         AssertInfo(is_nested_array_,
                    "ArrayValueViews requires a recursive ARRAY field");
-        RejectNullableElements();
         auto ca = SemiInlineGet(
             slot_->PinCells(op_ctx, {static_cast<cid_t>(chunk_id)}));
         auto* chunk =
@@ -806,7 +805,6 @@ class ChunkedArrayColumn : public ChunkedColumnBase {
         AssertInfo(is_nested_array_,
                    "ArrayValueViewsByOffsets requires a recursive ARRAY "
                    "field");
-        RejectNullableElements();
         auto ca = SemiInlineGet(
             slot_->PinCells(op_ctx, {static_cast<cid_t>(chunk_id)}));
         auto* chunk =
@@ -822,9 +820,9 @@ class ChunkedArrayColumn : public ChunkedColumnBase {
 
  private:
     void
+    // ArrayValueView exposes element validity; the legacy ArrayView cannot.
     ValidateArrayViewTarget(TargetType target_type) const override {
-        if (target_type == TargetType::ArrayView ||
-            target_type == TargetType::ArrayValueView) {
+        if (target_type == TargetType::ArrayView) {
             RejectNullableElements();
         }
     }
