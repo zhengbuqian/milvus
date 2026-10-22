@@ -1642,7 +1642,7 @@ TEST_F(LegacyIndexLoadTest, EmptyEmbeddingListsKeepValidParentRows) {
         .element_type = DataType::VECTOR_FLOAT,
         .index_engine_version =
             knowhere::Version::GetCurrentVersion().VersionNumber(),
-        .params = {{METRIC_TYPE, "L2"}, {DIM_KEY, 4}},
+        .params = {{METRIC_TYPE, "MAX_SIM_L2"}, {DIM_KEY, 4}},
     });
     adapted.params["nullable"] = true;
     adapted.params[INDEX_NUM_ROWS_KEY] = 3;
