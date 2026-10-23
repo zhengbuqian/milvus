@@ -2029,7 +2029,7 @@ func (s *Server) ImportV2(ctx context.Context, in *internalpb.ImportRequestInter
 	resp := &internalpb.ImportResponse{
 		Status: merr.Success(),
 	}
-	if err := importutilv2.ValidateImportSchema(in.GetSchema()); err != nil {
+	if err := importutilv2.ValidateImportSchema(in.GetSchema(), in.GetOptions()); err != nil {
 		resp.Status = merr.Status(err)
 		return resp, nil
 	}
@@ -2296,7 +2296,7 @@ func (s *Server) createImportJobFromAck(ctx context.Context, result message.Broa
 			Options: options, RlsPrincipal: rlsPrincipal, SkipRls: skipRLS,
 		})
 	}
-	unsupportedSchemaErr := importutilv2.ValidateImportSchema(body.GetSchema())
+	unsupportedSchemaErr := importutilv2.ValidateImportSchema(body.GetSchema(), options)
 
 	isBackup := importutilv2.IsBackup(options)
 	if isBackup && !importutilv2.IsSnapshotSource(options) && !l0ImportDisabled && sourceErr == nil && rlsErr == nil && unsupportedSchemaErr == nil {
