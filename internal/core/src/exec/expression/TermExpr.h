@@ -124,6 +124,9 @@ class PhyTermFilterExpr : public SegmentExpr {
     VectorPtr
     ExecVisitorImpl(EvalCtx& context);
 
+    VectorPtr
+    ExecElementLevelEmptyTerm(EvalCtx& context);
+
     template <typename T>
     VectorPtr
     ExecVisitorImplForIndex();
